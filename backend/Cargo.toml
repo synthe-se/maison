@@ -11,12 +11,12 @@ bluetooth = ["dep:btleplug"]
 live-runtime-tests = []
 
 [dependencies]
-argon2 = "0.5.3"
+argon2 = "0.6.0"
 async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.23.1"
-btleplug = { version = "0.12.0", optional = true }
+btleplug = { version = "0.13.3", optional = true }
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
 chrono-tz = "0.10.4"
 dotenvy = "0.15.7"
@@ -25,14 +25,14 @@ dotenvy = "0.15.7"
 # ashv2's `ezsp` feature provides the Transmit/Receive adapters; the ezsp
 # crate itself resolves through [patch.crates-io] below so both the direct
 # dependency and ashv2's internal one use the same patched source.
-ashv2 = { git = "https://github.com/uplg/ashv2/", branch = "main", version = "12.0.0", features = ["ezsp"] }
-ezsp = "15.0.0"
+ashv2 = { git = "https://github.com/uplg/ashv2/", branch = "main", version = "13.0.0", features = ["ezsp"] }
+ezsp = "17.0.0"
 silizium = { version = "3", features = ["le-stream"] }
 futures = "0.3.34"
 heapless = "0.9"
-jsonwebtoken = { version = "11.0.0", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
 md5 = "0.8.1"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "form"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "query", "rustls", "form"] }
 rbroadlink = "0.4.2"
 # ADB (Android TV box): the device authenticates the client by having it sign
 # a 20-byte token with RSA-2048, so a pure-Rust RSA is needed to speak the
@@ -41,31 +41,36 @@ rbroadlink = "0.4.2"
 # generate ourselves, and the pairing secret is a SHA-256 over both public
 # keys — hence rcgen to mint the cert and x509-parser to read the TV's.
 # rustls/tokio-rustls are already in the tree via reqwest.
-rcgen = "0.14.9"
-rustls = "0.23.43"
-tokio-rustls = "0.26.4"
+rcgen = "0.14.10"
+rustls = "0.23.45"
+tokio-rustls = "0.26.6"
 x509-parser = "0.18.1"
 sha2 = "0.11.0"
 rsa = "0.10.0-rc.18"
 sha1 = { version = "0.11.0", features = ["oid"] }
-rand = "0.10.2"
+rand = "0.10.3"
 rust-async-tuyapi = { git = "https://github.com/uplg/rust-async-tuyapi", rev = "6cd9180b296a04ef9e6751b594c6235aa79b7157" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 time = "0.3.55"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
 tokio-serial = "5.5.0"
-tower-http = { version = "0.7.0", features = ["cors", "fs", "timeout", "trace"] }
+tower-http = { version = "0.7.1", features = ["cors", "fs", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-uuid = { version = "1.25.0", features = ["v4"] }
+uuid = { version = "1.26.1", features = ["v4"] }
+# Matter controller (Sonoff Orb-RBS shutter switch): commissioning over IP,
+# CASE sessions and the Interaction Model in pure Rust, on the ring already in
+# the tree. matter-codec supplies the TLV tags for command fields.
+matter-controller = "0.16.0"
+matter-codec = "0.3.1"
 
 [dev-dependencies]
 bytes = "1.12.1"
 tempfile = "3.27.0"
 tower = "0.5.3"
-uuid = { version = "1.25.0", features = ["v4"] }
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [patch.crates-io]
 ezsp = { git = "https://github.com/uplg/ezsp", branch = "main" }

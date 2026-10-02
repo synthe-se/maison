@@ -1,4 +1,4 @@
-.PHONY: help backend frontend frontend-build test build-pi deploy deploy-push deploy-start deploy-stop deploy-status deploy-logs cloudflared-upgrade
+.PHONY: help backend web web-build frontend frontend-build test build-pi deploy deploy-push deploy-start deploy-stop deploy-status deploy-logs cloudflared-upgrade
 
 # SSH target for the Raspberry Pi. Override on the command line or set
 # PI_HOST in .env (deploy.sh and every deploy-* target read it from here).
@@ -10,9 +10,9 @@ LOG_TARGET ?= stack
 help:
 	@printf "Development (this machine):\n"
 	@printf "  make backend             Run the Rust backend in foreground (cargo run)\n"
-	@printf "  make frontend            Run the frontend dev server (vite)\n"
-	@printf "  make frontend-build      Build the frontend bundle\n"
-	@printf "  make test                Run backend tests and frontend lint\n"
+	@printf "  make web                 Run the SvelteKit dev server (alias: make frontend)\n"
+	@printf "  make web-build           Build the web bundle into web/build (alias: make frontend-build)\n"
+	@printf "  make test                Run backend tests, web checks and web tests\n"
 	@printf "\nRaspberry Pi 1 (uses PI_HOST, default from .env):\n"
 	@printf "  make build-pi            Cross-build the ARMv6 musl backend binary\n"
 	@printf "  make deploy              Full deploy: build + push + upgrade + restart\n"
@@ -26,15 +26,20 @@ help:
 backend:
 	cargo run --manifest-path backend/Cargo.toml
 
-frontend:
-	bun --cwd frontend run dev
+web:
+	bun --cwd web run dev
 
-frontend-build:
-	bun --cwd frontend run build
+web-build:
+	bun --cwd web run build
+
+# Former names, kept for muscle memory.
+frontend: web
+frontend-build: web-build
 
 test:
 	cargo test --manifest-path backend/Cargo.toml
-	bun --cwd frontend run lint
+	bun --cwd web run check
+	bun --cwd web run test
 
 build-pi:
 	bash scripts/build-rpi1-backend.sh

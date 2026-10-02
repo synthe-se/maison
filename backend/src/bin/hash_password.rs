@@ -1,9 +1,6 @@
 use std::io::{self, Read};
 
-use argon2::{
-    password_hash::{rand_core::OsRng, SaltString},
-    Argon2, PasswordHasher,
-};
+use argon2::{Argon2, PasswordHasher};
 
 fn main() {
     let password = std::env::args()
@@ -15,9 +12,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    let salt = SaltString::generate(&mut OsRng);
+    // The salt is drawn from the OS RNG by argon2 itself.
     let hash = Argon2::default()
-        .hash_password(password.trim_end().as_bytes(), &salt)
+        .hash_password(password.trim_end().as_bytes())
         .expect("password hashing should succeed")
         .to_string();
 

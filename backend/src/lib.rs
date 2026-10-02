@@ -11,6 +11,7 @@ pub mod hue;
 #[path = "hue_stub.rs"]
 pub mod hue;
 pub mod ir;
+pub mod matter;
 pub mod meross;
 pub mod mitsubishi_ir;
 pub mod nabaztag;
@@ -36,6 +37,7 @@ use config::Config;
 use error::AppError;
 use hue::HueManager;
 use ir::IrManager;
+use matter::MatterManager;
 use nabaztag::NabaztagManager;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -50,13 +52,14 @@ use zigbee::ZigbeeManager;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub(crate) config: Arc<Config>,
+    pub config: Arc<Config>,
     pub(crate) users: SharedUsers,
     pub(crate) auth_rate_limiter: AuthRateLimiter,
     pub(crate) refresh_store: RefreshTokenStore,
     pub(crate) broadlink: BroadlinkManager,
     pub(crate) hue: HueManager,
     pub(crate) ir: IrManager,
+    pub(crate) matter: MatterManager,
     pub(crate) meross: MerossManager,
     pub(crate) nabaztag: NabaztagManager,
     pub(crate) tempo: TempoService,
@@ -89,6 +92,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         BroadlinkManager::new(&config.broadlink_codes_path, &config.climate_state_path)?;
     let hue = HueManager::new(config.as_ref())?;
     let ir = IrManager::new(&config.ir_keymap_path)?;
+    let matter = MatterManager::new(config.as_ref())?;
     let meross = MerossManager::new(&config.meross_devices_path)?;
     let nabaztag = NabaztagManager::new(
         &config.nabaztag_config_path,
@@ -113,6 +117,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         broadlink,
         hue,
         ir,
+        matter,
         meross,
         nabaztag,
         tempo,
@@ -184,6 +189,7 @@ pub fn build_app(state: AppState) -> Router {
         .nest("/devices", routes::devices::router())
         .nest("/hue-lamps", routes::hue::router())
         .nest("/ir", routes::ir::router())
+        .nest("/matter", routes::matter::router())
         .nest("/meross", routes::meross::router())
         .nest("/nabaztag", routes::nabaztag::router())
         .nest("/tempo", routes::tempo::router())
@@ -195,6 +201,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(routes::root::health_router())
         .nest("/api", api_router);
 
+    let csp = content_security_policy(&state.config.frontend_dist_dir);
     let app = if state.config.frontend_dist_dir.join("index.html").is_file() {
         app.fallback_service(
             ServeDir::new(state.config.frontend_dist_dir.clone())
@@ -206,7 +213,9 @@ pub fn build_app(state: AppState) -> Router {
 
     // CORS: reject all cross-origin requests. The frontend is served from the
     // same origin so legitimate requests never need CORS.
-    app.layer(middleware::from_fn(security_headers))
+    app.layer(middleware::from_fn(move |request, next| {
+        security_headers(request, next, csp.clone())
+    }))
         .layer(CorsLayer::new())
         // Last-resort guard so no request can hang a connection forever; the
         // limit sits above every legitimate long operation (IR learning,
@@ -228,7 +237,11 @@ pub fn build_app(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn security_headers(request: axum::extract::Request, next: Next) -> Response {
+async fn security_headers(
+    request: axum::extract::Request,
+    next: Next,
+    csp: header::HeaderValue,
+) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
@@ -237,12 +250,7 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
         header::STRICT_TRANSPORT_SECURITY,
         "max-age=63072000; includeSubDomains".parse().unwrap(),
     );
-    // Note: style-src 'unsafe-inline' is required because the React frontend uses
-    // inline styles (e.g. dynamic positioning and color previews in device controls).
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'".parse().unwrap(),
-    );
+    headers.insert(header::CONTENT_SECURITY_POLICY, csp);
     headers.insert(
         header::REFERRER_POLICY,
         "strict-origin-when-cross-origin".parse().unwrap(),
@@ -250,9 +258,39 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
     response
 }
 
+/// The page's Content-Security-Policy. Scripts: our own files, plus exactly the inline
+/// scripts of the built `index.html` (SvelteKit's boot script, the theme set before first
+/// paint), allowed by their SHA-256 — never `'unsafe-inline'`. Styles keep `'unsafe-inline'`:
+/// Svelte's `style:` directives write inline styles (a progress bar's width, a colour swatch).
+fn content_security_policy(dist_dir: &std::path::Path) -> header::HeaderValue {
+    let page = std::fs::read_to_string(dist_dir.join("index.html")).unwrap_or_default();
+    let hashes: String = inline_scripts(&page)
+        .map(|script| {
+            use base64::Engine;
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(script.as_bytes());
+            format!(" 'sha256-{}'", base64::engine::general_purpose::STANDARD.encode(digest))
+        })
+        .collect();
+    format!(
+        "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'"
+    )
+    .parse()
+    .expect("a CSP made of ASCII")
+}
+
+/// The bodies of `<script>` elements without a `src`, as the browser hashes them.
+fn inline_scripts(page: &str) -> impl Iterator<Item = &str> {
+    page.split("<script").skip(1).filter_map(|rest| {
+        let (attrs, after) = rest.split_once('>')?;
+        let (body, _) = after.split_once("</script>")?;
+        (!attrs.contains("src=")).then_some(body)
+    })
+}
+
 impl AppState {
     pub fn validate_runtime_security(&self) -> Result<(), AppError> {
-        if self.config.jwt_secret == "super-secret-cat-key-change-me" {
+        if self.config.jwt_secret == config::DEFAULT_JWT_SECRET {
             return Err(AppError::http(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "Refusing to start with the default JWT secret. Set JWT_SECRET in .env.",
@@ -265,5 +303,39 @@ impl AppState {
     pub async fn shutdown(&self) {
         self.hue.shutdown().await;
         self.zigbee.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod csp_tests {
+    use super::*;
+
+    #[test]
+    fn inline_scripts_are_found_and_external_ones_skipped() {
+        let page = r#"<head><script>a()</script><script type="module" src="/x.js"></script></head><body><script>
+b()
+</script></body>"#;
+        let found: Vec<&str> = inline_scripts(page).collect();
+        assert_eq!(found, vec!["a()", "\nb()\n"]);
+    }
+
+    #[test]
+    fn the_policy_allows_exactly_the_inline_scripts() {
+        let dir = std::env::temp_dir().join(format!("maison-csp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // echo -n "a()" | openssl dgst -sha256 -binary | base64
+        std::fs::write(dir.join("index.html"), "<script>a()</script>").unwrap();
+        let csp = content_security_policy(&dir);
+        let csp = csp.to_str().unwrap();
+        assert!(csp.contains("script-src 'self' 'sha256-qVpDBgj7bpq5hMAcGp3AOc79J3Y1Z4HvySTwKrWDoy4='"), "{csp}");
+        let scripts = csp.split(';').find(|d| d.trim_start().starts_with("script-src")).unwrap();
+        assert!(!scripts.contains("unsafe-inline"), "{scripts}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_a_built_frontend_only_our_own_scripts_run() {
+        let csp = content_security_policy(std::path::Path::new("/nonexistent"));
+        assert!(csp.to_str().unwrap().contains("script-src 'self';"));
     }
 }

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="%sveltekit.env.PUBLIC_BASE_LOCALE%">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+		<meta name="theme-color" content="#0e5e68" />
+		<link rel="manifest" href="%sveltekit.assets%/manifest.webmanifest" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.ico" sizes="any" />
+		<link rel="icon" href="%sveltekit.assets%/brand.svg" type="image/svg+xml" />
+		<link rel="apple-touch-icon" href="%sveltekit.assets%/icons/apple-touch-icon.png" />
+		<link rel="preload" href="%sveltekit.assets%/fonts/CalSansVF.woff2" as="font" type="font/woff2" crossorigin />
+		<title>Maison</title>
+		<!-- the chosen theme before first paint: no flash of the other one -->
+		<script>
+			try {
+				const t = localStorage.getItem('%sveltekit.env.PUBLIC_THEME_KEY%');
+				if (t) document.documentElement.dataset.theme = t;
+			} catch {}
+		</script>
+		%sveltekit.head%
+	</head>
+	<body>
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

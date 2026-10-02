@@ -1105,8 +1105,7 @@ fn command_timeout_for(command: &NativeZigbeeCommand) -> StdDuration {
 }
 
 async fn open_ezsp_context(serial_port: &str) -> Result<EzspContext, AppError> {
-    let protocol_version = std::env::var("ZIGBEE_EZSP_PROTOCOL_VERSION")
-        .ok()
+    let protocol_version = crate::config::env_text("ZIGBEE_EZSP_PROTOCOL_VERSION")
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(DEFAULT_EZSP_PROTOCOL_VERSION);
     let attempts = [
@@ -1552,7 +1551,7 @@ fn configured_network_channel() -> u8 {
 }
 
 fn configured_network_tx_power() -> i8 {
-    let Ok(raw) = std::env::var("ZIGBEE_TX_POWER") else {
+    let Some(raw) = crate::config::env_text("ZIGBEE_TX_POWER") else {
         return DEFAULT_NETWORK_TX_POWER;
     };
     // Radio power is signed dBm; negative values are legitimate.
@@ -1571,7 +1570,7 @@ fn configured_pan_id() -> Option<u16> {
 }
 
 fn configured_extended_pan_id() -> Option<Eui64> {
-    let value = std::env::var("ZIGBEE_EXTENDED_PAN_ID").ok()?;
+    let value = crate::config::env_text("ZIGBEE_EXTENDED_PAN_ID")?;
     let compact = value.chars().filter(char::is_ascii_hexdigit).collect::<String>();
     if compact.len() != 16 {
         return None;
@@ -1599,12 +1598,12 @@ fn random_pan_id(value: u16) -> u16 {
 }
 
 fn parse_u8_env(name: &str) -> Option<u8> {
-    let value = std::env::var(name).ok()?;
+    let value = crate::config::env_text(name)?;
     parse_u16_literal(&value).ok()?.try_into().ok()
 }
 
 fn parse_u16_env(name: &str) -> Option<u16> {
-    let value = std::env::var(name).ok()?;
+    let value = crate::config::env_text(name)?;
     parse_u16_literal(&value).ok()
 }
 
@@ -1630,8 +1629,19 @@ async fn handle_command(context: &mut EzspContext, command: NativeZigbeeCommand)
                 let blank_eui64 = Eui64::new(0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF);
                 let key: security_man::Key = ZIGBEE_ALLIANCE09_LINK_KEY;
 
+                // The security-manager context is only on the wire from EZSP v14; the
+                // uplg/ezsp fork drops it for the MG21's v13 firmware.
+                let key_context = security_man::Context::new(
+                    security_man::KeyType::TcLink,
+                    0,
+                    security_man::DerivedKeyType::None,
+                    blank_eui64,
+                    0,
+                    security_man::Flags::NONE,
+                    0,
+                );
                 match context.connection
-                    .import_transient_key(blank_eui64, key, security_man::Flags::NONE)
+                    .import_transient_key(key_context, blank_eui64, key, security_man::Flags::NONE)
                     .await
                 {
                     Ok(()) => {

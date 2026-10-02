@@ -1,11 +1,16 @@
 {
   "name": "maison",
   "private": true,
-  "description": "Maison — Rust backend + Vite frontend, deployed to a Raspberry Pi 1",
+  "description": "Maison — Rust backend + SvelteKit web frontend, deployed to a Raspberry Pi 1",
   "scripts": {
     "backend": "cargo run --manifest-path backend/Cargo.toml",
-    "backend:dev": "cargo run --manifest-path backend/Cargo.toml",
-    "frontend:dev": "bun --cwd frontend run dev",
-    "frontend:build": "bun --cwd frontend run build"
+    "backend:dev": "bun run backend",
+    "web:dev": "bun --cwd web run dev",
+    "web:build": "bun --cwd web run build",
+    "web:check": "bun --cwd web run check",
+    "web:test": "bun --cwd web run test",
+    "frontend:dev": "bun run web:dev",
+    "frontend:build": "bun run web:build",
+    "test": "cargo test --manifest-path backend/Cargo.toml && bun run web:check && bun run web:test"
   }
 }

@@ -1,25 +1,23 @@
 #![cfg(feature = "live-runtime-tests")]
 
+mod common;
+
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
 };
 
 use axum::{
-    body::{to_bytes, Body},
-    http::{Method, Request, StatusCode},
+    http::{Method, StatusCode},
     Router,
 };
-use maison_backend::{auth::Claims, build_app_from_config, config::Config};
-use jsonwebtoken::{encode, EncodingKey, Header};
+use common::{assert_json_eq, normalize_numbers};
+use maison_backend::config::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tower::ServiceExt;
 
 const LEGACY_BASE_URL: &str = "http://localhost:3033";
 const LEGACY_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIxIiwidXNlcm5hbWUiOiJsZW9uYXJkIiwicm9sZSI6ImFkbWluIiwiZXhwIjoxNzczODc0NTE1LCJpYXQiOjE3NzMyNjk3MTV9.iA2VDfv_KLmADqGHI-yXa2fPRom5LqfyKIT2mP3dh6g";
-static TUYA_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredFixture {
@@ -29,7 +27,7 @@ struct StoredFixture {
 
 #[tokio::test]
 async fn devices_list_matches_runtime_contract() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices").await;
 
     assert_eq!(rust.0, StatusCode::OK);
@@ -48,7 +46,7 @@ async fn devices_list_matches_runtime_contract() {
 
 #[tokio::test]
 async fn stats_reports_runtime_connection_fields() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices/stats").await;
 
     assert_eq!(rust.0, StatusCode::OK);
@@ -62,22 +60,22 @@ async fn stats_reports_runtime_connection_fields() {
 
 #[tokio::test]
 async fn disconnect_then_connect_device_updates_runtime_stats() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
 
     let app = build_test_app();
 
-    let disconnect = request_with_app(&app, Method::GET, "/api/devices/bfe88591a492929ab380tm/disconnect", None).await;
+    let disconnect = common::send_authed(&app, Method::GET, "/api/devices/bfe88591a492929ab380tm/disconnect", None).await;
     assert_eq!(disconnect.0, StatusCode::OK);
 
-    let stats = request_with_app(&app, Method::GET, "/api/devices/stats", None).await;
+    let stats = common::send_authed(&app, Method::GET, "/api/devices/stats", None).await;
     assert_eq!(stats.0, StatusCode::OK);
     let litter_entry = find_stats_device(&stats.1, "bfe88591a492929ab380tm");
     assert_eq!(litter_entry.pointer("/isConnected"), Some(&Value::Bool(false)));
 
-    let connect = request_with_app(&app, Method::GET, "/api/devices/bfe88591a492929ab380tm/connect", None).await;
+    let connect = common::send_authed(&app, Method::GET, "/api/devices/bfe88591a492929ab380tm/connect", None).await;
     assert_eq!(connect.0, StatusCode::OK);
 
-    let stats = request_with_app(&app, Method::GET, "/api/devices/stats", None).await;
+    let stats = common::send_authed(&app, Method::GET, "/api/devices/stats", None).await;
     assert_eq!(stats.0, StatusCode::OK);
     let litter_entry = find_stats_device(&stats.1, "bfe88591a492929ab380tm");
     let reconnect_attempts = litter_entry
@@ -93,7 +91,7 @@ async fn disconnect_then_connect_device_updates_runtime_stats() {
 
 #[tokio::test]
 async fn scan_dps_reports_visible_range_summary() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices/bfe88591a492929ab380tm/scan-dps?start=101&end=119&timeout=3000").await;
 
     assert_eq!(rust.0, StatusCode::OK);
@@ -104,7 +102,7 @@ async fn scan_dps_reports_visible_range_summary() {
 
 #[tokio::test]
 async fn fountain_status_matches_runtime_contract() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices/bf855a2e493e0257b1mebx/fountain/status").await;
 
     if rust.0 == StatusCode::SERVICE_UNAVAILABLE {
@@ -131,7 +129,7 @@ async fn fountain_status_matches_runtime_contract() {
 
 #[tokio::test]
 async fn litter_box_status_matches_fixture_contract() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices/bfe88591a492929ab380tm/litter-box/status").await;
     let legacy = load_fixture("litter-box-status");
 
@@ -144,7 +142,7 @@ async fn litter_box_status_matches_fixture_contract() {
 
 #[tokio::test]
 async fn devices_list_reports_cache_backed_fields() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices").await;
     assert_eq!(rust.0, StatusCode::OK);
     let rust = rust.1;
@@ -187,7 +185,7 @@ async fn devices_list_reports_cache_backed_fields() {
 
 #[tokio::test]
 async fn feeder_status_matches_legacy_contract() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices/bfa64c250eb410189dy9gq/feeder/status").await;
 
     assert_eq!(rust.0, StatusCode::OK);
@@ -205,7 +203,7 @@ async fn feeder_status_matches_legacy_contract() {
 
 #[tokio::test]
 async fn feeder_meal_plan_reads_from_cache_contract() {
-    let _guard = tuya_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let rust = request_rust("/api/devices/bfa64c250eb410189dy9gq/feeder/meal-plan").await;
 
     assert_eq!(rust.0, StatusCode::OK);
@@ -270,42 +268,27 @@ async fn refresh_legacy_tuya_fixtures() {
 
 async fn request_rust(path: &str) -> (StatusCode, Value) {
     let app = build_test_app();
-    request_with_app(&app, Method::GET, path, None).await
+    common::send_authed(&app, Method::GET, path, None).await
 }
 
 async fn request_rust_with_body(method: Method, path: &str, body: Option<Value>) -> (StatusCode, Value) {
     let app = build_test_app();
-    request_with_app(&app, method, path, body).await
+    common::send_authed(&app, method, path, body).await
 }
 
 fn build_test_app() -> Router {
-    let config = test_config();
-    build_app_from_config(Arc::new(config)).expect("failed to build test app")
-}
-
-async fn request_with_app(app: &Router, method: Method, path: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let token = rust_test_token();
-
-    let mut builder = Request::builder().method(method).uri(path);
-    builder = builder.header("Authorization", format!("Bearer {token}"));
-    if body.is_some() {
-        builder = builder.header("Content-Type", "application/json");
-    }
-
-    let request = builder
-        .body(
-            body.map(|value| Body::from(serde_json::to_vec(&value).expect("body should encode")))
-                .unwrap_or_else(Body::empty),
-        )
-        .expect("request should build");
-
-    let response = app.clone().oneshot(request).await.expect("request should succeed");
-    let status = response.status();
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let json = serde_json::from_slice::<Value>(&body).expect("response should be valid json");
-    (status, json)
+    let temp_root = common::temp_root("maison-rust-tests");
+    let device_cache_path = temp_root.join("device-cache.json");
+    fs::copy(fixture_path("device-cache"), &device_cache_path)
+        .expect("device cache fixture should be copied");
+    common::app(Config {
+        device_cache_path,
+        broadlink_codes_path: temp_root.join("broadlink-codes.json"),
+        climate_state_path: temp_root.join("climate-state.json"),
+        refresh_tokens_path: temp_root.join("refresh-tokens.json"),
+        nabaztag_config_path: temp_root.join("nabaztag.json"),
+        ..common::test_config()
+    })
 }
 
 async fn request_legacy(path: &str) -> (StatusCode, Value) {
@@ -346,87 +329,12 @@ async fn refresh_fixture(name: &str, path: &str) {
         .unwrap_or_else(|error| panic!("failed to write fixture {}: {error}", output_path.display()));
 }
 
-fn test_config() -> Config {
-    let source_root = workspace_root();
-    let temp_root = std::env::temp_dir()
-        .join("maison-rust-tests")
-        .join(uuid::Uuid::new_v4().to_string());
-    fs::create_dir_all(&temp_root).expect("temp test dir should be created");
-    let cache_fixture = fixture_path("device-cache");
-    let cache_copy = temp_root.join("device-cache.json");
-    fs::copy(&cache_fixture, &cache_copy).expect("device cache fixture should be copied");
-
-    Config {
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-cat-key-change-me".to_string()),
-        frontend_dist_dir: source_root.join("frontend").join("dist"),
-        auth_cookie_name: "maison_session".to_string(),
-        auth_cookie_secure: false,
-        auth_rate_limit_attempts: 10,
-        auth_rate_limit_window_seconds: 300,
-        disable_bluetooth: true,
-        users_path: source_root.join("users.json"),
-        meross_devices_path: source_root.join("meross-devices.json"),
-        devices_path: source_root.join("devices.json"),
-        device_cache_path: cache_copy,
-        broadlink_codes_path: temp_root.join("broadlink-codes.json"),
-        climate_state_path: temp_root.join("climate-state.json"),
-        refresh_tokens_path: temp_root.join("refresh-tokens.json"),
-        nabaztag_config_path: temp_root.join("nabaztag.json"),
-        nabaztag_host: None,
-        hue_lamps_path: source_root.join("hue-lamps.json"),
-        hue_blacklist_path: source_root.join("hue-lamps-blacklist.json"),
-        zigbee_lamps_path: source_root.join("zigbee-lamps.json"),
-        zigbee_lamps_blacklist_path: source_root.join("zigbee-lamps-blacklist.json"),
-        zigbee_permit_join_seconds: 120,
-        ir_keymap_path: source_root.join("ir-keymap.json"),
-        tv_config_path: source_root.join("tv.json"),
-        androidtv_config_path: source_root.join("androidtv.json"),
-        adb_key_path: source_root.join("adb-key"),
-        atv_identity_path: source_root.join("atv-identity"),
-        ir_api_token: Some("test-ir-token".to_string()),
-        source_root,
-    }
-}
-
-fn workspace_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("backend has parent")
-        .to_path_buf()
-}
-
 fn fixture_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("tuya")
         .join(format!("{name}.json"))
-}
-
-fn tuya_test_lock() -> &'static tokio::sync::Mutex<()> {
-    TUYA_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-fn rust_test_token() -> String {
-    let claims = Claims {
-        user_id: "1".to_string(),
-        username: "leonard".to_string(),
-        role: "admin".to_string(),
-        exp: 4_102_444_800,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(
-            env::var("JWT_SECRET")
-                .unwrap_or_else(|_| "super-secret-cat-key-change-me".to_string())
-                .as_bytes(),
-        ),
-    )
-    .expect("test token should encode")
 }
 
 fn normalize_typed_status(value: Value) -> Value {
@@ -473,32 +381,4 @@ fn find_stats_device<'a>(value: &'a Value, device_id: &str) -> &'a Value {
             })
         })
         .expect("device entry should be present")
-}
-
-fn normalize_numbers(value: Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.into_iter().map(normalize_numbers).collect()),
-        Value::Object(entries) => Value::Object(
-            entries
-                .into_iter()
-                .map(|(key, value)| (key, normalize_numbers(value)))
-                .collect(),
-        ),
-        Value::Number(number) => {
-            if let Some(value) = number.as_f64() {
-                json!((value * 1_000_000.0).round() / 1_000_000.0)
-            } else {
-                Value::Number(number)
-            }
-        }
-        other => other,
-    }
-}
-
-fn assert_json_eq(left: &Value, right: &Value) {
-    assert_eq!(left, right, "left:\n{}\n\nright:\n{}", pretty(left), pretty(right));
-}
-
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).expect("json should pretty print")
 }

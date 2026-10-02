@@ -32,220 +32,111 @@ pub struct Config {
     pub adb_key_path: PathBuf,
     pub atv_identity_path: PathBuf,
     pub ir_api_token: Option<String>,
+    pub matter_state_dir: PathBuf,
+    pub matter_trust_dir: PathBuf,
+    pub matter_test_roots: bool,
 }
 
+/// The JWT secret a fresh checkout ships with; the backend refuses to start with it.
+pub const DEFAULT_JWT_SECRET: &str = "super-secret-cat-key-change-me";
+
 impl Config {
+    /// The settings from the environment (`.env` included), defaults for the rest.
     pub fn from_env() -> Self {
-        let source_root = env::var("MAISON_SOURCE_ROOT")
+        let source_root = env_text("MAISON_SOURCE_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| default_source_root());
-
-        let users_path = env::var("USERS_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("users.json"));
-
-        let frontend_dist_dir = env::var("FRONTEND_DIST_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("frontend").join("dist"));
-
-        let meross_devices_path = env::var("MEROSS_DEVICES_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("meross-devices.json"));
-
-        let devices_path = env::var("DEVICES_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("devices.json"));
-
-        let device_cache_path = env::var("DEVICE_CACHE_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("device-cache.json"));
-
-        let broadlink_codes_path = env::var("BROADLINK_CODES_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("broadlink-codes.json"));
-
-        let climate_state_path = env::var("CLIMATE_STATE_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("climate-state.json"));
-
-        let refresh_tokens_path = env::var("REFRESH_TOKENS_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("refresh-tokens.json"));
-
-        let hue_lamps_path = env::var("HUE_LAMPS_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("hue-lamps.json"));
-
-        let hue_blacklist_path = env::var("HUE_BLACKLIST_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("hue-lamps-blacklist.json"));
-
-        let zigbee_lamps_path = env::var("ZIGBEE_LAMPS_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("zigbee-lamps.json"));
-
-        let zigbee_lamps_blacklist_path = env::var("ZIGBEE_LAMPS_BLACKLIST_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("zigbee-lamps-blacklist.json"));
-
-        let nabaztag_config_path = env::var("NABAZTAG_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("nabaztag.json"));
-
-        let ir_keymap_path = env::var("IR_KEYMAP_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("ir-keymap.json"));
-
-        let tv_config_path = env::var("TV_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("tv.json"));
-
-        let androidtv_config_path = env::var("ANDROIDTV_JSON_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("androidtv.json"));
-
-        // Private key authenticating this host to the box's adbd.
-        let adb_key_path = env::var("ADB_KEY_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("adb-key"));
-
-        // TLS client identity for the Android TV Remote v2 protocol. Distinct
-        // from the ADB key: the TV pairs against this certificate.
-        let atv_identity_path = env::var("ATV_IDENTITY_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| source_root.join("atv-identity"));
-
-        // Machine token for the STB IR bridge (kird); empty/unset = IR API off.
-        let ir_api_token = env::var("IR_API_TOKEN").ok().and_then(|value| {
-            if value.is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        });
-
-        let nabaztag_host = env::var("NABAZTAG_HOST").ok().and_then(|value| {
-            if value.is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        });
-
-        let disable_bluetooth = env::var("DISABLE_BLUETOOTH")
-            .map(|value| {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
-
-        let auth_cookie_name =
-            env::var("AUTH_COOKIE_NAME").unwrap_or_else(|_| "maison_session".to_string());
-
-        let auth_cookie_secure = env::var("AUTH_COOKIE_SECURE")
-            .map(|value| {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(true);
-
-        let auth_rate_limit_attempts = env::var("AUTH_RATE_LIMIT_ATTEMPTS")
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(10);
-
-        let auth_rate_limit_window_seconds = env::var("AUTH_RATE_LIMIT_WINDOW_SECONDS")
-            .ok()
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(300);
-
-        let port = env::var("PORT")
-            .ok()
-            .or_else(|| env::var("API_PORT").ok())
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(3033);
-
-        let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let jwt_secret =
-            env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-cat-key-change-me".to_string());
-        let zigbee_permit_join_seconds = env::var("ZIGBEE_PERMIT_JOIN_SECONDS")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(120);
-
-        Self {
-            host,
-            port,
-            jwt_secret,
-            frontend_dist_dir,
-            auth_cookie_name,
-            auth_cookie_secure,
-            auth_rate_limit_attempts,
-            auth_rate_limit_window_seconds,
-            disable_bluetooth,
-            source_root,
-            users_path,
-            meross_devices_path,
-            devices_path,
-            device_cache_path,
-            broadlink_codes_path,
-            climate_state_path,
-            refresh_tokens_path,
-            hue_lamps_path,
-            hue_blacklist_path,
-            zigbee_lamps_path,
-            zigbee_lamps_blacklist_path,
-            nabaztag_config_path,
-            nabaztag_host,
-            zigbee_permit_join_seconds,
-            ir_keymap_path,
-            tv_config_path,
-            androidtv_config_path,
-            adb_key_path,
-            atv_identity_path,
-            ir_api_token,
-        }
+            .unwrap_or_else(default_source_root);
+        Self::load(source_root, env_text)
     }
 
-    #[cfg(test)]
-    pub fn for_tests(source_root: PathBuf) -> Self {
+    /// Every setting at its default, every file under `source_root` (tests start from here).
+    pub fn defaults(source_root: PathBuf) -> Self {
+        Self::load(source_root, |_| None)
+    }
+
+    /// The one place each setting is named, with its default: `var` looks a name up.
+    fn load(source_root: PathBuf, var: impl Fn(&str) -> Option<String>) -> Self {
+        let path = |name: &str, default: &str| {
+            var(name)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| source_root.join(default))
+        };
+        let flag = |name: &str, default: bool| var(name).map(|v| is_truthy(&v)).unwrap_or(default);
+
         Self {
-            host: "127.0.0.1".to_string(),
-            port: 3033,
-            jwt_secret: "test-secret".to_string(),
-            frontend_dist_dir: source_root.join("frontend").join("dist"),
-            auth_cookie_name: "maison_session".to_string(),
-            auth_cookie_secure: false,
-            auth_rate_limit_attempts: 10,
-            auth_rate_limit_window_seconds: 300,
-            disable_bluetooth: true,
-            users_path: source_root.join("users.json"),
-            meross_devices_path: source_root.join("meross-devices.json"),
-            devices_path: source_root.join("devices.json"),
-            device_cache_path: source_root.join("device-cache.json"),
-            broadlink_codes_path: source_root.join("broadlink-codes.json"),
-            climate_state_path: source_root.join("climate-state.json"),
-            refresh_tokens_path: source_root.join("refresh-tokens.json"),
-            hue_lamps_path: source_root.join("hue-lamps.json"),
-            hue_blacklist_path: source_root.join("hue-lamps-blacklist.json"),
-            zigbee_lamps_path: source_root.join("zigbee-lamps.json"),
-            zigbee_lamps_blacklist_path: source_root.join("zigbee-lamps-blacklist.json"),
-            nabaztag_config_path: source_root.join("nabaztag.json"),
-            nabaztag_host: None,
-            zigbee_permit_join_seconds: 120,
-            ir_keymap_path: source_root.join("ir-keymap.json"),
-            tv_config_path: source_root.join("tv.json"),
-            androidtv_config_path: source_root.join("androidtv.json"),
-            adb_key_path: source_root.join("adb-key"),
-            atv_identity_path: source_root.join("atv-identity"),
-            ir_api_token: Some("test-ir-token".to_string()),
+            host: var("HOST").unwrap_or_else(|| "0.0.0.0".to_string()),
+            port: var("PORT")
+                .or_else(|| var("API_PORT"))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3033),
+            jwt_secret: var("JWT_SECRET").unwrap_or_else(|| DEFAULT_JWT_SECRET.to_string()),
+            frontend_dist_dir: path("FRONTEND_DIST_DIR", "web/build"),
+            auth_cookie_name: var("AUTH_COOKIE_NAME").unwrap_or_else(|| "maison_session".to_string()),
+            auth_cookie_secure: flag("AUTH_COOKIE_SECURE", true),
+            auth_rate_limit_attempts: parsed(&var, "AUTH_RATE_LIMIT_ATTEMPTS", 10),
+            auth_rate_limit_window_seconds: parsed(&var, "AUTH_RATE_LIMIT_WINDOW_SECONDS", 300),
+            disable_bluetooth: flag("DISABLE_BLUETOOTH", false),
+            users_path: path("USERS_JSON_PATH", "users.json"),
+            meross_devices_path: path("MEROSS_DEVICES_JSON_PATH", "meross-devices.json"),
+            devices_path: path("DEVICES_JSON_PATH", "devices.json"),
+            device_cache_path: path("DEVICE_CACHE_JSON_PATH", "device-cache.json"),
+            broadlink_codes_path: path("BROADLINK_CODES_JSON_PATH", "broadlink-codes.json"),
+            climate_state_path: path("CLIMATE_STATE_JSON_PATH", "climate-state.json"),
+            refresh_tokens_path: path("REFRESH_TOKENS_JSON_PATH", "refresh-tokens.json"),
+            hue_lamps_path: path("HUE_LAMPS_JSON_PATH", "hue-lamps.json"),
+            hue_blacklist_path: path("HUE_BLACKLIST_JSON_PATH", "hue-lamps-blacklist.json"),
+            zigbee_lamps_path: path("ZIGBEE_LAMPS_JSON_PATH", "zigbee-lamps.json"),
+            zigbee_lamps_blacklist_path: path(
+                "ZIGBEE_LAMPS_BLACKLIST_JSON_PATH",
+                "zigbee-lamps-blacklist.json",
+            ),
+            nabaztag_config_path: path("NABAZTAG_JSON_PATH", "nabaztag.json"),
+            nabaztag_host: var("NABAZTAG_HOST"),
+            zigbee_permit_join_seconds: parsed(&var, "ZIGBEE_PERMIT_JOIN_SECONDS", 120),
+            ir_keymap_path: path("IR_KEYMAP_JSON_PATH", "ir-keymap.json"),
+            tv_config_path: path("TV_JSON_PATH", "tv.json"),
+            androidtv_config_path: path("ANDROIDTV_JSON_PATH", "androidtv.json"),
+            // Private key authenticating this host to the box's adbd.
+            adb_key_path: path("ADB_KEY_PATH", "adb-key"),
+            // TLS client identity for the Android TV Remote v2 protocol. Distinct from the
+            // ADB key: the TV pairs against this certificate.
+            atv_identity_path: path("ATV_IDENTITY_PATH", "atv-identity"),
+            // Machine token for the STB IR bridge (kird); unset = IR API off.
+            ir_api_token: var("IR_API_TOKEN"),
+            // Matter fabric keys + commissioned covers. A directory, not a file: the
+            // controller saves by temp-file + rename, so the service user must own the
+            // directory itself.
+            matter_state_dir: path("MATTER_STATE_DIR", "matter"),
+            // Device-attestation roots (paa/ + cd/), refreshed by scripts/update-matter-trust.sh.
+            matter_trust_dir: path("MATTER_TRUST_DIR", "matter-trust"),
+            // Development only: accept the CSA test roots (matter.js / chip example devices)
+            // instead of the production ones.
+            matter_test_roots: flag("MATTER_TEST_ROOTS", false),
             source_root,
         }
     }
+
+    /// The address to listen on.
+    pub fn listen_address(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+/// An environment variable, trimmed; unset and empty are the same: absent.
+pub fn env_text(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// `1`, `true`, `yes`, `on` (any case) are true; anything else is false.
+pub fn is_truthy(value: &str) -> bool {
+    matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
+fn parsed<T: std::str::FromStr>(var: &impl Fn(&str) -> Option<String>, name: &str, default: T) -> T {
+    var(name).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 fn default_source_root() -> PathBuf {
@@ -270,5 +161,5 @@ fn default_source_root() -> PathBuf {
 }
 
 fn looks_like_source_root(path: &std::path::Path) -> bool {
-    path.join("users.json").is_file() || path.join("frontend").is_dir()
+    path.join("users.json").is_file() || path.join("web").is_dir()
 }

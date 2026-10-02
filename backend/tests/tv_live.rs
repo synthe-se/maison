@@ -7,42 +7,36 @@
 //! here lean on `TvManager`'s own request gate for spacing.
 #![cfg(feature = "live-runtime-tests")]
 
-use std::{
-    env,
-    path::PathBuf,
-    sync::OnceLock,
-};
+mod common;
 
-use maison_backend::tv::{TvManager, TvPower};
+use std::sync::OnceLock;
+
+use maison_backend::{
+    broadlink::BroadlinkManager,
+    tv::{TvManager, TvPower},
+};
 
 /// One shared manager, so every test goes through the *same* request gate.
 /// Building one per test would give each its own gate and let the suite burst
 /// the very server this module exists to protect.
 static TV: OnceLock<TvManager> = OnceLock::new();
-/// Cargo runs tests on a thread pool; the lock keeps them end to end.
-static TV_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
-fn tv_test_lock() -> &'static tokio::sync::Mutex<()> {
-    TV_TEST_LOCK.get_or_init(Default::default)
-}
-
-/// Defaults to the living-room set; override to point at another one.
-fn config_path() -> PathBuf {
-    env::var("TV_JSON_PATH").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("backend has a parent")
-            .join("tv.json")
-    })
-}
-
+/// The living-room set and its blaster; each path can be overridden.
 fn manager() -> &'static TvManager {
-    TV.get_or_init(|| TvManager::new(&config_path()).expect("TV manager should build"))
+    TV.get_or_init(|| {
+        let broadlink = BroadlinkManager::new(
+            &common::env_path("BROADLINK_CODES_JSON_PATH", "broadlink-codes.json"),
+            &common::env_path("CLIMATE_STATE_JSON_PATH", "climate-state.json"),
+        )
+        .expect("Broadlink manager should build");
+        TvManager::new(&common::env_path("TV_JSON_PATH", "tv.json"), broadlink)
+            .expect("TV manager should build")
+    })
 }
 
 #[tokio::test]
 async fn reports_a_power_state() {
-    let _guard = tv_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let power = manager().power().await;
     // Any of the three is a valid answer; what matters is that the probe
     // resolves rather than hanging or panicking.
@@ -54,7 +48,7 @@ async fn reports_a_power_state() {
 
 #[tokio::test]
 async fn status_is_consistent_with_power() {
-    let _guard = tv_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let status = manager().status().await;
     assert!(status.configured, "tv.json should carry a host");
     if status.power == TvPower::On {
@@ -69,7 +63,7 @@ async fn status_is_consistent_with_power() {
 
 #[tokio::test]
 async fn ambilight_topology_matches_a_three_sided_set() {
-    let _guard = tv_test_lock().lock().await;
+    let _guard = common::serial().lock().await;
     let manager = manager();
     if manager.power().await != TvPower::On {
         eprintln!("skipping: TV is not on");

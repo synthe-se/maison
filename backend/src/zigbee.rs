@@ -4,7 +4,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    env,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -208,15 +207,8 @@ impl ZigbeeManager {
             })
             .collect();
 
-        let adapter = env::var("ZIGBEE_ADAPTER").unwrap_or_else(|_| "ember".to_string());
-        let serial_port = env::var("ZIGBEE_SERIAL_PORT").ok().and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        });
+        let adapter = crate::config::env_text("ZIGBEE_ADAPTER").unwrap_or_else(|| "ember".to_string());
+        let serial_port = crate::config::env_text("ZIGBEE_SERIAL_PORT");
 
         // Records without a node_id cannot be seeded into the native driver
         // (typically leftovers from the removed zigbee2mqtt era). Surface
@@ -764,8 +756,6 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
 
-        std::fs::create_dir_all(root.join("frontend/dist")).expect("frontend dist");
-        std::fs::write(root.join("frontend/dist/index.html"), "ok").expect("index");
         std::fs::write(root.join("users.json"), "[]").expect("users");
         std::fs::write(root.join("devices.json"), "[]").expect("devices");
         std::fs::write(root.join("device-cache.json"), "[]").expect("device-cache");
@@ -799,7 +789,7 @@ mod tests {
         )
         .expect("zigbee lamps");
 
-        let config = Config::for_tests(root.to_path_buf());
+        let config = Config::defaults(root.to_path_buf());
         std::env::set_var("ZIGBEE_SERIAL_PORT", "/dev/null");
         let manager = ZigbeeManager::new(&config).expect("native manager");
 

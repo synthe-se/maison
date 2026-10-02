@@ -17,7 +17,7 @@ On the Pi, run:
 
 - Mosquitto on the host
 - the Rust backend release binary (drives the Zigbee dongle natively)
-- the prebuilt frontend files in `frontend/dist`
+- the prebuilt web app in `web/build`
 
 The backend now serves the frontend directly when `FRONTEND_DIST_DIR/index.html` exists.
 
@@ -28,7 +28,7 @@ That means there is no separate nginx or frontend container on the Pi.
 Build the frontend:
 
 ```bash
-bun --cwd frontend run build
+bun --cwd web run build
 ```
 
 Build a Pi-oriented backend binary without Bluetooth support:
@@ -40,7 +40,7 @@ cargo build --release --manifest-path backend/Cargo.toml --no-default-features
 Copy these artifacts to the Pi:
 
 - `backend/target/release/maison-backend`
-- `frontend/dist/`
+- `web/build/`
 - `.env`
 - `deploy/mosquitto/maison.conf`
 - `deploy/openrc/maison`
@@ -99,7 +99,7 @@ Default artifact path:
 target/arm-unknown-linux-musleabihf/release/maison-backend
 ```
 
-`make backend`, `make frontend` and `cargo check` keep working on the dev machine as before.
+`make backend`, `make web` and `cargo check` keep working on the dev machine as before.
 
 ## Recommended `.env` values on the Pi
 
@@ -107,7 +107,7 @@ target/arm-unknown-linux-musleabihf/release/maison-backend
 HOST=0.0.0.0
 PORT=3033
 JWT_SECRET=replace-this
-FRONTEND_DIST_DIR=frontend/dist
+FRONTEND_DIST_DIR=web/build
 DISABLE_BLUETOOTH=true
 AUTH_COOKIE_SECURE=false
 ```

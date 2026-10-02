@@ -28,8 +28,9 @@ pub fn health_router() -> Router<AppState> {
     Router::new().route("/health", get(health_handler))
 }
 
+/// At the root when no web app is built: what the API offers (health is merged separately).
 pub fn router() -> Router<AppState> {
-    api_router()
+    Router::new().route("/", get(root_handler))
 }
 
 async fn root_handler() -> Json<RootResponse> {

@@ -1,0 +1,17 @@
+{
+	"name": "Maison",
+	"short_name": "Maison",
+	"id": "/",
+	"scope": "/",
+	"start_url": "/",
+	"display": "standalone",
+	"background_color": "#f2f0ea",
+	"theme_color": "#0e5e68",
+	"icons": [
+		{ "src": "/brand.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+		{ "src": "/icons/icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+		{ "src": "/icons/icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+		{ "src": "/icons/icon-maskable-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+		{ "src": "/icons/icon-maskable-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+	]
+}

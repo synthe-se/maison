@@ -1,0 +1,14 @@
+{
+	"name": "maison-e2e",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"all": "./run.sh smoke.ts && ./run.sh dashboard.ts && ./run.sh layout.ts && ./run.sh a11y.ts",
+		"look": "./run.sh look.ts"
+	},
+	"devDependencies": {
+		"@types/node": "26.6.4",
+		"axe-core": "4.13.0",
+		"playwright": "1.63.0"
+	}
+}

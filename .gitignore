@@ -6,9 +6,7 @@ logs/
 *.log
 *.pid
 
-# Frontend
-frontend/node_modules/
-frontend/dist/
+# Web app (SvelteKit) and e2e: their own .gitignore files list node_modules, build, .svelte-kit
 
 # Backend
 backend/target/
@@ -31,6 +29,8 @@ hue-lamps-blacklist.json
 zigbee-lamps.json
 zigbee-lamps-blacklist.json
 broadlink-codes.json
+# Matter fabric private keys + commissioned covers
+matter/
 
 # Mosquitto runtime data
 mosquitto/certs/

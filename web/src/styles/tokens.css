@@ -1,0 +1,152 @@
+/*
+ * Maison design tokens: the synthe.se tokens (phase 1, locked 2026-08-17) and Ariane's layout,
+ * spacing and type (docs/ux/mise-en-page.md in Ariane), plus Maison's own
+ * (docs/ux/tableau-de-bord.md). One token set, light and dark.
+ *
+ * Each colour is declared ONCE, its light and dark values side by side in `light-dark()`;
+ * `color-scheme` picks the side: the system's, unless the person chose (data-theme, set
+ * before first paint by app.html). Palette: ground + ink + ONE hue, petrol, in two contrast
+ * steps and a wash; brick and amber for states, always labelled in text.
+ *
+ * Contrast ratios (WCAG 2.x), every text pair:
+ *   synthe.se (2026-08-17), on ground #F2F0EA / #151A21
+ *     ink          #1B222C 14.05:1        #EAE7E0 14.15:1   AAA body
+ *     ink-muted    #525A66  6.12:1        #A8AEB8  7.83:1   AA secondary text
+ *     accent       #0E5E68  6.54:1        #63C0CB  8.27:1   AA text / AAA large
+ *     accent-soft  #4E8A92  3.43:1        #3E7A84  3.60:1   UI and large text only
+ *     ink on accent-wash #D8E4E2 12.29:1  #1D2A31 11.91:1   AAA body on tint
+ *   Ariane (2026-09-29)
+ *     blocked      #A5372A on ground 5.80:1, on ground-raised 5.19:1;  #E07A63 on ground-raised 5.24:1
+ *     warn-text    #8F4B22 on surface 6.23:1, on blocked-wash 5.23:1;  #D89372 6.50:1, 6.05:1
+ *     ink-muted    on ground-raised 5.48:1 / 6.91:1
+ *     accent       on accent-wash 5.72:1 / 6.96:1
+ *     on-accent    #F2F0EA on accent 6.54:1;  #151A21 on accent 8.27:1 AAA
+ *   Maison (2026-10-02), on ground
+ *     tempo-bleu   #2B5BA8 5.82:1         #7FA7E8 7.15:1
+ *     tempo-rouge  #B3261E 5.74:1         #F08A7E 7.19:1
+ *     tempo-blanc  ring #525A66 6.12:1    #EAE7E0 14.15:1
+ */
+
+:root { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+:root {
+  /* raw palette */
+  --raw-cloud: #f2f0ea; /* Cloud-Dancer-adjacent warm off-white */
+  --raw-cloud-deep: #e7e4db;
+  --raw-ink: #1b222c;
+  --raw-ink-soft: #525a66;
+  --raw-night: #151a21;
+  --raw-night-raised: #1e2530;
+  --raw-paper-dark: #eae7e0;
+  --raw-muted-dark: #a8aeb8;
+  --raw-petrol: #0e5e68;
+  --raw-petrol-soft: #4e8a92;
+  --raw-petrol-wash: #d8e4e2;
+  --raw-petrol-bright: #63c0cb;
+  --raw-petrol-dim: #3e7a84;
+  --raw-petrol-wash-dark: #1d2a31;
+  --raw-warn: #b4633f;
+  --raw-warn-dark: #d89372;
+  --raw-down: #a5372a;
+  --raw-down-dark: #e07a63;
+
+  /* semantic: light, dark */
+  --ground: light-dark(var(--raw-cloud), var(--raw-night));
+  --ground-raised: light-dark(var(--raw-cloud-deep), var(--raw-night-raised));
+  --surface: light-dark(#faf9f5, #1a2029);
+  --line: light-dark(#d6d2c6, #2e3744);
+  --ink: light-dark(var(--raw-ink), var(--raw-paper-dark));
+  --ink-muted: light-dark(var(--raw-ink-soft), var(--raw-muted-dark));
+  --accent: light-dark(var(--raw-petrol), var(--raw-petrol-bright));
+  --accent-soft: light-dark(var(--raw-petrol-soft), var(--raw-petrol-dim));
+  --accent-wash: light-dark(var(--raw-petrol-wash), var(--raw-petrol-wash-dark));
+  --on-accent: light-dark(var(--raw-cloud), var(--raw-night));
+  /* states: shape and words first, colour as support */
+  --status-degraded: light-dark(var(--raw-warn), var(--raw-warn-dark));
+  --status-down: light-dark(var(--raw-down), var(--raw-down-dark));
+  --status-down-text: var(--status-down);
+  --warn-text: light-dark(#8f4b22, var(--raw-warn-dark));
+  --blocked: var(--status-down);
+  --blocked-wash: light-dark(#f3e2dc, #33211f);
+  /* Tempo days: colour + shape + name, never colour alone (bleu filled, blanc ring, rouge hatched) */
+  --tempo-bleu: light-dark(#2b5ba8, #7fa7e8);
+  --tempo-blanc: light-dark(#ffffff, var(--raw-paper-dark));
+  --tempo-blanc-ring: light-dark(var(--raw-ink-soft), var(--raw-paper-dark));
+  --tempo-rouge: light-dark(#b3261e, #f08a7e);
+  --on-tempo: var(--on-accent);
+
+  /* shadows: their colours follow the theme, their geometry does not */
+  --shadow-near: light-dark(rgb(27 34 44 / 6%), rgb(0 0 0 / 30%));
+  --shadow-far: light-dark(rgb(27 34 44 / 6%), rgb(0 0 0 / 25%));
+  --shadow: 0 1px 2px var(--shadow-near), 0 4px 14px var(--shadow-far);
+  --shadow-pop: 0 10px 30px rgb(27 34 44 / 18%);   /* menus and popovers */
+  --line-on-ink: rgb(255 255 255 / 35%);             /* a frame on the toast's ink */
+
+  /* type: locked pairing, Fraunces display + Cal Sans 2 text, self-hosted; Borel for the name only */
+  --font-display: "Fraunces Variable", "Fraunces Fallback", Georgia, serif;
+  --font-text: "Cal Sans", "Cal Sans Fallback", system-ui, sans-serif;
+  --font-brand: "Borel Display", var(--font-display);
+
+  /* type: size / line-height (Material 3 scale, Apple sizes) */
+  --t-page: 500 1.75rem/2.125rem var(--font-display);
+  --t-group: 500 1.1875rem/1.625rem var(--font-display);
+  --t-body: 400 1rem/1.5rem var(--font-text);
+  --t-secondary: 400 0.875rem/1.25rem var(--font-text);
+  --t-label: 500 0.875rem/1.25rem var(--font-text);
+  --t-meta: 500 0.8125rem/1rem var(--font-text);
+
+  /*
+   * Layout (docs/ux/mise-en-page.md, Ariane, 2026-09-30): one page container for every page
+   * and for the header's inner row; content picks a measure inside it, left-aligned.
+   * Breakpoints: compact < 600, medium < 840, expanded < 1200, large < 1600, xl.
+   */
+  --page-max: 2400px;            /* a 32-inch screen used whole; text keeps its measure */
+  --page-margin: 16px;           /* compact; 24px from 600 (Material, Primer); 32px from 1600 */
+  --measure: 42rem;              /* ~75 characters at 16px */
+  --measure-wide: 64rem;         /* tables whose rows are short facts */
+  --pane: 20rem;                 /* supporting pane (Material) */
+
+  /* spacing: a scale of 4 */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+
+  /* controls: one height scale for fields, selects and buttons (WCAG 2.5.8, Apple 44pt) */
+  --control-h: 44px;             /* the touch target: text fields, selects, main actions */
+  --control-h-s: 36px;           /* compact: buttons, menu items, a select in a row of options */
+  --control-h-xs: 32px;          /* icon buttons, handles, chips */
+
+  /* corners: one scale (scripts/css.check.ts refuses literal radii elsewhere) */
+  --radius-xs: 2px;              /* a knot, a bead */
+  --radius-s: 4px;               /* focus ring, keys */
+  --radius: 6px;                 /* controls */
+  --radius-m: 8px;               /* rows, cards */
+  --radius-l: 10px;              /* menus, panels, tiles, callouts */
+  --radius-xl: 12px;             /* dialogs, framed groups */
+  --radius-2xl: 16px;            /* sheets */
+  --radius-pill: 999px;          /* pills, and the round ends of a line */
+
+  --row-min: 48px;               /* 56 on touch (Material list, Apple 44pt, WCAG 2.5.8) */
+  --header-h: 56px;
+  --bottom-h: 0px;               /* the bottom navigation's height, on compact */
+
+  /* Maison (docs/ux/tableau-de-bord.md) */
+  --tile-icon: 48px;             /* the tile's gesture: its icon is its main action */
+  --remote-key: 56px;            /* a remote's keys, OK larger */
+  --remote-ok: 64px;
+}
+@media (min-width: 600px) {
+  :root { --page-margin: 24px; }
+}
+@media (min-width: 1600px) {
+  :root { --page-margin: 32px; }
+}
+@media (max-width: 599px) {
+  :root { --row-min: 56px; --bottom-h: calc(64px + env(safe-area-inset-bottom, 0px)); }
+}

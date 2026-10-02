@@ -4,7 +4,8 @@
 
 - **Name**: "Maison" (crate `maison-backend`, service `maison`)
 - **Purpose**: self-hosted home-automation dashboard — cat devices (feeder,
-  fountain, litter box), lamps (Hue BLE, Zigbee), smart plugs (Meross), IR
+  fountain, litter box), lamps (Hue BLE, Zigbee), smart plugs (Meross),
+  roller shutters (Matter, Sonoff Orb-RBS), IR
   climate control (Broadlink → Mitsubishi AC), and French Tempo electricity
   tariff tracking/prediction.
 - **Production target**: Raspberry Pi 1 (Alpine Linux, OpenRC, musl,
@@ -30,16 +31,22 @@ maison/
 │   │   ├── hue.rs/hue_stub.rs # Philips Hue BLE (btleplug, feature "bluetooth")
 │   │   ├── broadlink.rs     # Broadlink IR manager + persisted climate state
 │   │   ├── mitsubishi_ir.rs # Mitsubishi AC IR frame encoder (see §5)
+│   │   ├── matter.rs        # Matter commissioner + window coverings
 │   │   ├── zigbee.rs        # Zigbee lamp manager (native EZSP only)
 │   │   ├── zigbee_native.rs # EZSP/EmberZNet driver (see §4)
 │   │   ├── tempo.rs         # RTE Tempo tariffs, history, prediction model
 │   │   └── routes/          # one module per domain, all JWT-authenticated
 │   │                        #   except /health
 │   └── tests/               # integration tests + fixtures
-├── frontend/                # React 19 + Vite + TS + Tailwind 4 (Bun)
-│   └── src/                 # pages/, components/devices/, components/ui/
-│                            #   (shadcn), i18n (en+fr), ThemeContext
-│                            #   (system/light/dark, .dark class strategy)
+├── web/                     # SvelteKit 3 SPA (Svelte 5 runes, Bits UI, Paraglide, Bun)
+│   ├── src/lib/components/  # the shared bricks: DeviceTile, Range, Select, Tabs, Sheet,
+│   │                        #   ConfirmDialog, PageHead, Toggle, Icon, Header…
+│   ├── src/lib/devices/     # one folder per device family (lamps/, cats/, tv/, tempo/…)
+│   ├── src/lib/*.svelte.ts  # live (server state), gesture, command, session, ui, i18n
+│   ├── src/styles/          # tokens.css (light-dark()) + app.css
+│   └── scripts/             # i18n.check, css.check, imports.fix
+├── i18n/                    # messages/{fr,en}.json (inlang), the only source of texts
+├── e2e/                     # Playwright + axe scenarios against the real backend
 ├── cache/tempo/             # Tempo history + calibration (persisted)
 ├── deploy/                  # OpenRC units, mosquitto conf
 ├── docs/                    # Pi setup, Tempo calibration, flashing
@@ -60,17 +67,19 @@ Meross plug firmware requires a reachable TLS broker.
 Dependency chain (all pinned in `backend/Cargo.toml` + lockfile):
 
 - `ashv2` — **uplg fork, branch `main`** = upstream
-  (PaulmannLighting) v12 + robustness fixes not yet upstream: transmitter
+  (PaulmannLighting) v13 + robustness fixes not yet upstream (old v12 lineage in `legacy-v12`): transmitter
   self-requeue deadlock removed (local pending queue + housekeeping tick),
   frame-number reset after RST/RST-ACK, receiver exit on fatal serial errors,
   active retransmission of timed-out DATA frames, duplicate-retransmission
   payload dedupe. Transport-agnostic (AsyncRead/AsyncWrite); the backend
   opens the port with `tokio-serial`. The `ezsp` cargo feature provides the
   `Transmit`/`Receive` adapters.
-- `ezsp` 15 — **uplg fork, branch `main`**, wired through
+- `ezsp` 17 — **uplg fork, branch `main`** (old 15 lineage in `legacy-v15`), wired through
   `[patch.crates-io]` so both the direct dep and ashv2's internal dep
-  resolve to it. Single fork patch: `importTransientKey` uses the legacy
-  EZSP ≤ v13 wire format (no SecManContext prefix) because the Sonoff
+  resolve to it. Two fork patches: `importTransientKey` drops the
+  SecManContext prefix when the negotiated protocol is < v14 (the EZSP ≤ v13 wire
+  format; v14+ NCPs get upstream's layout), and the receiver never blocks response
+  routing on a full callback channel (upstream can deadlock there) because the Sonoff
   Dongle Lite MG21 firmware line is EmberZNet 7.4.x = EZSP v13. If the
   dongle ever runs EZSP ≥ v14 firmware, drop this patch and the
   `[patch.crates-io]` entry to run vanilla crates.io ezsp.
@@ -124,23 +133,32 @@ Driver design (`zigbee_native.rs`):
 | Philips TV (Saphi) | JointSPACE over plain HTTP :1925 (`pairing_type: "none"`, no auth) + Wake-on-LAN + DIAL on the Android box | `tv.rs`. **The endpoint whitelist is load-bearing**: unimplemented paths (`/6/sources`, `/6/applications`, `/6/activities/*`, `/5/*`) kill the single-threaded server *persistently* — only a mains power cycle revives it — so endpoints are an enum, not strings, and every call goes through one gate holding `MIN_REQUEST_GAP`. Two sleep depths: light standby answers on 1925, deep standby needs WoL first (~20 s, revives the network only; the panel needs a following `powerstate: On`). Saphi cannot switch sources, so `switchToBox` wakes the box over DIAL :8008 and lets CEC One Touch Play route the input. Config in `tv.json`; live tests behind `live-runtime-tests` |
 | Android TV box — keys & app launches | **Remote v2** over mutual TLS :6466 (`atvremote.rs`), ADB as fallback | The fast path. ADB costs ~150 ms per key, of which only 65 ms is ADB — the rest is `input` booting a JVM per press. Remote v2 sends a protobuf on an open session, and a background task owns that session so the handler returns in µs instead of blocking. Framing is varint-length + protobuf, hand-encoded (no prost/protoc for two small schemas). **Pairing is per host and the client cert must be RSA** — the secret hashes both certs' moduli — so the key comes from `rsa` and rcgen only wraps it (ring cannot generate RSA). The TV's cert is accepted unverified on purpose: self-signed, no verifiable name, and auth runs the other way. `protocol_version` must be 2 and `service_name` `atvremote`, or the TV answers STATUS_ERROR. Identity in `atv-identity` (0600); pairing routes at `/androidtv/pair/{start,finish}` |
 | Android TV box (MECOOL LEAP-S1) | native ADB over TCP :5555 (`adb.rs`, no `adb` binary) | `androidtv.rs`. Auth: the box's 20-byte token **is** a SHA-1 digest and must be signed pre-hashed (`sign_prehash`, not `Signer::try_sign`) — hashing twice makes the box reject the signature and fall back to re-sending the public key, re-prompting on screen every connection. Key generated on first use into `adb-key` (0600, `spawn_blocking` — tens of seconds on a Pi 1), one on-screen authorisation ever. Connection is kept and reused, one stream at a time; keys are an enum and package names are validated, so nothing reaches the shell unchecked. APK sideloading goes through the `sync:` service then `pm install -r`, capped at 96 MB. CEC lives here too: waking the box does One Touch Play (TV on + input), sleeping it broadcasts standby. Config in `androidtv.json`; live tests behind `live-runtime-tests` |
+| Matter window coverings (Sonoff Orb-RBS) | Matter over IP (`matter-controller` 0.16, pure Rust on `ring`, own `mdns-sd` responder; IPv6 socket, needs IPv6 on the Pi) | `matter.rs`. Maison is the commissioner: one fabric, created lazily on the first pairing (no RTC on the Pi: minting certs before NTP would date them 1970). Pairing takes a multi-admin code from a phone ecosystem, since the Pi has no BLE to put a device on the Wi-Fi. Attestation is checked against the CSA production PAA/CD roots vendored in `matter-trust/` (`scripts/update-matter-trust.sh`); `MATTER_TEST_ROOTS=1` swaps in the CSA test roots for simulators. State in `matter/` (dir 0700: `controller.bin` keys saved by temp+rename, `covers.json` names/endpoints). The controller is built on first use, not at boot. Positions are flipped: the cluster counts closure in 1/100 % (0 = open), the API exposes `openPercent`. Removal sends `RemoveFabric` (response may never arrive, the session dies with the fabric) then forgets the node. Live round trip in `tests/matter_live.rs` behind `live-runtime-tests` |
 | Nabaztag (garenne) | UDP 9998 `grn1 ` control + GET /status | rabbit runs clapier's garenne firmware; clapier server is hosted on the same Pi (/opt/clapier, OpenRC). `nabaztag.rs` pushes the daily Tempo colors every 15 min: today = static belly LED (`led 2 RRGGBB`), tomorrow = ear position. Config: `NABAZTAG_HOST` (rabbit IP) + nabaztag.json. All firmware tooling lives in uplg/nabgcc (branch portal-ui); nothing firmware-related remains here. |
 
-## 6. Frontend notes
+## 6. Web app notes
 
-- Theme: `.dark` class on `<html>`, `system/light/dark` in localStorage,
-  pre-paint script in `index.html`; `ThemeProvider` sits above the router so
-  the login page is themed; `ThemeSwitcher` is available on login and in the
-  app layout. Design tokens in `src/index.css` (`@theme` + `.dark` override);
-  `tw-animate-css` supplies the shadcn animate-in/out utilities.
-- Data fetching: TanStack Query; toasts via sonner wrapper (`use-toast`).
-- i18n: i18next, `en` + `fr` locales.
-- Build: `bun run build` (tsc + vite), lint `oxlint`, format `oxfmt`.
+- SvelteKit **3** (not 2): imports are `#lib/...` WITH the file extension
+  (`bun scripts/imports.fix.ts` adds missing ones); public build-time values live in
+  `src/env.ts` (`defineEnvVars`), read by `app.html`'s `%sveltekit.env.*%` and
+  `$app/env/public` (the old `process.env` trick yields empty values). TypeScript 6
+  (svelte-check does not run on TS 7 alone).
+- Design: Ariane's rules and tokens (`docs/ux/mise-en-page.md` there), Maison's own in
+  `docs/ux/tableau-de-bord.md`. Colours are written once each with `light-dark()`;
+  `data-theme` on `<html>` (set before first paint from the key `PUBLIC_THEME_KEY`) forces a side.
+- Data: `live(key, fetch, every)` — one shared value per key, polled while mounted and visible.
+  Gestures: `Gesture.run(send, then, key)`; device on/off: `Command` (optimistic target,
+  « Allumage… » after 1 s, « Pas de réponse » at `LIMIT.lamp|plug|tv`).
+- Texts: Paraglide from `../i18n`; `bun run check` enforces parity, use, no duplicates.
+- No service worker on purpose (live state; the React app had removed it too); `legacy.ts`
+  unregisters the old `/sw.js`.
+- Tests: Vitest 5 (browser project in Chromium for `*.svelte.test.ts`, node project for the
+  rest), `e2e/` for scenarios. See README « Tests ».
 
 ## 7. Operational notes
 
 - Production = Raspberry Pi 1 only (Alpine 3.24, sys mode, OpenRC — no
-  Docker anywhere). Dev machine runs `make backend` / `make frontend`;
+  Docker anywhere). Dev machine runs `make backend` / `make web`;
   deployment goes through `deploy.sh` (wrapped by `make deploy*`), and
   `make cloudflared-upgrade` rebuilds/swaps the ARMv6 tunnel binary.
 - Runtime JSON state lives at the repo root (gitignored where mutable).

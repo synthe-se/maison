@@ -1,0 +1,30 @@
+[
+	{
+		"keys": [
+			"climate_modes_cool",
+			"lamps_cool"
+		],
+		"reason": "« Froid »: the AC's cooling mode vs the cool end of a lamp's white; other words in other languages (Cool / Cool white)."
+	},
+	{
+		"keys": [
+			"climate_vanes_low",
+			"device_level_low"
+		],
+		"reason": "« Bas »: the AC vane's position vs a low water or food level."
+	},
+	{
+		"keys": [
+			"nav_home",
+			"remote_keys_home"
+		],
+		"reason": "« Accueil »: Maison's home page vs the name of the remote's Home key."
+	},
+	{
+		"keys": [
+			"remote_keys_stop",
+			"shutters_stop"
+		],
+		"reason": "« Stop »: the name of the remote's Stop key vs the shutter's stop action."
+	}
+]

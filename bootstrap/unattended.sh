@@ -138,7 +138,7 @@ cat <<-SETUP > /tmp/sys-setup.sh
 	# Directory tree
 	mkdir -p \
 		"${APP_DIR}/backend/target/release" \
-		"${APP_DIR}/frontend/dist" \
+		"${APP_DIR}/web/build" \
 		"${APP_DIR}/deploy/systemd" \
 		"${APP_DIR}/deploy/openrc" \
 		"${APP_DIR}/deploy/mosquitto" \

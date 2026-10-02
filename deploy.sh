@@ -12,27 +12,54 @@ BACKEND_TARGET="${BACKEND_TARGET:-arm-unknown-linux-musleabihf}"
 BACKEND_BIN="${ROOT_DIR}/backend/target/${BACKEND_TARGET}/release/maison-backend"
 CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-${ROOT_DIR}/cloudflared-arm}"
 
+# Files pushed from this machine on every deploy (the source of truth is local).
 RUNTIME_FILES=(
   devices.json
   users.json
   meross-devices.json
 )
 
-MUTABLE_RUNTIME_FILES=(
-  device-cache.json
-  broadlink-codes.json
-  hue-lamps.json
-  hue-lamps-blacklist.json
-  zigbee-lamps.json
-  zigbee-lamps-blacklist.json
-  climate-state.json
-  nabaztag.json
-  refresh-tokens.json
-  ir-keymap.json
-  tv.json
-  androidtv.json
-  adb-key
-  atv-identity
+# Mutable state owned by the backend on the Pi: never pushed, seeded when
+# absent (APP_DIR belongs to root, so the backend cannot create them itself)
+# and handed to the service user. Format: "name|seed"; an empty seed creates
+# an empty file.
+STATE_FILES=(
+  'device-cache.json|[]'
+  'broadlink-codes.json|{"codes":[]}'
+  'hue-lamps.json|[]'
+  'hue-lamps-blacklist.json|[]'
+  'zigbee-lamps.json|[]'
+  'zigbee-lamps-blacklist.json|[]'
+  'climate-state.json|'
+  'nabaztag.json|'
+  'refresh-tokens.json|'
+  'ir-keymap.json|'
+  'tv.json|'
+  'androidtv.json|'
+  'adb-key|'
+  'atv-identity|'
+)
+
+# State directories handed recursively to the service user. Format:
+# "name|mode"; an empty mode leaves permissions alone. matter/ holds the
+# fabric keys: the controller saves by temp-file + rename, so it needs a
+# private directory of its own rather than a pre-created file.
+STATE_DIRS=(
+  'cache|'
+  'matter|700'
+)
+
+# Remote layout, relative to PI_APP_DIR.
+REMOTE_BACKEND_DIR=backend/target/release
+REMOTE_WEB_DIR=web/build
+REMOTE_LAYOUT=(
+  "${REMOTE_BACKEND_DIR}"
+  "${REMOTE_WEB_DIR}"
+  deploy/openrc
+  deploy/mosquitto
+  mosquitto/certs
+  matter-trust
+  cache/tempo
 )
 
 usage() {
@@ -42,7 +69,7 @@ Usage:
 
 Commands:
   all      Build locally, push to the Pi, upgrade host services, restart everything
-  build    Build the frontend and cross-build the backend only
+  build    Build the web frontend and cross-build the backend only
   push     Push artifacts and configs to the Pi only
   upgrade  Install or upgrade host-native dependencies on the Pi
   start    Install service definitions and restart the stack on the Pi
@@ -108,22 +135,37 @@ rsync_pi() {
   ssh_base_cmd rsync "$@"
 }
 
-build_local() {
-  run_local bun install --cwd "${ROOT_DIR}/frontend" --frozen-lockfile
-  run_local bun run --cwd "${ROOT_DIR}/frontend" build
-  run_local env TARGET="${BACKEND_TARGET}" bash "${ROOT_DIR}/scripts/build-rpi1-backend.sh"
+# Prologue of every remote script. The Pi runs BusyBox sh: no bash-isms
+# below this line, and lists arrive as positional arguments.
+remote_prologue() {
+  cat <<'EOF'
+set -eu
+# shellcheck disable=SC2034 # not every script uses all three
+APP_DIR="$1" SERVICE_USER="$2" SERVICE_GROUP="$3"
+shift 3
+EOF
 }
 
-prepare_remote_push() {
+# Run the script read on stdin on the Pi, as root, with APP_DIR,
+# SERVICE_USER and SERVICE_GROUP set and "$@" as its remaining arguments.
+# ssh hands the remote shell a single command line, hence the quoting.
+ssh_pi_script() {
   require_host
-  log "Preparing remote host for file sync"
-  ssh_pi sh -s -- "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" <<'EOF'
-set -eu
+  local args
+  args="$(printf ' %q' "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" "$@")"
+  { remote_prologue; cat; } | ssh_pi "sh -s --${args}"
+}
 
-APP_DIR="$1"
-SERVICE_USER="$2"
-SERVICE_GROUP="$3"
-apk add --no-cache rsync
+# The one place that knows how the Pi's state is laid out: service account,
+# directory layout, seeded state files, ownership. Idempotent.
+# Arguments: LAYOUT, STATE_DIRS (space-separated), then one "name|seed" per
+# state file.
+remote_state_script() {
+  cat <<'EOF'
+LAYOUT="$1"
+STATE_DIRS="$2"
+shift 2
+
 if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
   addgroup -S "${SERVICE_GROUP}"
 fi
@@ -135,45 +177,66 @@ if ! id -Gn "${SERVICE_USER}" | grep -qw dialout; then
   addgroup "${SERVICE_USER}" dialout
 fi
 
-mkdir -p \
-  "${APP_DIR}/backend/target/release" \
-  "${APP_DIR}/frontend/dist" \
-  "${APP_DIR}/deploy/openrc" \
-  "${APP_DIR}/deploy/mosquitto" \
-  "${APP_DIR}/mosquitto/certs" \
-  "${APP_DIR}/cache"
-EOF
-}
+for dir in ${LAYOUT}; do
+  mkdir -p "${APP_DIR}/${dir}"
+done
 
-# rsync runs as root, so every push must hand the mutable state back to the
-# service user — otherwise the backend gets EACCES on its next persist.
-fix_state_ownership() {
-  require_host
-  log "Restoring mutable-state ownership"
-  ssh_pi sh -s -- "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" <<'EOF'
-set -eu
-APP_DIR="$1"
-SERVICE_USER="$2"
-SERVICE_GROUP="$3"
-chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${APP_DIR}/cache" 2>/dev/null || true
-# Pre-create absent state files: APP_DIR belongs to root, so the backend
-# cannot create them itself (EACCES on first persist — bit us with
-# climate-state.json and ir-keymap.json).
-for state_file in \
-  device-cache.json broadlink-codes.json hue-lamps.json hue-lamps-blacklist.json \
-  zigbee-lamps.json zigbee-lamps-blacklist.json climate-state.json nabaztag.json \
-  refresh-tokens.json ir-keymap.json tv.json androidtv.json adb-key \
-  atv-identity
-do
-  [ -e "${APP_DIR}/${state_file}" ] || touch "${APP_DIR}/${state_file}"
-  chown "${SERVICE_USER}:${SERVICE_GROUP}" "${APP_DIR}/${state_file}"
+# rsync runs as root, so ownership is handed back after every push —
+# otherwise the backend gets EACCES on its next persist.
+for entry in ${STATE_DIRS}; do
+  dir="${APP_DIR}/${entry%%|*}"
+  mode="${entry#*|}"
+  mkdir -p "${dir}"
+  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${dir}"
+  if [ -n "${mode}" ]; then
+    chmod "${mode}" "${dir}"
+  fi
+done
+
+for entry in "$@"; do
+  file="${APP_DIR}/${entry%%|*}"
+  seed="${entry#*|}"
+  if [ ! -e "${file}" ]; then
+    if [ -n "${seed}" ]; then
+      printf '%s\n' "${seed}" > "${file}"
+    else
+      : > "${file}"
+    fi
+  fi
+  chown "${SERVICE_USER}:${SERVICE_GROUP}" "${file}"
 done
 EOF
 }
 
+# Run the state step on the Pi, followed by the script read on stdin (if any).
+ssh_pi_with_state() {
+  { remote_state_script; cat; } |
+    ssh_pi_script "${REMOTE_LAYOUT[*]}" "${STATE_DIRS[*]}" "${STATE_FILES[@]}"
+}
+
+build_local() {
+  run_local bun install --cwd "${ROOT_DIR}/web" --frozen-lockfile
+  run_local bun run --cwd "${ROOT_DIR}/web" build
+  run_local env TARGET="${BACKEND_TARGET}" bash "${ROOT_DIR}/scripts/build-rpi1-backend.sh"
+}
+
+prepare_remote_push() {
+  log "Preparing remote host for file sync"
+  ssh_pi_with_state <<'EOF'
+apk add --no-cache rsync
+# The React frontend (frontend/dist) was replaced by the SvelteKit bundle in
+# web/build: drop the stale copy so the Pi carries a single frontend.
+rm -rf "${APP_DIR}/frontend"
+EOF
+}
+
+fix_state_ownership() {
+  log "Restoring mutable-state ownership"
+  ssh_pi_with_state </dev/null
+}
+
 push_to_pi() {
   require_host
-  prepare_remote_push
 
   if [ ! -f "${BACKEND_BIN}" ]; then
     printf 'Missing backend artifact: %s\n' "${BACKEND_BIN}" >&2
@@ -181,16 +244,18 @@ push_to_pi() {
     exit 1
   fi
 
-  if [ ! -d "${ROOT_DIR}/frontend/dist" ]; then
-    printf '%s\n' 'Missing frontend/dist. Run ./deploy.sh build first.' >&2
+  if [ ! -d "${ROOT_DIR}/${REMOTE_WEB_DIR}" ]; then
+    printf 'Missing %s. Run ./deploy.sh build first.\n' "${REMOTE_WEB_DIR}" >&2
     exit 1
   fi
 
-  log "Pushing backend artifact"
-  rsync_pi -avz "${BACKEND_BIN}" "${PI_HOST}:${PI_APP_DIR}/backend/target/release/"
+  prepare_remote_push
 
-  log "Pushing frontend bundle"
-  rsync_pi -avz "${ROOT_DIR}/frontend/dist/" "${PI_HOST}:${PI_APP_DIR}/frontend/dist/"
+  log "Pushing backend artifact"
+  rsync_pi -avz "${BACKEND_BIN}" "${PI_HOST}:${PI_APP_DIR}/${REMOTE_BACKEND_DIR}/"
+
+  log "Pushing web bundle"
+  rsync_pi -avz "${ROOT_DIR}/${REMOTE_WEB_DIR}/" "${PI_HOST}:${PI_APP_DIR}/${REMOTE_WEB_DIR}/"
 
   if [ -f "${PI_ENV_FILE}" ]; then
     log "Pushing env file"
@@ -213,6 +278,9 @@ push_to_pi() {
     warn "mosquitto/certs is missing locally; TLS listener deployment may fail"
   fi
 
+  log "Pushing Matter attestation roots"
+  rsync_pi -avz --delete "${ROOT_DIR}/matter-trust/" "${PI_HOST}:${PI_APP_DIR}/matter-trust/"
+
   if [ -f "${CLOUDFLARED_BIN}" ]; then
     log "Pushing cloudflared binary to /usr/local/bin/cloudflared"
     rsync_pi -avz "${CLOUDFLARED_BIN}" "${PI_HOST}:/usr/local/bin/cloudflared"
@@ -222,6 +290,7 @@ push_to_pi() {
     warn "Build it with: ./scripts/build-cloudflared-armv6.sh"
   fi
 
+  local relative_path entry
   for relative_path in "${RUNTIME_FILES[@]}"; do
     if [ -f "${ROOT_DIR}/${relative_path}" ]; then
       log "Pushing ${relative_path}"
@@ -229,7 +298,8 @@ push_to_pi() {
     fi
   done
 
-  for relative_path in "${MUTABLE_RUNTIME_FILES[@]}"; do
+  for entry in "${STATE_FILES[@]}"; do
+    relative_path="${entry%%|*}"
     if [ -f "${ROOT_DIR}/${relative_path}" ]; then
       warn "Skipping push of mutable runtime file ${relative_path}; keeping remote state"
       ## Enable on first deploy
@@ -247,62 +317,10 @@ push_to_pi() {
 }
 
 upgrade_pi() {
-  require_host
   log "Upgrading host-native services on the Pi"
-  ssh_pi sh -s -- "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" <<'EOF'
-set -eu
-
-APP_DIR="$1"
-SERVICE_USER="$2"
-SERVICE_GROUP="$3"
-
-mkdir -p "${APP_DIR}/cache/tempo"
-
-for runtime_file in \
-  "${APP_DIR}/device-cache.json" \
-  "${APP_DIR}/broadlink-codes.json" \
-  "${APP_DIR}/hue-lamps.json" \
-  "${APP_DIR}/hue-lamps-blacklist.json" \
-  "${APP_DIR}/zigbee-lamps.json" \
-  "${APP_DIR}/zigbee-lamps-blacklist.json"
-do
-  if [ ! -e "${runtime_file}" ]; then
-    case "${runtime_file}" in
-      *broadlink-codes.json)
-        printf '%s\n' '{"codes":[]}' > "${runtime_file}"
-        ;;
-      *)
-        printf '%s\n' '[]' > "${runtime_file}"
-        ;;
-    esac
-  fi
-done
-
-for mutable_path in \
-  "${APP_DIR}/cache" \
-  "${APP_DIR}/device-cache.json" \
-  "${APP_DIR}/broadlink-codes.json" \
-  "${APP_DIR}/hue-lamps.json" \
-  "${APP_DIR}/hue-lamps-blacklist.json" \
-  "${APP_DIR}/zigbee-lamps.json" \
-  "${APP_DIR}/zigbee-lamps-blacklist.json" \
-  "${APP_DIR}/climate-state.json" \
-  "${APP_DIR}/nabaztag.json" \
-  "${APP_DIR}/refresh-tokens.json"
-do
-  if [ -e "${mutable_path}" ]; then
-    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${mutable_path}"
-  fi
-done
-
+  ssh_pi_with_state <<'EOF'
 apk update
 apk add --no-cache bash ca-certificates curl git logrotate mosquitto rsync
-if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
-  addgroup -S "${SERVICE_GROUP}"
-fi
-if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-  adduser -S -D -H -h "${APP_DIR}" -G "${SERVICE_GROUP}" -s /sbin/nologin "${SERVICE_USER}"
-fi
 
 mkdir -p /etc/mosquitto/conf.d /etc/mosquitto/certs/maison /var/log/mosquitto /var/log
 
@@ -330,79 +348,20 @@ if ! command -v cloudflared >/dev/null 2>&1; then
   printf '%s\n' 'Warning: cloudflared is not installed on the Pi.' >&2
   printf '%s\n' 'Push it with: ./scripts/build-cloudflared-armv6.sh && ./deploy.sh push' >&2
 fi
-
-chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${APP_DIR}/cache" 2>/dev/null || true
 EOF
 }
 
 start_pi() {
-  require_host
   log "Installing service definitions and restarting the stack"
-  ssh_pi sh -s -- "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" <<'EOF'
-set -eu
-
-APP_DIR="$1"
-SERVICE_USER="$2"
-SERVICE_GROUP="$3"
-
-mkdir -p \
-  "${APP_DIR}/cache" \
-  "${APP_DIR}/cache/tempo" \
-  "${APP_DIR}/frontend/dist" \
-  "${APP_DIR}/backend/target/release" \
-  "${APP_DIR}/deploy/openrc" \
-  "${APP_DIR}/deploy/mosquitto"
-
-for runtime_file in \
-  "${APP_DIR}/device-cache.json" \
-  "${APP_DIR}/broadlink-codes.json" \
-  "${APP_DIR}/hue-lamps.json" \
-  "${APP_DIR}/hue-lamps-blacklist.json" \
-  "${APP_DIR}/zigbee-lamps.json" \
-  "${APP_DIR}/zigbee-lamps-blacklist.json"
-do
-  if [ ! -e "${runtime_file}" ]; then
-    case "${runtime_file}" in
-      *broadlink-codes.json)
-        printf '%s\n' '{"codes":[]}' > "${runtime_file}"
-        ;;
-      *)
-        printf '%s\n' '[]' > "${runtime_file}"
-        ;;
-    esac
-  fi
+  ssh_pi_with_state <<'EOF'
+for service in maison cloudflared-maison; do
+  sed \
+    -e "s#@@APP_DIR@@#${APP_DIR}#g" \
+    -e "s#@@SERVICE_USER@@#${SERVICE_USER}#g" \
+    -e "s#@@SERVICE_GROUP@@#${SERVICE_GROUP}#g" \
+    "${APP_DIR}/deploy/openrc/${service}" | tee "/etc/init.d/${service}" >/dev/null
+  chmod +x "/etc/init.d/${service}"
 done
-
-for mutable_path in \
-  "${APP_DIR}/cache" \
-  "${APP_DIR}/device-cache.json" \
-  "${APP_DIR}/broadlink-codes.json" \
-  "${APP_DIR}/hue-lamps.json" \
-  "${APP_DIR}/hue-lamps-blacklist.json" \
-  "${APP_DIR}/zigbee-lamps.json" \
-  "${APP_DIR}/zigbee-lamps-blacklist.json" \
-  "${APP_DIR}/climate-state.json" \
-  "${APP_DIR}/nabaztag.json" \
-  "${APP_DIR}/refresh-tokens.json"
-do
-  if [ -e "${mutable_path}" ]; then
-    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${mutable_path}"
-  fi
-done
-
-sed \
-  -e "s#@@APP_DIR@@#${APP_DIR}#g" \
-  -e "s#@@SERVICE_USER@@#${SERVICE_USER}#g" \
-  -e "s#@@SERVICE_GROUP@@#${SERVICE_GROUP}#g" \
-  "${APP_DIR}/deploy/openrc/maison" | tee /etc/init.d/maison >/dev/null
-chmod +x /etc/init.d/maison
-
-sed \
-  -e "s#@@APP_DIR@@#${APP_DIR}#g" \
-  -e "s#@@SERVICE_USER@@#${SERVICE_USER}#g" \
-  -e "s#@@SERVICE_GROUP@@#${SERVICE_GROUP}#g" \
-  "${APP_DIR}/deploy/openrc/cloudflared-maison" | tee /etc/init.d/cloudflared-maison >/dev/null
-chmod +x /etc/init.d/cloudflared-maison
 
 rc-update add mosquitto default >/dev/null 2>&1 || true
 rc-update add maison default >/dev/null 2>&1 || true
@@ -429,16 +388,12 @@ for service in mosquitto maison cloudflared-maison; do
     printf '%s: inactive\n' "${service}"
   fi
 done
-
 EOF
 }
 
 stop_pi() {
-  require_host
   log "Stopping the stack on the Pi"
-  ssh_pi sh -s <<'EOF'
-set -eu
-
+  ssh_pi_script <<'EOF'
 for service in cloudflared-maison maison mosquitto; do
   if [ -x "/etc/init.d/${service}" ]; then
     rc-service "${service}" stop >/dev/null 2>&1 || true
@@ -452,16 +407,13 @@ for service in mosquitto maison cloudflared-maison; do
     printf '%s: inactive\n' "${service}"
   fi
 done
-
 EOF
 }
 
 logs_pi() {
-  require_host
   local target="${1:-stack}"
   log "Following ${target} logs on the Pi"
-  ssh_pi sh -s -- "${target}" <<'EOF'
-set -eu
+  ssh_pi_script "${target}" <<'EOF'
 TARGET="$1"
 
 case "${TARGET}" in
@@ -491,12 +443,10 @@ EOF
 }
 
 status_pi() {
-  require_host
   log "Collecting deployment status from the Pi"
-  ssh_pi sh -s -- "${PI_APP_DIR}" <<'EOF'
-set -eu
-
-APP_DIR="$1"
+  ssh_pi_script "${REMOTE_BACKEND_DIR}" "${REMOTE_WEB_DIR}" <<'EOF'
+BACKEND_DIR="$1"
+WEB_DIR="$2"
 
 service_state_openrc() {
   if rc-service "$1" status >/dev/null 2>&1; then
@@ -535,8 +485,8 @@ fi
 
 printf '\nPaths:\n'
 printf '  app: %s\n' "${APP_DIR}"
-printf '  backend: %s\n' "${APP_DIR}/backend/target/release/maison-backend"
-printf '  frontend: %s\n' "${APP_DIR}/frontend/dist"
+printf '  backend: %s\n' "${APP_DIR}/${BACKEND_DIR}/maison-backend"
+printf '  web: %s\n' "${APP_DIR}/${WEB_DIR}"
 
 printf '\nAccess:\n'
 printf '  local: http://%s:3033\n' "$(hostname -i 2>/dev/null | awk '{print $1}' || hostname)"
