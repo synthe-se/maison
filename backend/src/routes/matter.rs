@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, State},
-    routing::{get, post},
+    extract::{Path, Query, State},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::AuthenticatedUser,
     error::AppError,
-    matter::{CoverCommand, CoverView},
+    matter::{CoverCommand, CoverView, SunSchedule},
+    sun::Place,
     AppState,
 };
 
@@ -46,6 +47,32 @@ struct RenameRequest {
     name: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaceResponse {
+    success: bool,
+    place: Option<Place>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlacesResponse {
+    success: bool,
+    places: Vec<Place>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    q: String,
+    /// The reader's language, for the place names (« Londres » / « London »).
+    #[serde(default = "default_language")]
+    lang: String,
+}
+
+fn default_language() -> String {
+    "fr".into()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PositionRequest {
@@ -62,6 +89,41 @@ pub fn router() -> Router<AppState> {
         .route("/covers/{id}/close", post(close))
         .route("/covers/{id}/stop", post(stop))
         .route("/covers/{id}/position", post(position))
+        .route("/covers/{id}/schedule", put(schedule))
+        .route("/place", get(place).put(set_place))
+        .route("/place/search", get(search_places))
+}
+
+async fn schedule(
+    State(state): State<AppState>,
+    _user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(body): Json<SunSchedule>,
+) -> Result<Json<CoverResponse>, AppError> {
+    let cover = state.matter.set_schedule(&id, body).await?;
+    Ok(Json(CoverResponse { success: true, cover }))
+}
+
+async fn place(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<PlaceResponse> {
+    Json(PlaceResponse { success: true, place: state.matter.place().await })
+}
+
+async fn set_place(
+    State(state): State<AppState>,
+    _user: AuthenticatedUser,
+    Json(body): Json<Place>,
+) -> Result<Json<PlaceResponse>, AppError> {
+    let place = state.matter.set_place(body).await?;
+    Ok(Json(PlaceResponse { success: true, place: Some(place) }))
+}
+
+async fn search_places(
+    State(state): State<AppState>,
+    _user: AuthenticatedUser,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<PlacesResponse>, AppError> {
+    let places = state.matter.search_places(&query.q, &query.lang).await?;
+    Ok(Json(PlacesResponse { success: true, places }))
 }
 
 async fn list(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<CoversResponse> {

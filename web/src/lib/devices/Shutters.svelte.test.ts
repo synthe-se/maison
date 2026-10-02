@@ -27,6 +27,7 @@ function server(covers: Shutter[]) {
 		if (url.endsWith('/close')) return json({ success: true, cover: { ...c, motion: 'closing' } });
 		if (url.endsWith('/stop')) return json({ success: true, cover: { ...c, motion: 'stopped' } });
 		if (url.endsWith('/position')) return json({ success: true, cover: { ...c, targetOpenPercent: sentBody({ url, init }).openPercent } });
+		if (url === '/api/matter/place') return json({ success: true, place: null });
 		return json({ success: true, cover: { ...c, name: sentBody({ url, init }).name } });
 	});
 }
@@ -135,12 +136,20 @@ describe('Shutters', () => {
 		const toast = vi.spyOn(ui, 'toast');
 		await render(Shutters);
 		await page.getByRole('button', { name: m.common_settings() }).click();
-		await page.getByRole('button', { name: m.shutters_remove() }).click();
+		await page.getByRole('button', { name: m.common_remove() }).click();
 		const dialog = page.getByRole('alertdialog');
 		await expect.element(dialog.getByText(m.shutters_remove_confirm({ name: 'Salon' }))).toBeVisible();
-		await dialog.getByRole('button', { name: m.shutters_remove() }).click();
+		await dialog.getByRole('button', { name: m.common_remove() }).click();
 		await expect.poll(() => commands(calls)).toEqual([['DELETE', '/api/matter/covers/s1', null]]);
 		await expect.poll(() => toast.mock.calls[0]?.[0]).toBe(m.shutters_removed({ name: 'Salon' }));
+	});
+
+	it('the tile’s fact is the next scheduled move', async () => {
+		const at = '2026-10-02T18:28:00Z';
+		server([shutter({ id: 'a', name: 'A', nextClose: at })]);
+		await render(Shutters);
+		const time = new Intl.DateTimeFormat(document.documentElement.lang || undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(at));
+		await expect.element(page.getByRole('article', { name: 'A' }).getByText(m.shutters_fact_close({ time }))).toBeVisible();
 	});
 
 	it('polls every second while a motor runs, every 10 s at rest', async () => {

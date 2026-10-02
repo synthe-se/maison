@@ -248,7 +248,7 @@ celui qu'on utilise le plus.
 
 - **Par type d'appareil, pas par marque ni par pièce** (décision du 2 octobre 2026 : un studio,
   une seule pièce ; les pièces reviendront avec un logement qui en a). Les sections nomment ce
-  qu'on pilote (« Volets », « Lampes Hue », « Prises », « Coin des chats »), chacune un `h2`
+  qu'on pilote (« Volets », « Lampes Hue », « Prises », « Coin du chat »), chacune un `h2`
   (`--t-group`, Fraunces 19 px) et ses tuiles en liste. Le protocole n'apparaît que dans le
   détail, sauf là où deux familles cohabitent (Hue et Zigbee). Pas de groupe « Maintenant » :
   une seule pièce, tout tient à l'écran.

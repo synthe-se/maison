@@ -8,17 +8,16 @@ use axum::{
     extract::{FromRef, FromRequestParts},
     http::{header::AUTHORIZATION, request::Parts, HeaderMap, StatusCode},
 };
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::{error::AppError, AppState};
-
-#[derive(Clone, Default)]
-pub struct AuthRateLimiter {
-    inner: Arc<Mutex<HashMap<String, RateLimitEntry>>>,
-}
+use crate::{
+    error::AppError,
+    people::{ADMIN, Person},
+    AppState,
+};
 
 /// Server-side store for refresh tokens.
 /// Maps opaque token strings to their associated user data and expiration.
@@ -34,30 +33,17 @@ pub struct RefreshTokenStore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshEntry {
+    /// The person's id; their name and role are read again at each refresh.
     pub user_id: String,
-    pub username: String,
-    pub role: String,
     /// Seconds since epoch when this refresh token expires.
     pub expires_at: i64,
-}
-
-#[derive(Debug, Clone)]
-struct RateLimitEntry {
-    window_started_at: chrono::DateTime<Utc>,
-    attempts: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AuthRateLimitStatus {
-    pub allowed: bool,
-    pub attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     #[serde(rename = "userId")]
     pub user_id: String,
-    pub username: String,
+    pub name: String,
     pub role: String,
     pub exp: usize,
 }
@@ -65,15 +51,21 @@ pub struct Claims {
 #[derive(Debug, Clone, Serialize)]
 pub struct AuthUser {
     pub id: String,
-    pub username: String,
+    pub name: String,
     pub role: String,
+}
+
+impl AuthUser {
+    pub fn of(person: &Person) -> Self {
+        Self { id: person.id.clone(), name: person.name.clone(), role: person.role.clone() }
+    }
 }
 
 impl From<Claims> for AuthUser {
     fn from(value: Claims) -> Self {
         Self {
             id: value.user_id,
-            username: value.username,
+            name: value.name,
             role: value.role,
         }
     }
@@ -105,6 +97,19 @@ where
     }
 }
 
+/// Signed in or not: the routes that serve both (adding a passkey, or a first one by invitation).
+impl<S> axum::extract::OptionalFromRequestParts<S> for AuthenticatedUser
+where
+    AppState: axum::extract::FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Option<Self>, Self::Rejection> {
+        Ok(<Self as FromRequestParts<S>>::from_request_parts(parts, state).await.ok())
+    }
+}
+
 /// Extractor that requires the authenticated user to have the `admin` role.
 /// Use this for destructive or sensitive operations (device control, settings, etc.).
 #[derive(Debug, Clone)]
@@ -119,7 +124,7 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let user = AuthenticatedUser::from_request_parts(parts, state).await?;
-        if user.0.role != "admin" {
+        if user.0.role != ADMIN {
             return Err(AppError::http(
                 StatusCode::FORBIDDEN,
                 "Admin privileges required",
@@ -190,47 +195,17 @@ pub fn decode_token(
 }
 
 fn extract_cookie_token<'a>(headers: &'a HeaderMap, cookie_name: &str) -> Result<&'a str, AppError> {
-    let cookie_header = headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| AppError::unauthorized("No token provided"))?;
+    cookie_value(headers, cookie_name).ok_or_else(|| AppError::unauthorized("No token provided"))
+}
 
-    cookie_header
+/// A named cookie's value from the request headers.
+pub fn cookie_value<'a>(headers: &'a HeaderMap, cookie_name: &str) -> Option<&'a str> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())?
         .split(';')
         .filter_map(|cookie| cookie.trim().split_once('='))
         .find_map(|(name, value)| (name == cookie_name).then_some(value))
-        .ok_or_else(|| AppError::unauthorized("No token provided"))
-}
-
-impl AuthRateLimiter {
-    pub async fn check(&self, key: &str, max_attempts: u32, window: Duration) -> AuthRateLimitStatus {
-        let now = Utc::now();
-        let mut entries = self.inner.lock().await;
-
-        // Evict expired entries to prevent unbounded memory growth.
-        entries.retain(|_, entry| now - entry.window_started_at < window);
-
-        let entry = entries.entry(key.to_string()).or_insert(RateLimitEntry {
-            window_started_at: now,
-            attempts: 0,
-        });
-
-        if now - entry.window_started_at >= window {
-            entry.window_started_at = now;
-            entry.attempts = 0;
-        }
-
-        entry.attempts = entry.attempts.saturating_add(1);
-
-        AuthRateLimitStatus {
-            allowed: entry.attempts <= max_attempts,
-            attempts: entry.attempts,
-        }
-    }
-
-    pub async fn reset(&self, key: &str) {
-        self.inner.lock().await.remove(key);
-    }
 }
 
 impl RefreshTokenStore {
@@ -271,6 +246,18 @@ impl RefreshTokenStore {
             self.persist(&map);
         }
         map.get(token).cloned()
+    }
+
+    /// Remove every refresh token of a person but `except` (this browser's): how many went.
+    pub async fn remove_person(&self, user_id: &str, except: Option<&str>) -> usize {
+        let mut map = self.inner.lock().await;
+        let before = map.len();
+        map.retain(|token, entry| entry.user_id != user_id || Some(token.as_str()) == except);
+        let removed = before - map.len();
+        if removed > 0 {
+            self.persist(&map);
+        }
+        removed
     }
 
     /// Remove a refresh token (used on logout and rotation).

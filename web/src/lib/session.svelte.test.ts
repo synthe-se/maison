@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import { api } from '#lib/api.ts';
 import { forgetAll, live } from '#lib/live.svelte.ts';
-import { json, scriptFetch, sentBody } from '#lib/test/fetch.ts';
+import { stubApi } from '#lib/test/api.ts';
+import { json, scriptFetch } from '#lib/test/fetch.ts';
+import { alex, authenticator, leonard, passkeyRoutes } from '#lib/test/passkeys.ts';
 import { session } from './session.svelte.ts';
 
-const user = { id: '1', username: 'leonard', role: 'admin' };
+const user = leonard;
 
 /** The live entry at `key`, as a component would get it. */
 function liveEntry(key: string) {
@@ -57,19 +59,37 @@ describe('session', () => {
 		expect(session.status).toBe('unreachable');
 	});
 
-	it('signs in with the name and password typed', async () => {
-		const calls = scriptFetch(json({ success: true, user }));
-		await session.signIn('leonard', 'secret');
-		expect(calls[0].url).toBe('/api/auth/login');
-		expect(sentBody(calls[0])).toEqual({ username: 'leonard', password: 'secret' });
+	it('signs in with a passkey: no name, no password', async () => {
+		authenticator();
+		const api = stubApi(passkeyRoutes());
+		await session.signIn();
+		expect(api.sent('POST', '/passkeys/login/finish')).toHaveLength(1);
 		expect(session.status).toBe('signed_in');
-		expect(session.user?.username).toBe('leonard');
+		expect(session.user?.name).toBe('Léonard');
+		expect(session.admin).toBe(true);
 	});
 
-	it('a refused sign-in throws the server’s words and changes nothing', async () => {
+	it('a closed passkey dialog throws and changes nothing', async () => {
 		session.status = 'signed_out';
-		scriptFetch(json({ error: 'Identifiants incorrects' }, 401), json({}, 401));
-		await expect(session.signIn('leonard', 'wrong')).rejects.toThrow('Identifiants incorrects');
+		authenticator(null);
+		stubApi(passkeyRoutes());
+		await expect(session.signIn()).rejects.toMatchObject({ code: 'cancelled' });
+		expect(session.status).toBe('signed_out');
+	});
+
+	it('adopts the person an invitation has just let in; a member is no admin', () => {
+		session.adopt(alex);
+		expect(session.status).toBe('signed_in');
+		expect(session.admin).toBe(false);
+		session.adopt(undefined);
+		expect(session.user).toEqual(alex);
+	});
+
+	it('signs out everywhere: the server ends every session, this one forgotten too', async () => {
+		session.adopt(user);
+		const calls = scriptFetch(json({ success: true }));
+		await session.signOutEverywhere();
+		expect(calls[0].url).toBe('/api/auth/logout-everywhere');
 		expect(session.status).toBe('signed_out');
 	});
 

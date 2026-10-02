@@ -17,12 +17,15 @@
 maison/
 ├── backend/                 # Rust backend (Axum 0.8, tokio)
 │   ├── src/
-│   │   ├── main.rs          # entrypoint, dotenvy, graceful shutdown
+│   │   ├── main.rs          # entrypoint, dotenvy, graceful shutdown;
+│   │   │                    #   `maison-backend invite <id> --name X [--admin]`
 │   │   ├── lib.rs           # AppState, router assembly, layers (CORS,
 │   │   │                    #   security headers, 180s TimeoutLayer, trace)
 │   │   ├── config.rs        # env-driven Config (paths, auth, zigbee)
 │   │   ├── error.rs         # AppError (thiserror + IntoResponse)
-│   │   ├── auth.rs          # JWT + Argon2, HttpOnly cookie, rate limiting
+│   │   ├── auth.rs          # JWT extractors (signed in / admin / machine), refresh store
+│   │   ├── passkey.rs       # WebAuthn (webauthn-rs): ceremonies, limits, RP from PUBLIC_URL
+│   │   ├── people.rs        # auth/auth.json: people, passkeys, invitations (no passwords)
 │   │   ├── tuya.rs          # Tuya local TCP (feeder/fountain/litter box)
 │   │   ├── meross.rs        # Meross plugs via LOCAL HTTP (reqwest) — the
 │   │   │                    #   backend does NOT speak MQTT; the plugs'
@@ -133,7 +136,7 @@ Driver design (`zigbee_native.rs`):
 | Philips TV (Saphi) | JointSPACE over plain HTTP :1925 (`pairing_type: "none"`, no auth) + Wake-on-LAN + DIAL on the Android box | `tv.rs`. **The endpoint whitelist is load-bearing**: unimplemented paths (`/6/sources`, `/6/applications`, `/6/activities/*`, `/5/*`) kill the single-threaded server *persistently* — only a mains power cycle revives it — so endpoints are an enum, not strings, and every call goes through one gate holding `MIN_REQUEST_GAP`. Two sleep depths: light standby answers on 1925, deep standby needs WoL first (~20 s, revives the network only; the panel needs a following `powerstate: On`). Saphi cannot switch sources, so `switchToBox` wakes the box over DIAL :8008 and lets CEC One Touch Play route the input. Config in `tv.json`; live tests behind `live-runtime-tests` |
 | Android TV box — keys & app launches | **Remote v2** over mutual TLS :6466 (`atvremote.rs`), ADB as fallback | The fast path. ADB costs ~150 ms per key, of which only 65 ms is ADB — the rest is `input` booting a JVM per press. Remote v2 sends a protobuf on an open session, and a background task owns that session so the handler returns in µs instead of blocking. Framing is varint-length + protobuf, hand-encoded (no prost/protoc for two small schemas). **Pairing is per host and the client cert must be RSA** — the secret hashes both certs' moduli — so the key comes from `rsa` and rcgen only wraps it (ring cannot generate RSA). The TV's cert is accepted unverified on purpose: self-signed, no verifiable name, and auth runs the other way. `protocol_version` must be 2 and `service_name` `atvremote`, or the TV answers STATUS_ERROR. Identity in `atv-identity` (0600); pairing routes at `/androidtv/pair/{start,finish}` |
 | Android TV box (MECOOL LEAP-S1) | native ADB over TCP :5555 (`adb.rs`, no `adb` binary) | `androidtv.rs`. Auth: the box's 20-byte token **is** a SHA-1 digest and must be signed pre-hashed (`sign_prehash`, not `Signer::try_sign`) — hashing twice makes the box reject the signature and fall back to re-sending the public key, re-prompting on screen every connection. Key generated on first use into `adb-key` (0600, `spawn_blocking` — tens of seconds on a Pi 1), one on-screen authorisation ever. Connection is kept and reused, one stream at a time; keys are an enum and package names are validated, so nothing reaches the shell unchecked. APK sideloading goes through the `sync:` service then `pm install -r`, capped at 96 MB. CEC lives here too: waking the box does One Touch Play (TV on + input), sleeping it broadcasts standby. Config in `androidtv.json`; live tests behind `live-runtime-tests` |
-| Matter window coverings (Sonoff Orb-RBS) | Matter over IP (`matter-controller` 0.16, pure Rust on `ring`, own `mdns-sd` responder; IPv6 socket, needs IPv6 on the Pi) | `matter.rs`. Maison is the commissioner: one fabric, created lazily on the first pairing (no RTC on the Pi: minting certs before NTP would date them 1970). Pairing takes a multi-admin code from a phone ecosystem, since the Pi has no BLE to put a device on the Wi-Fi. Attestation is checked against the CSA production PAA/CD roots vendored in `matter-trust/` (`scripts/update-matter-trust.sh`); `MATTER_TEST_ROOTS=1` swaps in the CSA test roots for simulators. State in `matter/` (dir 0700: `controller.bin` keys saved by temp+rename, `covers.json` names/endpoints). The controller is built on first use, not at boot. Positions are flipped: the cluster counts closure in 1/100 % (0 = open), the API exposes `openPercent`. Removal sends `RemoveFabric` (response may never arrive, the session dies with the fabric) then forgets the node. Live round trip in `tests/matter_live.rs` behind `live-runtime-tests` |
+| Matter window coverings (Sonoff Orb-RBS) | Matter over IP (`matter-controller` 0.16, pure Rust on `ring`, own `mdns-sd` responder; IPv6 socket, needs IPv6 on the Pi) | `matter.rs`. Maison is the commissioner: one fabric, created lazily on the first pairing (no RTC on the Pi: minting certs before NTP would date them 1970). Pairing takes a multi-admin code from a phone ecosystem, since the Pi has no BLE to put a device on the Wi-Fi. Attestation is checked against the CSA production PAA/CD roots vendored in `matter-trust/` (`scripts/update-matter-trust.sh`); `MATTER_TEST_ROOTS=1` swaps in the CSA test roots for simulators. State in `matter/` (dir 0700: `controller.bin` keys saved by temp+rename, `covers.json` names/endpoints). The controller is built on first use, not at boot. Positions are flipped: the cluster counts closure in 1/100 % (0 = open), the API exposes `openPercent`. No software reversal: a switch that runs backwards gets its motor wires swapped (the Orb-RBS accepts the WC `Mode` « motor reversed » bit but does not act on it). Sun schedule per cover (`SunSchedule`: open at sunrise / close at sunset ± offset) computed locally by `sun.rs` from the place in `matter/place.json` (found by name via Open-Meteo geocoding); `run_schedule` every 30 s sends, per cover, the latest event that fell due since the last look, looking back `CATCH_UP` (5 min) at most (`due()` is pure and tested): the Pi boots on swclock's saved time and NTP then steps weeks ahead, which once replayed every sunrise/sunset in between. Removal sends `RemoveFabric` (response may never arrive, the session dies with the fabric) then forgets the node. Live round trip in `tests/matter_live.rs` behind `live-runtime-tests` |
 | Nabaztag (garenne) | UDP 9998 `grn1 ` control + GET /status | rabbit runs clapier's garenne firmware; clapier server is hosted on the same Pi (/opt/clapier, OpenRC). `nabaztag.rs` pushes the daily Tempo colors every 15 min: today = static belly LED (`led 2 RRGGBB`), tomorrow = ear position. Config: `NABAZTAG_HOST` (rabbit IP) + nabaztag.json. All firmware tooling lives in uplg/nabgcc (branch portal-ui); nothing firmware-related remains here. |
 
 ## 6. Web app notes
@@ -162,7 +165,17 @@ Driver design (`zigbee_native.rs`):
   deployment goes through `deploy.sh` (wrapped by `make deploy*`), and
   `make cloudflared-upgrade` rebuilds/swaps the ARMv6 tunnel binary.
 - Runtime JSON state lives at the repo root (gitignored where mutable).
-- `users.json` requires Argon2 password hashes; the backend refuses the
-  default JWT secret.
-- Every route sits behind a global 180s timeout layer; auth endpoints are
-  rate limited.
+- Sign-in is by passkey only, Ariane's implementation (`passkey.rs`,
+  `people.rs`, `routes/passkeys.rs`, web `passkeys.ts`; notes in
+  `docs/dependances/passkeys.md`). People exist once an invitation has
+  registered their first passkey; the first invitation comes from
+  `maison-backend invite` on the Pi. `auth/auth.json` is read on every use
+  and replaced by temp+rename in `auth/` (dir 0700, the service's: the app
+  dir is root's), keeping the owner (root's CLI writes it for the service). RP ID = host of `PUBLIC_URL` (default `https://` +
+  `CLOUDFLARE_PUBLIC_HOSTNAME`): never an IP, so the LAN address cannot sign
+  in. Roles: `admin` invites, `member` does the rest. Coded refusals
+  (`AppError::Coded`, `{error, code}`) let the web app word them; no 401
+  but « not signed in » (the web app reads a 401 as a session that ended).
+  The backend refuses the default JWT secret.
+- Every route sits behind a global 180s timeout layer; failed passkey
+  attempts are limited per address.

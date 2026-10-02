@@ -15,7 +15,6 @@ CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-${ROOT_DIR}/cloudflared-arm}"
 # Files pushed from this machine on every deploy (the source of truth is local).
 RUNTIME_FILES=(
   devices.json
-  users.json
   meross-devices.json
 )
 
@@ -47,6 +46,7 @@ STATE_FILES=(
 STATE_DIRS=(
   'cache|'
   'matter|700'
+  'auth|700'
 )
 
 # Remote layout, relative to PI_APP_DIR.
@@ -365,7 +365,10 @@ done
 
 rc-update add mosquitto default >/dev/null 2>&1 || true
 rc-update add maison default >/dev/null 2>&1 || true
-rc-service mosquitto restart || rc-service mosquitto start
+# --nodeps: maison `need`s mosquitto, so a plain mosquitto restart would also stop maison and
+# start it again in the background, racing the restart below (« maison stopped by something
+# else », flock errors). maison only needs the broker for the plugs' boot; restart it once.
+rc-service --nodeps mosquitto restart || rc-service mosquitto start
 rc-service maison restart || rc-service maison start
 
 if command -v cloudflared >/dev/null 2>&1 && grep -q '^CLOUDFLARE_TUNNEL_TOKEN=.' "${APP_DIR}/.env"; then

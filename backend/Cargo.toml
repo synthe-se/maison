@@ -11,7 +11,12 @@ bluetooth = ["dep:btleplug"]
 live-runtime-tests = []
 
 [dependencies]
-argon2 = "0.6.0"
+# passkeys (docs/dependances/passkeys.md): usernameless sign-in needs `conditional-ui`
+webauthn-rs = { version = "0.5.5", default-features = false, features = ["conditional-ui"] }
+webauthn-rs-proto = "0.5.5"   # the same version webauthn-rs pins; for the options it builds
+# webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the Pi
+# carries it (cargo-zigbuild compiles it with zig cc)
+openssl = { version = "0.10", features = ["vendored"] }
 async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
@@ -65,8 +70,13 @@ uuid = { version = "1.26.1", features = ["v4"] }
 # the tree. matter-codec supplies the TLV tags for command fields.
 matter-controller = "0.16.0"
 matter-codec = "0.3.1"
+sunrise = "3.0.0"
 
 [dev-dependencies]
+# a software authenticator and client: passkeys end to end, discoverable ones included
+passkey = { version = "0.6.0", features = ["rust-crypto"] }
+async-trait = "0.1"
+public-suffix = "0.1"
 bytes = "1.12.1"
 tempfile = "3.27.0"
 tower = "0.5.3"

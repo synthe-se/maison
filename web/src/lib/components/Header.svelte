@@ -21,7 +21,8 @@
 		{ value: 'light', label: m.theme_light },
 		{ value: 'dark', label: m.theme_dark }
 	];
-	const name = $derived(session.user?.username ?? '');
+	const name = $derived(session.user?.name ?? '');
+	let open = $state(false);
 </script>
 
 {#snippet nav(cls: string)}
@@ -40,7 +41,7 @@
 		<Brand />
 		{@render nav('views')}
 		<div class="grow"></div>
-		<Popover.Root>
+		<Popover.Root bind:open>
 			<Popover.Trigger class="btn ghost who" aria-label={m.session_menu({ name })}>
 				<span class="initial" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
 				<span class="who-name">{name}</span>
@@ -65,6 +66,7 @@
 						</div>
 					</div>
 					<div class="row">
+						<a class="btn" href="/account" onclick={() => (open = false)}><Icon name="key" />{m.account_title()}</a>
 						<button class="btn" onclick={() => session.signOut()}>
 							<Icon name="log-out" />{m.auth_logout()}
 						</button>

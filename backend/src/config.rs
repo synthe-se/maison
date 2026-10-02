@@ -8,11 +8,13 @@ pub struct Config {
     pub frontend_dist_dir: PathBuf,
     pub auth_cookie_name: String,
     pub auth_cookie_secure: bool,
-    pub auth_rate_limit_attempts: u32,
-    pub auth_rate_limit_window_seconds: i64,
+    /// Where Maison is reached (`https://home.example.com`): the passkeys' origin, its host
+    /// their RP ID. `PUBLIC_URL`, else `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`.
+    pub public_url: Option<String>,
     pub disable_bluetooth: bool,
     pub source_root: PathBuf,
-    pub users_path: PathBuf,
+    /// People, their passkeys, pending invitations (`people.rs`).
+    pub auth_path: PathBuf,
     pub meross_devices_path: PathBuf,
     pub devices_path: PathBuf,
     pub device_cache_path: PathBuf,
@@ -73,10 +75,12 @@ impl Config {
             frontend_dist_dir: path("FRONTEND_DIST_DIR", "web/build"),
             auth_cookie_name: var("AUTH_COOKIE_NAME").unwrap_or_else(|| "maison_session".to_string()),
             auth_cookie_secure: flag("AUTH_COOKIE_SECURE", true),
-            auth_rate_limit_attempts: parsed(&var, "AUTH_RATE_LIMIT_ATTEMPTS", 10),
-            auth_rate_limit_window_seconds: parsed(&var, "AUTH_RATE_LIMIT_WINDOW_SECONDS", 300),
+            public_url: var("PUBLIC_URL")
+                .or_else(|| var("CLOUDFLARE_PUBLIC_HOSTNAME").map(|host| format!("https://{host}"))),
             disable_bluetooth: flag("DISABLE_BLUETOOTH", false),
-            users_path: path("USERS_JSON_PATH", "users.json"),
+            // A directory of its own, like matter/: the file is replaced by temp-file +
+            // rename, so the service user must own the directory (the app dir is root's).
+            auth_path: path("AUTH_JSON_PATH", "auth/auth.json"),
             meross_devices_path: path("MEROSS_DEVICES_JSON_PATH", "meross-devices.json"),
             devices_path: path("DEVICES_JSON_PATH", "devices.json"),
             device_cache_path: path("DEVICE_CACHE_JSON_PATH", "device-cache.json"),
@@ -161,5 +165,5 @@ fn default_source_root() -> PathBuf {
 }
 
 fn looks_like_source_root(path: &std::path::Path) -> bool {
-    path.join("users.json").is_file() || path.join("web").is_dir()
+    path.join("devices.json").is_file() || path.join("web").is_dir()
 }

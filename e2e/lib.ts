@@ -1,14 +1,16 @@
 // What every scenario repeats, said once (after Ariane's e2e/lib.ts): the server, checks and
 // the exit code, a signed-in page, errors watched, screenshots, axe.
 import { chromium, type Browser, type BrowserContextOptions, type Locator, type Page } from 'playwright';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 /** The backend under test; run.sh passes it. */
-export const BASE = process.env.BASE ?? 'http://127.0.0.1:3099';
+export const BASE = process.env.BASE ?? 'http://localhost:3099';
 /** Where screenshots go; none taken when unset. */
 export const SHOTS = process.env.SHOTS;
 export const PHONE = { width: 390, height: 844 };
-export const USER = { name: 'e2e', password: 'e2e-password' };
+/** The account every scenario signs in as (an admin, made by invitation). */
+export const USER = { id: 'e2e', name: 'E2E' };
 
 // ---- checks and the exit code
 
@@ -45,8 +47,9 @@ export async function open(browser: Browser, options: BrowserContextOptions = {}
 
 const errors: string[] = [];
 /** Expected, not errors: a device absent from the throwaway root answers 404/500/503, a
- * session not yet opened answers 401. */
-const EXPECTED = /status of (401|404|500|502|503)/;
+ * session not yet opened answers 401, a refusal the app words itself 403/409 (the last
+ * passkey, a member asking for invitations). */
+const EXPECTED = /status of (401|403|404|409|500|502|503)/;
 
 function watchErrors(page: Page) {
 	page.on('pageerror', (e) => errors.push(e.message));
@@ -64,12 +67,32 @@ export function checkNoErrors(label = 'no page errors') {
 /** Waits for the page's own title (h1). */
 export const title = (page: Page, name: string | RegExp) => page.getByRole('heading', { name, level: 1 }).waitFor();
 
-/** The sign-in form shown in place of any page, then the page itself. */
+/** A one-time invitation link, made as on the Pi: `maison-backend invite` (run.sh says where). */
+export function invitation(person = USER.id, name = USER.name, admin = true): string {
+	const args = ['invite', person, '--name', name, ...(admin ? ['--admin'] : [])];
+	const out = execFileSync(process.env.MAISON_BIN!, args, { encoding: 'utf8' });
+	return out.match(/http\S+\/invite\/\S+/)![0];
+}
+
+/** A platform authenticator with user verification, as on a phone or a Mac (WebAuthn CDP). */
+export async function authenticator(page: Page) {
+	const cdp = await page.context().newCDPSession(page);
+	await cdp.send('WebAuthn.enable');
+	const add = () =>
+		cdp.send('WebAuthn.addVirtualAuthenticator', {
+			options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true }
+		});
+	return { cdp, add, ...(await add()) };
+}
+
+/** In by a fresh invitation (a new passkey on a new authenticator), then the page itself. */
 export async function signIn(page: Page, path = '/') {
-	await page.goto(BASE + path);
-	await page.getByLabel(/Nom d’utilisateur|Username/).fill(USER.name);
-	await page.getByLabel(/Mot de passe|Password/).fill(USER.password);
-	await page.getByRole('button', { name: /Se connecter|Sign in|Log in/ }).click();
+	await authenticator(page);
+	await page.goto(invitation());
+	await page.getByRole('button', { name: /Créer ma clé d’accès|Create my passkey/ }).click();
+	await page.getByRole('button', { name: /Entrer dans Maison|Enter Maison/ }).click();
+	await page.waitForURL((url) => !url.pathname.startsWith('/invite/'));
+	if (path !== '/') await page.goto(BASE + path);
 	await page.locator('main h1').first().waitFor();
 }
 

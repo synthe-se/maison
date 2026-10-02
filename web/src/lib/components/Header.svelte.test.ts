@@ -20,7 +20,7 @@ const nav = () => screen.getByRole('navigation', { name: m.nav_label() }).first(
 describe('Header', () => {
 	const startLocale = locale();
 	beforeEach(() => {
-		session.user = { id: '1', username: 'léonard', role: 'admin' };
+		session.user = { id: 'leonard', name: 'léonard', role: 'admin' };
 		at('/');
 	});
 	afterEach(() => {
@@ -77,6 +77,16 @@ describe('Header', () => {
 		expect(ui.theme).toBe('dark');
 		await expect.element(dark).toHaveAttribute('aria-pressed', 'true');
 		await expect.element(screen.getByRole('button', { name: m.theme_system() })).toHaveAttribute('aria-pressed', 'false');
+	});
+
+	it('leads to my account (my passkeys), and the panel closes on the way', async () => {
+		await render(Header);
+		await screen.getByRole('button', { name: m.session_menu({ name: 'léonard' }) }).click();
+		const account = screen.getByRole('link', { name: m.account_title() });
+		await expect.element(account).toHaveAttribute('href', '/account');
+		account.element().addEventListener('click', (e) => e.preventDefault(), { once: true });
+		await account.click();
+		await expect.element(screen.getByRole('dialog', { name: 'léonard' })).not.toBeInTheDocument();
 	});
 
 	it('signs out', async () => {

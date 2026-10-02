@@ -1,10 +1,9 @@
-// Who is signed in. The session is an HttpOnly cookie the backend sets; the page only asks
-// whether it is still good, and forgets everything on sign-out.
+// Who is signed in. The session is an HttpOnly cookie the backend sets (after a passkey,
+// passkeys.ts); the page only asks whether it is still good, and forgets everything on sign-out.
 
-import { ApiError, authApi, onUnauthorized } from '#lib/api.ts';
+import { ApiError, authApi, onUnauthorized, type User } from '#lib/api.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
-
-type User = { id: string; username: string; role: string };
+import * as passkeys from '#lib/passkeys.ts';
 
 class Session {
 	/** `unreachable`: no answer, or the tunnel's 502 while the Pi restarts. */
@@ -19,11 +18,7 @@ class Session {
 	async verify() {
 		try {
 			const r = await authApi.verify();
-			if (r.success && r.user) {
-				this.user = r.user;
-				this.status = 'signed_in';
-				return;
-			}
+			if (r.success && r.user) return this.adopt(r.user);
 		} catch (e) {
 			// refused: no usable session; anything else: the server is not there to ask
 			if (!(e instanceof ApiError) || e.status >= 500) {
@@ -34,12 +29,27 @@ class Session {
 		this.#out();
 	}
 
-	async signIn(username: string, password: string) {
-		const r = await authApi.login(username, password);
-		if (r.success) {
-			this.user = r.user;
-			this.status = 'signed_in';
-		}
+	/** Whether the person may invite others. */
+	get admin() {
+		return this.user?.role === 'admin';
+	}
+
+	/** Signs in with a passkey: no name, no password. Throws what went wrong (`passkeyMessage`). */
+	async signIn() {
+		this.adopt((await passkeys.signIn()).user);
+	}
+
+	/** In, as this person: the server has just opened the session (a sign-in, an invitation). */
+	adopt(user: User | undefined) {
+		if (!user) return;
+		this.user = user;
+		this.status = 'signed_in';
+	}
+
+	/** A lost phone: every session of mine ends, here too. */
+	async signOutEverywhere() {
+		await authApi.logoutEverywhere();
+		this.#out();
 	}
 
 	async signOut() {

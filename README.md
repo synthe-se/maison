@@ -61,7 +61,7 @@ cd e2e && bun install && bun run all            # after `cargo build` and `bun -
 
 `e2e/run.sh scenario.ts` starts the real backend on a throwaway root (a test account, no device
 file: nothing on the LAN is touched) serving `web/build`; `e2e/house.ts` simulates the devices a
-scenario needs. Scenarios: `smoke` (sign-in, navigation, sign-out), `dashboard` (tiles, gestures,
+scenario needs. Scenarios: `smoke` (sign-in, navigation, sign-out), `passkeys` (invitation, passkeys added and removed, an admin invites, sign-in again; a Chromium virtual authenticator), `dashboard` (tiles, gestures,
 a device that does not answer), `layout` (measured at 390, 1024, 1440 and 2560 px), `a11y` (axe,
 light and dark, desktop and phone).
 
@@ -71,7 +71,7 @@ The Rust backend reads these files directly from the repo root:
 
 - `devices.json`
 - `device-cache.json`
-- `users.json`
+- `auth/auth.json` (people, their passkeys, pending invitations; written by the backend)
 - `meross-devices.json`
 - `hue-lamps.json`
 - `hue-lamps-blacklist.json`
@@ -260,6 +260,19 @@ The phone ecosystem can stay as a second admin or be removed afterwards;
 Maison does not depend on it. Removing a shutter in Maison sends
 `RemoveFabric`, so the switch frees that slot.
 
+**Wrong way round, or the position is off?** Swap the two motor wires if Open closes, then
+let the switch learn its travel again (hold its button about 10 s until the LED breathes, then
+let it run a full open and close): the position Maison shows is the switch's own estimate.
+
+**Follow the sun.** Each shutter can open at sunrise and close at sunset, each shifted by up
+to ± 3 h (closing defaults to an hour after sunset). The house's town is looked up once by name
+(Open-Meteo geocoding, the only network call); sunrise and sunset are then computed on the Pi
+(NOAA equations, `sun.rs`), so the shutters still move when the internet is down. A look every
+30 s sends the latest open or close that fell due since the previous look, one command per
+shutter, looking back 5 min at most: nothing is caught up after a restart or when NTP steps the
+clock (the Pi boots on the time it last saw), and nothing moves while the clock is unset. The tile shows the next move
+(« Fermeture 20:24 »). State: `matter/covers.json` (schedules), `matter/place.json`.
+
 Positions follow the cluster but are flipped for the UI: Matter counts
 *closure* in hundredths of a percent (0 = open), while the API and dashboard
 show `openPercent` (100 = open).
@@ -331,8 +344,7 @@ Main settings:
 - `MATTER_TEST_ROOTS`: `true` to accept CSA test devices (simulators) instead of production ones; development only
 - `AUTH_COOKIE_NAME`: session cookie name
 - `AUTH_COOKIE_SECURE`: keep `true` when the app is exposed through HTTPS/Cloudflare
-- `AUTH_RATE_LIMIT_ATTEMPTS`: max failed login attempts per IP+username window
-- `AUTH_RATE_LIMIT_WINDOW_SECONDS`: backend login throttling window
+- `PUBLIC_URL`: where Maison is reached, the passkeys' origin (its host is their RP ID); defaults to `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`. Locally: `http://localhost:5173`
 - `CLOUDFLARE_TUNNEL_TOKEN`: optional token for the Cloudflare tunnel profile
 - `CLOUDFLARED_PROTOCOL`: Cloudflare transport protocol, default `http2` for better compatibility behind NAT
 - `CLOUDFLARE_PUBLIC_HOSTNAME`: optional stable public hostname, for example `home.example.com`
@@ -340,23 +352,27 @@ Main settings:
 ## Security notes
 
 - `JWT_SECRET` must be set to a strong unique value; the backend now refuses to start with the default secret.
-- `users.json` must exist and contain at least one account with `password_hash`; plaintext passwords are refused.
-- Browser access is expected through the frontend only.
-- Auth uses an `HttpOnly` cookie.
-- Login throttling.
-- Simple audit logs are emitted for login success, failure, and rate-limit hits.
+- No passwords: signing in is by passkey only (WebAuthn, Ariane's implementation; notes in
+  `docs/dependances/passkeys.md`). One button, no name to type: the device offers its passkey
+  (Face ID, Touch ID, a PIN) and the server checks the signature.
+- Passkeys need HTTPS and a domain: open Maison at `https://home.kahn.studio` (the tunnel),
+  also at home. `http://192.168.1.103:3033` cannot sign in.
+- Entry is by invitation: a one-time link, valid 7 days, only its hash kept. An admin makes
+  one from « Mon compte → Inviter quelqu’un »; the very first one (or a way back in) comes
+  from the Pi:
 
-To generate a password hash for `users.json`:
+  ```bash
+  ssh root@192.168.1.103 'cd /opt/maison && ./backend/target/release/maison-backend invite leonard --name Léonard --admin'
+  ```
 
-```bash
-cargo run --manifest-path backend/Cargo.toml --bin hash_password -- 'your-password'
-```
-
-Then :
-```bash
-cp users.json.template users.json
-# copy previous argon2i hashes into this file.
-```
+  An invitation for someone who exists already adds a passkey (lost phone): same person,
+  same role. Admins invite; members do everything else.
+- « Mon compte » lists my passkeys (rename, remove all but the last, add one from this
+  device) and signs me out everywhere.
+- Sessions: an `HttpOnly` access cookie (15 min) and a rotating refresh cookie (7 days); a
+  refresh reads the person again.
+- Failed passkey attempts are limited per address (10 a minute), ceremonies started signed
+  out too (30 a minute); behind cloudflared, the address is `CF-Connecting-IP`.
 
 ## Development (this machine)
 

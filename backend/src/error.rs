@@ -7,6 +7,10 @@ use tracing::{error, warn};
 pub enum AppError {
     #[error("{message}")]
     Http { status: StatusCode, message: String },
+    /// A refusal the app explains in its own words: `code` names it (`passkey_rejected`,
+    /// `last_passkey`…), the message is for the logs and curl.
+    #[error("{code}: {message}")]
+    Coded { status: StatusCode, code: &'static str, message: &'static str, retry_after_s: Option<u64> },
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
@@ -23,6 +27,8 @@ pub enum AppError {
 struct ErrorBody {
     success: bool,
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 impl AppError {
@@ -31,6 +37,10 @@ impl AppError {
             status,
             message: message.into(),
         }
+    }
+
+    pub fn coded(status: StatusCode, code: &'static str, message: &'static str) -> Self {
+        Self::Coded { status, code, message, retry_after_s: None }
     }
 
     pub fn unauthorized(message: impl Into<String>) -> Self {
@@ -43,7 +53,7 @@ impl AppError {
 
     fn status(&self) -> StatusCode {
         match self {
-            Self::Http { status, .. } => *status,
+            Self::Http { status, .. } | Self::Coded { status, .. } => *status,
             Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Reqwest(_) | Self::Join(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -53,6 +63,7 @@ impl AppError {
     fn client_message(&self) -> String {
         match self {
             Self::Http { message, .. } => message.clone(),
+            Self::Coded { message, .. } => (*message).to_string(),
             Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Join(_) => {
                 "Internal server error".to_string()
             }
@@ -69,11 +80,19 @@ impl IntoResponse for AppError {
         } else if status.is_server_error() {
             error!(error = %self, "request failed");
         }
+        let (code, retry_after_s) = match &self {
+            Self::Coded { code, retry_after_s, .. } => (Some(*code), *retry_after_s),
+            _ => (None, None),
+        };
         let body = ErrorBody {
             success: false,
             error: self.client_message(),
+            code,
         };
-
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let Some(seconds) = retry_after_s {
+            response.headers_mut().insert(axum::http::header::RETRY_AFTER, seconds.into());
+        }
+        response
     }
 }

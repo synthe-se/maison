@@ -63,6 +63,7 @@ pub fn test_config() -> Config {
         disable_bluetooth: true,
         ir_api_token: Some(TEST_IR_TOKEN.into()),
         matter_state_dir: std::env::temp_dir().join("maison-matter-tests-unused"),
+        public_url: None,
         ..Config::defaults(source_root)
     }
 }
@@ -71,7 +72,7 @@ pub fn test_config() -> Config {
 pub fn test_token() -> String {
     let claims = Claims {
         user_id: "1".to_string(),
-        username: "leonard".to_string(),
+        name: "Léonard".to_string(),
         role: "admin".to_string(),
         exp: 4_102_444_800,
     };
@@ -103,16 +104,13 @@ pub fn request(method: Method, path: &str, token: Option<&str>, body: Option<Val
         .expect("request should build")
 }
 
-/// Runs `request` through `app`: status, headers and JSON body.
+/// Runs `request` through `app`: status, headers and the JSON body (`null` when empty).
 pub async fn respond(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, Value) {
     let response = app.clone().oneshot(request).await.expect("request should succeed");
     let status = response.status();
     let headers = response.headers().clone();
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should be readable");
-    let json = serde_json::from_slice::<Value>(&body).expect("response should be valid json");
-    (status, headers, json)
+    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body should be readable");
+    (status, headers, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
 /// One round trip: status and JSON body.

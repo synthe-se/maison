@@ -7,12 +7,14 @@ interface ApiOptions {
 	_skipRefresh?: boolean;
 }
 
-/** The server answered, with an error: its message, and the HTTP status. A request that got no
- * answer at all (network down) throws the browser's TypeError instead. */
+/** The server answered, with an error: its message, the HTTP status, and the refusal's name
+ * when it has one (`passkey_rejected`, `last_passkey`…: the app words those itself). A request
+ * that got no answer at all (network down) throws the browser's TypeError instead. */
 export class ApiError extends Error {
 	constructor(
 		message: string,
-		readonly status: number
+		readonly status: number,
+		readonly code?: string
 	) {
 		super(message);
 	}
@@ -75,15 +77,17 @@ export async function api<T>(endpoint: string, options: ApiOptions = {}): Promis
 
 	if (!response.ok) {
 		let errorMessage = `API request failed (${response.status})`;
+		let code: string | undefined;
 		try {
 			const data = await response.json();
 			if (data.error) {
 				errorMessage = data.error;
 			}
+			code = data.code;
 		} catch {
 			// Response body is not JSON (empty, HTML, etc.) — keep the default message.
 		}
-		throw new ApiError(errorMessage, response.status);
+		throw new ApiError(errorMessage, response.status, code);
 	}
 
 	// Handle 204 No Content or empty bodies gracefully.
@@ -95,42 +99,30 @@ export async function api<T>(endpoint: string, options: ApiOptions = {}): Promis
 	return JSON.parse(text);
 }
 
-// Auth API
-export interface LoginResponse {
-	success: boolean;
-	user: {
-		id: string;
-		username: string;
-		role: string;
-	};
+// Auth API: the session once in; signing in is passkeys.ts
+
+/** Who is signed in. `role`: "admin" (may invite) or "member". */
+export interface User {
+	id: string;
+	name: string;
+	role: string;
 }
 
-export interface VerifyResponse {
+export interface SessionResponse {
 	success: boolean;
-	user?: {
-		id: string;
-		username: string;
-		role: string;
-	};
+	user?: User;
 	error?: string;
 }
 
 export const authApi = {
-	login: (username: string, password: string) =>
-		api<LoginResponse>("/auth/login", {
-			method: "POST",
-			body: { username, password },
-		}),
-
-	verify: () => api<VerifyResponse>("/auth/verify", { method: "POST" }),
+	verify: () => api<SessionResponse>("/auth/verify", { method: "POST" }),
 
 	logout: () => api("/auth/logout", { method: "POST" }),
 
-	refresh: () =>
-		api<{ success: boolean; user: { id: string; username: string; role: string } }>(
-			"/auth/refresh",
-			{ method: "POST", _skipRefresh: true },
-		),
+	/** Every session of mine ends, this one too. */
+	logoutEverywhere: () => api("/auth/logout-everywhere", { method: "POST" }),
+
+	refresh: () => api<SessionResponse>("/auth/refresh", { method: "POST", _skipRefresh: true }),
 };
 
 // Device types
@@ -1190,7 +1182,26 @@ export interface Shutter {
 	motion: ShutterMotion | null;
 	vendorId: number | null;
 	productId: number | null;
+	schedule: SunSchedule;
+	/** When the sun schedule will next open / close it (ISO, UTC). */
+	nextOpen: string | null;
+	nextClose: string | null;
 	error?: string;
+}
+
+/** Follow the sun: open at sunrise, close at sunset, each shifted by minutes (± 180). */
+export interface SunSchedule {
+	openAtSunrise: boolean;
+	closeAtSunset: boolean;
+	sunriseOffsetMin: number;
+	sunsetOffsetMin: number;
+}
+
+/** Where the house is (for the sun schedule). */
+export interface Place {
+	name: string;
+	latitude: number;
+	longitude: number;
 }
 
 export interface ShuttersResponse {
@@ -1225,6 +1236,18 @@ export const shuttersApi = {
 		api<ShutterResponse>(`/matter/covers/${id}`, { method: "PATCH", body: { name } }),
 
 	remove: (id: string) => api<{ success: boolean }>(`/matter/covers/${id}`, { method: "DELETE" }),
+
+	setSchedule: (id: string, schedule: SunSchedule) =>
+		api<ShutterResponse>(`/matter/covers/${id}/schedule`, { method: "PUT", body: schedule }),
+
+	place: () => api<{ success: boolean; place: Place | null }>("/matter/place"),
+
+	setPlace: (place: Place) => api<{ success: boolean; place: Place }>("/matter/place", { method: "PUT", body: place }),
+
+	searchPlaces: (query: string, lang: string) =>
+		api<{ success: boolean; places: Place[] }>(
+			`/matter/place/search?${new URLSearchParams({ q: query, lang })}`
+		),
 };
 
 export type AndroidKey =

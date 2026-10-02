@@ -15,8 +15,11 @@ pub mod matter;
 pub mod meross;
 pub mod mitsubishi_ir;
 pub mod nabaztag;
+pub mod passkey;
+pub mod people;
 pub mod philips_ir;
 pub mod routes;
+pub mod sun;
 pub mod tempo;
 pub mod tuya;
 pub mod tv;
@@ -31,7 +34,7 @@ use axum::Router;
 use axum::middleware::{self, Next};
 use axum::http::header;
 use axum::response::Response;
-use auth::{AuthRateLimiter, RefreshTokenStore};
+use auth::RefreshTokenStore;
 use broadlink::BroadlinkManager;
 use config::Config;
 use error::AppError;
@@ -42,7 +45,8 @@ use nabaztag::NabaztagManager;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::services::{ServeDir, ServeFile};
-use routes::auth::{load_users, SharedUsers};
+use passkey::PasskeyState;
+use people::People;
 use meross::MerossManager;
 use tuya::TuyaManager;
 use tv::TvManager;
@@ -53,8 +57,9 @@ use zigbee::ZigbeeManager;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub(crate) users: SharedUsers,
-    pub(crate) auth_rate_limiter: AuthRateLimiter,
+    pub(crate) people: Arc<People>,
+    /// `None` without a usable `PUBLIC_URL`: nobody can sign in (said in the log).
+    pub(crate) passkeys: Option<Arc<PasskeyState>>,
     pub(crate) refresh_store: RefreshTokenStore,
     pub(crate) broadlink: BroadlinkManager,
     pub(crate) hue: HueManager,
@@ -85,8 +90,8 @@ pub fn build_app_from_config(config: Arc<Config>) -> Result<Router, AppError> {
 }
 
 pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppState), AppError> {
-    let users = Arc::new(load_users(&config)?);
-    let auth_rate_limiter = AuthRateLimiter::default();
+    let people = Arc::new(People::new(&config.auth_path));
+    let passkeys = PasskeyState::new(&config).map(Arc::new);
     let refresh_store = RefreshTokenStore::load(&config.refresh_tokens_path);
     let broadlink =
         BroadlinkManager::new(&config.broadlink_codes_path, &config.climate_state_path)?;
@@ -111,8 +116,8 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
 
     let state = AppState {
         config,
-        users,
-        auth_rate_limiter,
+        people,
+        passkeys,
         refresh_store,
         broadlink,
         hue,
@@ -137,6 +142,17 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
             .collect::<Vec<_>>();
         for device_id in device_ids {
             let _ = startup_tuya.connect_device(&device_id).await;
+        }
+    });
+
+    // The shutters' sun schedule: a look every 30 s sends what fell due since the last one.
+    let schedule = state.matter.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            schedule.run_schedule().await;
         }
     });
 
@@ -185,6 +201,7 @@ pub fn build_app(state: AppState) -> Router {
     let api_router = Router::<AppState>::new()
         .merge(routes::root::api_router())
         .nest("/auth", routes::auth::router())
+        .merge(routes::passkeys::router())
         .nest("/broadlink", routes::broadlink::router())
         .nest("/devices", routes::devices::router())
         .nest("/hue-lamps", routes::hue::router())

@@ -4,7 +4,7 @@
 	import '#lib/i18n.svelte.ts';
 	import { tick } from 'svelte';
 	import { afterNavigate, beforeNavigate } from '$app/navigation';
-	import { updated } from '$app/state';
+	import { page, updated } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
 	import { session } from '#lib/session.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
@@ -14,6 +14,9 @@
 	import Toasts from '#lib/components/Toasts.svelte';
 
 	let { children } = $props();
+
+	// an invitation opens signed out: it is how one gets a first passkey
+	const invitation = $derived(page.url.pathname.startsWith('/invite/'));
 
 	$effect(() => {
 		void session.verify();
@@ -60,7 +63,7 @@
 			<p>{m.unreachable_body()}</p>
 			<button class="btn primary" onclick={() => location.reload()}>{m.reload()}</button>
 		</section>
-	{:else if session.status === 'signed_out'}
+	{:else if session.status === 'signed_out' && !invitation}
 		<SignIn />
 	{:else}
 		{@render children()}

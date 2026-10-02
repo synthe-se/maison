@@ -91,7 +91,7 @@ describe('ZigbeeLampDetail', () => {
 		const { calls } = backend(zigbeeLamp());
 		await render(ZigbeeLampDetail, { id: 'zb-1' });
 		const input = page.getByLabelText(m.zigbee_lamps_name());
-		const button = page.getByRole('button', { name: m.zigbee_lamps_rename_confirm() });
+		const button = page.getByRole('button', { name: m.common_rename() });
 		await expect.element(input).toHaveValue('Suspension');
 		await expect.element(button).toBeDisabled();
 		await input.fill('  Plafonnier ');

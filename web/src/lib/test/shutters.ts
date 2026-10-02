@@ -12,5 +12,8 @@ export const shutter = (over: Partial<Shutter> = {}): Shutter => ({
 	motion: 'stopped',
 	vendorId: null,
 	productId: null,
+	schedule: { openAtSunrise: false, closeAtSunset: false, sunriseOffsetMin: 0, sunsetOffsetMin: 0 },
+	nextOpen: null,
+	nextClose: null,
 	...over
 });

@@ -1,49 +1,42 @@
 <script lang="ts">
-	// A centred 25rem card, no header to align with (docs/ux/mise-en-page.md § 3).
+	// Sign in with a passkey (Ariane's PasskeySignIn). No name to type (discoverable
+	// credentials): one button, the passkey explained by what people know (fingerprint, face,
+	// device code), and a word before the system dialog (FIDO Alliance design guidelines,
+	// « handshake » messaging).
 	import { m } from '#lib/paraglide/messages.js';
+	import { passkeyMessage, supported } from '#lib/passkeys.ts';
 	import { session } from '#lib/session.svelte.ts';
-	import Brand from './Brand.svelte';
+	import AuthCard from './AuthCard.svelte';
+	import Icon from './Icon.svelte';
 
-	let username = $state('');
-	let password = $state('');
 	let busy = $state(false);
 	let error = $state('');
+	const secure = supported();
 
-	async function submit(e: SubmitEvent) {
-		e.preventDefault();
+	async function enter() {
 		busy = true;
 		error = '';
 		try {
-			await session.signIn(username, password);
-		} catch (err) {
-			error = err instanceof Error && err.message ? err.message : m.auth_invalid_credentials();
+			await session.signIn();
+		} catch (e) {
+			error = passkeyMessage(e);
 		} finally {
 			busy = false;
 		}
 	}
 </script>
 
-<div class="signin">
-	<Brand />
-	<h1 tabindex="-1">{m.auth_login()}</h1>
-	<p class="hint">{m.auth_login_card_description()}</p>
-	<form onsubmit={submit} class="form">
-		<div class="field">
-			<label for="username">{m.auth_username()}</label>
-			<input id="username" bind:value={username} autocomplete="username" autocapitalize="none" required />
-		</div>
-		<div class="field">
-			<label for="password">{m.auth_password()}</label>
-			<input id="password" type="password" bind:value={password} autocomplete="current-password" required />
-		</div>
+<AuthCard>
+	<h1 tabindex="-1">{m.pk_signin_title()}</h1>
+	{#if !secure}
+		<p class="banner warn" role="alert">{m.pk_insecure()}</p>
+	{:else}
+		<p class="hint">{m.pk_signin_intro()}</p>
+		<button class="btn primary big" disabled={busy} onclick={enter}>
+			<Icon name="key" />{busy ? m.pk_waiting() : m.pk_button()}
+		</button>
+		<p class="hint">{m.pk_handshake()}</p>
 		<p class="form-error" role="alert">{error}</p>
-		<button class="btn primary submit" disabled={busy}>{busy ? m.auth_logging_in() : m.auth_login()}</button>
-	</form>
-</div>
-
-<style>
-	.signin { width: min(25rem, calc(100% - 2 * var(--page-margin))); margin: 12vh auto 0; display: grid; gap: var(--s-3); }
-	h1 { font: var(--t-page); margin-top: var(--s-5); }
-	.form { display: grid; gap: var(--s-4); margin-top: var(--s-3); }
-	.submit { min-height: var(--control-h); justify-content: center; }
-</style>
+		<p class="hint aside">{m.pk_no_key()}</p>
+	{/if}
+</AuthCard>

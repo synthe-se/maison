@@ -11,6 +11,8 @@
 	import Range from '#lib/components/Range.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import SunSettings from './shutters/SunSettings.svelte';
+	import { nextMove } from './shutters/sun.ts';
 
 	const moving = (c: Shutter) => c.motion === 'opening' || c.motion === 'closing';
 	const list = live('shutters', shuttersApi.list, (d) => (d?.covers.some(moving) ? 1_000 : 10_000));
@@ -115,7 +117,7 @@
 	{:else}
 		<div class="tiles">
 			{#each covers as c (c.id)}
-				<DeviceTile name={c.name} icon="blinds" state={describe(c)} warn={!c.online} on={c.online && (c.openPercent ?? 0) > 0}>
+				<DeviceTile name={c.name} icon="blinds" state={describe(c)} warn={!c.online} on={c.online && (c.openPercent ?? 0) > 0} fact={nextMove(c)}>
 					{#snippet end()}
 						<button
 							class="icon-btn"
@@ -169,14 +171,15 @@
 									</button>
 								</div>
 							</div>
+							<SunSettings cover={c} onchange={replace} />
 							<div class="actions">
 								<ConfirmDialog
 									danger
 									icon="trash"
-									label={m.shutters_remove()}
+									label={m.common_remove()}
 									title={m.shutters_remove_confirm({ name: c.name })}
 									description={m.shutters_remove_description()}
-									action={m.shutters_remove()}
+									action={m.common_remove()}
 									onconfirm={() => remove(c)}
 								/>
 							</div>

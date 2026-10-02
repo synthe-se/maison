@@ -58,12 +58,17 @@ describe('api', () => {
 		expect(over).toHaveBeenCalledOnce();
 	});
 
-	it('does not end the session for a refused sign-in', async () => {
+	it('does not end the session for a refused session check', async () => {
 		const over = vi.fn();
 		onUnauthorized(over);
-		script(json(401, { error: 'Invalid username or password' }), json(401, {}));
-		await expect(api('/auth/login', { method: 'POST', body: {} })).rejects.toThrow('Invalid username or password');
+		script(json(401, { error: 'Invalid token' }), json(401, {}));
+		await expect(api('/auth/verify', { method: 'POST' })).rejects.toThrow('Invalid token');
 		expect(over).not.toHaveBeenCalled();
+	});
+
+	it('keeps the name of a refusal, for the app to word it', async () => {
+		script(json(409, { success: false, error: 'The last passkey stays', code: 'last_passkey' }));
+		await expect(api('/passkeys/k1', { method: 'DELETE' })).rejects.toMatchObject({ status: 409, code: 'last_passkey' });
 	});
 
 	it('uses the server’s error message, or says the status when there is none', async () => {
@@ -81,9 +86,9 @@ describe('api', () => {
 
 /** Each wrapper: the request the backend receives (method, path, JSON body). */
 const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
-	['auth.login', () => authApi.login('léo', 'pw'), 'POST /auth/login', { username: 'léo', password: 'pw' }],
 	['auth.verify', () => authApi.verify(), 'POST /auth/verify'],
 	['auth.logout', () => authApi.logout(), 'POST /auth/logout'],
+	['auth.logoutEverywhere', () => authApi.logoutEverywhere(), 'POST /auth/logout-everywhere'],
 	['auth.refresh', () => authApi.refresh(), 'POST /auth/refresh'],
 	['devices.list', () => devicesApi.list(), 'GET /devices'],
 	['devices.connect', () => devicesApi.connect('d1'), 'POST /devices/d1/connect'],

@@ -3,7 +3,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"all": "./run.sh smoke.ts && ./run.sh dashboard.ts && ./run.sh layout.ts && ./run.sh a11y.ts",
+		"all": "./run.sh smoke.ts && ./run.sh passkeys.ts && ./run.sh dashboard.ts && ./run.sh layout.ts && ./run.sh a11y.ts",
 		"look": "./run.sh look.ts"
 	},
 	"devDependencies": {

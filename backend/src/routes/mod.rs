@@ -7,6 +7,7 @@ pub mod ir;
 pub mod matter;
 pub mod meross;
 pub mod nabaztag;
+pub mod passkeys;
 pub mod root;
 pub mod tempo;
 pub mod tv;

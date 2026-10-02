@@ -102,7 +102,7 @@
 			<div class="actions">
 				<input id="zigbee-rename" value={draft} oninput={(e) => (renameDraft = e.currentTarget.value)} required />
 				<button class="btn" disabled={g.is('rename') || !draft.trim() || draft.trim() === raw?.name}>
-					{#if g.is('rename')}<Icon name="loader-circle" class="spin" />{/if}{m.zigbee_lamps_rename_confirm()}
+					{#if g.is('rename')}<Icon name="loader-circle" class="spin" />{/if}{m.common_rename()}
 				</button>
 			</div>
 		</form>
