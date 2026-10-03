@@ -59,11 +59,16 @@ describe('ScenesGroup', () => {
 			.toBe(m.scenes_failed({ name: 'Nuit', count: 1, total: 1, details: 'Suspension timed out' }));
 	});
 
-	it('no scene: an admin is offered three templates from the house’s devices; a template opens prefilled', async () => {
+	it('« Créer » opens « Nouvelle scène », which can start from a template of the house’s devices', async () => {
 		const api = house([], { 'PUT /scenes/nuit': { success: true, scene: scene() } });
 		await render(ScenesGroup);
-		await page.getByRole('button', { name: m.scenes_create({ name: m.scenes_template_night() }) }).click();
-		await expect.element(page.getByRole('dialog', { name: m.scenes_new() })).toBeVisible();
+		await page.getByRole('button', { name: m.scenes_add() }).click();
+		const sheet = page.getByRole('dialog', { name: m.scenes_new() });
+		await expect.element(sheet).toBeVisible();
+		const templates = sheet.getByRole('group', { name: m.scenes_from_template() });
+		await expect.element(templates.getByRole('button', { name: m.scenes_template_leave() })).toBeVisible();
+		await templates.getByRole('button', { name: m.scenes_template_night() }).click();
+		await expect.element(templates.getByRole('button', { name: m.scenes_template_night() })).toHaveAttribute('aria-pressed', 'true');
 		await expect.element(page.getByLabelText(m.common_name())).toHaveValue(m.scenes_template_night());
 		await page.getByRole('button', { name: m.common_save() }).click();
 		await expect
@@ -80,7 +85,7 @@ describe('ScenesGroup', () => {
 				}
 			]);
 		await expect.element(page.getByRole('dialog')).not.toBeInTheDocument();
-		await expect.element(page.getByRole('button', { name: m.scenes_create({ name: m.scenes_template_night() }) })).toHaveFocus();
+		await expect.element(page.getByRole('button', { name: m.scenes_add() })).toHaveFocus();
 	});
 
 	it('a member sees no group without scenes, and cannot edit them', async () => {
@@ -147,7 +152,7 @@ describe('ScenesGroup', () => {
 	it('the editor says what is missing under the name, and keeps the scene unsaved', async () => {
 		const api = house();
 		await render(ScenesGroup);
-		await page.getByRole('button', { name: m.scenes_new() }).click();
+		await page.getByRole('button', { name: m.scenes_add() }).click();
 		await page.getByRole('button', { name: m.common_save() }).click();
 		const name = page.getByLabelText(m.common_name());
 		await expect.element(name).toHaveFocus();

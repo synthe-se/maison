@@ -781,7 +781,7 @@
 	"remote_title": "Remote control",
 	"remote_visual_hint": "Pick a button to configure it.",
 	"rename_empty": "The name cannot be empty.",
-	"scenes_create": "Create “{name}”",
+	"scenes_add": "Create",
 	"scenes_delete": "Delete “{name}”",
 	"scenes_delete_description": "It leaves the dashboard, the app’s shortcuts and the remote keys that run it.",
 	"scenes_delete_title": "Delete the scene “{name}”?",
@@ -803,7 +803,7 @@
 		}
 	],
 	"scenes_edit": "Edit {name}",
-	"scenes_editor_description": "The actions run in order; when one fails, the next ones still run.",
+	"scenes_editor_description": "Actions run in order; if one fails, the next ones still run.",
 	"scenes_failed": [
 		{
 			"declarations": [
@@ -822,6 +822,7 @@
 			}
 		}
 	],
+	"scenes_from_template": "Start from a template",
 	"scenes_icon": "Icon",
 	"scenes_icon_film": "Film",
 	"scenes_icon_home": "Home",
@@ -833,7 +834,6 @@
 	"scenes_missing_name": "Give the scene a name.",
 	"scenes_nested": "A scene cannot run another scene.",
 	"scenes_new": "New scene",
-	"scenes_none_hint": "A scene runs several actions in one gesture. Start from a template, filled with the house’s devices.",
 	"scenes_not_found": "The scene “{id}” does not exist (yet): create it from the dashboard.",
 	"scenes_run": "Run “{name}”",
 	"scenes_run_title": "Run “{name}”?",

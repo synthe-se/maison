@@ -124,9 +124,10 @@ await lowWater.click();
 check('a chip leads to its group', await until(() => p.evaluate(() => document.activeElement?.id === 'cats-title')));
 
 // ── scenes: an admin makes « Je pars » from its template, then runs it ──
-await p.getByRole('button', { name: fr.scenes_create({ name: fr.scenes_template_leave() }) }).click();
+await p.getByRole('button', { name: fr.scenes_add() }).click();
 const sheet = p.getByRole('dialog', { name: fr.scenes_new() });
 await sheet.waitFor();
+await sheet.getByRole('group', { name: fr.scenes_from_template() }).getByRole('button', { name: fr.scenes_template_leave() }).click();
 const template = await sheet.innerText();
 check('the template is filled from the house’s devices', template.includes('Lave-linge'));
 check(

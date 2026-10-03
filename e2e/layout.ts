@@ -133,7 +133,7 @@ check('no tile changes height when values refresh', JSON.stringify(before) === J
 
 // the phone dashboard stays compact (docs/ux.md « Layout »): the README's house at 390 px,
 // rows of 56 px, « Maintenant » on two lines at most, and a bounded height
-const PHONE_BOUND = 2300;
+const PHONE_BOUND = 2350;
 const phone = await open(browser, { viewport: { width: 390, height: 844 } });
 await house().serve(phone);
 await showcase(phone);

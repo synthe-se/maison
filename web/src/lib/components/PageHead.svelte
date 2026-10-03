@@ -14,8 +14,11 @@
 		/** The line under the title. */
 		sub?: Snippet;
 		end?: Snippet;
+		/** The title is known without being read (the dashboard: « Accueil »): kept for screen
+		 * readers and for the focus after a navigation, not drawn. */
+		hidden?: boolean;
 	}
-	let { title, back = false, sub, end }: Props = $props();
+	let { title, back = false, sub, end, hidden = false }: Props = $props();
 </script>
 
 <svelte:head><title>{pageTitle(title)}</title></svelte:head>
@@ -23,8 +26,8 @@
 {#if back}
 	<a class="back link-btn quiet" href="/"><Icon name="arrow-left" />{m.back_home()}</a>
 {/if}
-<div class="page-head">
-	<h1 tabindex="-1">{title}</h1>
+<div class="page-head" class:quiet={hidden}>
+	<h1 tabindex="-1" class:sr-only={hidden}>{title}</h1>
 	{#if end}<div class="end">{@render end()}</div>{/if}
 	{#if sub}<p class="sub">{@render sub()}</p>{/if}
 </div>
@@ -36,6 +39,10 @@
 		gap: var(--s-2);
 		min-height: var(--control-h);
 		margin-top: var(--s-3);
+	}
+	/* a title not drawn: only the breathing space under the header stays */
+	.page-head.quiet {
+		padding-block: var(--s-4) 0;
 	}
 	/* the sub line under the title, the actions beside it */
 	.sub {

@@ -19,7 +19,7 @@
 	import TvGroup from '#lib/devices/TvGroup.svelte';
 </script>
 
-<PageHead title={m.nav_home()} />
+<PageHead title={m.nav_home()} hidden />
 
 <NowStrip />
 

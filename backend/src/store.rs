@@ -197,7 +197,12 @@ fn keep_owner(file: &Path, like: &Path, dir: &Path) -> std::io::Result<()> {
         let Ok(owner) = fs::metadata(like).or_else(|_| fs::metadata(dir)) else { return Ok(()) };
         let mine = fs::metadata(file)?;
         if (mine.uid(), mine.gid()) != (owner.uid(), owner.gid()) {
-            std::os::unix::fs::chown(file, Some(owner.uid()), Some(owner.gid()))?;
+            match std::os::unix::fs::chown(file, Some(owner.uid()), Some(owner.gid())) {
+                // not root (the service writing a first file in root's app dir): the file is
+                // the writer's own, which is what it needs to write it again
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+                other => other?,
+            }
         }
     }
     #[cfg(not(unix))]
@@ -209,6 +214,17 @@ fn keep_owner(file: &Path, like: &Path, dir: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::util::test_dir;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_first_file_in_someone_elses_directory_is_kept_as_ones_own() {
+        // the service creating scenes.json in root's /opt/maison: it may not give the file to
+        // root, and must not fail for it (tests run as a user: `/` is root's)
+        let d = test_dir();
+        let file = d.path().join("x");
+        fs::write(&file, "1").unwrap();
+        assert!(keep_owner(&file, Path::new("/nowhere/x.json"), Path::new("/")).is_ok());
+    }
 
     #[test]
     fn missing_is_default_and_a_write_reads_back() {

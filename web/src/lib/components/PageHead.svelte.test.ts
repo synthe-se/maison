@@ -19,6 +19,14 @@ describe('PageHead', () => {
 		await expect.poll(() => document.title).toBe(m.branding_name());
 	});
 
+	it('a title known without being read (the dashboard) stays for screen readers, not drawn', async () => {
+		await render(PageHead, { title: m.nav_home(), hidden: true });
+		const h1 = page.getByRole('heading', { level: 1, name: m.nav_home() });
+		await expect.element(h1).toBeInTheDocument();
+		await expect.element(h1).toHaveClass('sr-only');
+		await expect.poll(() => document.title).toBe(`${m.nav_home()} · ${m.branding_name()}`);
+	});
+
 	it('the h1 can take the focus after a navigation', async () => {
 		await render(PageHead, { title: 'Salon' });
 		const h1 = document.querySelector('h1')!;

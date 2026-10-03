@@ -1,8 +1,8 @@
 <script lang="ts">
 	// « Scènes » near the top of the dashboard: one button per scene (« Je pars », « Nuit »,
-	// « Film »), each a Gesture whose outcome is said, a failed action named. Admins create,
-	// edit and delete them in a sheet; with none yet, admins are offered three templates filled
-	// from the house's devices, members see nothing. `/?scene=<id>` (the app's shortcuts) asks
+	// « Film »), each a Gesture whose outcome is said, a failed action named. After them, for an
+	// admin, « Créer »: a sheet « Nouvelle scène » that can start from a template filled from the
+	// house's devices; the pencil in the head edits the existing ones. Members see the scenes only. `/?scene=<id>` (the app's shortcuts) asks
 	// first, then runs: a scene never runs silently.
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -38,6 +38,12 @@
 
 	function edit(scene: Scene, isNew: boolean, e?: Event) {
 		editing = { scene, isNew, draft: new Draft(sceneForm(scene)), opener: e?.currentTarget as HTMLElement | null };
+	}
+	/** The templates a new scene may start from: those the house does not have yet. */
+	const offered = $derived(templates(sources.current).filter((t) => !all.some((s) => s.id === t.id)));
+	/** A new scene starts again from `t` (the form is refilled from it). */
+	function start(t: Scene) {
+		if (editing) editing = { ...editing, scene: t, draft: new Draft(sceneForm(t)) };
 	}
 	async function closed(reread: boolean) {
 		const opener = editing?.opener;
@@ -77,7 +83,7 @@
 
 {#if all.length || session.admin}
 	<Group id="scenes-title" title={m.scenes_title()} bind:heading={title} actions={session.admin && all.length ? manage : undefined}>
-		{#if all.length}
+		{#if all.length || list.data}
 			<ul class="scenes plain-list">
 				{#each all as s (s.id)}
 					<li>
@@ -91,16 +97,13 @@
 						{/if}
 					</li>
 				{/each}
-			</ul>
-		{:else if list.data}
-			<!-- no scene yet: an admin starts from the house's own devices -->
-			<p class="hint">{m.scenes_none_hint()}</p>
-			<ul class="scenes plain-list">
-				{#each templates(sources.current) as t (t.id)}
+				{#if session.admin}
 					<li>
-						<button class="btn scene" onclick={(e) => edit(t, true, e)}><Icon name="plus" />{m.scenes_create({ name: t.name })}</button>
+						<button class="btn ghost scene" aria-haspopup="dialog" onclick={(e) => edit(blank(), true, e)}
+							><Icon name="plus" />{m.scenes_add()}</button
+						>
 					</li>
-				{/each}
+				{/if}
 			</ul>
 		{/if}
 	</Group>
@@ -111,7 +114,6 @@
 	<button class="icon-btn" aria-label={m.scenes_manage()} aria-pressed={managing} onclick={() => (managing = !managing)}
 		><Icon name="pencil" /></button
 	>
-	<button class="icon-btn" aria-label={m.scenes_new()} onclick={(e) => edit(blank(), true, e)}><Icon name="plus" /></button>
 {/snippet}
 
 <Sheet
@@ -122,16 +124,28 @@
 	description={m.scenes_editor_description()}
 >
 	{#if editing}
-		<SceneEditor
-			scene={editing.scene}
-			isNew={editing.isNew}
-			taken={all.map((s) => s.id)}
-			sources={sources.current}
-			draft={editing.draft}
-			onsaved={() => closed(true)}
-			ondeleted={() => closed(true)}
-			oncancel={() => closed(false)}
-		/>
+		{#if editing.isNew && offered.length}
+			<div class="from" role="group" aria-labelledby="scenes-from">
+				<span id="scenes-from" class="label">{m.scenes_from_template()}</span>
+				<div class="row">
+					{#each offered as t (t.id)}
+						<button class="btn" aria-pressed={editing.scene.id === t.id} onclick={() => start(t)}><Icon name={iconOf(t)} />{t.name}</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
+		{#key editing.scene}
+			<SceneEditor
+				scene={editing.scene}
+				isNew={editing.isNew}
+				taken={all.map((s) => s.id)}
+				sources={sources.current}
+				draft={editing.draft}
+				onsaved={() => closed(true)}
+				ondeleted={() => closed(true)}
+				oncancel={() => closed(false)}
+			/>
+		{/key}
 	{/if}
 </Sheet>
 
@@ -160,5 +174,15 @@
 	}
 	.scene {
 		min-height: var(--control-h);
+	}
+	.from {
+		display: grid;
+		gap: var(--s-2);
+		margin-bottom: var(--s-4);
+	}
+	.from .row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--s-2);
 	}
 </style>

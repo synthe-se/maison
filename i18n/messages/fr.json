@@ -781,7 +781,7 @@
 	"remote_title": "Télécommande",
 	"remote_visual_hint": "Choisis une touche pour la configurer.",
 	"rename_empty": "Le nom ne peut pas être vide.",
-	"scenes_create": "Créer « {name} »",
+	"scenes_add": "Créer",
 	"scenes_delete": "Supprimer « {name} »",
 	"scenes_delete_description": "Elle disparaît de l’accueil, des raccourcis de l’app et des touches de télécommande qui la lancent.",
 	"scenes_delete_title": "Supprimer la scène « {name} » ?",
@@ -822,6 +822,7 @@
 			}
 		}
 	],
+	"scenes_from_template": "Partir d’un modèle",
 	"scenes_icon": "Icône",
 	"scenes_icon_film": "Film",
 	"scenes_icon_home": "Maison",
@@ -833,7 +834,6 @@
 	"scenes_missing_name": "Donne un nom à la scène.",
 	"scenes_nested": "Une scène ne peut pas en lancer une autre.",
 	"scenes_new": "Nouvelle scène",
-	"scenes_none_hint": "Une scène lance plusieurs actions d’un geste. Pars d’un modèle, rempli avec les appareils de la maison.",
 	"scenes_not_found": "La scène « {id} » n’existe pas (encore) : crée-la depuis l’accueil.",
 	"scenes_run": "Lancer « {name} »",
 	"scenes_run_title": "Lancer « {name} » ?",
