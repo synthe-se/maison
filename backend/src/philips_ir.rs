@@ -11,8 +11,7 @@
 //! remote pointed at the blaster, which means waking the set first — and that
 //! destroys the very state the code exists to escape.
 
-const BROADLINK_TICK_US: f32 = 32.84;
-const BROADLINK_IR_TOKEN: u8 = 0x26;
+use crate::broadlink_ir;
 
 /// RC5 spends 1778µs on a bit, split into two equal halves.
 const RC5_HALF_BIT_US: u32 = 889;
@@ -78,28 +77,7 @@ pub fn encode_rc5(address: u8, command: u8, toggle: bool) -> Vec<u8> {
         durations.remove(0);
     }
 
-    build_packet(&durations)
-}
-
-fn build_packet(durations: &[(Level, u32)]) -> Vec<u8> {
-    let mut packet = vec![BROADLINK_IR_TOKEN, 0x00, 0x00, 0x00];
-
-    for (_, micros) in durations {
-        let ticks = ((*micros as f32) / BROADLINK_TICK_US).round() as u16;
-        if ticks >= 256 {
-            packet.push(0x00);
-            packet.push((ticks >> 8) as u8);
-            packet.push((ticks & 0xFF) as u8);
-        } else {
-            packet.push(ticks as u8);
-        }
-    }
-
-    packet.extend_from_slice(&[0x00, 0x0D]);
-    let encoded_len = (packet.len() - 4 + 1) as u16;
-    packet[2] = (encoded_len & 0xFF) as u8;
-    packet[3] = (encoded_len >> 8) as u8;
-    packet
+    broadlink_ir::encode(durations.into_iter().map(|(_, micros)| micros))
 }
 
 #[cfg(test)]
@@ -135,7 +113,7 @@ mod tests {
     fn frame_opens_on_a_mark_of_one_half_bit() {
         let packet = encode_rc5(TV_ADDRESS, TV_POWER_ON, false);
         assert_eq!(packet[4], 27);
-        assert_eq!(packet[0], BROADLINK_IR_TOKEN);
+        assert_eq!(packet[0], broadlink_ir::IR_TOKEN);
         assert_eq!(&packet[packet.len() - 2..], &[0x00, 0x0D]);
     }
 

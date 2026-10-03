@@ -23,7 +23,9 @@ describe('CatDevices', () => {
 	it('says it is loading, without a jump when the tiles come', async () => {
 		stubApi({ '/devices': () => new Promise(() => {}) });
 		await render(CatDevices);
-		await expect.element(page.getByRole('status')).toHaveTextContent(m.common_loading());
+		// no live region of its own: a load is never announced (§ 4); skeletons hold the place
+		await expect.element(page.getByText(m.common_loading())).toBeInTheDocument();
+		expect(document.querySelectorAll('.skeleton').length).toBeGreaterThan(0);
 		await expect.element(page.getByRole('heading', { name: m.dashboard_cats_title() })).toBeVisible();
 	});
 
@@ -34,7 +36,7 @@ describe('CatDevices', () => {
 		await expect.element(tile('Fontaine')).toMatchTextContent(m.device_offline());
 		await expect.element(page.getByRole('link', { name: 'Distributeur' })).toHaveAttribute('href', '/device/f1');
 		await expect.element(page.getByText(m.dashboard_device_count({ count: 2 }))).toBeVisible();
-		await expect.element(tile('Fontaine').getByRole('button', { name: m.device_connect({ name: 'Fontaine' }) })).toBeVisible();
+		await expect.element(tile('Fontaine').getByRole('button', { name: m.device_connection({ name: 'Fontaine' }) })).toBeVisible();
 		// only a feeder serves
 		await expect.element(tile('Fontaine').getByRole('button', { name: m.feeder_distribute({ count: 1 }) })).not.toBeInTheDocument();
 	});
@@ -69,7 +71,7 @@ describe('CatDevices', () => {
 	it('says when the list cannot be read, and tries again on demand', async () => {
 		const api = stubApi({ '/devices': new Response('{"error":"down"}', { status: 500 }) });
 		await render(CatDevices);
-		await expect.element(page.getByText(m.dashboard_loading_error())).toBeVisible();
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
 		api.routes['/devices'] = list([feeder]);
 		await page.getByRole('button', { name: m.common_retry() }).click();
 		await expect.element(tile('Distributeur')).toBeVisible();

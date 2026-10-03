@@ -73,11 +73,15 @@ describe('LampTile', () => {
 		await expect.poll(() => calls.map((c) => [c.url, sentBody(c)])).toEqual([['/api/zigbee/lamps/zb-1/brightness', { brightness: 70 }]]);
 	});
 
-	it('unreachable: no toggle, the last brightness greyed, the state in the warning words', async () => {
-		stubFetch(() => json({ success: true }));
+	it('unreachable: the toggle kept but unavailable, the last brightness greyed, the state in the warning words', async () => {
+		const calls = stubFetch(() => json({ success: true }));
 		await render(LampTile, { lamp: fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })), driver: zigbee });
-		await expect.element(page.getByRole('button', { name: 'Suspension' })).not.toBeInTheDocument();
-		await expect.element(page.getByText(m.lamps_never_seen())).toBeVisible();
+		const toggle = page.getByRole('button', { name: 'Suspension' });
+		await expect.element(toggle).toHaveAttribute('aria-disabled', 'true');
+		await expect.element(toggle).toHaveAccessibleDescription(m.state_never_seen());
+		(toggle.element() as HTMLElement).click();
+		expect(calls).toEqual([]);
+		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
 		await expect.element(page.getByRole('slider', { name: m.lamps_last_brightness() })).toBeDisabled();
 	});
 

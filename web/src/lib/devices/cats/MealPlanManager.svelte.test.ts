@@ -102,17 +102,37 @@ describe('MealPlanManager', () => {
 		await expect.element(rows()).toHaveLength(2);
 	});
 
-	it('offers « Rétablir » for 10 s only', async () => {
+	it('« Rétablir » takes the focus and is said; it stays while focused, then 10 s', async () => {
+		const say = vi.spyOn(ui, 'say');
 		feeder([breakfast]);
 		await render(MealPlanManager, { id: 'f1' });
 		await expect.element(rows()).toHaveLength(1);
-		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 		await page.getByRole('button', { name: m.meal_plan_delete_label({ time: clockOf('08:00') }) }).click();
 		const restore = page.getByRole('button', { name: m.meal_plan_restore() });
+		await expect.element(restore).toHaveFocus();
+		await expect.poll(() => say.mock.calls.flat()).toContain(m.meal_plan_deleted_undo({ time: clockOf('08:00') }));
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(restore.query()).not.toBeNull();
+		(restore.element() as HTMLElement).blur();
 		await vi.advanceTimersByTimeAsync(9_900);
 		expect(restore.query()).not.toBeNull();
 		await vi.advanceTimersByTimeAsync(100);
 		expect(restore.query()).toBeNull();
+	});
+
+	it('« Rétablir » waits for a write in flight (two whole-plan writes would race)', async () => {
+		const api = feeder([breakfast, dinner]);
+		let release!: () => void;
+		api.routes[`POST ${PATH}`] = () => new Promise((r) => (release = () => r({ success: true })));
+		await render(MealPlanManager, { id: 'f1' });
+		await page.getByRole('button', { name: m.meal_plan_delete_label({ time: clockOf('08:00') }) }).click();
+		const restore = page.getByRole('button', { name: m.meal_plan_restore() });
+		await expect.element(restore).toHaveAttribute('aria-disabled', 'true');
+		(restore.element() as HTMLElement).click();
+		release();
+		await expect.element(restore).not.toHaveAttribute('aria-disabled');
+		expect(posted(api)).toEqual([[dinner]]);
 	});
 
 	it('adds a meal from the sheet, and closes it', async () => {

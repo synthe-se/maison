@@ -4,6 +4,7 @@
 	import { irApi } from '#lib/api.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
+	import { session } from '#lib/session.svelte.ts';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 
 	// the keymap only changes from the configurator, which refreshes it: no polling
@@ -21,7 +22,8 @@
 			state={keymap.loading ? m.common_loading() : count ? m.remote_binding_count({ count }) : m.remote_no_bindings()}
 		>
 			<div class="actions">
-				<a class="btn" href="/remote"><Icon name="settings" />{m.remote_configure()}</a>
+				<!-- configuring is an admin's; a member can look -->
+				<a class="btn" href="/remote"><Icon name="settings" />{session.admin ? m.remote_configure() : m.remote_view()}</a>
 			</div>
 		</DeviceTile>
 	</div>

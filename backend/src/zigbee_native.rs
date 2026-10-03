@@ -30,8 +30,6 @@ use tracing::{debug, error, info, warn};
 
 use silizium::zigbee::security::man as security_man;
 
-use axum::http::StatusCode;
-
 use crate::error::AppError;
 
 const DEFAULT_EZSP_PROTOCOL_VERSION: u8 = 13;
@@ -46,6 +44,11 @@ const ZCL_READ_ATTRIBUTES_COMMAND_ID: u8 = 0x00;
 const ZCL_READ_ATTRIBUTES_RESPONSE_COMMAND_ID: u8 = 0x01;
 const ZCL_ON_OFF_COMMAND_OFF: u8 = 0x00;
 const ZCL_ON_OFF_COMMAND_ON: u8 = 0x01;
+const ZCL_ON_OFF_COMMAND_TOGGLE: u8 = 0x02;
+const ZCL_REPORT_ATTRIBUTES_COMMAND_ID: u8 = 0x0a;
+/// Frame control bit 2: a manufacturer code follows the frame control byte.
+const ZCL_MANUFACTURER_SPECIFIC_FLAG: u8 = 0x04;
+/// Move to Level (with On/Off): the level also switches the lamp on or off.
 const ZCL_LEVEL_CONTROL_COMMAND_MOVE_TO_LEVEL: u8 = 0x04;
 const ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR: u8 = 0x07;
 const ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR_TEMPERATURE: u8 = 0x0a;
@@ -69,6 +72,11 @@ const ON_OFF_CLUSTER_ID: u16 = 0x0006;
 const LEVEL_CONTROL_CLUSTER_ID: u16 = 0x0008;
 const COLOR_CONTROL_CLUSTER_ID: u16 = 0x0300;
 const DEFAULT_SOURCE_ENDPOINT: u8 = 1;
+/// Colour temperature range of the API's 0–100 scale, in mireds: 0 % is the warmest
+/// (500 mireds, 2000 K), 100 % the coolest (153 mireds, 6500 K). The web mirrors them
+/// (web/src/lib/devices/lamps/lamp.ts).
+pub const MIRED_WARM: u16 = 500;
+pub const MIRED_COOL: u16 = 153;
 const DEFAULT_HOME_GATEWAY_DEVICE_ID: u16 = 0x0050;
 
 /// ZCL Level Control cluster-specific command IDs (client → server).
@@ -148,6 +156,11 @@ const MAX_BACKOFF_MULTIPLIER: f64 = 12.0;
 /// Duration after which the EZSP pipeline is considered stuck if no EZSP activity
 /// (successful command or callback) has been observed.  Triggers a full reconnect.
 const WATCHDOG_TIMEOUT: StdDuration = StdDuration::from_secs(180);
+
+/// Quiet for this long (a calm night: no command, no callback), the link is probed with
+/// a cheap `network_state()` round-trip, so a healthy dongle is never torn down by the
+/// watchdog above for want of traffic.
+const KEEPALIVE_AFTER: StdDuration = StdDuration::from_secs(60);
 
 /// Per-EZSP-command timeout.  If a single `send_unicast` / `communicate` call takes
 /// longer than this, we assume the pipeline is dead and trigger a full reconnect.
@@ -344,6 +357,13 @@ impl NativeZigbeeRuntime {
         status.last_error = None;
     }
 
+    /// Keeps the driver from ever starting (its queue is taken away): a test drives the
+    /// manager's state alone, with no serial port opened behind its back.
+    #[cfg(test)]
+    pub(crate) async fn test_detach(&self) {
+        self.command_rx.lock().await.take();
+    }
+
     #[cfg(test)]
     pub(crate) async fn test_set_lifecycle(&self, lifecycle: DriverLifecycle) {
         *self.lifecycle.write().await = lifecycle;
@@ -358,27 +378,23 @@ impl NativeZigbeeRuntime {
         };
     }
 
+    /// Starts the driver, and runs the first discovery once the radio is up. Never waits:
+    /// while the dongle is starting, unplugged or not on a network, it returns at once (the
+    /// 2 s save loop and every request call it; they must not queue behind a dead radio),
+    /// and a later call does the discovery.
     pub async fn ensure_initialized(&self) {
         self.start_task_if_needed().await;
 
-        let mut guard = self.init_once.lock().await;
+        if !matches!(*self.lifecycle.read().await, DriverLifecycle::Ready)
+            || *self.network_state.read().await != DriverNetworkState::Joined
+        {
+            return;
+        }
+        // another caller is running the discovery: no need to wait for it
+        let Ok(mut guard) = self.init_once.try_lock() else {
+            return;
+        };
         if *guard {
-            return;
-        }
-
-        if let Err(error) = wait_for_driver_ready(&self.lifecycle).await {
-            warn!(adapter = %self.adapter, serial_port = ?self.serial_port, error = %error, "native zigbee driver did not become ready");
-            let mut status = self.status.write().await;
-            status.last_error = Some(error.to_string());
-            status.message = Some("Native Zigbee initialization timed out".to_string());
-            return;
-        }
-
-        if let Err(error) = wait_for_joined_network(&self.network_state).await {
-            warn!(adapter = %self.adapter, serial_port = ?self.serial_port, error = %error, "native zigbee network did not become joined before discovery");
-            let mut status = self.status.write().await;
-            status.last_error = Some(error.to_string());
-            status.message = Some(format!("Native Zigbee network not joined: {error}"));
             return;
         }
 
@@ -446,9 +462,22 @@ impl NativeZigbeeRuntime {
         let lifecycle = Arc::clone(&self.lifecycle);
         let network_state = Arc::clone(&self.network_state);
 
-        let task = tokio::spawn(async move {
-            run_native_driver(adapter, serial_port, known_devices, task_status, lifecycle, network_state, command_rx).await;
-        });
+        let task = tokio::spawn(supervise_driver(
+            Arc::clone(&self.status),
+            Arc::clone(&self.lifecycle),
+            command_rx,
+            move |command_rx| {
+                Box::pin(run_native_driver(
+                    adapter.clone(),
+                    serial_port.clone(),
+                    known_devices.clone(),
+                    Arc::clone(&task_status),
+                    Arc::clone(&lifecycle),
+                    Arc::clone(&network_state),
+                    command_rx,
+                ))
+            },
+        ));
 
         *self.task.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
     }
@@ -462,37 +491,32 @@ impl NativeZigbeeRuntime {
 
 /// Join handles for the four pipeline tasks (ASH transmitter/receiver and
 /// EZSP transmitter/receiver actors). All spawned by us, so teardown is a
-/// bounded abort + join.
-struct PipelineTasks {
-    ash_transmitter: JoinHandle<()>,
-    ash_receiver: JoinHandle<()>,
-    ezsp_transmitter: JoinHandle<()>,
-    ezsp_receiver: JoinHandle<()>,
-}
+/// bounded abort + join. Dropped without a teardown (the driver panicked), they are
+/// aborted all the same: a detached actor would keep the serial port open.
+struct PipelineTasks([JoinHandle<()>; 4]);
 
 impl PipelineTasks {
     /// All four tasks must be running for the pipeline to be usable; any
     /// finished task (serial unplug, channel closure, panic) means the whole
     /// stack must be rebuilt.
     fn is_alive(&self) -> bool {
-        !self.ash_transmitter.is_finished()
-            && !self.ash_receiver.is_finished()
-            && !self.ezsp_transmitter.is_finished()
-            && !self.ezsp_receiver.is_finished()
+        self.0.iter().all(|handle| !handle.is_finished())
     }
 
-    async fn shutdown(self) {
-        for handle in [
-            self.ezsp_transmitter,
-            self.ezsp_receiver,
-            self.ash_transmitter,
-            self.ash_receiver,
-        ] {
+    async fn shutdown(mut self) {
+        for handle in &mut self.0 {
             handle.abort();
             let _ = handle.await;
         }
     }
+}
 
+impl Drop for PipelineTasks {
+    fn drop(&mut self) {
+        for handle in &self.0 {
+            handle.abort();
+        }
+    }
 }
 
 struct EzspContext {
@@ -502,8 +526,8 @@ struct EzspContext {
     joined_devices: Vec<DiscoveredDevice>,
     next_global_sequence: u8,
     next_device_sequence: HashMap<u16, u8>,
-    /// Updated on every successful EZSP command or callback.  Used by the watchdog
-    /// to detect a silently-dead pipeline.
+    /// Updated on every successful EZSP round-trip (unicast, keepalive) and every
+    /// callback received.  Used by the watchdog to detect a silently-dead pipeline.
     last_activity: Instant,
     /// The coordinator's own EUI64, fetched once at startup.
     /// Needed for ZDO Bind_req destination addresses.
@@ -570,7 +594,6 @@ enum AvailabilityState {
 
 /// A ZLL device discovered during a Touchlink scan.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // fields retained for future diagnostics/logging
 struct TouchlinkFoundNetwork {
     network_info: ZllNetwork,
     device_endpoint: Option<u8>,
@@ -629,6 +652,54 @@ struct DiscoveredDevice {
     failed_ping_cycles: u32,
 }
 
+/// Longest pause before restarting a driver that panicked.
+const MAX_RESTART_DELAY: StdDuration = StdDuration::from_secs(60);
+
+/// The driver, supervised: it owns the command queue across restarts, so a panic in the
+/// driver (a parser bug, an unexpected NCP answer) is a restart after a pause, not a
+/// Zigbee dead until the service restarts. While it waits the lifecycle says `Failed`
+/// (requests fail fast with the reason); a clean return (queue closed, no serial port)
+/// ends it.
+async fn supervise_driver<F>(
+    status: Arc<RwLock<NativeZigbeeStatus>>,
+    lifecycle: Arc<RwLock<DriverLifecycle>>,
+    mut command_rx: mpsc::Receiver<DriverRequest>,
+    mut run: F,
+) where
+    F: for<'a> FnMut(&'a mut mpsc::Receiver<DriverRequest>) -> futures::future::BoxFuture<'a, ()>,
+{
+    use futures::FutureExt;
+    let mut crashes: u32 = 0;
+    loop {
+        let Err(panic) = std::panic::AssertUnwindSafe(run(&mut command_rx)).catch_unwind().await else {
+            return;
+        };
+        crashes = crashes.saturating_add(1);
+        let reason = panic
+            .downcast_ref::<&str>()
+            .map(|text| text.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        let delay = restart_delay(crashes);
+        error!(%reason, crashes, ?delay, "native zigbee driver panicked — restarting");
+        *lifecycle.write().await =
+            DriverLifecycle::Failed(format!("Native Zigbee driver crashed ({reason}); restarting in {delay:?}"));
+        set_status(&status, Some("Native Zigbee driver crashed; restarting".to_string()), Some(reason)).await;
+        // requests queued meanwhile would wait for the reply timeout: answer them now
+        drain_pending_requests(&mut command_rx, AppError::service_unavailable("Native Zigbee driver is restarting")).await;
+        tokio::time::sleep(delay).await;
+        *lifecycle.write().await = DriverLifecycle::Starting;
+    }
+}
+
+/// 1 s, 2 s, 4 s… up to [`MAX_RESTART_DELAY`]: a driver that panics at once every time
+/// must not spin the Pi's single core.
+fn restart_delay(crashes: u32) -> StdDuration {
+    StdDuration::from_secs(1)
+        .saturating_mul(1_u32 << crashes.saturating_sub(1).min(6))
+        .min(MAX_RESTART_DELAY)
+}
+
 async fn run_native_driver(
     adapter: String,
     serial_port: Option<String>,
@@ -636,7 +707,7 @@ async fn run_native_driver(
     status: Arc<RwLock<NativeZigbeeStatus>>,
     lifecycle: Arc<RwLock<DriverLifecycle>>,
     driver_network_state: Arc<RwLock<DriverNetworkState>>,
-    mut command_rx: mpsc::Receiver<DriverRequest>,
+    command_rx: &mut mpsc::Receiver<DriverRequest>,
 ) {
     let Some(serial_port) = serial_port else {
         warn!(adapter = %adapter, "native zigbee serial port is not configured");
@@ -650,7 +721,7 @@ async fn run_native_driver(
             "Set ZIGBEE_SERIAL_PORT before using the native Zigbee backend".to_string(),
         );
         drain_pending_requests(
-            &mut command_rx,
+            command_rx,
             AppError::service_unavailable("Set ZIGBEE_SERIAL_PORT before using the native Zigbee backend"),
         )
         .await;
@@ -866,9 +937,19 @@ async fn run_native_driver(
                 _ = tick.tick() => {
                     tick_count = tick_count.wrapping_add(1);
 
-                    // --- Health check: ASH tasks alive? ---
-                    if let Some(reason) = check_pipeline_health(&context) {
-                        break 'event_loop Some(reason.to_string());
+                    // --- Health check: ASH tasks alive, link answering? ---
+                    if !context.tasks.is_alive() {
+                        break 'event_loop Some("EZSP pipeline task(s) died".to_string());
+                    }
+                    match link_health(context.last_activity.elapsed()) {
+                        LinkHealth::Fine => {}
+                        LinkHealth::Dead => break 'event_loop Some("EZSP watchdog timeout — no activity".to_string()),
+                        LinkHealth::Probe => match timeout(EZSP_COMMAND_TIMEOUT, context.connection.network_state()).await {
+                            Ok(Ok(_)) => context.last_activity = Instant::now(),
+                            Ok(Err(error)) => break 'event_loop Some(format!("EZSP keepalive failed: {error}")),
+                            // a dropped round-trip leaves the pipeline out of step: rebuild it
+                            Err(_elapsed) => break 'event_loop Some("EZSP keepalive timed out".to_string()),
+                        },
                     }
 
                     // --- Drain callbacks ---
@@ -925,7 +1006,7 @@ async fn run_native_driver(
                         }
                     }
 
-                    if tick_count % DISCOVERY_RETRY_INTERVAL_TICKS == 0 {
+                    if tick_count.is_multiple_of(DISCOVERY_RETRY_INTERVAL_TICKS) {
                         // Wrap interview retries in a timeout — a hung send_unicast here
                         // would block the entire event loop.
                         if timeout(EZSP_COMMAND_TIMEOUT, retry_pending_interviews(&mut context)).await.is_err() {
@@ -934,7 +1015,7 @@ async fn run_native_driver(
                         sync_status_devices(&status, &context.joined_devices).await;
                     }
 
-                    if tick_count % AVAILABILITY_CHECK_INTERVAL_TICKS == 0 {
+                    if tick_count.is_multiple_of(AVAILABILITY_CHECK_INTERVAL_TICKS) {
                         // Non-blocking availability state machine: advances one step
                         // per call.  The only blocking work is a single send_read_attributes
                         // (guarded by EZSP_COMMAND_TIMEOUT via the pipeline).  No sleeps.
@@ -1052,12 +1133,12 @@ async fn open_and_connect(
         EZSP_CHANNEL_SIZE,
     );
 
-    let tasks = PipelineTasks {
-        ash_transmitter: tokio::spawn(ash_futures.transmitter),
-        ash_receiver: tokio::spawn(ash_futures.receiver),
-        ezsp_transmitter: tokio::spawn(ezsp_futures.transmitter),
-        ezsp_receiver: tokio::spawn(ezsp_futures.receiver),
-    };
+    let tasks = PipelineTasks([
+        tokio::spawn(ezsp_futures.transmitter),
+        tokio::spawn(ezsp_futures.receiver),
+        tokio::spawn(ash_futures.transmitter),
+        tokio::spawn(ash_futures.receiver),
+    ]);
 
     info!(
         serial_port = %serial_port,
@@ -1187,37 +1268,6 @@ async fn try_open_ezsp_context(
     })
 }
 
-async fn wait_for_driver_ready(lifecycle: &Arc<RwLock<DriverLifecycle>>) -> Result<(), AppError> {
-    for _ in 0..30 {
-        match &*lifecycle.read().await {
-            DriverLifecycle::Ready => return Ok(()),
-            DriverLifecycle::Failed(message) => {
-                return Err(AppError::service_unavailable(message.clone()));
-            }
-            DriverLifecycle::Starting => tokio::time::sleep(StdDuration::from_millis(200)).await,
-        }
-    }
-
-    Err(AppError::service_unavailable(
-        "Native Zigbee adapter initialization timed out",
-    ))
-}
-
-async fn wait_for_joined_network(network_state: &Arc<RwLock<DriverNetworkState>>) -> Result<(), AppError> {
-    for _ in 0..30 {
-        match *network_state.read().await {
-            DriverNetworkState::Joined => return Ok(()),
-            DriverNetworkState::NoNetwork | DriverNetworkState::Unknown => {
-                tokio::time::sleep(StdDuration::from_millis(200)).await;
-            }
-        }
-    }
-
-    Err(AppError::service_unavailable(
-        "Native Zigbee network did not report a joined state in time",
-    ))
-}
-
 async fn ensure_coordinator_network(
     context: &mut EzspContext,
     serial_port: &str,
@@ -1294,16 +1344,24 @@ async fn teardown_context(context: EzspContext) {
     info!("EZSP pipeline torn down");
 }
 
-/// Check whether the EZSP pipeline is healthy.  Returns a human-readable reason
-/// if the pipeline should be torn down and rebuilt.
-fn check_pipeline_health(context: &EzspContext) -> Option<&'static str> {
-    if !context.tasks.is_alive() {
-        return Some("EZSP pipeline task(s) died");
+/// What the watchdog makes of the link's silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkHealth {
+    Fine,
+    /// Quiet: prove it alive with a keepalive round-trip.
+    Probe,
+    /// Nothing for too long, keepalives included: rebuild the pipeline.
+    Dead,
+}
+
+fn link_health(idle: StdDuration) -> LinkHealth {
+    if idle > WATCHDOG_TIMEOUT {
+        LinkHealth::Dead
+    } else if idle >= KEEPALIVE_AFTER {
+        LinkHealth::Probe
+    } else {
+        LinkHealth::Fine
     }
-    if context.last_activity.elapsed() > WATCHDOG_TIMEOUT {
-        return Some("EZSP watchdog timeout — no activity");
-    }
-    None
 }
 
 async fn configure_local_endpoint(context: &mut EzspContext) -> Result<(), AppError> {
@@ -1744,40 +1802,17 @@ async fn handle_command(context: &mut EzspContext, command: NativeZigbeeCommand)
         }
         NativeZigbeeCommand::SetPower { lamp_id, enabled } => {
             let target = find_target_device(context, &lamp_id)?;
-
-            let endpoint = target
-                .endpoint
-                .ok_or_else(|| AppError::service_unavailable(format!(
-                    "Lamp {lamp_id} has no discovered endpoint yet; run discovery first"
-                )))?;
+            let endpoint = lamp_endpoint(&target)?;
             if !target.input_clusters.contains(&ON_OFF_CLUSTER_ID) {
                 return Err(AppError::service_unavailable(format!(
                     "Lamp {lamp_id} does not expose the On/Off cluster yet"
                 )));
             }
 
-            let aps_frame = EzspApsFrame::new(
-                HOME_AUTOMATION_PROFILE_ID,
-                ON_OFF_CLUSTER_ID,
-                DEFAULT_SOURCE_ENDPOINT,
-                endpoint,
-                EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                0,
-                0,
-            );
-            let sequence = next_device_sequence(context, target.node_id);
-            let zcl_payload = build_on_off_command_payload(enabled, sequence);
-
-            context.connection
-                .send_unicast(
-                    Destination::Direct(NodeId::from(target.node_id)),
-                    aps_frame,
-                    0,
-                    zcl_payload.into_iter().collect(),
-                )
-                .await
-                .map(|_| ())
-                .map_err(map_ezsp_error("send unicast on/off"))?;
+            send_zcl(context, target.node_id, endpoint, ON_OFF_CLUSTER_ID, "unicast on/off", |sequence| {
+                build_on_off_command_payload(enabled, sequence)
+            })
+            .await?;
 
             if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == target.node_id) {
                 device.is_on = enabled;
@@ -1794,33 +1829,11 @@ async fn handle_command(context: &mut EzspContext, command: NativeZigbeeCommand)
                 )));
             }
 
-            let endpoint = target
-                .endpoint
-                .ok_or_else(|| AppError::service_unavailable(format!(
-                    "Lamp {lamp_id} has no discovered endpoint yet; run discovery first"
-                )))?;
-            let sequence = next_device_sequence(context, target.node_id);
-            let zcl_payload = build_brightness_command_payload(brightness, sequence);
-            let aps_frame = EzspApsFrame::new(
-                HOME_AUTOMATION_PROFILE_ID,
-                0x0008,
-                DEFAULT_SOURCE_ENDPOINT,
-                endpoint,
-                EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                0,
-                0,
-            );
-
-            context.connection
-                .send_unicast(
-                    Destination::Direct(NodeId::from(target.node_id)),
-                    aps_frame,
-                    0,
-                    zcl_payload.into_iter().collect(),
-                )
-                .await
-                .map(|_| ())
-                .map_err(map_ezsp_error("send unicast brightness"))?;
+            let endpoint = lamp_endpoint(&target)?;
+            send_zcl(context, target.node_id, endpoint, LEVEL_CONTROL_CLUSTER_ID, "unicast brightness", |sequence| {
+                build_brightness_command_payload(brightness, sequence)
+            })
+            .await?;
 
             if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == target.node_id) {
                 device.brightness = brightness.min(100);
@@ -1839,33 +1852,11 @@ async fn handle_command(context: &mut EzspContext, command: NativeZigbeeCommand)
                 )));
             }
 
-            let endpoint = target
-                .endpoint
-                .ok_or_else(|| AppError::service_unavailable(format!(
-                    "Lamp {lamp_id} has no discovered endpoint yet; run discovery first"
-                )))?;
-            let sequence = next_device_sequence(context, target.node_id);
-            let zcl_payload = build_color_temperature_command_payload(temperature, sequence);
-            let aps_frame = EzspApsFrame::new(
-                HOME_AUTOMATION_PROFILE_ID,
-                0x0300,
-                DEFAULT_SOURCE_ENDPOINT,
-                endpoint,
-                EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                0,
-                0,
-            );
-
-            context.connection
-                .send_unicast(
-                    Destination::Direct(NodeId::from(target.node_id)),
-                    aps_frame,
-                    0,
-                    zcl_payload.into_iter().collect(),
-                )
-                .await
-                .map(|_| ())
-                .map_err(map_ezsp_error("send unicast color temperature"))?;
+            let endpoint = lamp_endpoint(&target)?;
+            send_zcl(context, target.node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, "unicast color temperature", |sequence| {
+                build_color_temperature_command_payload(temperature, sequence)
+            })
+            .await?;
 
             if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == target.node_id) {
                 device.temperature = Some(temperature.min(100));
@@ -1889,33 +1880,11 @@ async fn handle_command(context: &mut EzspContext, command: NativeZigbeeCommand)
                 )));
             }
 
-            let endpoint = target
-                .endpoint
-                .ok_or_else(|| AppError::service_unavailable(format!(
-                    "Lamp {lamp_id} has no discovered endpoint yet; run discovery first"
-                )))?;
-            let sequence = next_device_sequence(context, target.node_id);
-            let zcl_payload = build_color_xy_command_payload(x, y, sequence);
-            let aps_frame = EzspApsFrame::new(
-                HOME_AUTOMATION_PROFILE_ID,
-                COLOR_CONTROL_CLUSTER_ID,
-                DEFAULT_SOURCE_ENDPOINT,
-                endpoint,
-                EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                0,
-                0,
-            );
-
-            context.connection
-                .send_unicast(
-                    Destination::Direct(NodeId::from(target.node_id)),
-                    aps_frame,
-                    0,
-                    zcl_payload.into_iter().collect(),
-                )
-                .await
-                .map(|_| ())
-                .map_err(map_ezsp_error("send unicast color xy"))?;
+            let endpoint = lamp_endpoint(&target)?;
+            send_zcl(context, target.node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, "unicast color xy", |sequence| {
+                build_color_xy_command_payload(x, y, sequence)
+            })
+            .await?;
 
             if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == target.node_id) {
                 device.color_x = Some(x.clamp(0.0, 1.0));
@@ -1933,122 +1902,41 @@ async fn handle_command(context: &mut EzspContext, command: NativeZigbeeCommand)
         }
         NativeZigbeeCommand::SetEffect { lamp_id, effect } => {
             let target = find_target_device(context, &lamp_id)?;
+            let endpoint = lamp_endpoint(&target)?;
 
-            let endpoint = target
-                .endpoint
-                .ok_or_else(|| AppError::service_unavailable(format!(
-                    "Lamp {lamp_id} has no discovered endpoint yet; run discovery first"
-                )))?;
-
-            // Determine which cluster and payload to use based on the effect name.
             // Standard Identify cluster effects:
             //   blink, breathe, okay, channel_change, finish_effect, stop_effect
             // Philips Hue proprietary effects (cluster 0xFC03):
             //   candle, fireplace, colorloop, sunrise, sparkle, opal, glisten, stop_hue_effect
-            let effect_lower = effect.to_ascii_lowercase();
-            match effect_lower.as_str() {
-                "blink" | "breathe" | "okay" | "channel_change" | "finish_effect" | "stop_effect" => {
-                    let effect_id: u8 = match effect_lower.as_str() {
-                        "blink" => 0x00,
-                        "breathe" => 0x01,
-                        "okay" => 0x02,
-                        "channel_change" => 0x0B,
-                        "finish_effect" => 0xFE,
-                        "stop_effect" => 0xFF,
-                        _ => unreachable!(),
-                    };
-                    let sequence = next_device_sequence(context, target.node_id);
-                    let zcl_payload = build_identify_trigger_effect_payload(effect_id, sequence);
-                    let aps_frame = EzspApsFrame::new(
-                        HOME_AUTOMATION_PROFILE_ID,
-                        IDENTIFY_CLUSTER_ID,
-                        DEFAULT_SOURCE_ENDPOINT,
-                        endpoint,
-                        EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                        0,
-                        0,
-                    );
-
-                    context.connection
-                        .send_unicast(
-                            Destination::Direct(NodeId::from(target.node_id)),
-                            aps_frame,
-                            0,
-                            zcl_payload.into_iter().collect(),
-                        )
-                        .await
-                        .map(|_| ())
-                        .map_err(map_ezsp_error("send unicast identify effect"))?;
-                }
-                "candle" | "fireplace" | "colorloop" | "sunrise" | "sparkle" | "opal" | "glisten" => {
-                    let hue_effect_id: u8 = match effect_lower.as_str() {
-                        "candle" => 0x01,
-                        "fireplace" => 0x02,
-                        "colorloop" => 0x03,
-                        "sunrise" => 0x09,
-                        "sparkle" => 0x0A,
-                        "opal" => 0x0B,
-                        "glisten" => 0x0C,
-                        _ => unreachable!(),
-                    };
-                    let start_payload: &[u8] = &[0x21, 0x00, 0x01, hue_effect_id];
-                    let sequence = next_device_sequence(context, target.node_id);
-                    let zcl_payload = build_philips_hue_effect_payload(start_payload, sequence);
-                    let aps_frame = EzspApsFrame::new(
-                        HOME_AUTOMATION_PROFILE_ID,
-                        PHILIPS_MANU_SPECIFIC_CLUSTER_ID,
-                        DEFAULT_SOURCE_ENDPOINT,
-                        endpoint,
-                        EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                        0,
-                        0,
-                    );
-
-                    context.connection
-                        .send_unicast(
-                            Destination::Direct(NodeId::from(target.node_id)),
-                            aps_frame,
-                            0,
-                            zcl_payload.into_iter().collect(),
-                        )
-                        .await
-                        .map(|_| ())
-                        .map_err(map_ezsp_error("send unicast hue effect"))?;
-                }
-                "stop_hue_effect" => {
-                    let stop_payload: &[u8] = &[0x20, 0x00, 0x00];
-                    let sequence = next_device_sequence(context, target.node_id);
-                    let zcl_payload = build_philips_hue_effect_payload(stop_payload, sequence);
-                    let aps_frame = EzspApsFrame::new(
-                        HOME_AUTOMATION_PROFILE_ID,
-                        PHILIPS_MANU_SPECIFIC_CLUSTER_ID,
-                        DEFAULT_SOURCE_ENDPOINT,
-                        endpoint,
-                        EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                        0,
-                        0,
-                    );
-
-                    context.connection
-                        .send_unicast(
-                            Destination::Direct(NodeId::from(target.node_id)),
-                            aps_frame,
-                            0,
-                            zcl_payload.into_iter().collect(),
-                        )
-                        .await
-                        .map(|_| ())
-                        .map_err(map_ezsp_error("send unicast stop hue effect"))?;
-                }
+            let (cluster_id, what, body): (u16, &'static str, Vec<u8>) = match effect.to_ascii_lowercase().as_str() {
+                "blink" => (IDENTIFY_CLUSTER_ID, "unicast identify effect", vec![0x00]),
+                "breathe" => (IDENTIFY_CLUSTER_ID, "unicast identify effect", vec![0x01]),
+                "okay" => (IDENTIFY_CLUSTER_ID, "unicast identify effect", vec![0x02]),
+                "channel_change" => (IDENTIFY_CLUSTER_ID, "unicast identify effect", vec![0x0B]),
+                "finish_effect" => (IDENTIFY_CLUSTER_ID, "unicast identify effect", vec![0xFE]),
+                "stop_effect" => (IDENTIFY_CLUSTER_ID, "unicast identify effect", vec![0xFF]),
+                "candle" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast hue effect", vec![0x21, 0x00, 0x01, 0x01]),
+                "fireplace" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast hue effect", vec![0x21, 0x00, 0x01, 0x02]),
+                "colorloop" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast hue effect", vec![0x21, 0x00, 0x01, 0x03]),
+                "sunrise" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast hue effect", vec![0x21, 0x00, 0x01, 0x09]),
+                "sparkle" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast hue effect", vec![0x21, 0x00, 0x01, 0x0A]),
+                "opal" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast hue effect", vec![0x21, 0x00, 0x01, 0x0B]),
+                "glisten" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast hue effect", vec![0x21, 0x00, 0x01, 0x0C]),
+                "stop_hue_effect" => (PHILIPS_MANU_SPECIFIC_CLUSTER_ID, "unicast stop hue effect", vec![0x20, 0x00, 0x00]),
                 _ => {
-                    return Err(AppError::http(
-                        StatusCode::BAD_REQUEST,
-                        format!("Unknown effect: {effect}. Supported: blink, breathe, okay, channel_change, finish_effect, stop_effect, candle, fireplace, colorloop, sunrise, sparkle, opal, glisten, stop_hue_effect"),
-                    ));
+                    return Err(AppError::bad_request(format!(
+                        "Unknown effect: {effect}. Supported: blink, breathe, okay, channel_change, finish_effect, stop_effect, candle, fireplace, colorloop, sunrise, sparkle, opal, glisten, stop_hue_effect"
+                    )));
                 }
-            }
-
-            Ok(())
+            };
+            send_zcl(context, target.node_id, endpoint, cluster_id, what, |sequence| {
+                if cluster_id == IDENTIFY_CLUSTER_ID {
+                    build_identify_trigger_effect_payload(body[0], sequence)
+                } else {
+                    build_philips_hue_effect_payload(&body, sequence)
+                }
+            })
+            .await
         }
         NativeZigbeeCommand::TouchlinkScan => {
             touchlink_scan(context).await
@@ -2174,7 +2062,7 @@ async fn touchlink_scan(context: &mut EzspContext) -> Result<(), AppError> {
     }
 
     // --- 4. Commission each found device: tell it to join our network ---
-    let found_networks = context.touchlink_found_networks.drain(..).collect::<Vec<_>>();
+    let found_networks = std::mem::take(&mut context.touchlink_found_networks);
     for (i, found) in found_networks.iter().enumerate() {
         let eui64 = found.network_info.eui64();
         info!(
@@ -2235,12 +2123,7 @@ fn find_target_device(context: &EzspContext, lamp_id: &str) -> Result<Discovered
 }
 
 async fn refresh_device_state(context: &mut EzspContext, target: &DiscoveredDevice) -> Result<(), AppError> {
-    let endpoint = target
-        .endpoint
-        .ok_or_else(|| AppError::service_unavailable(format!(
-            "Lamp {} has no discovered endpoint yet; run discovery first",
-            target.eui64
-        )))?;
+    let endpoint = lamp_endpoint(target)?;
 
     send_read_attributes(context, target.node_id, endpoint, BASIC_CLUSTER_ID, &[0x0004, 0x0005]).await?;
 
@@ -2264,32 +2147,80 @@ async fn send_read_attributes(
     cluster_id: u16,
     attributes: &[u16],
 ) -> Result<(), AppError> {
+    send_zcl(context, node_id, endpoint, cluster_id, "ZCL read attributes", |sequence| {
+        let mut payload = vec![ZCL_GLOBAL_FRAME_CONTROL, sequence, ZCL_READ_ATTRIBUTES_COMMAND_ID];
+        payload.extend(attributes.iter().flat_map(|attribute| attribute.to_le_bytes()));
+        payload
+    })
+    .await
+}
+
+/// The endpoint a lamp is driven on, once its interview found it.
+fn lamp_endpoint(lamp: &DiscoveredDevice) -> Result<u8, AppError> {
+    lamp.endpoint.ok_or_else(|| {
+        AppError::service_unavailable(format!(
+            "Lamp {} has no discovered endpoint yet; run discovery first",
+            lamp.eui64
+        ))
+    })
+}
+
+/// A ZCL frame (home-automation profile, from our endpoint) to `endpoint` of `node_id`;
+/// `build` gets the device's next sequence number.
+async fn send_zcl(
+    context: &mut EzspContext,
+    node_id: u16,
+    endpoint: u8,
+    cluster_id: u16,
+    what: &'static str,
+    build: impl FnOnce(u8) -> Vec<u8>,
+) -> Result<(), AppError> {
     let sequence = next_device_sequence(context, node_id);
-    let mut payload = vec![ZCL_GLOBAL_FRAME_CONTROL, sequence, ZCL_READ_ATTRIBUTES_COMMAND_ID];
-    for attribute in attributes {
-        payload.push((attribute & 0xff) as u8);
-        payload.push((attribute >> 8) as u8);
-    }
-    let aps_frame = EzspApsFrame::new(
-        HOME_AUTOMATION_PROFILE_ID,
+    let frame = aps_frame(HOME_AUTOMATION_PROFILE_ID, cluster_id, DEFAULT_SOURCE_ENDPOINT, endpoint);
+    send_unicast(context, node_id, frame, build(sequence), what).await
+}
+
+/// A ZDO request (profile and endpoints 0) to `node_id`; `build` gets the sequence number.
+async fn send_zdo(
+    context: &mut EzspContext,
+    node_id: u16,
+    cluster_id: u16,
+    what: &'static str,
+    build: impl FnOnce(u8) -> Vec<u8>,
+) -> Result<(), AppError> {
+    let sequence = next_device_sequence(context, node_id);
+    let frame = aps_frame(ZDO_PROFILE_ID, cluster_id, 0, 0);
+    send_unicast(context, node_id, frame, build(sequence), what).await
+}
+
+/// Every unicast is retried, with route discovery.
+fn aps_frame(profile_id: u16, cluster_id: u16, source_endpoint: u8, destination_endpoint: u8) -> EzspApsFrame {
+    EzspApsFrame::new(
+        profile_id,
         cluster_id,
-        DEFAULT_SOURCE_ENDPOINT,
-        endpoint,
+        source_endpoint,
+        destination_endpoint,
         EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
         0,
         0,
-    );
+    )
+}
 
-    context.connection
-        .send_unicast(
-            Destination::Direct(NodeId::from(node_id)),
-            aps_frame,
-            0,
-            payload.into_iter().collect(),
-        )
+/// One unicast round-trip with the NCP; its success proves the link alive to the watchdog.
+async fn send_unicast(
+    context: &mut EzspContext,
+    node_id: u16,
+    frame: EzspApsFrame,
+    payload: Vec<u8>,
+    what: &'static str,
+) -> Result<(), AppError> {
+    context
+        .connection
+        .send_unicast(Destination::Direct(NodeId::from(node_id)), frame, 0, payload.into_iter().collect())
         .await
-        .map(|_| ())
-        .map_err(map_ezsp_error("send ZCL read attributes"))
+        .map_err(map_ezsp_error(what))?;
+    context.last_activity = Instant::now();
+    Ok(())
 }
 
 async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Option<NativeZigbeeEvent> {
@@ -2305,7 +2236,7 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
             }
             parameters::networking::handler::Handler::ChildJoin(join) => {
                 let eui64 = format_eui64(join.child_eui64());
-                let node_id: u16 = join.child_id().into();
+                let node_id: u16 = join.child_id();
                 let child_type = join.child_type();
                 info!(
                     node_id = format_args!("0x{node_id:04x}"),
@@ -2367,7 +2298,7 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
         },
         Callback::Messaging(handler) => match handler {
             parameters::messaging::handler::Handler::IncomingMessage(message) => {
-                let node_id: u16 = message.sender().into();
+                let node_id: u16 = message.sender();
                 let cluster_id = message.aps_frame().cluster_id();
                 let profile_id = message.aps_frame().profile_id();
                 let payload = message.message().to_vec();
@@ -2422,7 +2353,7 @@ fn handle_zll_callback(context: &mut EzspContext, handler: parameters::zll::hand
             info!(
                 eui64 = %format_eui64(eui64),
                 rssi,
-                node_id = format_args!("0x{:04x}", u16::from(network.node_id())),
+                node_id = format_args!("0x{:04x}", network.node_id()),
                 number_sub_devices = network.number_sub_devices(),
                 "touchlink: ZLL device found during scan"
             );
@@ -2460,7 +2391,7 @@ fn handle_zll_callback(context: &mut EzspContext, handler: parameters::zll::hand
         parameters::zll::handler::Handler::AddressAssignment(assignment) => {
             let addr = assignment.address_info();
             info!(
-                node_id = format_args!("0x{:04x}", u16::from(addr.node_id_())),
+                node_id = format_args!("0x{:04x}", addr.node_id_()),
                 "touchlink: address assignment received"
             );
         }
@@ -2479,7 +2410,7 @@ async fn handle_trust_center_join(
     join: parameters::trust_center::handler::TrustCenterJoin,
 ) -> Option<NativeZigbeeEvent> {
     let status = join.status().ok()?;
-    let node_id: u16 = join.new_node_id().into();
+    let node_id: u16 = join.new_node_id();
     let eui64 = format_eui64(join.new_node_eui64());
 
     match status {
@@ -2651,7 +2582,7 @@ async fn tick_device_availability(context: &mut EzspContext) -> bool {
                     let effective_timeout = AVAILABILITY_TIMEOUT.mul_f64(backoff_multiplier(device.failed_ping_cycles));
                     let is_expired = device
                         .last_seen
-                        .map_or(true, |last_seen| now.duration_since(last_seen) > effective_timeout);
+                        .is_none_or(|last_seen| now.duration_since(last_seen) > effective_timeout);
 
                     if is_expired {
                         context.availability_queue.push(AvailabilityTarget {
@@ -2742,7 +2673,7 @@ async fn tick_device_availability(context: &mut EzspContext) -> bool {
                     .iter()
                     .find(|d| d.node_id == node_id)
                     .and_then(|d| d.last_seen)
-                    .map_or(false, |ls| ls > before_ping);
+                    .is_some_and(|ls| ls > before_ping);
 
                 if device_responded {
                     debug!(
@@ -2872,6 +2803,7 @@ async fn tick_device_availability(context: &mut EzspContext) -> bool {
 /// so that pending ZCL responses can update device state immediately.
 async fn drain_pending_callbacks(context: &mut EzspContext) {
     while let Ok(callback) = context.callbacks_rx.try_recv() {
+        context.last_activity = Instant::now();
         handle_callback(context, callback).await;
     }
 }
@@ -2889,174 +2821,71 @@ async fn drain_pending_callbacks(context: &mut EzspContext) {
 ///
 /// **IMPORTANT**: no `timeout()` wrapper — the caller handles timeouts.
 async fn restore_desired_state(context: &mut EzspContext) {
-    // Collect targets: devices that are reachable, have an endpoint, and have unapplied desired state.
-    let targets: Vec<(u16, u8, Option<u8>, Option<u8>, Option<f32>, Option<f32>, bool, bool, bool, bool)> = context
+    // Devices that are reachable, have an endpoint, and have unapplied desired state.
+    let targets: Vec<DiscoveredDevice> = context
         .joined_devices
         .iter()
         .filter(|d| d.reachable && !d.desired_state_applied && d.endpoint.is_some())
         .filter(|d| d.desired_brightness.is_some() || d.desired_temperature.is_some() || d.desired_color_x.is_some())
-        .map(|d| {
-            (
-                d.node_id,
-                d.endpoint.unwrap(),
-                d.desired_brightness,
-                d.desired_temperature,
-                d.desired_color_x,
-                d.desired_color_y,
-                d.supports_brightness,
-                d.supports_temperature,
-                d.supports_xy_color,
-                d.is_on,
-            )
-        })
+        .cloned()
         .collect();
 
-    for (node_id, endpoint, desired_brightness, desired_temperature, desired_color_x, desired_color_y, supports_brightness, supports_temperature, has_color_control, was_on) in targets {
+    for target in targets {
+        let node_id = target.node_id;
+        let Some(endpoint) = target.endpoint else { continue };
+
         // Restore brightness — but only if the lamp was supposed to be on.
         // Never send MoveToLevel(0) here: if the lamp was turned off (e.g. via
         // dimmer or wall switch), we should not re-send brightness 0 when it
         // reappears — that would turn it off again immediately after a physical
         // switch-on.
-        if let Some(brightness) = desired_brightness {
-            if supports_brightness && was_on && brightness > 0 {
-                let sequence = next_device_sequence(context, node_id);
-                let zcl_payload = build_brightness_command_payload(brightness, sequence);
-                let aps_frame = EzspApsFrame::new(
-                    HOME_AUTOMATION_PROFILE_ID,
-                    LEVEL_CONTROL_CLUSTER_ID,
-                    DEFAULT_SOURCE_ENDPOINT,
-                    endpoint,
-                    EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                    0,
-                    0,
-                );
-
-                match context.connection
-                    .send_unicast(
-                        Destination::Direct(NodeId::from(node_id)),
-                        aps_frame,
-                        0,
-                        zcl_payload.into_iter().collect(),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        info!(
-                            node_id = format_args!("0x{node_id:04x}"),
-                            brightness,
-                            "restored desired brightness after reconnect"
-                        );
-                        if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == node_id) {
-                            device.brightness = brightness;
-                            device.is_on = brightness > 0;
-                        }
-                    }
-                    Err(error) => {
-                        warn!(
-                            node_id = format_args!("0x{node_id:04x}"),
-                            error = %error,
-                            "failed to restore desired brightness"
-                        );
-                        // Don't mark as applied — retry next cycle.
-                        continue;
-                    }
-                }
+        if let Some(brightness) = target.desired_brightness.filter(|b| target.supports_brightness && target.is_on && *b > 0) {
+            if let Err(error) = send_zcl(context, node_id, endpoint, LEVEL_CONTROL_CLUSTER_ID, "unicast restored brightness", |sequence| {
+                build_brightness_command_payload(brightness, sequence)
+            })
+            .await
+            {
+                // Don't mark as applied — retry next cycle.
+                warn!(node_id = format_args!("0x{node_id:04x}"), error = %error, "failed to restore desired brightness");
+                continue;
+            }
+            info!(node_id = format_args!("0x{node_id:04x}"), brightness, "restored desired brightness after reconnect");
+            if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == node_id) {
+                device.brightness = brightness;
+                device.is_on = true;
             }
         }
 
         // Restore colour temperature
-        if let Some(temperature) = desired_temperature {
-            if supports_temperature {
-                let sequence = next_device_sequence(context, node_id);
-                let zcl_payload = build_color_temperature_command_payload(temperature, sequence);
-                let aps_frame = EzspApsFrame::new(
-                    HOME_AUTOMATION_PROFILE_ID,
-                    COLOR_CONTROL_CLUSTER_ID,
-                    DEFAULT_SOURCE_ENDPOINT,
-                    endpoint,
-                    EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                    0,
-                    0,
-                );
-
-                match context.connection
-                    .send_unicast(
-                        Destination::Direct(NodeId::from(node_id)),
-                        aps_frame,
-                        0,
-                        zcl_payload.into_iter().collect(),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        info!(
-                            node_id = format_args!("0x{node_id:04x}"),
-                            temperature,
-                            "restored desired colour temperature after reconnect"
-                        );
-                        if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == node_id) {
-                            device.temperature = Some(temperature);
-                        }
-                    }
-                    Err(error) => {
-                        warn!(
-                            node_id = format_args!("0x{node_id:04x}"),
-                            error = %error,
-                            "failed to restore desired colour temperature"
-                        );
-                        // Don't mark as applied — retry next cycle.
-                        continue;
-                    }
-                }
+        if let Some(temperature) = target.desired_temperature.filter(|_| target.supports_temperature) {
+            if let Err(error) = send_zcl(context, node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, "unicast restored colour temperature", |sequence| {
+                build_color_temperature_command_payload(temperature, sequence)
+            })
+            .await
+            {
+                warn!(node_id = format_args!("0x{node_id:04x}"), error = %error, "failed to restore desired colour temperature");
+                continue;
+            }
+            info!(node_id = format_args!("0x{node_id:04x}"), temperature, "restored desired colour temperature after reconnect");
+            if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == node_id) {
+                device.temperature = Some(temperature);
             }
         }
 
         // Restore colour XY
-        if let (Some(color_x), Some(color_y)) = (desired_color_x, desired_color_y) {
-            if has_color_control {
-                let sequence = next_device_sequence(context, node_id);
-                let zcl_payload = build_color_xy_command_payload(color_x, color_y, sequence);
-                let aps_frame = EzspApsFrame::new(
-                    HOME_AUTOMATION_PROFILE_ID,
-                    COLOR_CONTROL_CLUSTER_ID,
-                    DEFAULT_SOURCE_ENDPOINT,
-                    endpoint,
-                    EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-                    0,
-                    0,
-                );
-
-                match context.connection
-                    .send_unicast(
-                        Destination::Direct(NodeId::from(node_id)),
-                        aps_frame,
-                        0,
-                        zcl_payload.into_iter().collect(),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        info!(
-                            node_id = format_args!("0x{node_id:04x}"),
-                            color_x,
-                            color_y,
-                            "restored desired colour XY after reconnect"
-                        );
-                        if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == node_id) {
-                            device.color_x = Some(color_x);
-                            device.color_y = Some(color_y);
-                        }
-                    }
-                    Err(error) => {
-                        warn!(
-                            node_id = format_args!("0x{node_id:04x}"),
-                            error = %error,
-                            "failed to restore desired colour XY"
-                        );
-                        // Don't mark as applied — retry next cycle.
-                        continue;
-                    }
-                }
+        if let (Some(color_x), Some(color_y), true) = (target.desired_color_x, target.desired_color_y, target.supports_xy_color) {
+            if let Err(error) = send_zcl(context, node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, "unicast restored colour xy", |sequence| {
+                build_color_xy_command_payload(color_x, color_y, sequence)
+            })
+            .await
+            {
+                warn!(node_id = format_args!("0x{node_id:04x}"), error = %error, "failed to restore desired colour XY");
+                continue;
+            }
+            info!(node_id = format_args!("0x{node_id:04x}"), color_x, color_y, "restored desired colour XY after reconnect");
+            if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == node_id) {
+                device.color_x = Some(color_x);
+                device.color_y = Some(color_y);
             }
         }
 
@@ -3110,28 +2939,11 @@ async fn retry_pending_interviews(context: &mut EzspContext) {
 }
 
 async fn request_active_endpoints(context: &mut EzspContext, node_id: u16) -> Result<(), AppError> {
-    let sequence = next_device_sequence(context, node_id);
-    let payload = vec![sequence, (node_id & 0xff) as u8, (node_id >> 8) as u8];
-    let aps_frame = EzspApsFrame::new(
-        ZDO_PROFILE_ID,
-        ACTIVE_EP_REQ_CLUSTER_ID,
-        0,
-        0,
-        EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-        0,
-        0,
-    );
-
-    context.connection
-        .send_unicast(
-            Destination::Direct(NodeId::from(node_id)),
-            aps_frame,
-            0,
-            payload.into_iter().collect(),
-        )
-        .await
-        .map(|_| ())
-        .map_err(map_ezsp_error("send Active_EP_req"))
+    send_zdo(context, node_id, ACTIVE_EP_REQ_CLUSTER_ID, "send Active_EP_req", |sequence| {
+        let [low, high] = node_id.to_le_bytes();
+        vec![sequence, low, high]
+    })
+    .await
 }
 
 async fn request_simple_descriptor(
@@ -3139,28 +2951,11 @@ async fn request_simple_descriptor(
     node_id: u16,
     endpoint: u8,
 ) -> Result<(), AppError> {
-    let sequence = next_device_sequence(context, node_id);
-    let payload = vec![sequence, (node_id & 0xff) as u8, (node_id >> 8) as u8, endpoint];
-    let aps_frame = EzspApsFrame::new(
-        ZDO_PROFILE_ID,
-        SIMPLE_DESC_REQ_CLUSTER_ID,
-        0,
-        0,
-        EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-        0,
-        0,
-    );
-
-    context.connection
-        .send_unicast(
-            Destination::Direct(NodeId::from(node_id)),
-            aps_frame,
-            0,
-            payload.into_iter().collect(),
-        )
-        .await
-        .map(|_| ())
-        .map_err(map_ezsp_error("send Simple_Desc_req"))
+    send_zdo(context, node_id, SIMPLE_DESC_REQ_CLUSTER_ID, "send Simple_Desc_req", |sequence| {
+        let [low, high] = node_id.to_le_bytes();
+        vec![sequence, low, high, endpoint]
+    })
+    .await
 }
 
 /// Parse a colon-separated EUI64 string (e.g. "00:17:88:01:08:0c:00:0b")
@@ -3202,39 +2997,6 @@ async fn send_bind_request(
     })?;
 
     let coordinator_bytes = coordinator_eui64.into_array();
-    let sequence = next_device_sequence(context, target_node_id);
-
-    // Build the Bind_req payload.
-    // EUI64 on the wire is little-endian (reversed from the display order).
-    let mut payload = Vec::with_capacity(23);
-    payload.push(sequence);
-    // Source address: remote EUI64 in little-endian.
-    for &byte in remote_eui64_bytes.iter().rev() {
-        payload.push(byte);
-    }
-    // Source endpoint.
-    payload.push(remote_endpoint);
-    // Cluster ID (little-endian).
-    payload.push((cluster_id & 0xff) as u8);
-    payload.push((cluster_id >> 8) as u8);
-    // Destination address mode: 0x03 = 64-bit unicast.
-    payload.push(0x03);
-    // Destination address: coordinator EUI64 in little-endian.
-    for &byte in coordinator_bytes.iter().rev() {
-        payload.push(byte);
-    }
-    // Destination endpoint.
-    payload.push(DEFAULT_SOURCE_ENDPOINT);
-
-    let aps_frame = EzspApsFrame::new(
-        ZDO_PROFILE_ID,
-        BIND_REQ_CLUSTER_ID,
-        0,
-        0,
-        EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-        0,
-        0,
-    );
 
     info!(
         target_node_id = format_args!("0x{target_node_id:04x}"),
@@ -3245,16 +3007,22 @@ async fn send_bind_request(
         "sending ZDO Bind_req to remote"
     );
 
-    context.connection
-        .send_unicast(
-            Destination::Direct(NodeId::from(target_node_id)),
-            aps_frame,
-            0,
-            payload.into_iter().collect(),
-        )
-        .await
-        .map(|_| ())
-        .map_err(map_ezsp_error("send Bind_req"))
+    send_zdo(context, target_node_id, BIND_REQ_CLUSTER_ID, "send Bind_req", |sequence| {
+        // EUI64 on the wire is little-endian (reversed from the display order).
+        let mut payload = Vec::with_capacity(23);
+        payload.push(sequence);
+        // Source address: remote EUI64 in little-endian.
+        payload.extend(remote_eui64_bytes.iter().rev());
+        payload.push(remote_endpoint);
+        payload.extend(cluster_id.to_le_bytes());
+        // Destination address mode: 0x03 = 64-bit unicast.
+        payload.push(0x03);
+        // Destination address: coordinator EUI64 in little-endian.
+        payload.extend(coordinator_bytes.iter().rev());
+        payload.push(DEFAULT_SOURCE_ENDPOINT);
+        payload
+    })
+    .await
 }
 
 /// Bind a Hue Dimmer's output clusters to our coordinator.
@@ -3396,38 +3164,26 @@ async fn handle_remote_command(
         return;
     }
 
-    let frame_control = payload[0];
-
     // We only care about cluster-specific commands (direction: client → server).
-    // Frame control bit 0-1 = 01 (cluster-specific), bit 3 = 0 (client → server).
-    let is_cluster_specific = (frame_control & 0x03) == 0x01;
-    if !is_cluster_specific {
+    // Manufacturer-specific ones (the Philips hueNotification) carry a 2-byte
+    // manufacturer code before the sequence number.
+    let Some(header) = parse_zcl_header(payload) else {
+        warn!(
+            remote_node_id = format_args!("0x{remote_node_id:04x}"),
+            payload = %hex_bytes(payload),
+            "remote: malformed ZCL frame"
+        );
+        return;
+    };
+    if !header.cluster_specific {
         info!(
             remote_node_id = format_args!("0x{remote_node_id:04x}"),
-            frame_control = format_args!("0x{frame_control:02x}"),
+            frame_control = format_args!("0x{:02x}", payload[0]),
             "remote: ignoring non-cluster-specific frame (global command or report)"
         );
         return;
     }
-
-    // Manufacturer-specific frames (frame_control bit 2 set) have a 2-byte
-    // manufacturer code between the sequence number and the command ID:
-    //   Standard:  [frame_control, sequence, command_id, ...]
-    //   Mfr-spec:  [frame_control, sequence, mfr_lo, mfr_hi, command_id, ...]
-    let is_manufacturer_specific = (frame_control & 0x04) != 0;
-    let (command_id, zcl_header_len) = if is_manufacturer_specific {
-        if payload.len() < 5 {
-            warn!(
-                remote_node_id = format_args!("0x{remote_node_id:04x}"),
-                payload = %hex_bytes(payload),
-                "remote: manufacturer-specific payload too short (need >= 5 bytes)"
-            );
-            return;
-        }
-        (payload[4], 5)
-    } else {
-        (payload[2], 3)
-    };
+    let (command_id, zcl_header_len) = (header.command_id, header.body);
 
     // Update the remote's last_seen timestamp.
     if let Some(remote) = context.joined_devices.iter_mut().find(|d| d.node_id == remote_node_id) {
@@ -3700,9 +3456,9 @@ async fn broadcast_power_to_all_lamps(context: &mut EzspContext, enabled: bool) 
     let targets: Vec<(u16, u8)> = context
         .joined_devices
         .iter()
-        .filter(|d| d.device_type == ZigbeeDeviceType::Lamp && d.reachable && d.endpoint.is_some())
+        .filter(|d| d.device_type == ZigbeeDeviceType::Lamp && d.reachable)
         .filter(|d| d.input_clusters.contains(&ON_OFF_CLUSTER_ID))
-        .map(|d| (d.node_id, d.endpoint.unwrap()))
+        .filter_map(|d| Some((d.node_id, d.endpoint?)))
         .collect();
 
     info!(
@@ -3712,28 +3468,12 @@ async fn broadcast_power_to_all_lamps(context: &mut EzspContext, enabled: bool) 
     );
 
     for (lamp_node_id, endpoint) in targets {
-        let sequence = next_device_sequence(context, lamp_node_id);
-        let zcl_payload = build_on_off_command_payload(enabled, sequence);
-        let aps_frame = EzspApsFrame::new(
-            HOME_AUTOMATION_PROFILE_ID,
-            ON_OFF_CLUSTER_ID,
-            DEFAULT_SOURCE_ENDPOINT,
-            endpoint,
-            EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-            0,
-            0,
-        );
-
-        match context.connection
-            .send_unicast(
-                Destination::Direct(NodeId::from(lamp_node_id)),
-                aps_frame,
-                0,
-                zcl_payload.into_iter().collect(),
-            )
-            .await
+        match send_zcl(context, lamp_node_id, endpoint, ON_OFF_CLUSTER_ID, "unicast remote on/off", |sequence| {
+            build_on_off_command_payload(enabled, sequence)
+        })
+        .await
         {
-            Ok(_) => {
+            Ok(()) => {
                 if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == lamp_node_id) {
                     device.is_on = enabled;
                 }
@@ -3759,9 +3499,9 @@ async fn broadcast_brightness_step_to_all_lamps(context: &mut EzspContext, step_
     let targets: Vec<(u16, u8, u8)> = context
         .joined_devices
         .iter()
-        .filter(|d| d.device_type == ZigbeeDeviceType::Lamp && d.reachable && d.endpoint.is_some())
+        .filter(|d| d.device_type == ZigbeeDeviceType::Lamp && d.reachable)
         .filter(|d| d.supports_brightness && d.input_clusters.contains(&LEVEL_CONTROL_CLUSTER_ID))
-        .map(|d| (d.node_id, d.endpoint.unwrap(), d.brightness))
+        .filter_map(|d| Some((d.node_id, d.endpoint?, d.brightness)))
         .collect();
 
     info!(
@@ -3778,28 +3518,12 @@ async fn broadcast_brightness_step_to_all_lamps(context: &mut EzspContext, step_
             current_brightness.saturating_sub(DIMMER_BRIGHTNESS_STEP).max(1)
         };
 
-        let sequence = next_device_sequence(context, lamp_node_id);
-        let zcl_payload = build_brightness_command_payload(new_brightness, sequence);
-        let aps_frame = EzspApsFrame::new(
-            HOME_AUTOMATION_PROFILE_ID,
-            LEVEL_CONTROL_CLUSTER_ID,
-            DEFAULT_SOURCE_ENDPOINT,
-            endpoint,
-            EzspApsOptions::RETRY | EzspApsOptions::ENABLE_ROUTE_DISCOVERY,
-            0,
-            0,
-        );
-
-        match context.connection
-            .send_unicast(
-                Destination::Direct(NodeId::from(lamp_node_id)),
-                aps_frame,
-                0,
-                zcl_payload.into_iter().collect(),
-            )
-            .await
+        match send_zcl(context, lamp_node_id, endpoint, LEVEL_CONTROL_CLUSTER_ID, "unicast remote brightness step", |sequence| {
+            build_brightness_command_payload(new_brightness, sequence)
+        })
+        .await
         {
-            Ok(_) => {
+            Ok(()) => {
                 if let Some(device) = context.joined_devices.iter_mut().find(|d| d.node_id == lamp_node_id) {
                     device.brightness = new_brightness;
                     device.is_on = new_brightness > 0;
@@ -3865,7 +3589,7 @@ async fn handle_incoming_cluster(
 
         let is_light_cluster = cluster_id == ON_OFF_CLUSTER_ID || cluster_id == LEVEL_CONTROL_CLUSTER_ID;
         let is_philips_cluster = cluster_id == PHILIPS_SPECIFIC_CLUSTER_ID;
-        let is_cluster_specific_command = payload.len() >= 3 && (payload[0] & 0x03) == 0x01;
+        let is_cluster_specific_command = parse_zcl_header(payload).is_some_and(|header| header.cluster_specific);
 
         if (is_light_cluster || is_philips_cluster) && is_cluster_specific_command {
             // The uninterviewed device is sending us On/Off or Level Control
@@ -3904,7 +3628,7 @@ async fn handle_incoming_cluster(
                 .find(|d| d.node_id == node_id)
                 .map(|d| {
                     d.last_discovery_at
-                        .map_or(true, |ts| ts.elapsed() >= DISCOVERY_COOLDOWN)
+                        .is_none_or(|ts| ts.elapsed() >= DISCOVERY_COOLDOWN)
                 })
                 .unwrap_or(false);
 
@@ -4117,145 +3841,180 @@ async fn handle_incoming_cluster(
             }
             None
         }
-        ON_OFF_CLUSTER_ID => {
-            if payload.len() >= 8 && payload[2] == ZCL_READ_ATTRIBUTES_RESPONSE_COMMAND_ID {
-                parse_zcl_read_attributes_response(context, node_id, cluster_id, payload);
-            } else if payload.len() >= 3 && payload[2] <= 0x02 {
-                if let Some(value) = payload.last().copied() {
-                    if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == node_id) {
-                        device.connected = true;
-                        device.reachable = true;
-                        device.last_seen = Some(Instant::now());
-                        device.failed_ping_cycles = 0;
-                        device.is_on = value != 0;
-                    }
-                }
-            }
-            None
-        }
-        LEVEL_CONTROL_CLUSTER_ID => {
-            if payload.len() >= 8 && payload[2] == ZCL_READ_ATTRIBUTES_RESPONSE_COMMAND_ID {
-                parse_zcl_read_attributes_response(context, node_id, cluster_id, payload);
-            } else if payload.len() >= 3 && payload[2] == 0x04 {
-                if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == node_id) {
+        ON_OFF_CLUSTER_ID | LEVEL_CONTROL_CLUSTER_ID | COLOR_CONTROL_CLUSTER_ID | BASIC_CLUSTER_ID => {
+            debug!(
+                node_id = format_args!("0x{node_id:04x}"),
+                cluster_id = format_args!("0x{cluster_id:04x}"),
+                payload = %hex_bytes(payload),
+                "native zigbee lamp frame"
+            );
+            if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == node_id) {
+                if apply_lamp_frame(device, cluster_id, payload) {
                     device.connected = true;
                     device.reachable = true;
                     device.last_seen = Some(Instant::now());
                     device.failed_ping_cycles = 0;
-                    if let Some(level) = payload.get(3).copied() {
-                        device.brightness = ((u16::from(level) * 100) / 254) as u8;
-                        device.is_on = level > 0;
-                    }
                 }
             }
-            None
-        }
-        COLOR_CONTROL_CLUSTER_ID => {
-            parse_zcl_read_attributes_response(context, node_id, cluster_id, payload);
-            None
-        }
-        BASIC_CLUSTER_ID => {
-            parse_zcl_read_attributes_response(context, node_id, cluster_id, payload);
             None
         }
         _ => None,
     }
 }
 
-fn parse_zcl_read_attributes_response(
-    context: &mut EzspContext,
-    node_id: u16,
-    cluster_id: u16,
-    payload: &[u8],
-) {
-    if payload.len() < 3 || payload[2] != ZCL_READ_ATTRIBUTES_RESPONSE_COMMAND_ID {
-        return;
+/// A ZCL frame's header: `[frame control, (manufacturer code ×2), sequence, command]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ZclHeader {
+    /// Cluster-specific (frame type 01) rather than global (00, e.g. read responses).
+    cluster_specific: bool,
+    manufacturer: Option<u16>,
+    command_id: u8,
+    /// Where the command's payload starts.
+    body: usize,
+}
+
+fn parse_zcl_header(payload: &[u8]) -> Option<ZclHeader> {
+    let frame_control = *payload.first()?;
+    let cluster_specific = match frame_control & 0x03 {
+        0x00 => false,
+        0x01 => true,
+        _ => return None,
+    };
+    let (manufacturer, command_at) = if frame_control & ZCL_MANUFACTURER_SPECIFIC_FLAG != 0 {
+        (Some(u16::from_le_bytes([*payload.get(1)?, *payload.get(2)?])), 4)
+    } else {
+        (None, 2)
+    };
+    Some(ZclHeader { cluster_specific, manufacturer, command_id: *payload.get(command_at)?, body: command_at + 1 })
+}
+
+/// What a lamp's ZCL frame says about it: attribute reads and reports, and the On/Off and
+/// Level commands it echoes. The frame type is read before the command id (a global Write
+/// Attributes Response is 0x04, like Move to Level; a Read Attributes Response is 0x01,
+/// like On), and manufacturer-specific frames are not ours to read. Says whether the frame
+/// was a well-formed standard one: the lamp answered, so it is alive.
+fn apply_lamp_frame(device: &mut DiscoveredDevice, cluster_id: u16, payload: &[u8]) -> bool {
+    let Some(header) = parse_zcl_header(payload) else {
+        return false;
+    };
+    if header.manufacturer.is_some() {
+        return false;
+    }
+    let body = &payload[header.body..];
+
+    if !header.cluster_specific {
+        let records = match header.command_id {
+            ZCL_READ_ATTRIBUTES_RESPONSE_COMMAND_ID => parse_attribute_records(body, true),
+            ZCL_REPORT_ATTRIBUTES_COMMAND_ID => parse_attribute_records(body, false),
+            // a default or write response: nothing to read, but an answer all the same
+            _ => Vec::new(),
+        };
+        for (attribute_id, value) in records {
+            apply_attribute(device, cluster_id, attribute_id, value);
+        }
+        return true;
     }
 
-    debug!(
-        node_id = format_args!("0x{node_id:04x}"),
-        cluster_id = format_args!("0x{cluster_id:04x}"),
-        payload = %hex_bytes(payload),
-        "native zigbee read attributes response"
-    );
-
-    let mut offset = 3;
-    while offset + 4 <= payload.len() {
-        let attribute_id = u16::from(payload[offset]) | (u16::from(payload[offset + 1]) << 8);
-        offset += 2;
-        let status = payload[offset];
-        offset += 1;
-        if status != 0 || offset >= payload.len() {
-            continue;
-        }
-
-        let data_type = payload[offset];
-        offset += 1;
-        let Some((value_len, value_bytes)) = parse_zcl_attribute_value(data_type, &payload[offset..]) else {
-            break;
-        };
-        offset += value_len;
-
-        if let Some(device) = context.joined_devices.iter_mut().find(|device| device.node_id == node_id) {
-            device.connected = true;
-            device.reachable = true;
-            device.last_seen = Some(Instant::now());
-            device.failed_ping_cycles = 0;
-            match (cluster_id, attribute_id) {
-                (ON_OFF_CLUSTER_ID, 0x0000) => {
-                    if let Some(value) = value_bytes.first() {
-                        device.is_on = *value != 0;
-                    }
-                }
-                (LEVEL_CONTROL_CLUSTER_ID, 0x0000) => {
-                    if let Some(value) = value_bytes.first() {
-                        device.brightness = ((u16::from(*value) * 100) / 254) as u8;
-                    }
-                }
-                (COLOR_CONTROL_CLUSTER_ID, 0x0003) if value_bytes.len() >= 2 => {
-                    let raw = u16::from(value_bytes[0]) | (u16::from(value_bytes[1]) << 8);
-                    device.color_x = Some(f32::from(raw) / 65535.0);
-                }
-                (COLOR_CONTROL_CLUSTER_ID, 0x0004) if value_bytes.len() >= 2 => {
-                    let raw = u16::from(value_bytes[0]) | (u16::from(value_bytes[1]) << 8);
-                    device.color_y = Some(f32::from(raw) / 65535.0);
-                }
-                (COLOR_CONTROL_CLUSTER_ID, 0x0007) if value_bytes.len() >= 2 => {
-                    let raw = u16::from(value_bytes[0]) | (u16::from(value_bytes[1]) << 8);
-                    let normalized = (((500_u16.saturating_sub(raw.min(500))) * 100) / (500 - 153)) as u8;
-                    device.supports_temperature = true;
-                    device.temperature = Some(normalized.min(100));
-                }
-                (COLOR_CONTROL_CLUSTER_ID, 0x0008) => {
-                    if let Some(value) = value_bytes.first() {
-                        device.color_mode = Some(*value);
-                    }
-                }
-                // colorCapabilities (0x400A): 16-bit bitmap.
-                // Bit 0 = Hue/Saturation, Bit 3 = XY, Bit 4 = Color Temperature.
-                (COLOR_CONTROL_CLUSTER_ID, 0x400A) if value_bytes.len() >= 2 => {
-                    let caps = u16::from(value_bytes[0]) | (u16::from(value_bytes[1]) << 8);
-                    device.supports_xy_color = (caps & 0x08) != 0;
-                    debug!(
-                        node_id = format_args!("0x{:04x}", device.node_id),
-                        caps = format_args!("0x{caps:04x}"),
-                        supports_xy = device.supports_xy_color,
-                        "parsed colorCapabilities"
-                    );
-                }
-                (BASIC_CLUSTER_ID, 0x0004) => {
-                    if let Ok(text) = String::from_utf8(value_bytes.to_vec()) {
-                        device.manufacturer = Some(text);
-                    }
-                }
-                (BASIC_CLUSTER_ID, 0x0005) => {
-                    if let Ok(text) = String::from_utf8(value_bytes.to_vec()) {
-                        device.model = Some(text);
-                    }
-                }
-                _ => {}
+    match (cluster_id, header.command_id) {
+        (ON_OFF_CLUSTER_ID, ZCL_ON_OFF_COMMAND_OFF) => device.is_on = false,
+        (ON_OFF_CLUSTER_ID, ZCL_ON_OFF_COMMAND_ON) => device.is_on = true,
+        (ON_OFF_CLUSTER_ID, ZCL_ON_OFF_COMMAND_TOGGLE) => device.is_on = !device.is_on,
+        (LEVEL_CONTROL_CLUSTER_ID, ZCL_LEVEL_CONTROL_COMMAND_MOVE_TO_LEVEL) => {
+            if let Some(&level) = body.first() {
+                device.brightness = level_to_brightness_percent(level);
+                device.is_on = level > 0;
             }
         }
+        _ => {}
+    }
+    true
+}
+
+/// The successful records of a Read Attributes Response (`with_status`) or of an Attribute
+/// Report: `(attribute, value bytes)`. An error record (status ≠ 0) has no type nor value
+/// and is skipped; a type of unknown length ends the parse.
+fn parse_attribute_records(body: &[u8], with_status: bool) -> Vec<(u16, &[u8])> {
+    let mut records = Vec::new();
+    let mut rest = body;
+    while let [low, high, after @ ..] = rest {
+        let attribute_id = u16::from_le_bytes([*low, *high]);
+        rest = after;
+        if with_status {
+            let Some((&status, after)) = rest.split_first() else { break };
+            rest = after;
+            if status != 0 {
+                continue;
+            }
+        }
+        let Some((&data_type, after)) = rest.split_first() else { break };
+        let Some((length, value)) = parse_zcl_attribute_value(data_type, after) else { break };
+        records.push((attribute_id, value));
+        rest = &after[length..];
+    }
+    records
+}
+
+fn apply_attribute(device: &mut DiscoveredDevice, cluster_id: u16, attribute_id: u16, value: &[u8]) {
+    let word = || match value {
+        [low, high, ..] => Some(u16::from_le_bytes([*low, *high])),
+        _ => None,
+    };
+    match (cluster_id, attribute_id) {
+        (ON_OFF_CLUSTER_ID, 0x0000) => {
+            if let Some(value) = value.first() {
+                device.is_on = *value != 0;
+            }
+        }
+        (LEVEL_CONTROL_CLUSTER_ID, 0x0000) => {
+            if let Some(&level) = value.first() {
+                device.brightness = level_to_brightness_percent(level);
+            }
+        }
+        (COLOR_CONTROL_CLUSTER_ID, 0x0003) => {
+            if let Some(raw) = word() {
+                device.color_x = Some(f32::from(raw) / 65535.0);
+            }
+        }
+        (COLOR_CONTROL_CLUSTER_ID, 0x0004) => {
+            if let Some(raw) = word() {
+                device.color_y = Some(f32::from(raw) / 65535.0);
+            }
+        }
+        (COLOR_CONTROL_CLUSTER_ID, 0x0007) => {
+            if let Some(raw) = word() {
+                device.supports_temperature = true;
+                device.temperature = Some(mireds_to_temperature_percent(raw));
+            }
+        }
+        (COLOR_CONTROL_CLUSTER_ID, 0x0008) => {
+            if let Some(value) = value.first() {
+                device.color_mode = Some(*value);
+            }
+        }
+        // colorCapabilities (0x400A): 16-bit bitmap.
+        // Bit 0 = Hue/Saturation, Bit 3 = XY, Bit 4 = Color Temperature.
+        (COLOR_CONTROL_CLUSTER_ID, 0x400A) => {
+            if let Some(caps) = word() {
+                device.supports_xy_color = (caps & 0x08) != 0;
+                debug!(
+                    node_id = format_args!("0x{:04x}", device.node_id),
+                    caps = format_args!("0x{caps:04x}"),
+                    supports_xy = device.supports_xy_color,
+                    "parsed colorCapabilities"
+                );
+            }
+        }
+        (BASIC_CLUSTER_ID, 0x0004) => {
+            if let Ok(text) = String::from_utf8(value.to_vec()) {
+                device.manufacturer = Some(text);
+            }
+        }
+        (BASIC_CLUSTER_ID, 0x0005) => {
+            if let Ok(text) = String::from_utf8(value.to_vec()) {
+                device.model = Some(text);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -4264,11 +4023,12 @@ fn parse_zcl_attribute_value(data_type: u8, payload: &[u8]) -> Option<(usize, &[
         // 1-byte: boolean (0x10), 8-bit bitmap (0x18), uint8 (0x20), enum8 (0x30)
         0x10 | 0x18 | 0x20 | 0x30 => payload.first().map(|_| (1, &payload[..1])),
         // 2-byte: 16-bit bitmap (0x19), uint16 (0x21), enum16 (0x31)
-        0x19 | 0x21 | 0x31 => (payload.len() >= 2).then_some((2, &payload[..2])),
+        // (`then`, not `then_some`: the slice must only be taken when it fits)
+        0x19 | 0x21 | 0x31 => (payload.len() >= 2).then(|| (2, &payload[..2])),
         // length-prefixed octet string
         0x42 => {
             let len = *payload.first()? as usize;
-            (payload.len() > len).then_some((1 + len, &payload[1..1 + len]))
+            (payload.len() > len).then(|| (1 + len, &payload[1..1 + len]))
         }
         _ => None,
     }
@@ -4343,7 +4103,17 @@ fn build_brightness_command_payload(brightness: u8, sequence: u8) -> Vec<u8> {
 }
 
 fn temperature_percent_to_mireds(temperature: u8) -> u16 {
-    500_u16.saturating_sub((u16::from(temperature.min(100)) * (500 - 153)) / 100)
+    MIRED_WARM.saturating_sub((u16::from(temperature.min(100)) * (MIRED_WARM - MIRED_COOL)) / 100)
+}
+
+fn mireds_to_temperature_percent(mireds: u16) -> u8 {
+    let percent = (MIRED_WARM.saturating_sub(mireds.min(MIRED_WARM)) * 100) / (MIRED_WARM - MIRED_COOL);
+    percent.min(100) as u8
+}
+
+/// A ZCL level (0–254) as the API's 0–100.
+fn level_to_brightness_percent(level: u8) -> u8 {
+    ((u16::from(level) * 100) / 254).min(100) as u8
 }
 
 fn build_color_temperature_command_payload(temperature: u8, sequence: u8) -> Vec<u8> {
@@ -4608,12 +4378,7 @@ fn map_ezsp_error(context: &'static str) -> impl FnOnce(ezsp::Error) -> AppError
 }
 
 fn format_eui64(eui64: Eui64) -> String {
-    eui64
-        .into_array()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<Vec<_>>()
-        .join(":")
+    crate::util::hex(&eui64.into_array(), ":")
 }
 
 fn seed_known_device(device: NativeKnownDevice) -> DiscoveredDevice {
@@ -4666,11 +4431,7 @@ fn normalize_device_id(eui64: &str, node_id: u16) -> String {
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::util::hex(bytes, " ")
 }
 
 #[cfg(test)]
@@ -4745,11 +4506,11 @@ mod tests {
         assert_eq!(next_sequence_for_device(&mut per_device, &mut next_global, 0x6cce), 3);
     }
 
-    #[test]
-    fn startup_probe_only_runs_for_uninterviewed_devices() {
-        let base = super::DiscoveredDevice {
-            node_id: 0x8a4c,
-            eui64: "ab:1e:d2:06:01:88:17:00".to_string(),
+    /// An interviewed Hue lamp on endpoint 11 (On/Off, Level), on and reachable.
+    fn lamp() -> super::DiscoveredDevice {
+        super::DiscoveredDevice {
+            node_id: 0x2e34,
+            eui64: "4b:8e:c6:08:01:88:17:00".to_string(),
             endpoint: Some(11),
             input_clusters: vec![0, 3, 4, 5, 6, 8],
             output_clusters: vec![25],
@@ -4765,7 +4526,7 @@ mod tests {
             color_y: None,
             color_mode: None,
             interview_completed: true,
-            model: Some("LWA001".to_string()),
+            model: Some("LTG002".to_string()),
             manufacturer: Some("Signify Netherlands B.V.".to_string()),
             connected: true,
             reachable: true,
@@ -4778,8 +4539,12 @@ mod tests {
             desired_state_applied: true,
             last_discovery_at: None,
             failed_ping_cycles: 0,
-        };
+        }
+    }
 
+    #[test]
+    fn startup_probe_only_runs_for_uninterviewed_devices() {
+        let base = lamp();
         assert!(!should_probe_active_endpoints(&base));
 
         let mut missing_endpoint = base.clone();
@@ -4792,81 +4557,213 @@ mod tests {
     }
 
     #[test]
-    fn announce_reuses_known_endpoint_without_reprobe() {
-        let known = super::DiscoveredDevice {
-            node_id: 0x2e34,
-            eui64: "4b:8e:c6:08:01:88:17:00".to_string(),
-            endpoint: Some(11),
-            input_clusters: vec![0, 3, 4, 5, 6, 8],
-            output_clusters: vec![25],
-            device_type: super::ZigbeeDeviceType::Lamp,
-            supports_brightness: true,
-            supports_temperature: false,
-            has_color_control_cluster: false,
-            supports_xy_color: false,
-            is_on: true,
-            brightness: 100,
-            temperature: None,
-            color_x: None,
-            color_y: None,
-            color_mode: None,
-            interview_completed: true,
-            model: Some("LTG002".to_string()),
-            manufacturer: Some("Signify Netherlands B.V.".to_string()),
-            connected: true,
-            reachable: true,
-            interview_attempts: 0,
-            last_seen: None,
-            desired_brightness: None,
-            desired_temperature: None,
-            desired_color_x: None,
-            desired_color_y: None,
-            desired_state_applied: true,
-            last_discovery_at: None,
-            failed_ping_cycles: 0,
-        };
-
-        assert!(!should_probe_active_endpoints(&known));
-    }
-
-    #[test]
     fn color_control_cluster_does_not_imply_temperature_support() {
-        let mut device = super::DiscoveredDevice {
-            node_id: 0x2e34,
-            eui64: "4b:8e:c6:08:01:88:17:00".to_string(),
-            endpoint: Some(11),
-            input_clusters: vec![0, 3, 4, 5, 6, 8, super::COLOR_CONTROL_CLUSTER_ID],
-            output_clusters: vec![25],
-            device_type: super::ZigbeeDeviceType::Lamp,
-            supports_brightness: true,
-            supports_temperature: false,
-            has_color_control_cluster: true,
-            supports_xy_color: false,
-            is_on: true,
-            brightness: 100,
-            temperature: None,
-            color_x: None,
-            color_y: None,
-            color_mode: None,
-            interview_completed: true,
-            model: Some("LTG002".to_string()),
-            manufacturer: Some("Signify Netherlands B.V.".to_string()),
-            connected: true,
-            reachable: true,
-            interview_attempts: 0,
-            last_seen: None,
-            desired_brightness: None,
-            desired_temperature: None,
-            desired_color_x: None,
-            desired_color_y: None,
-            desired_state_applied: true,
-            last_discovery_at: None,
-            failed_ping_cycles: 0,
-        };
+        let mut device = lamp();
+        device.input_clusters.push(super::COLOR_CONTROL_CLUSTER_ID);
+        device.has_color_control_cluster = true;
 
         device.supports_temperature = device.supports_temperature && device.has_color_control_cluster;
 
         assert!(device.has_color_control_cluster);
         assert!(!device.supports_temperature);
+    }
+
+    #[test]
+    fn the_watchdog_probes_a_quiet_link_before_giving_up_on_it() {
+        use super::{KEEPALIVE_AFTER, LinkHealth, WATCHDOG_TIMEOUT, link_health};
+        use std::time::Duration;
+        assert_eq!(link_health(Duration::ZERO), LinkHealth::Fine);
+        assert_eq!(link_health(KEEPALIVE_AFTER - Duration::from_millis(1)), LinkHealth::Fine);
+        assert_eq!(link_health(KEEPALIVE_AFTER), LinkHealth::Probe, "a calm network is probed, not torn down");
+        assert_eq!(link_health(WATCHDOG_TIMEOUT), LinkHealth::Probe);
+        assert_eq!(link_health(WATCHDOG_TIMEOUT + Duration::from_secs(1)), LinkHealth::Dead);
+        assert!(KEEPALIVE_AFTER < WATCHDOG_TIMEOUT);
+    }
+
+    #[test]
+    fn restarts_back_off_up_to_a_minute() {
+        use super::restart_delay;
+        use std::time::Duration;
+        assert_eq!(restart_delay(1), Duration::from_secs(1));
+        assert_eq!(restart_delay(2), Duration::from_secs(2));
+        assert_eq!(restart_delay(5), Duration::from_secs(16));
+        assert_eq!(restart_delay(50), Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn a_panicking_driver_is_failed_then_restarted() {
+        use super::{DriverLifecycle, DriverRequest, NativeZigbeeCommand, NativeZigbeeStatus, supervise_driver};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        };
+        use tokio::sync::{RwLock, mpsc, oneshot};
+
+        let status = Arc::new(RwLock::new(NativeZigbeeStatus::default()));
+        let lifecycle = Arc::new(RwLock::new(DriverLifecycle::Starting));
+        let (command_tx, command_rx) = mpsc::channel::<DriverRequest>(4);
+        let runs = Arc::new(AtomicU32::new(0));
+        let supervisor = tokio::spawn(supervise_driver(status.clone(), lifecycle.clone(), command_rx, {
+            let (runs, lifecycle) = (runs.clone(), lifecycle.clone());
+            move |command_rx| {
+                let (runs, lifecycle) = (runs.clone(), lifecycle.clone());
+                Box::pin(async move {
+                    if runs.fetch_add(1, Ordering::SeqCst) == 0 {
+                        panic!("parser bug");
+                    }
+                    *lifecycle.write().await = DriverLifecycle::Ready;
+                    while let Some(request) = command_rx.recv().await {
+                        let _ = request.reply_tx.send(Ok(()));
+                    }
+                })
+            }
+        }));
+
+        let mut saw_failed = false;
+        for _ in 0..300 {
+            match &*lifecycle.read().await {
+                DriverLifecycle::Failed(reason) => {
+                    assert!(reason.contains("parser bug"), "{reason}");
+                    saw_failed = true;
+                }
+                DriverLifecycle::Ready => break,
+                DriverLifecycle::Starting => {}
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(saw_failed, "the crash is said while the driver waits");
+        assert!(matches!(*lifecycle.read().await, DriverLifecycle::Ready), "the driver came back");
+        assert_eq!(status.read().await.last_error.as_deref(), Some("parser bug"));
+
+        // the queue survived the crash: the restarted driver answers
+        let (reply_tx, reply_rx) = oneshot::channel();
+        command_tx.send(DriverRequest { command: NativeZigbeeCommand::DiscoverDevices, reply_tx }).await.unwrap();
+        assert!(reply_rx.await.unwrap().is_ok());
+
+        drop(command_tx);
+        supervisor.await.expect("a clean return ends the supervisor");
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn zcl_headers_tell_global_from_cluster_specific_and_skip_the_manufacturer_code() {
+        use super::{ZclHeader, parse_zcl_header};
+        assert_eq!(
+            parse_zcl_header(&[0x18, 0x10, 0x01, 0x00]),
+            Some(ZclHeader { cluster_specific: false, manufacturer: None, command_id: 0x01, body: 3 })
+        );
+        assert_eq!(
+            parse_zcl_header(&[0x01, 0x10, 0x04, 0x7f]),
+            Some(ZclHeader { cluster_specific: true, manufacturer: None, command_id: 0x04, body: 3 })
+        );
+        assert_eq!(
+            parse_zcl_header(&[0x1d, 0x0b, 0x10, 0x22, 0x00, 0x01]),
+            Some(ZclHeader { cluster_specific: true, manufacturer: Some(0x100b), command_id: 0x00, body: 5 })
+        );
+        assert_eq!(parse_zcl_header(&[0x18, 0x10]), None, "too short");
+        assert_eq!(parse_zcl_header(&[0x1d, 0x0b]), None, "manufacturer code cut");
+        assert_eq!(parse_zcl_header(&[0x03, 0x00, 0x00]), None, "reserved frame type");
+    }
+
+    #[test]
+    fn a_read_error_reply_does_not_switch_a_lamp_on() {
+        use super::{ON_OFF_CLUSTER_ID, apply_lamp_frame};
+        let mut device = lamp();
+        device.is_on = false;
+        // Read Attributes Response, OnOff (0x0000), status 0x86 (unsupported attribute)
+        assert!(apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x18, 0x10, 0x01, 0x00, 0x00, 0x86]));
+        assert!(!device.is_on, "status 0x86 read as « on »");
+        // the same read, answered: on
+        assert!(apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x18, 0x11, 0x01, 0x00, 0x00, 0x00, 0x10, 0x01]));
+        assert!(device.is_on);
+        // an attribute report (no status byte): off
+        assert!(apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x18, 0x12, 0x0a, 0x00, 0x00, 0x10, 0x00]));
+        assert!(!device.is_on);
+        // cluster-specific On, then Toggle
+        apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x01, 0x13, 0x01]);
+        assert!(device.is_on);
+        apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x01, 0x14, 0x02]);
+        assert!(!device.is_on);
+    }
+
+    #[test]
+    fn a_write_ack_is_not_a_move_to_level() {
+        use super::{LEVEL_CONTROL_CLUSTER_ID, apply_lamp_frame};
+        let mut device = lamp();
+        // Write Attributes Response (global 0x04), status success
+        assert!(apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x18, 0x20, 0x04, 0x00]));
+        assert_eq!((device.brightness, device.is_on), (100, true), "a write ack turned the lamp off");
+        // a Default Response neither
+        apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x18, 0x21, 0x0b, 0x04, 0x00]);
+        assert_eq!((device.brightness, device.is_on), (100, true));
+        // the real Move to Level (with On/Off), level 127 → 50 %
+        assert!(apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x01, 0x22, 0x04, 127, 0x00, 0x00]));
+        assert_eq!((device.brightness, device.is_on), (50, true));
+        // a manufacturer-specific frame is not read
+        assert!(!apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x05, 0x0b, 0x10, 0x23, 0x04, 0x00]));
+        assert_eq!(device.brightness, 50);
+    }
+
+    #[test]
+    fn read_responses_skip_error_records_and_read_the_rest() {
+        use super::{BASIC_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID, apply_lamp_frame, parse_attribute_records};
+        // manufacturer (0x0004): unsupported; model (0x0005): "LTG"
+        let body = [0x04, 0x00, 0x86, 0x05, 0x00, 0x00, 0x42, 0x03, b'L', b'T', b'G'];
+        assert_eq!(parse_attribute_records(&body, true), vec![(0x0005, &b"LTG"[..])]);
+        let mut device = lamp();
+        let mut frame = vec![0x18, 0x30, 0x01];
+        frame.extend_from_slice(&body);
+        apply_lamp_frame(&mut device, BASIC_CLUSTER_ID, &frame);
+        assert_eq!(device.model.as_deref(), Some("LTG"));
+        assert_eq!(device.manufacturer.as_deref(), Some("Signify Netherlands B.V."), "kept");
+
+        // colour temperature 153 mireds (coolest) and capabilities with XY
+        let colour = [0x18, 0x31, 0x01, 0x07, 0x00, 0x00, 0x21, 153, 0x00, 0x0a, 0x40, 0x00, 0x19, 0x18, 0x00];
+        apply_lamp_frame(&mut device, COLOR_CONTROL_CLUSTER_ID, &colour);
+        assert_eq!(device.temperature, Some(100));
+        assert!(device.supports_temperature && device.supports_xy_color);
+
+        // a type of unknown length ends the parse, a cut record too
+        assert!(parse_attribute_records(&[0x00, 0x00, 0x00, 0xff, 0x01], true).is_empty());
+        assert!(parse_attribute_records(&[0x00, 0x00, 0x00, 0x21, 0x01], true).is_empty());
+        assert!(parse_attribute_records(&[0x00], true).is_empty());
+        assert!(parse_attribute_records(&[0x05, 0x00, 0x00, 0x42, 0x05, b'L'], true).is_empty(), "a cut string");
+    }
+
+    #[test]
+    fn simple_descriptors_are_parsed_and_bad_ones_refused() {
+        use super::parse_simple_desc_response;
+        // seq, status, nwk addr, length 18, then: endpoint 11, profile 0x0104, device 0x010c,
+        // version, 4 inputs (Basic, On/Off, Level, Colour), 1 output (OTA)
+        let payload = [
+            0x05, 0x00, 0x34, 0x2e, 18, 11, 0x04, 0x01, 0x0c, 0x01, 0x01, 4, 0x00, 0x00, 0x06, 0x00, 0x08, 0x00,
+            0x00, 0x03, 1, 0x19, 0x00,
+        ];
+        let descriptor = parse_simple_desc_response(&payload).expect("a valid descriptor");
+        assert_eq!(descriptor.endpoint, 11);
+        assert_eq!(descriptor.profile_id, 0x0104);
+        assert_eq!(descriptor.device_id, 0x010c);
+        assert_eq!(descriptor.input_clusters, vec![0x0000, 0x0006, 0x0008, 0x0300]);
+        assert_eq!(descriptor.output_clusters, vec![0x0019]);
+        assert_eq!(super::classify_device_type(&descriptor), super::ZigbeeDeviceType::Lamp);
+
+        let mut failed = payload;
+        failed[1] = 0x81;
+        assert!(parse_simple_desc_response(&failed).is_none(), "a failed status");
+        assert!(parse_simple_desc_response(&payload[..payload.len() - 1]).is_none(), "cut short");
+        let mut overlong = payload;
+        overlong[11] = 9;
+        assert!(parse_simple_desc_response(&overlong).is_none(), "more clusters than bytes");
+    }
+
+    #[test]
+    fn mireds_and_percent_agree_at_the_ends() {
+        use super::{MIRED_COOL, MIRED_WARM, mireds_to_temperature_percent, temperature_percent_to_mireds};
+        assert_eq!(mireds_to_temperature_percent(MIRED_WARM), 0);
+        assert_eq!(mireds_to_temperature_percent(MIRED_COOL), 100);
+        assert_eq!(mireds_to_temperature_percent(600), 0, "warmer than the range");
+        assert_eq!(mireds_to_temperature_percent(100), 100, "cooler than the range");
+        assert_eq!(temperature_percent_to_mireds(0), MIRED_WARM);
+        assert_eq!(temperature_percent_to_mireds(100), MIRED_COOL);
     }
 }

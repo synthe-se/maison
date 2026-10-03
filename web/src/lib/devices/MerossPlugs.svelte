@@ -4,7 +4,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { merossApi } from '#lib/api.ts';
 	import { live } from '#lib/live.svelte.ts';
-	import PlugTile from './meross/PlugTile.svelte';
+	import Loaded from '#lib/components/Loaded.svelte';
 	import LivePlugTile from './meross/LivePlugTile.svelte';
 	import { LIST_EVERY_MS, LIST_KEY } from './meross/keys.ts';
 
@@ -21,18 +21,10 @@
 		{/if}
 	</div>
 
-	{#if list.loading}
-		<p class="hint">{m.common_loading()}</p>
-	{:else if plugs.length === 0}
-		<div class="empty">
-			<p>{m.meross_none()}</p>
-			<p class="hint">{m.meross_none_hint()}</p>
-		</div>
-	{:else}
+	<Loaded value={list} empty={plugs.length === 0} emptyText={m.meross_none()} emptyHint={m.meross_none_hint()}>
 		<div class="tiles">
-			{#each plugs as p (p.id)}
-				{#if p.isOnline}<LivePlugTile plug={p} />{:else}<PlugTile id={p.id} name={p.name} on={p.isOn} online={false} />{/if}
-			{/each}
+			<!-- one component whether it answers or not: a plug going offline keeps its tile -->
+			{#each plugs as p (p.id)}<LivePlugTile plug={p} />{/each}
 		</div>
-	{/if}
+	</Loaded>
 </section>

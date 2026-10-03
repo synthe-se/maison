@@ -37,6 +37,20 @@ pub struct Config {
     pub matter_state_dir: PathBuf,
     pub matter_trust_dir: PathBuf,
     pub matter_test_roots: bool,
+    /// Tempo's sources (`tempo/source.rs`): RTE's public open data, RTE's official API (used
+    /// when `RTE_CLIENT_ID` and `RTE_CLIENT_SECRET` are set: a free data.rte-france.com
+    /// account), api-couleur-tempo.fr when RTE fails, EDF's season (the quotas), data.gouv's
+    /// prices, ODRE's éCO2mix and Open-Meteo (the forecast). Settings so the tests point them
+    /// at a local stub.
+    pub tempo_rte_url: String,
+    pub tempo_rte_api_url: String,
+    pub rte_client_id: Option<String>,
+    pub rte_client_secret: Option<String>,
+    pub tempo_fallback_url: String,
+    pub tempo_edf_url: String,
+    pub tempo_tarifs_url: String,
+    pub tempo_odre_url: String,
+    pub open_meteo_url: String,
 }
 
 /// The JWT secret a fresh checkout ships with; the backend refuses to start with it.
@@ -116,6 +130,22 @@ impl Config {
             // Development only: accept the CSA test roots (matter.js / chip example devices)
             // instead of the production ones.
             matter_test_roots: flag("MATTER_TEST_ROOTS", false),
+            tempo_rte_url: var("TEMPO_RTE_URL")
+                .unwrap_or_else(|| "https://www.services-rte.com/cms/open_data/v1".to_string()),
+            tempo_rte_api_url: var("TEMPO_RTE_API_URL")
+                .unwrap_or_else(|| "https://digital.iservices.rte-france.com".to_string()),
+            rte_client_id: var("RTE_CLIENT_ID"),
+            rte_client_secret: var("RTE_CLIENT_SECRET"),
+            tempo_fallback_url: var("TEMPO_FALLBACK_URL")
+                .unwrap_or_else(|| "https://www.api-couleur-tempo.fr".to_string()),
+            tempo_edf_url: var("TEMPO_EDF_URL")
+                .unwrap_or_else(|| "https://api-commerce.edf.fr/commerce-activet/api/v1".to_string()),
+            tempo_tarifs_url: var("TEMPO_TARIFS_URL").unwrap_or_else(|| {
+                "https://tabular-api.data.gouv.fr/api/resources/0c3d1d36-c412-4620-8566-e5cbb4fa2b5a/data/?page_size=1&P_SOUSCRITE__exact=6&__id__sort=desc".to_string()
+            }),
+            tempo_odre_url: var("TEMPO_ODRE_URL")
+                .unwrap_or_else(|| "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets".to_string()),
+            open_meteo_url: var("OPEN_METEO_URL").unwrap_or_else(|| "https://api.open-meteo.com".to_string()),
             source_root,
         }
     }

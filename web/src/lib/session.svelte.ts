@@ -1,7 +1,7 @@
 // Who is signed in. The session is an HttpOnly cookie the backend sets (after a passkey,
 // passkeys.ts); the page only asks whether it is still good, and forgets everything on sign-out.
 
-import { ApiError, authApi, onUnauthorized, type User } from '#lib/api.ts';
+import { ApiError, UNREACHABLE, authApi, onUnauthorized, type User } from '#lib/api.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import * as passkeys from '#lib/passkeys.ts';
 
@@ -20,8 +20,9 @@ class Session {
 			const r = await authApi.verify();
 			if (r.success && r.user) return this.adopt(r.user);
 		} catch (e) {
-			// refused: no usable session; anything else: the server is not there to ask
-			if (!(e instanceof ApiError) || e.status >= 500) {
+			// refused: no usable session; anything else (no answer, a 5xx, a renewal that got no
+			// answer) is the server not being there to ask
+			if (!(e instanceof ApiError) || e.status >= 500 || e.code === UNREACHABLE) {
 				this.status = 'unreachable';
 				return;
 			}
@@ -34,7 +35,7 @@ class Session {
 		return this.user?.role === 'admin';
 	}
 
-	/** Signs in with a passkey: no name, no password. Throws what went wrong (`passkeyMessage`). */
+	/** Signs in with a passkey: no name, no password. Throws what went wrong (errors.ts words it). */
 	async signIn() {
 		this.adopt((await passkeys.signIn()).user);
 	}

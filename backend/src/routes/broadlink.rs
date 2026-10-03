@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
-    auth::AuthenticatedUser,
+    auth::{AdminUser, AuthenticatedUser},
     broadlink::{self, BroadlinkSecurityMode, LearnCodeSaveRequest, SaveCodeRequest},
     error::AppError,
+    passkey::Refusal,
+    routes::SimpleResponse,
 };
 
 #[derive(Debug, Deserialize)]
@@ -86,12 +88,6 @@ struct DiscoverResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct SimpleResponse {
-    success: bool,
-    message: String,
-}
-
-#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LearnResponse {
     success: bool,
@@ -147,10 +143,15 @@ async fn discover(
     Query(query): Query<DiscoverQuery>,
     user: AuthenticatedUser,
 ) -> Result<Json<DiscoverResponse>, AppError> {
-    let _ = user.0;
+    // The climate tile reads the cached list; scanning the network again, or from a
+    // chosen interface, is setting up.
+    let force_refresh = query.force_refresh.unwrap_or(false);
+    if (force_refresh || query.local_ip.is_some()) && !user.0.is_admin() {
+        return Err(Refusal::Forbidden.into());
+    }
     let devices = state
         .broadlink
-        .discover(query.local_ip, query.force_refresh.unwrap_or(false))
+        .discover(query.local_ip, force_refresh)
         .await?;
     Ok(Json(DiscoverResponse {
         success: true,
@@ -162,15 +163,11 @@ async fn discover(
 
 async fn provision(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<ProvisionRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
     if body.ssid.trim().is_empty() {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "ssid is required",
-        ));
+        return Err(AppError::bad_request("ssid is required"));
     }
 
     state
@@ -178,18 +175,14 @@ async fn provision(
         .provision(body.ssid.trim().to_string(), body.password, body.security_mode)
         .await?;
 
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Provisioning packet sent to Broadlink device in AP mode".to_string(),
-    }))
+    Ok(SimpleResponse::ok("Provisioning packet sent to Broadlink device in AP mode"))
 }
 
 async fn learn_ir(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<LearnIrRequest>,
 ) -> Result<Json<LearnResponse>, AppError> {
-    let _ = user.0;
     let save_code = body.save_code.map(|save| LearnCodeSaveRequest {
         name: save.name,
         brand: save.brand,
@@ -210,10 +203,9 @@ async fn learn_ir(
 
 async fn send_packet(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<SendPacketRequest>,
 ) -> Result<Json<SendResponse>, AppError> {
-    let _ = user.0;
     let result = state
         .broadlink
         .send_packet(body.host, body.local_ip, body.packet_base64, None, None)
@@ -227,9 +219,7 @@ async fn send_packet(
 
 async fn list_codes(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
 ) -> Result<Json<CodesResponse>, AppError> {
-    let _ = user.0;
     let codes = state.broadlink.list_codes().await;
     Ok(Json(CodesResponse {
         success: true,
@@ -241,10 +231,9 @@ async fn list_codes(
 
 async fn save_code(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<SaveCodeRequest>,
 ) -> Result<Json<CodeResponse>, AppError> {
-    let _ = user.0;
     let code = state.broadlink.save_code(body).await?;
     Ok(Json(CodeResponse {
         success: true,
@@ -256,10 +245,8 @@ async fn save_code(
 async fn send_code(
     State(state): State<AppState>,
     Path(code_id): Path<String>,
-    user: AuthenticatedUser,
     Json(body): Json<SendCodeRequest>,
 ) -> Result<Json<SendResponse>, AppError> {
-    let _ = user.0;
     let result = state
         .broadlink
         .send_saved_code(body.host, body.local_ip, code_id)
@@ -274,9 +261,7 @@ async fn send_code(
 async fn list_mitsubishi_codes(
     State(state): State<AppState>,
     Query(query): Query<MitsubishiQuery>,
-    user: AuthenticatedUser,
 ) -> Result<Json<CodesResponse>, AppError> {
-    let _ = user.0;
     let codes = state
         .broadlink
         .list_mitsubishi_codes(query.model.as_deref())
@@ -291,9 +276,7 @@ async fn list_mitsubishi_codes(
 
 async fn get_climate_state(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
 ) -> Result<Json<ClimateStateResponse>, AppError> {
-    let _ = user.0;
     let climate_state = state.broadlink.climate_state().await;
     Ok(Json(ClimateStateResponse {
         success: true,
@@ -304,10 +287,8 @@ async fn get_climate_state(
 
 async fn send_mitsubishi_command(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     Json(body): Json<MitsubishiCommandRequest>,
 ) -> Result<Json<SendResponse>, AppError> {
-    let _ = user.0;
     let result = state
         .broadlink
         .send_mitsubishi_command(body.host, body.local_ip, body.command, body.model)

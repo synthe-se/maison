@@ -8,7 +8,6 @@ struct RootResponse {
     message: &'static str,
     version: &'static str,
     description: &'static str,
-    endpoints: Vec<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,22 +32,10 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/", get(root_handler))
 }
 
+/// Who answers, nothing more: the routes themselves are the list (`lib.rs`), and a list here
+/// would drift (it once still offered a password login).
 async fn root_handler() -> Json<RootResponse> {
-    Json(RootResponse {
-        message: "Home API",
-        version: "0.1.0",
-        description: "Maison backend",
-        endpoints: vec![
-            "GET /api/",
-            "GET /api/health",
-            "POST /api/auth/login",
-            "POST /api/auth/verify",
-            "GET /api/tempo",
-            "POST /api/tempo/refresh",
-            "GET /api/tempo/predictions",
-            "GET /api/tempo/state",
-        ],
-    })
+    Json(RootResponse { message: "Home API", version: env!("CARGO_PKG_VERSION"), description: "Maison backend" })
 }
 
 async fn health_handler() -> Json<HealthResponse> {

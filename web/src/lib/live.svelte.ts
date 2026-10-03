@@ -10,6 +10,9 @@ class Live<T> {
 	error = $state.raw<Error | undefined>(undefined);
 	/** Only the first load: a refresh keeps showing what is known. */
 	loading = $derived(this.data === undefined && this.error === undefined);
+	/** Nothing known and the last ask failed: an error to show (with a retry), never an empty
+	 * list (« Aucun volet » would be a lie). */
+	failed = $derived(this.data === undefined && this.error !== undefined);
 	/** When the last answer arrived (ms), to say how old a value is. */
 	at = $state(0);
 
@@ -42,11 +45,14 @@ class Live<T> {
 		return this.#inflight;
 	}
 
-	/** What a command answered: shown at once, without waiting for the next poll. */
+	/** What a command answered: shown at once, without waiting for the next poll. The next
+	 * poll is planned from it (a motor that starts polls at 1 s, a pairing window that opens
+	 * counts down), unless a request is in flight: its answer plans it. */
 	set(data: T) {
 		this.data = data;
 		this.error = undefined;
 		this.at = Date.now();
+		if (!this.#inflight) this.#schedule();
 	}
 
 	start() {

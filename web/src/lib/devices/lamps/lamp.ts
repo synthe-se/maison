@@ -3,7 +3,7 @@
 
 import { m } from '#lib/paraglide/messages.js';
 import { hueLampsApi, zigbeeLampsApi, type HueLamp, type ZigbeeLamp } from '#lib/api.ts';
-import { formatMinutes } from '#lib/format.ts';
+import { unreachableSince } from '#lib/format.ts';
 
 /** Polling, as the React app did: the dashboard lists every 5 s, a lamp's page every 3 s. */
 export const LIST_EVERY = 5_000;
@@ -28,6 +28,8 @@ export interface Lamp {
 export interface LampDriver {
 	/** Prefix of every `live` key of this family: refreshing it refreshes lists and pages. */
 	key: string;
+	/** The family's `live` keys, all under `key` (so `refresh(key)` reaches every view). */
+	keys: { list: string; stats: string; detail: (id: string) => string };
 	href: (id: string) => string;
 	power: (id: string, on: boolean) => Promise<unknown>;
 	brightness: (id: string, value: number) => Promise<unknown>;
@@ -46,6 +48,8 @@ export const fromHue = (l: HueLamp): Lamp => ({
 
 export const fromZigbee = (l: ZigbeeLamp): Lamp => ({
 	...l,
+	// the coordinator does not read the firmware version
+	firmware: null,
 	connecting: false,
 	isOn: l.state.isOn,
 	brightness: l.state.brightness,
@@ -55,8 +59,11 @@ export const fromZigbee = (l: ZigbeeLamp): Lamp => ({
 const tone = (percent: number) =>
 	percent < 34 ? m.lamps_tone_warm() : percent < 67 ? m.lamps_tone_neutral() : m.lamps_tone_cool();
 
+const keysOf = (key: string): LampDriver['keys'] => ({ list: `${key}:list`, stats: `${key}:stats`, detail: (id) => `${key}:${id}` });
+
 export const hue: LampDriver = {
 	key: 'hue-lamp',
+	keys: keysOf('hue-lamp'),
 	href: (id) => `/hue-lamp/${id}`,
 	power: hueLampsApi.power,
 	brightness: hueLampsApi.brightness,
@@ -65,7 +72,8 @@ export const hue: LampDriver = {
 	temperatureText: (v) => m.lamps_temperature_percent({ percent: v, tone: tone(v) })
 };
 
-// Zigbee: 0 % is 500 mireds, 100 % is 153 mireds (backend/src/zigbee_native.rs)
+// Zigbee: 0 % is the warmest white, 100 % the coolest; the same bounds as MIRED_WARM and
+// MIRED_COOL in backend/src/zigbee_native.rs (keep them in step)
 const MIRED_WARM = 500;
 const MIRED_COOL = 153;
 const kelvin = (percent: number) => {
@@ -75,6 +83,7 @@ const kelvin = (percent: number) => {
 
 export const zigbee: LampDriver = {
 	key: 'zigbee-lamp',
+	keys: keysOf('zigbee-lamp'),
 	href: (id) => `/zigbee-lamp/${id}`,
 	power: zigbeeLampsApi.power,
 	brightness: zigbeeLampsApi.brightness,
@@ -85,10 +94,6 @@ export const zigbee: LampDriver = {
 /** Line 2 of a lamp's tile: « Allumée, 80 % », « Éteinte », « Injoignable depuis 12 min ». */
 export function lampState(l: Lamp): string {
 	if (l.connecting) return m.lamps_connecting();
-	if (!l.reachable) {
-		if (!l.lastSeen) return m.lamps_never_seen();
-		const minutes = Math.max(1, Math.round((Date.now() - new Date(l.lastSeen).getTime()) / 60_000));
-		return m.lamps_unreachable_for({ duration: formatMinutes(minutes) });
-	}
+	if (!l.reachable) return unreachableSince(l.lastSeen);
 	return l.isOn ? m.lamps_on_percent({ percent: l.brightness }) : m.state_off();
 }

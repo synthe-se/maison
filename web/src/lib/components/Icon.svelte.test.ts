@@ -13,6 +13,13 @@ describe('Icon', () => {
 		expect(svg.querySelector('path')).not.toBeNull();
 	});
 
+	it('busy: the spinning loader in its place (one place for it)', async () => {
+		const { container } = await render(Icon, { name: 'power', busy: true });
+		const svg = container.querySelector('svg')!;
+		expect(svg.classList.contains('spin')).toBe(true);
+		expect(svg.innerHTML).toContain('M21 12a9 9 0 1 1-6.219-8.56');
+	});
+
 	it('speaks as an image when labelled', async () => {
 		await render(Icon, { name: 'circle-alert', label: 'Injoignable', size: 24, class: 'warn' });
 		const img = page.getByRole('img', { name: 'Injoignable' });

@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { goto } from '$app/navigation';
 import { m } from '#lib/paraglide/messages.js';
+import { session } from '#lib/session.svelte.ts';
+import { alex, leonard } from '#lib/test/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { json, stubFetch } from '#lib/test/fetch.ts';
@@ -26,6 +28,8 @@ function backend(lamp = hueLamp()) {
 }
 
 describe('HueLampDetail', () => {
+	beforeEach(() => session.adopt(leonard));
+
 	it('reads its lamp and shows it with its Bluetooth address', async () => {
 		const calls = backend();
 		await render(HueLampDetail, { id: 'hue-1' });
@@ -46,6 +50,14 @@ describe('HueLampDetail', () => {
 		backend();
 		await render(HueLampDetail, { id: 'missing' });
 		await expect.element(page.getByRole('heading', { level: 1 })).toHaveTextContent(m.lamps_not_found());
+	});
+
+	it('a member cannot hide a lamp', async () => {
+		session.adopt(alex);
+		backend();
+		await render(HueLampDetail, { id: 'hue-1' });
+		await expect.element(page.getByRole('heading', { level: 1 })).toHaveTextContent('Lampe du salon');
+		await expect.element(page.getByRole('button', { name: m.hue_lamps_blacklist() })).not.toBeInTheDocument();
 	});
 
 	it('hiding asks first, then POSTs, says so and goes home', async () => {

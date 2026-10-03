@@ -8,23 +8,10 @@
 	import SettingRow from '#lib/components/SettingRow.svelte';
 	import StatusRow from './StatusRow.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import type { FountainStatus } from '#lib/api.ts';
+	import Loaded from '#lib/components/Loaded.svelte';
 	import { reread, status } from './tuya.svelte.ts';
-
-	interface FountainStatus {
-		power?: boolean;
-		/** Older firmwares said `uv_enabled`, the backend says `uv`. */
-		uv?: boolean;
-		uv_enabled?: boolean;
-		/** Seconds of UV left; > 0 means the lamp is on. */
-		uv_runtime?: number;
-		eco_mode?: number;
-		water_level?: string;
-		/** Minutes. */
-		filter_life?: number;
-		pump_time?: number;
-		water_time?: number;
-	}
 
 	const WATER: Record<string, () => string> = {
 		low: m.device_level_low,
@@ -50,9 +37,7 @@
 	const prefix = $derived(`tuya:${id}`);
 </script>
 
-{#if st.loading}
-	<p class="hint" role="status">{m.common_loading()}</p>
-{:else}
+<Loaded value={st}>
 	<Section title={m.common_settings()} icon="droplets">
 		<ul class="settings">
 			<SettingRow
@@ -79,8 +64,7 @@
 					<button
 						class="btn"
 						aria-pressed={s?.eco_mode === mode}
-						aria-busy={g.is('eco')}
-						disabled={g.is('eco')}
+						{...pending(g.is('eco'))}
 						onclick={() => g.run(() => fountainApi.setEcoMode(id, mode), reread(prefix, m.fountain_eco_mode_on({ mode })), 'eco')}
 					>
 						{ECO_LABEL[mode]()}
@@ -104,7 +88,7 @@
 				{/if}
 			{/each}
 		</dl>
-		{#if s?.water_level === 'low'}<p class="warn">{m.fountain_add_water()}</p>{/if}
+		{#if s?.water_level === 'low'}<p class="warn-text">{m.fountain_add_water()}</p>{/if}
 		<div class="resets">
 			{#each COUNTERS as c (c.key)}
 				<ConfirmDialog
@@ -119,9 +103,9 @@
 			{/each}
 		</div>
 	</Section>
-{/if}
+</Loaded>
 
 <style>
 	.resets { display: grid; gap: var(--s-2); }
-	.warn { margin: 0; color: var(--warn-text); font-weight: 600; }
+
 </style>

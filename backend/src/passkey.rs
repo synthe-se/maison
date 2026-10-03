@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use axum::http::{HeaderMap, StatusCode};
 use webauthn_rs::prelude::{DiscoverableAuthentication, PasskeyRegistration, Url, Uuid, Webauthn, WebauthnBuilder};
 
-use crate::{config::Config, error::AppError, people::random_secret};
+use crate::{config::Config, error::AppError, util::random_secret};
 
 /// How long a ceremony may take, from options to answer; also the browser's timeout.
 pub const CEREMONY_TTL: Duration = Duration::from_secs(300);
@@ -53,6 +53,10 @@ pub enum Refusal {
     PasskeyExists,
     LastPasskey,
     NotFound,
+    /// Adding a passkey from a session wants a passkey sign-in in the last minutes.
+    ReauthNeeded,
+    /// An invitation by name for a name someone already has.
+    PersonExists,
     TooManyAttempts { retry_after_s: u64 },
 }
 
@@ -71,12 +75,15 @@ impl From<Refusal> for AppError {
             Refusal::PasskeyExists => (StatusCode::CONFLICT, "passkey_exists", "Passkey already registered"),
             Refusal::LastPasskey => (StatusCode::CONFLICT, "last_passkey", "The last passkey stays"),
             Refusal::NotFound => (StatusCode::NOT_FOUND, "not_found", "Not found"),
+            Refusal::ReauthNeeded => (StatusCode::FORBIDDEN, "reauth_needed", "Sign in with a passkey again first"),
+            Refusal::PersonExists => (StatusCode::CONFLICT, "person_exists", "Someone already has this name"),
             Refusal::TooManyAttempts { retry_after_s } => {
                 return AppError::Coded {
                     status: StatusCode::TOO_MANY_REQUESTS,
                     code: "too_many_attempts",
                     message: "Too many attempts",
                     retry_after_s: Some(retry_after_s),
+                    detail: None,
                 };
             }
         };

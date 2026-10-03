@@ -44,7 +44,7 @@ describe('Pad', () => {
 
 	it('draws the arrows, OK and the keys under it, plus any extra key', async () => {
 		await render(Pad, { label: LABEL, keys: keys(), under: ['back', 'home', 'menu'], extra: html('<button>Source</button>') });
-		for (const name of [m.remote_keys_up(), m.remote_keys_left(), m.tv_key_ok(), m.remote_keys_right(), m.remote_keys_down(), m.tv_key_back(), m.remote_keys_home(), m.remote_keys_menu(), 'Source'])
+		for (const name of [m.remote_keys_up(), m.remote_keys_left(), m.tv_key_ok(), m.remote_keys_right(), m.remote_keys_down(), m.tv_key_back(), m.nav_home(), m.remote_keys_menu(), 'Source'])
 			await expect.element(page.getByRole('button', { name, exact: true })).toBeVisible();
 	});
 

@@ -85,14 +85,14 @@ describe('PlugDetail', () => {
 		plugServer(merossStatus({ online: false, wifi: { signal: null } }));
 		await render(PlugDetail, { id: 'p1' });
 		await expect.element(page.getByText(m.meross_not_connected())).toBeVisible();
-		await expect.element(page.getByText(m.state_unreachable())).toBeVisible();
+		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
 		await expect.element(page.getByText(m.meross_wifi_signal())).not.toBeInTheDocument();
 	});
 
 	it('a plug the server does not know: « not found »', async () => {
 		stubFetch(() => json({ success: false, error: 'unknown plug' }, 404));
 		await render(PlugDetail, { id: 'p1' });
-		await expect.element(page.getByText(m.meross_not_found())).toBeVisible();
+		await expect.element(page.getByText('unknown plug')).toBeVisible();
 		await expect.element(page.getByRole('heading', { level: 1, name: m.meross_plug_control() })).toBeVisible();
 	});
 

@@ -28,8 +28,8 @@ function remote(press: Partial<IrEvent> | null) {
 	let asked = 0;
 	return () => {
 		asked++;
-		const old: IrEvent = { code: 2, value: 1, mapped: false, receivedAt: '2026-10-02T10:00:00Z' };
-		return { success: true, events: asked > 1 && press ? [{ ...old, receivedAt: '2026-10-02T10:00:05Z', ...press }, old] : [old] };
+		const old: IrEvent = { seq: 7, code: 2, value: 1, mapped: false, receivedAt: '2026-10-02T10:00:00Z' };
+		return { success: true, events: asked > 1 && press ? [{ ...old, seq: 8, receivedAt: '2026-10-02T10:00:05Z', ...press }, old] : [old] };
 	};
 }
 
@@ -42,11 +42,12 @@ describe('BindingEditor', () => {
 		stubApi({ '/ir/recent': remote({ code: 115 }) });
 		const say = vi.spyOn(ui, 'say');
 		await editor(undefined);
-		await expect.element(page.getByRole('button', { name: m.remote_stop_capture() })).toHaveAttribute('aria-pressed', 'true');
+		// a plain button whose words change (APG: no aria-pressed on such a button)
+		await expect.element(page.getByRole('button', { name: m.remote_stop_capture() })).not.toHaveAttribute('aria-pressed');
 		await expect.element(page.getByText(m.remote_capturing())).toBeVisible();
 		await expect.element(codeBox(), { timeout: 3000 }).toHaveValue('115');
 		await expect.element(page.getByText(keyName(115), { exact: true })).toBeVisible();
-		await expect.element(page.getByRole('button', { name: m.remote_capture() })).toHaveAttribute('aria-pressed', 'false');
+		await expect.element(page.getByRole('button', { name: m.remote_capture() })).toBeVisible();
 		expect(say).toHaveBeenCalledWith(m.remote_captured({ key: keyName(115) }));
 	});
 
@@ -72,7 +73,24 @@ describe('BindingEditor', () => {
 		const fail = vi.spyOn(ui, 'fail').mockImplementation(() => {});
 		await editor(undefined);
 		await expect.poll(() => fail).toHaveBeenCalledOnce();
-		await expect.element(page.getByRole('button', { name: m.remote_capture() })).toHaveAttribute('aria-pressed', 'false');
+		await expect.element(page.getByRole('button', { name: m.remote_capture() })).toBeVisible();
+	});
+
+	it('captures by the backend’s sequence, not its clock (an NTP step back hides nothing)', async () => {
+		let asked = 0;
+		const old: IrEvent = { seq: 7, code: 2, value: 1, mapped: false, receivedAt: '2026-10-02T10:00:00Z' };
+		// the new press is stamped earlier than the old one: the clock went back
+		stubApi({ '/ir/recent': () => ({ success: true, events: ++asked > 1 ? [{ ...old, seq: 8, code: 115, receivedAt: '2026-10-02T09:59:00Z' }, old] : [old] }) });
+		await editor(undefined);
+		await expect.element(codeBox(), { timeout: 3000 }).toHaveValue('115');
+	});
+
+	it('after a backend restart (the sequence starts again), the new press is still captured', async () => {
+		let asked = 0;
+		const old: IrEvent = { seq: 40, code: 2, value: 1, mapped: false, receivedAt: '2026-10-02T10:00:00Z' };
+		stubApi({ '/ir/recent': () => ({ success: true, events: ++asked > 1 ? [{ ...old, seq: 1, code: 116 }] : [old] }) });
+		await editor(undefined);
+		await expect.element(codeBox(), { timeout: 3000 }).toHaveValue('116');
 	});
 
 	it('takes a typed code instead, and names its key', async () => {
@@ -140,6 +158,7 @@ describe('BindingEditor', () => {
 		await expect.element(page.getByText(m.remote_missing_actions())).toBeVisible();
 		await test().click();
 		await expect.element(page.getByText(m.remote_missing_actions()).nth(1)).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.remote_add_action() })).toHaveAccessibleDescription(m.remote_missing_actions());
 		await page.getByRole('button', { name: m.remote_add_action() }).click();
 		await save().click();
 		await expect.element(page.getByText(m.remote_incomplete_actions())).toBeVisible();
@@ -151,6 +170,9 @@ describe('BindingEditor', () => {
 		await editor(undefined);
 		await save().click();
 		await expect.element(page.getByText(m.remote_missing_code())).toBeVisible();
+		// tied to its field, which takes the focus
+		await expect.element(codeBox()).toHaveAccessibleDescription(m.remote_missing_code());
+		await expect.element(codeBox()).toHaveFocus();
 	});
 
 	it('tests the actions now, and says how each one went, in words', async () => {

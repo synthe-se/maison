@@ -31,7 +31,7 @@
 		<PageHead back title={device.name}>
 			{#snippet end()}<ConnectButton {device} />{/snippet}
 			{#snippet sub()}
-				<span class:warn={!device.connected}>{device.connected ? m.device_online() : m.device_offline()}</span> · {facts}
+				<span class:warn-text={!device.connected}>{device.connected ? m.device_online() : m.device_offline()}</span> · {facts}
 			{/snippet}
 		</PageHead>
 		<!-- keyed: another device's page starts from its own state -->
@@ -52,6 +52,6 @@
 </div>
 
 <style>
-	.warn { color: var(--warn-text); font-weight: 600; }
+
 	.panels { display: grid; gap: var(--s-4); }
 </style>

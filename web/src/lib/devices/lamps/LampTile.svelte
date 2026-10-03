@@ -2,7 +2,8 @@
 	import { percent } from '#lib/i18n.svelte.ts';
 	// A lamp's tile, Hue or Zigbee alike (docs/ux/tableau-de-bord.md § 1–3): the icon turns it
 	// on or off, the name opens its page, line 2 says « Allumée, 80 % », and the brightness
-	// slider follows the finger. Unreachable: said in words, the last value kept but greyed.
+	// slider follows the finger. Unreachable: said in words with since when, the gesture kept
+	// in place but unavailable, the last value kept but greyed (§ 4).
 	import { m } from '#lib/paraglide/messages.js';
 	import { Command, LIMIT } from '#lib/command.svelte.ts';
 	import { refresh } from '#lib/live.svelte.ts';
@@ -36,9 +37,10 @@
 	state={lampState(lamp)}
 	href={link ? driver.href(lamp.id) : undefined}
 	warn={!lamp.reachable && !lamp.connecting}
-	on={lamp.reachable && lamp.isOn}
-	command={lamp.reachable ? command : undefined}
-	ontoggle={lamp.reachable ? toggle : undefined}
+	on={lamp.isOn}
+	offline={!lamp.reachable}
+	{command}
+	ontoggle={toggle}
 >
 	<Range
 		live

@@ -10,8 +10,7 @@ import Nabaztag from './Nabaztag.svelte';
 const status = (reachable: boolean, tempoEnabled = true, host: string | null = '192.168.1.50') => ({
 	success: true,
 	config: { host, tempoEnabled },
-	reachable,
-	status: null
+	reachable
 });
 const tile = () => page.getByRole('article', { name: m.nabaztag_rabbit() });
 const push = () => page.getByRole('button', { name: m.nabaztag_push_tempo() });
@@ -46,7 +45,20 @@ describe('Nabaztag', () => {
 		const api = stubApi({ '/nabaztag': status(false, false, null) });
 		const { container } = await render(Nabaztag);
 		await expect.poll(() => api.calls).toHaveLength(1);
-		expect(container.textContent?.trim()).toBe('');
+		await expect.poll(() => container.textContent?.trim()).toBe('');
+	});
+
+	it('keeps its place while first asked', async () => {
+		stubApi({ '/nabaztag': () => new Promise(() => {}) });
+		await render(Nabaztag);
+		await expect.element(page.getByRole('heading', { name: m.nabaztag_name() })).toBeVisible();
+	});
+
+	it('a server that does not answer: said in place, with a retry', async () => {
+		stubApi({ '/nabaztag': new Response('{"error":"down"}', { status: 500 }) });
+		await render(Nabaztag);
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.common_retry() })).toBeVisible();
 	});
 
 	it('pushes today’s colour again, busy meanwhile, then says so and reads the rabbit', async () => {

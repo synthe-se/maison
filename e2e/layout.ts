@@ -66,6 +66,16 @@ for (const w of [390, 1024, 1440, 2560]) {
 	check(`${w}px: a focused control is not hidden under a bar`, !hidden);
 }
 
+// reflow at 320 px (WCAG 1.4.10): the dashboard and a plug's page never scroll sideways
+for (const r of ['/', '/meross/plug-1']) {
+	await p.setViewportSize({ width: 320, height: 800 });
+	await p.goto(BASE + r);
+	await p.locator('main h1').first().waitFor();
+	await p.waitForTimeout(600);
+	const wide = await p.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+	check(`320px ${r}: no sideways scroll`, wide <= 0, `${wide}px too wide`);
+}
+
 // values refresh without moving anything: every tile keeps its height across a poll (rule 8)
 await p.setViewportSize({ width: 1440, height: 1000 });
 await p.goto(BASE + '/');

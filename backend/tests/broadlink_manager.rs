@@ -1,7 +1,6 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use maison_backend::config::Config;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -70,11 +69,45 @@ async fn broadlink_mitsubishi_filter_returns_only_matching_brand() {
 }
 
 fn test_app() -> axum::Router {
-    let temp_root = common::temp_root("maison-rust-broadlink-tests");
-    common::app(Config {
-        broadlink_codes_path: temp_root.join("broadlink-codes.json"),
-        climate_state_path: temp_root.join("climate-state.json"),
-        refresh_tokens_path: temp_root.join("refresh-tokens.json"),
-        ..common::test_config()
-    })
+    common::app(common::isolated_config("maison-rust-broadlink-tests"))
+}
+
+/// Setting the blasters up is for admins; the climate tile (cached list, codes, sending)
+/// is everyday use.
+#[tokio::test]
+async fn setting_up_blasters_is_admin_only() {
+    let app = test_app();
+    let member = common::member_token();
+    for (method, path, body) in [
+        (Method::GET, "/api/broadlink/discover?forceRefresh=true", None),
+        (Method::GET, "/api/broadlink/discover?localIp=192.168.1.10", None),
+        (Method::POST, "/api/broadlink/provision", Some(json!({"ssid": "x", "securityMode": "wpa2"}))),
+        (Method::POST, "/api/broadlink/learn/ir", Some(json!({"host": "192.168.1.73"}))),
+        (Method::POST, "/api/broadlink/send", Some(json!({"host": "192.168.1.73", "packetBase64": "AQ=="}))),
+        (Method::POST, "/api/broadlink/codes", Some(json!({"name": "n", "command": "c", "packetBase64": "AQ=="}))),
+    ] {
+        let (status, answer) = common::send(&app, method.clone(), path, Some(&member), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {answer}");
+        assert_eq!(answer["code"], json!("forbidden"));
+    }
+    let (status, _) = common::send(&app, Method::GET, "/api/broadlink/codes", Some(&member), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = common::send(&app, Method::GET, "/api/broadlink/mitsubishi/state", Some(&member), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A blaster address is a LAN device or nothing: no request leaves for anything else.
+#[tokio::test]
+async fn blaster_addresses_outside_the_lan_are_refused() {
+    let app = test_app();
+    for host in ["127.0.0.1", "8.8.8.8", "169.254.169.254", "blaster.local", "192.168.1.73:80"] {
+        let (status, body) = common::send_authed(
+            &app,
+            Method::POST,
+            "/api/broadlink/send",
+            Some(json!({"host": host, "packetBase64": "JgAAAA=="})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{host}: {body}");
+    }
 }

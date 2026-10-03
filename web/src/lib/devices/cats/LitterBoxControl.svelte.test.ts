@@ -21,7 +21,7 @@ describe('LitterBoxControl', () => {
 	it('says it is loading until the box answers', async () => {
 		stubApi({ [STATUS]: () => new Promise(() => {}) });
 		await render(LitterBoxControl, { id: 'l1' });
-		await expect.element(page.getByRole('status')).toHaveTextContent(m.common_loading());
+		await expect.element(page.getByText(m.common_loading())).toBeVisible();
 	});
 
 	it('says its state and levels in words, warning on what needs a hand', async () => {
@@ -30,7 +30,7 @@ describe('LitterBoxControl', () => {
 		await expect.element(page.getByText(m.litter_box_fill_soon())).toBeVisible();
 		expect(facts()).toEqual([
 			{ term: m.litter_box_litter_level(), value: m.litter_box_half_filled(), warn: true },
-			{ term: m.common_status(), value: m.litter_box_status_standby(), warn: false },
+			{ term: m.common_status(), value: m.state_standby(), warn: false },
 			{ term: m.common_status(), value: m.litter_box_maintenance_required(), warn: true },
 			{ term: m.common_error(), value: m.litter_box_fault_alarm({ code: 4 }), warn: true }
 		]);

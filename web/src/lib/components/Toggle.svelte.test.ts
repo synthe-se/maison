@@ -30,7 +30,20 @@ describe('Toggle', () => {
 		await render(Toggle, { label: 'Veille', checked: false, onchange, pending: true });
 		const sw = page.getByRole('switch', { name: 'Veille' });
 		await expect.element(sw).toHaveAttribute('aria-busy', 'true');
-		await expect.element(sw).toBeDisabled();
+		await expect.element(sw).toHaveAttribute('aria-disabled', 'true');
+		// a real press: Playwright itself refuses to click what says it is disabled
+		(sw.element() as HTMLElement).click();
+		expect(onchange).not.toHaveBeenCalled();
+		await expect.element(sw).not.toBeChecked();
+	});
+
+	it('keeps the focus while its command travels (never disabled under the finger)', async () => {
+		const { rerender } = await render(Toggle, { label: 'Veille', checked: false, onchange: () => {} });
+		const sw = document.querySelector<HTMLElement>('[role=switch]')!;
+		sw.focus();
+		await rerender({ pending: true });
+		expect(document.activeElement).toBe(sw);
+		expect(sw.hasAttribute('disabled')).toBe(false);
 	});
 
 	it('can be disabled, and keep its label for readers only', async () => {

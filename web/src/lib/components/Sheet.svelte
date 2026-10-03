@@ -1,10 +1,12 @@
 <script lang="ts">
 	// A form that needs room (a meal, a remote binding): a Bits UI Dialog drawn as a sheet, from
 	// the bottom on a phone, from the right on a wide screen (Material 3; app.css `.sheet`).
-	// Its title names what is edited; Escape, the overlay or the cross close it.
+	// Its title names what is edited; Escape, the overlay or the cross close it. A form changed
+	// and not saved (`dirty`) is not lost to a stray Escape or tap: closing asks first.
 	import type { Snippet } from 'svelte';
 	import { Dialog } from 'bits-ui';
 	import { m } from '#lib/paraglide/messages.js';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
 
 	interface Props {
@@ -12,12 +14,21 @@
 		onclose: () => void;
 		title: string;
 		description?: string;
+		/** The form holds changes not yet saved. */
+		dirty?: boolean;
 		children: Snippet;
 	}
-	let { open, onclose, title, description, children }: Props = $props();
+	let { open, onclose, title, description, dirty = false, children }: Props = $props();
+	let asking = $state(false);
+
+	function close() {
+		if (dirty) asking = true;
+		else onclose();
+	}
 </script>
 
-<Dialog.Root {open} onOpenChange={(next) => !next && onclose()}>
+<!-- controlled: closing goes through `close`, which may ask first -->
+<Dialog.Root bind:open={() => open, (next) => !next && close()}>
 	<Dialog.Portal>
 		<Dialog.Overlay class="overlay" />
 		<Dialog.Content class="sheet">
@@ -32,6 +43,14 @@
 			<div class="sheet-body">
 				{#if open}{@render children()}{/if}
 			</div>
+			<ConfirmDialog
+				bind:open={asking}
+				title={m.sheet_discard_title()}
+				description={m.sheet_discard_description()}
+				action={m.sheet_discard()}
+				keep={m.sheet_keep_editing()}
+				onconfirm={onclose}
+			/>
 		</Dialog.Content>
 	</Dialog.Portal>
 </Dialog.Root>

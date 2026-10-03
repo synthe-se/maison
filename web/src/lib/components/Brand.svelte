@@ -9,7 +9,6 @@
 
 <style>
 	.brand { display: inline-flex; align-items: center; gap: var(--s-2); min-height: var(--control-h); color: var(--ink); text-decoration: none; }
-	.brand img { border-radius: var(--radius-m); }
 	/* the name only, in Borel (as Ariane): never a title, never body text */
 	.name { font-family: var(--font-brand); font-size: 1.35rem; line-height: 1; padding-top: 0.3em; }
 </style>

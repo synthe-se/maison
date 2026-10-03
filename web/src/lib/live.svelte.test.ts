@@ -98,6 +98,38 @@ describe('live', () => {
 		destroy();
 	});
 
+	it('set() plans the next poll from what it sets (a pairing window that opens counts down)', async () => {
+		const fetch = vi.fn(async () => ({ open: false }));
+		const { entry, destroy } = mount('pairing', fetch, (d) => (d?.open ? 1_000 : 10_000));
+		await settle();
+		expect(fetch).toHaveBeenCalledOnce();
+		entry.set({ open: true });
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(fetch).toHaveBeenCalledTimes(2);
+		destroy();
+	});
+
+	it('set() while a request travels leaves the planning to its answer', async () => {
+		let answer!: (v: number) => void;
+		const fetch = vi.fn(() => new Promise<number>((r) => (answer = r)));
+		const { entry, destroy } = mount('busy', fetch, 1_000);
+		entry.set(5);
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(fetch).toHaveBeenCalledOnce();
+		answer(6);
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(fetch).toHaveBeenCalledTimes(2);
+		destroy();
+	});
+
+	it('nothing known and a failure: `failed`, an error to show, not an empty list', async () => {
+		const { entry, destroy } = mount('down', () => Promise.reject(new Error('down')));
+		await settle();
+		expect(entry.failed).toBe(true);
+		expect(entry.loading).toBe(false);
+		destroy();
+	});
+
 	it('refresh(prefix) asks again every mounted value under the prefix only', async () => {
 		const lamp = vi.fn(async () => 'lamp');
 		const plug = vi.fn(async () => 'plug');

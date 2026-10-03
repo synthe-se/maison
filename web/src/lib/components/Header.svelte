@@ -13,8 +13,8 @@
 
 	const views: { href: string; label: () => string; icon: IconName; match: (p: string) => boolean }[] = [
 		{ href: '/', label: m.nav_home, icon: 'house', match: (p) => p === '/' || /^\/(device|hue-lamp|zigbee-lamp|meross)\//.test(p) },
-		{ href: '/remote', label: m.nav_remote, icon: 'radio', match: (p) => p.startsWith('/remote') },
-		{ href: '/tempo-predictions', label: m.nav_tempo, icon: 'zap', match: (p) => p.startsWith('/tempo') }
+		{ href: '/tempo-predictions', label: m.nav_tempo, icon: 'zap', match: (p) => p.startsWith('/tempo') },
+		{ href: '/remote', label: m.nav_remote, icon: 'radio', match: (p) => p.startsWith('/remote') }
 	];
 	const themes: { value: Theme; label: () => string }[] = [
 		{ value: 'system', label: m.theme_system },

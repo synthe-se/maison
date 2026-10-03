@@ -6,9 +6,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auth::AuthenticatedUser,
+    auth::AdminUser,
     error::AppError,
     matter::{CoverCommand, CoverView, SunSchedule},
+    routes::SimpleResponse,
     sun::Place,
     AppState,
 };
@@ -25,12 +26,6 @@ struct CoversResponse {
 struct CoverResponse {
     success: bool,
     cover: CoverView,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RemovedResponse {
-    success: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +91,6 @@ pub fn router() -> Router<AppState> {
 
 async fn schedule(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(body): Json<SunSchedule>,
 ) -> Result<Json<CoverResponse>, AppError> {
@@ -104,13 +98,13 @@ async fn schedule(
     Ok(Json(CoverResponse { success: true, cover }))
 }
 
-async fn place(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<PlaceResponse> {
+async fn place(State(state): State<AppState>) -> Json<PlaceResponse> {
     Json(PlaceResponse { success: true, place: state.matter.place().await })
 }
 
 async fn set_place(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<Place>,
 ) -> Result<Json<PlaceResponse>, AppError> {
     let place = state.matter.set_place(body).await?;
@@ -119,14 +113,13 @@ async fn set_place(
 
 async fn search_places(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<PlacesResponse>, AppError> {
     let places = state.matter.search_places(&query.q, &query.lang).await?;
     Ok(Json(PlacesResponse { success: true, places }))
 }
 
-async fn list(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<CoversResponse> {
+async fn list(State(state): State<AppState>) -> Json<CoversResponse> {
     Json(CoversResponse {
         success: true,
         covers: state.matter.list().await,
@@ -135,7 +128,6 @@ async fn list(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<C
 
 async fn get_cover(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<CoverResponse>, AppError> {
     let cover = state.matter.get(&id).await?;
@@ -147,7 +139,7 @@ async fn get_cover(
 
 async fn commission(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<CommissionRequest>,
 ) -> Result<Json<CoverResponse>, AppError> {
     let cover = state.matter.commission(&body.code, &body.name).await?;
@@ -159,7 +151,6 @@ async fn commission(
 
 async fn rename(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(body): Json<RenameRequest>,
 ) -> Result<Json<CoverResponse>, AppError> {
@@ -172,67 +163,41 @@ async fn rename(
 
 async fn remove(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    _admin: AdminUser,
     Path(id): Path<String>,
-) -> Result<Json<RemovedResponse>, AppError> {
+) -> Result<Json<SimpleResponse>, AppError> {
     state.matter.remove(&id).await?;
-    Ok(Json(RemovedResponse { success: true }))
+    Ok(SimpleResponse::ok("Shutter removed"))
 }
 
-async fn open(
-    state: State<AppState>,
-    user: AuthenticatedUser,
-    id: Path<String>,
-) -> Result<Json<CoverResponse>, AppError> {
-    run(state, user, id, CoverCommand::Open).await
+async fn open(state: State<AppState>, id: Path<String>) -> Result<Json<CoverResponse>, AppError> {
+    run(state, id, CoverCommand::Open).await
 }
 
-async fn close(
-    state: State<AppState>,
-    user: AuthenticatedUser,
-    id: Path<String>,
-) -> Result<Json<CoverResponse>, AppError> {
-    run(state, user, id, CoverCommand::Close).await
+async fn close(state: State<AppState>, id: Path<String>) -> Result<Json<CoverResponse>, AppError> {
+    run(state, id, CoverCommand::Close).await
 }
 
-async fn stop(
-    state: State<AppState>,
-    user: AuthenticatedUser,
-    id: Path<String>,
-) -> Result<Json<CoverResponse>, AppError> {
-    run(state, user, id, CoverCommand::Stop).await
+async fn stop(state: State<AppState>, id: Path<String>) -> Result<Json<CoverResponse>, AppError> {
+    run(state, id, CoverCommand::Stop).await
 }
 
 async fn position(
     state: State<AppState>,
-    user: AuthenticatedUser,
     id: Path<String>,
     Json(body): Json<PositionRequest>,
 ) -> Result<Json<CoverResponse>, AppError> {
     if body.open_percent > 100 {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "openPercent must be between 0 and 100",
-        ));
+        return Err(AppError::bad_request("openPercent must be between 0 and 100"));
     }
-    run(
-        state,
-        user,
-        id,
-        CoverCommand::OpenPercent(body.open_percent),
-    )
-    .await
+    run(state, id, CoverCommand::OpenPercent(body.open_percent)).await
 }
 
 async fn run(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
     Path(id): Path<String>,
     command: CoverCommand,
 ) -> Result<Json<CoverResponse>, AppError> {
     let cover = state.matter.command(&id, command).await?;
-    Ok(Json(CoverResponse {
-        success: true,
-        cover,
-    }))
+    Ok(Json(CoverResponse { success: true, cover }))
 }

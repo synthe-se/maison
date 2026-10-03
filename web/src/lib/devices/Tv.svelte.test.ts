@@ -5,6 +5,8 @@ import { m } from '#lib/paraglide/messages.js';
 import { clock } from '#lib/i18n.svelte.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
+import { session } from '#lib/session.svelte.ts';
+import { alex, leonard } from '#lib/test/passkeys.ts';
 import type { TvStatus, TvStatusResponse } from '#lib/api.ts';
 import { json, sentBody, stubFetch, type FetchCall } from '#lib/test/fetch.ts';
 import Tv from './Tv.svelte';
@@ -53,6 +55,7 @@ async function activate(name: string) {
 }
 
 beforeEach(() => {
+	session.adopt(leonard);
 	// wide screen: the pad and the rarer keys are unfolded
 	vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList);
 	localStorage.removeItem(ORDER_KEY);
@@ -67,7 +70,7 @@ describe('Tv', () => {
 		let answer!: (r: Response) => void;
 		const calls = serve(() => new Promise<Response>((r) => (answer = r)) as unknown as Response);
 		await render(Tv);
-		await expect.element(page.getByRole('status')).toHaveTextContent(m.common_loading());
+		await expect.element(page.getByText(m.common_loading())).toBeVisible();
 		answer(json(tvStatus()));
 		await expect.element(page.getByRole('button', { name: NAME })).toBeVisible();
 		await new Promise((r) => setTimeout(r, 200));
@@ -78,16 +81,16 @@ describe('Tv', () => {
 		serve(tvStatus());
 		await render(Tv);
 		await expect.element(page.getByRole('button', { name: NAME })).toHaveAttribute('aria-pressed', 'true');
-		await expect.element(page.getByText(m.meross_state_on(), { exact: true })).toBeVisible();
+		await expect.element(page.getByText(m.state_on(), { exact: true })).toBeVisible();
 		await expect.element(page.getByText(m.tv_volume_fact({ level: 12 }))).toBeVisible();
 		await expect.element(page.getByRole('group', { name: m.tv_pad({ name: NAME }) })).toBeVisible();
 		await expect.element(page.getByRole('slider', { name: m.tv_volume() })).toHaveAttribute('aria-valuetext', m.tv_volume_value({ level: 12, max: 60 }));
 	});
 
-	it('falls back to « Télévision » when the set has no name; muted says so', async () => {
+	it('falls back to « TV du salon » (not the group’s name) when the set has none; muted says so', async () => {
 		serve(tvStatus({ name: undefined, volume: { current: 3, min: 0, max: 60, muted: true } }));
 		await render(Tv);
-		await expect.element(page.getByRole('button', { name: m.tv_title(), exact: true })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.tv_default_name(), exact: true })).toBeVisible();
 		await expect.element(page.getByText(m.tv_muted())).toBeVisible();
 		await expect.element(page.getByRole('button', { name: m.tv_mute() })).toHaveAttribute('aria-pressed', 'true');
 	});
@@ -141,7 +144,7 @@ describe('Tv', () => {
 	it('pad keys go out in JointSPACE’s names, with no status read', async () => {
 		const calls = serve(tvStatus());
 		await render(Tv);
-		for (const name of [m.remote_keys_up(), m.tv_key_ok(), m.tv_key_back(), m.remote_keys_home(), m.tv_key_source(), m.tv_key_play_pause()]) await activate(name);
+		for (const name of [m.remote_keys_up(), m.tv_key_ok(), m.tv_key_back(), m.nav_home(), m.tv_key_source(), m.tv_key_play_pause()]) await activate(name);
 		const pad = page.getByRole('group', { name: m.tv_pad({ name: NAME }) }).element() as HTMLElement;
 		pad.focus();
 		await userEvent.keyboard('{ArrowLeft}');
@@ -224,7 +227,7 @@ describe('Tv', () => {
 	it('standby: the toggle is not pressed, and waking from standby shows no bar', async () => {
 		serve(tvStatus({ power: 'standby', volume: undefined }), { 'POST /api/tv/power': () => new Promise<Response>(() => {}) });
 		await render(Tv);
-		await expect.element(page.getByText(m.litter_box_status_standby(), { exact: true })).toBeVisible();
+		await expect.element(page.getByText(m.state_standby(), { exact: true })).toBeVisible();
 		await page.getByRole('button', { name: NAME }).click();
 		await expect.element(page.getByRole('button', { name: NAME })).toHaveAttribute('aria-pressed', 'true');
 		await expect.element(page.getByRole('progressbar')).not.toBeInTheDocument();
@@ -247,19 +250,30 @@ describe('Tv', () => {
 	it('the settings button unfolds and folds the settings', async () => {
 		const calls = serve(tvStatus());
 		await render(Tv);
-		const settings = page.getByRole('button', { name: m.common_settings() });
+		const settings = page.getByRole('button', { name: m.common_settings_of({ name: NAME }) });
 		await expect.element(settings).toHaveAttribute('aria-expanded', 'false');
 		await settings.click();
 		await expect.element(page.getByLabelText(m.tv_host())).toHaveValue('192.168.1.52');
 		await page.getByRole('button', { name: m.common_save() }).click();
 		await expect.element(settings).toHaveAttribute('aria-expanded', 'false');
+		// the form is gone: the focus is back on the button that opened it
+		await expect.element(settings).toHaveFocus();
 		expect(sent(calls)[0][1]).toBe('/api/tv/config');
+	});
+
+	it('a member: no settings button; unconfigured, says an admin sets it up', async () => {
+		session.adopt(alex);
+		serve(tvStatus({ configured: false, power: 'standby', volume: undefined }));
+		await render(Tv);
+		await expect.element(page.getByText(m.tv_configure_admin())).toBeVisible();
+		await expect.element(page.getByLabelText(m.tv_host())).not.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: /Réglages/ })).not.toBeInTheDocument();
 	});
 
 	it('no answer at all: the tile says so', async () => {
 		serve(() => json({ success: false, error: 'TV unreachable' }, 503));
 		await render(Tv);
-		await expect.element(page.getByText(m.command_no_answer_short())).toBeVisible();
-		await expect.element(page.getByRole('button', { name: m.tv_title() })).not.toBeInTheDocument();
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.common_retry() })).toBeVisible();
 	});
 });

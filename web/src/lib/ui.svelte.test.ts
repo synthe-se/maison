@@ -39,6 +39,17 @@ describe('ui', () => {
 		expect(ui.toasts).toHaveLength(0);
 	});
 
+	it('a failure says plain words, without « Erreur. » in front', async () => {
+		ui.fail(new Error('Volet injoignable'));
+		expect(ui.toasts[0].text).toBe('Volet injoignable');
+	});
+
+	it('the same failure twice does not stack two toasts', () => {
+		ui.fail(new Error('Recherche impossible'));
+		ui.fail(new Error('Recherche impossible'));
+		expect(ui.toasts).toHaveLength(1);
+	});
+
 	it('remembers an explicit theme, forgets « system »', () => {
 		ui.setTheme('dark');
 		expect(localStorage.getItem('maison-theme')).toBe('dark');

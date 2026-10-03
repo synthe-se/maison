@@ -1,13 +1,15 @@
 <script lang="ts">
-	// The rabbit (garenne firmware): reachable or not, whether it shows Tempo, and a way to push
-	// today's colour again. Nothing at all when no rabbit is configured.
+	// The rabbit (garenne firmware, « Garenne » in the house): reachable or not, whether it shows
+	// Tempo, and a way to push today's colour again. Its place is kept while it is first asked
+	// and when the server does not answer; nothing at all once the server says no rabbit is set.
 	import { m } from '#lib/paraglide/messages.js';
 	import { nabaztagApi } from '#lib/api.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
+	import Loaded from '#lib/components/Loaded.svelte';
 
 	/** The rabbit's cadence (docs/ux/tableau-de-bord.md § 4: 120 s). */
 	const POLL_MS = 120_000;
@@ -24,30 +26,34 @@
 		);
 </script>
 
-{#if s?.config.host}
+{#if !s || s.config.host}
 	<section class="group" aria-labelledby="nabaztag-title">
 		<h2 id="nabaztag-title" class="group-title">{m.nabaztag_name()}</h2>
-		<div class="tiles">
-			<DeviceTile
-				name={m.nabaztag_rabbit()}
-				icon="rabbit"
-				on={s.reachable}
-				warn={!s.reachable}
-				state={!s.reachable ? m.state_unreachable() : s.config.tempoEnabled ? m.nabaztag_reachable_synced() : m.nabaztag_reachable()}
-			>
-				{#snippet end()}
-					<button
-						class="icon-btn"
-						aria-label={m.nabaztag_push_tempo()}
-						title={m.nabaztag_push_tempo()}
-						aria-busy={pushing.is()}
-						disabled={pushing.is() || !s.reachable}
-						onclick={push}
+		<Loaded value={status} skeletons={1}>
+			{#if s}
+				<div class="tiles">
+					<DeviceTile
+						name={m.nabaztag_rabbit()}
+						icon="rabbit"
+						on={s.reachable}
+						warn={!s.reachable}
+						state={!s.reachable ? m.state_unreachable() : s.config.tempoEnabled ? m.nabaztag_reachable_synced() : m.nabaztag_reachable()}
 					>
-						<Icon name={pushing.is() ? 'loader-circle' : 'refresh-cw'} class={pushing.is() ? 'spin' : undefined} />
-					</button>
-				{/snippet}
-			</DeviceTile>
-		</div>
+						{#snippet end()}
+							<button
+								class="icon-btn"
+								aria-label={m.nabaztag_push_tempo()}
+								title={m.nabaztag_push_tempo()}
+								disabled={!s.reachable}
+								{...pending(pushing.is())}
+								onclick={push}
+							>
+								<Icon name="refresh-cw" busy={pushing.is()} />
+							</button>
+						{/snippet}
+					</DeviceTile>
+				</div>
+			{/if}
+		</Loaded>
 	</section>
 {/if}

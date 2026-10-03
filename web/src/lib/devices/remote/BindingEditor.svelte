@@ -4,9 +4,10 @@
 	// one went; « Enregistrer » saves. A key already configured edits the existing binding.
 	import { tick } from 'svelte';
 	import { m } from '#lib/paraglide/messages.js';
-	import { irApi, type IrAction, type IrBinding, type IrTestResponse } from '#lib/api.ts';
+	import { irApi, type IrAction, type IrBinding, type IrEvent, type IrTestResponse } from '#lib/api.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { refocus } from '#lib/focus.ts';
 	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Toggle from '#lib/components/Toggle.svelte';
@@ -21,8 +22,11 @@
 		sources: Sources;
 		onsaved: () => void;
 		oncancel: () => void;
+		/** Touched since it opened: a key captured fills only an untouched form, and the sheet
+		 * asks before losing it. */
+		dirty?: boolean;
 	}
-	let { code: fixed, keymap, sources, onsaved, oncancel }: Props = $props();
+	let { code: fixed, keymap, sources, onsaved, oncancel, dirty = $bindable(false) }: Props = $props();
 
 	/** The STB's events are read once a second while capturing (as the React page did). */
 	const CAPTURE_POLL_MS = 1_000;
@@ -40,7 +44,6 @@
 	let actions = $state<Row[]>(rows(initial?.actions ?? []));
 	// svelte-ignore state_referenced_locally
 	let capturing = $state(fixed === undefined);
-	let dirty = false;
 	/** The binding the form was filled from (kept whole: `debounce_ms` and friends survive a save). */
 	let base: IrBinding | undefined = initial;
 	// two gestures: a test may still be running its actions when « Enregistrer » is pressed
@@ -49,6 +52,7 @@
 	let test = $state<{ response: IrTestResponse; actions: IrAction[] } | null>(null);
 	let problem = $state('');
 	let addButton = $state<HTMLButtonElement | null>(null);
+	let codeInput = $state<HTMLInputElement | null>(null);
 	const id = $props.id();
 
 	const code = $derived.by(() => {
@@ -68,10 +72,13 @@
 		actions = rows(existing.actions);
 	}
 
-	// capture: the first press newer than the events seen when it started (server clock)
+	// capture: the newest press numbered after the newest event seen when it started. By the
+	// backend's sequence, never by its clock: an NTP step back on the Pi (no RTC) would hide
+	// every new press. A sequence lower than the baseline means the backend restarted: all new.
 	$effect(() => {
 		if (!capturing) return;
-		let baseline: string | null = null;
+		/** undefined: not read yet; 0: the list was empty. */
+		let baseline: number | undefined = undefined;
 		let stopped = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const poll = async () => {
@@ -79,9 +86,10 @@
 				try {
 					const { events } = await irApi.recent();
 					if (stopped) return;
-					if (baseline === null) baseline = events[0]?.receivedAt ?? '';
+					if (baseline === undefined) baseline = events[0]?.seq ?? 0;
 					else {
-						const press = events.find((e) => e.value === 1 && e.receivedAt > (baseline ?? ''));
+						const since = (events[0]?.seq ?? 0) < baseline ? 0 : baseline;
+						const press = events.find((e) => e.seq > since && e.value === 1);
 						if (press) {
 							capturing = false;
 							codeText = String(press.code);
@@ -145,17 +153,25 @@
 		edited();
 	}
 
+	/** What the problem is about: the field it is said under, and that takes the focus. */
+	let problemAt = $state<'code' | 'actions' | null>(null);
+
 	/** Testing needs actions only; saving also needs the key. */
 	function check(needCode: boolean): boolean {
-		problem =
-			needCode && code === null
-				? m.remote_missing_code()
-				: actions.length === 0
-					? m.remote_missing_actions()
-					: !actions.every((r) => isComplete(r.action))
-						? m.remote_incomplete_actions()
-						: '';
-		if (problem) ui.say(problem);
+		const missingCode = needCode && code === null;
+		problem = missingCode
+			? m.remote_missing_code()
+			: actions.length === 0
+				? m.remote_missing_actions()
+				: !actions.every((r) => isComplete(r.action))
+					? m.remote_incomplete_actions()
+					: '';
+		problemAt = !problem ? null : missingCode ? 'code' : 'actions';
+		if (problem) {
+			// the field is described by the problem, and read when it takes the focus
+			if (missingCode && codeInput) void refocus(codeInput);
+			else void refocus(document.getElementById(`${id}-actions`)?.querySelector<HTMLElement>('[aria-invalid="true"], select, input') ?? addButton);
+		}
 		return !problem;
 	}
 
@@ -198,12 +214,16 @@
 		<legend class="label">{m.remote_key_code()}</legend>
 		{#if fixed === undefined}
 			<div class="actions">
-				<button type="button" class="btn" aria-pressed={capturing} onclick={() => (capturing = !capturing)}>
-					{#if capturing}<Icon name="loader-circle" class="spin" />{m.remote_stop_capture()}{:else}<Icon name="radio" />{m.remote_capture()}{/if}
+				<!-- a plain button: its words change with what it does (APG: no aria-pressed then) -->
+				<button type="button" class="btn" onclick={() => (capturing = !capturing)}>
+					<Icon name="radio" busy={capturing} />{capturing ? m.remote_stop_capture() : m.remote_capture()}
 				</button>
 				<input
 					id="{id}-code"
+					bind:this={codeInput}
 					class="code"
+					aria-invalid={problemAt === 'code' ? 'true' : undefined}
+					aria-describedby={problemAt === 'code' ? `${id}-problem` : undefined}
 					inputmode="numeric"
 					autocomplete="off"
 					aria-label={m.remote_key_code()}
@@ -223,7 +243,7 @@
 		{:else}
 			<p class="fixed">{keyName(fixed)} <span class="muted">{m.remote_key_number({ code: fixed })}</span></p>
 		{/if}
-		{#if alreadyMapped}<p class="warn">{m.remote_already_mapped()}</p>{/if}
+		{#if alreadyMapped}<p class="warn-text">{m.remote_already_mapped()}</p>{/if}
 	</fieldset>
 
 	<div class="field">
@@ -247,7 +267,7 @@
 		<h3 id="{id}-actions-title" class="label">{m.remote_actions()}</h3>
 		<p class="hint">{m.remote_actions_hint()}</p>
 		{#if actions.length === 0}<p class="hint">{m.remote_missing_actions()}</p>{/if}
-		<ol class="rows" id="{id}-actions">
+		<ol class="rows" id="{id}-actions" aria-describedby={problemAt === 'actions' ? `${id}-problem` : undefined}>
 			{#each actions as row, i (row.id)}
 				<ActionRow
 					action={row.action}
@@ -261,7 +281,13 @@
 			{/each}
 		</ol>
 		<div>
-			<button type="button" class="btn" bind:this={addButton} onclick={add}><Icon name="plus" />{m.remote_add_action()}</button>
+			<button
+				type="button"
+				class="btn"
+				bind:this={addButton}
+				aria-describedby={problemAt === 'actions' ? `${id}-problem` : undefined}
+				onclick={add}><Icon name="plus" />{m.remote_add_action()}</button
+			>
 		</div>
 	</section>
 
@@ -284,15 +310,15 @@
 		</div>
 	{/if}
 
-	<p class="form-error">{problem}</p>
+	<p class="form-error" id="{id}-problem">{problem}</p>
 
 	<div class="foot">
 		<button type="button" class="btn" onclick={oncancel}>{m.common_cancel()}</button>
-		<button type="button" class="btn" disabled={testing.is()} aria-describedby="{id}-test-hint" onclick={runTest}>
-			{#if testing.is()}<Icon name="loader-circle" class="spin" />{:else}<Icon name="flask-conical" />{/if}{m.remote_test()}
+		<button type="button" class="btn" {...pending(testing.is())} aria-describedby="{id}-test-hint" onclick={runTest}>
+			<Icon name="flask-conical" busy={testing.is()} />{m.remote_test()}
 		</button>
-		<button type="submit" class="btn primary" disabled={saving.is()}>
-			{#if saving.is()}<Icon name="loader-circle" class="spin" />{:else}<Icon name="save" />{/if}{m.common_save()}
+		<button type="submit" class="btn primary" {...pending(saving.is())}>
+			<Icon name="save" busy={saving.is()} />{m.common_save()}
 		</button>
 	</div>
 	<p class="hint" id="{id}-test-hint">{testing.is() ? m.remote_testing() : m.remote_test_hint()}</p>
@@ -301,11 +327,10 @@
 <style>
 	.editor { display: grid; gap: var(--s-5); }
 	.key { border: 0; padding: 0; margin: 0; display: grid; gap: var(--s-2); min-width: 0; }
-	.label { font: var(--t-label); font-weight: 600; margin: 0; padding: 0; }
+	.label { font-weight: 600; padding: 0; }
 	.code { width: 8rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 	.fixed { margin: 0; font: var(--t-body); font-weight: 600; }
-	.warn { margin: 0; font: var(--t-secondary); color: var(--warn-text); }
-	.field input { width: 100%; min-width: 0; }
+
 	.repeat { display: grid; gap: var(--s-1); }
 	.list { display: grid; gap: var(--s-2); }
 	.rows { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-3); }

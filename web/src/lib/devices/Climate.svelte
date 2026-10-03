@@ -12,7 +12,8 @@
 	import { broadlinkApi } from '#lib/api.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import { when } from '#lib/i18n.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
@@ -94,12 +95,19 @@
 		return () => clearTimeout(t);
 	});
 
+	/** A fresh search of the network (an admin's: it asks the server to scan again), once. */
 	async function search() {
+		if (searching) return;
 		discovery.timedOut = false;
 		discovery.force = true;
 		searching = true;
-		await remoteList.refresh();
-		searching = false;
+		try {
+			await remoteList.refresh();
+		} finally {
+			// the polls after it read the server's cache again
+			discovery.force = false;
+			searching = false;
+		}
 	}
 
 	function send(cmd: string) {
@@ -136,9 +144,11 @@
 <section class="group" aria-labelledby="climate-title">
 	<div class="group-head">
 		<h2 id="climate-title" class="group-title">{m.climate_dashboard_title()}</h2>
-		<button class="icon-btn end" aria-label={m.climate_search_remote()} disabled={searching} onclick={search}>
-			<Icon name={searching ? 'loader-circle' : 'refresh-cw'} class={searching ? 'spin' : undefined} />
-		</button>
+		<AdminOnly reason={false}>
+			<button class="icon-btn end" aria-label={m.climate_search_remote()} {...pending(searching)} onclick={search}>
+				<Icon name="refresh-cw" busy={searching} />
+			</button>
+		</AdminOnly>
 	</div>
 
 	<div class="tiles">
@@ -152,20 +162,20 @@
 			{#if !remote}
 				{#if discovery.timedOut}
 					<div class="hint">
-						<p class="warn">{m.climate_no_remote_title()}</p>
+						<p class="warn-text">{m.climate_no_remote_title()}</p>
 						<p>{m.climate_no_remote_description()}</p>
 					</div>
 				{:else}
-					<p class="hint searching"><Icon name="loader-circle" class="spin" />{m.climate_searching_title()} — {m.climate_searching_description()}</p>
+					<p class="hint searching"><Icon name="search" busy />{m.climate_searching_title()} — {m.climate_searching_description()}</p>
 				{/if}
 			{/if}
 
 			<div class="btn-row">
-				<button class="btn" disabled={!remote || sending.is()} onclick={() => send(command)}>
-					<Icon name={sending.is(command) ? 'loader-circle' : 'power'} class={sending.is(command) ? 'spin' : undefined} />{m.action_turn_on()}
+				<button class="btn" disabled={!remote} {...pending(sending.is())} onclick={() => !sending.is() && send(command)}>
+					<Icon name="power" busy={sending.is(command)} /><span class="btn-text">{m.action_turn_on()}</span>
 				</button>
-				<button class="btn" disabled={!remote || sending.is()} onclick={() => send(CLIMATE_OFF)}>
-					<Icon name={sending.is(CLIMATE_OFF) ? 'loader-circle' : 'square'} class={sending.is(CLIMATE_OFF) ? 'spin' : undefined} />{m.action_turn_off()}
+				<button class="btn" disabled={!remote} {...pending(sending.is())} onclick={() => !sending.is() && send(CLIMATE_OFF)}>
+					<Icon name="square" busy={sending.is(CLIMATE_OFF)} /><span class="btn-text">{m.action_turn_off()}</span>
 				</button>
 			</div>
 
@@ -215,13 +225,17 @@
 						<p class="hint">{m.climate_econo_cool_description()}</p>
 					</div>
 
-					<p class="hint">{m.climate_generated_command()} <code>{command}</code></p>
+					<!-- the infrared order itself: for whoever debugs, folded -->
+					<details class="raw">
+						<summary class="link-btn quiet">{m.climate_generated_command()}</summary>
+						<code>{command}</code>
+					</details>
 
 					<div class="actions">
-						<button class="btn primary" disabled={!remote || sending.is()} onclick={() => send(command)}>
-							{#if sending.is(command)}<Icon name="loader-circle" class="spin" />{/if}{m.climate_send_structured_command()}
+						<button class="btn primary" disabled={!remote} {...pending(sending.is())} onclick={() => !sending.is() && send(command)}>
+							<Icon name="power" busy={sending.is(command)} />{m.climate_send_structured_command()}
 						</button>
-						<button class="btn" disabled={sending.is()} onclick={() => (form = { ...INITIAL })}>{m.climate_reset()}</button>
+						<button class="btn" onclick={() => (form = { ...INITIAL })}>{m.climate_reset()}</button>
 					</div>
 				</div>
 			{/if}
@@ -234,8 +248,8 @@
 	.settings { gap: var(--s-4); }
 	.searching { display: flex; align-items: center; gap: var(--s-2); }
 	.hint p { margin: 0; }
-	.warn { color: var(--warn-text); font-weight: 600; }
-	code { overflow-wrap: anywhere; color: var(--ink); }
+	.raw summary { cursor: pointer; font: var(--t-secondary); min-height: var(--control-h-xs); display: flex; align-items: center; }
+	code { overflow-wrap: anywhere; color: var(--ink); font: var(--t-secondary); }
 	/* « Éteindre après un délai » wraps rather than overflow at 390 px */
 	.segmented .btn { white-space: normal; text-align: center; }
 </style>

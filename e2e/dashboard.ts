@@ -1,6 +1,6 @@
 // The dashboard against a simulated house (house.ts): what a tile says, what a gesture sends,
 // what the page does when a device does not answer (docs/ux/tableau-de-bord.md § 1–4).
-import { check, checkNoErrors, done, launch, open, shot, signIn } from './lib.ts';
+import { BASE, check, checkNoErrors, done, launch, open, shot, signIn } from './lib.ts';
 import { house } from './house.ts';
 
 const browser = await launch();
@@ -21,9 +21,9 @@ check('pressed: shows the target at once', (await gesture('Salon').getAttribute(
 await p.waitForTimeout(300);
 check('one command sent, off', h.state.sent.at(-1) === 'POST /api/hue-lamps/hue-01/power {"enabled":false}', h.state.sent.at(-1));
 
-// an unreachable lamp: no gesture offered, its state in words
-check('unreachable lamp: says so', /Injoignable/.test(await tile('Chambre').innerText()));
-check('unreachable lamp: no on/off button', (await gesture('Chambre').count()) === 0);
+// an unreachable lamp: its gesture kept in place but unavailable, its state and since when in words
+check('unreachable lamp: says since when', /Injoignable depuis 12/.test(await tile('Chambre').innerText()));
+check('unreachable lamp: the on/off button stays, unavailable', (await gesture('Chambre').getAttribute('aria-disabled')) === 'true');
 
 // a lamp that stops answering: « Pas de réponse » after the lamp limit (3 s), back to the read state
 h.state.silent.add('hue');
@@ -54,9 +54,27 @@ check('the tile says closed', /Fermé/.test(await shutter.innerText()));
 const slider = shutter.getByRole('slider');
 await slider.focus();
 await p.keyboard.press('PageUp');
-await p.waitForTimeout(400);
+// the motor gets its target 0.4 s after the last key, not one per key (§ 3)
+await p.waitForTimeout(150);
+check('no target sent while keys may still come', !h.state.sent.some((x) => x.includes('/position')));
+await p.waitForTimeout(600);
 check('Page Up moves 25 %', h.state.sent.at(-1) === 'POST /api/matter/covers/0000000000000002/position {"openPercent":25}', h.state.sent.at(-1));
 check('the slider speaks words', (await slider.getAttribute('aria-valuetext')) === 'Ouvert à 25 %');
+
+// ── a settings switch keeps the focus while its order travels (never disabled under the finger) ──
+await p.goto(BASE + '/device/feeder-1');
+await p.getByRole('heading', { name: 'Pixi Feeder', level: 1 }).waitFor();
+await p.getByRole('tab', { name: 'Repas planifiés' }).click();
+const meal = p.getByRole('switch').first();
+await meal.focus();
+await p.keyboard.press('Space');
+await p.waitForTimeout(100);
+check('the switch says it is busy', (await meal.getAttribute('aria-busy')) === 'true');
+check('…and keeps the focus', await meal.evaluate((el) => el === document.activeElement));
+await p.waitForTimeout(800);
+check('…still focused once saved', await meal.evaluate((el) => el === document.activeElement));
+await p.getByRole('link', { name: 'Retour à l’accueil' }).click();
+await p.getByRole('heading', { name: 'Accueil', level: 1 }).waitFor();
 
 // ── the cats: the device links to its page ──
 await p.getByRole('link', { name: 'Pixi Feeder' }).click();

@@ -25,16 +25,21 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
-use crate::error::AppError;
+use crate::{
+    error::AppError,
+    store::{self, Access, Corrupt},
+};
 
 const RECENT_EVENTS_CAP: usize = 50;
 
@@ -59,6 +64,21 @@ pub enum SwitchState {
     Off,
     #[default]
     Toggle,
+}
+
+impl SwitchState {
+    /// Whether the device should end up on. `current` (is it on now?) is only asked for a
+    /// toggle, so forcing a state costs no round trip.
+    pub async fn resolve<F>(self, current: impl FnOnce() -> F) -> Result<bool, AppError>
+    where
+        F: Future<Output = Result<bool, AppError>>,
+    {
+        match self {
+            Self::On => Ok(true),
+            Self::Off => Ok(false),
+            Self::Toggle => Ok(!current().await?),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -144,11 +164,7 @@ fn default_true() -> bool {
 pub fn validate_actions(actions: &[IrAction]) -> Result<(), String> {
     for action in actions {
         if let IrAction::AndroidTvApp { package, .. } = action {
-            let valid = !package.is_empty()
-                && package
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_');
-            if !valid {
+            if crate::androidtv::validate_package(package).is_err() {
                 return Err(format!(
                     "invalid Android package {package:?} (expected e.g. org.smarttube.beta)"
                 ));
@@ -198,18 +214,28 @@ impl IrBinding {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IrEventLog {
+    /// Increases by one with each event (from 1 at each start): what the configurator's
+    /// capture compares, never the clock (the Pi's may step back when NTP syncs).
+    pub seq: u64,
     pub code: u16,
     pub value: i32,
     pub mapped: bool,
     pub received_at: DateTime<Utc>,
 }
 
+/// Work queued for one key, run after the key's earlier presses.
+type KeyJob = BoxFuture<'static, ()>;
+
 #[derive(Clone)]
 pub struct IrManager {
     path: Arc<PathBuf>,
     keymap: Arc<RwLock<HashMap<u16, IrBinding>>>,
     recent: Arc<Mutex<VecDeque<IrEventLog>>>,
+    /// The last event's `seq`.
+    seq: Arc<std::sync::atomic::AtomicU64>,
     last_press: Arc<Mutex<HashMap<u16, Instant>>>,
+    /// One queue per key, each drained by its own task, in order.
+    queues: Arc<std::sync::Mutex<HashMap<u16, mpsc::UnboundedSender<KeyJob>>>>,
 }
 
 impl IrManager {
@@ -217,24 +243,44 @@ impl IrManager {
     /// A present but invalid file is a startup error: a corrupt keymap
     /// should not silently disable the remote.
     pub fn new(path: &Path) -> Result<Self, AppError> {
-        let keymap = match std::fs::read_to_string(path) {
-            Ok(content) => parse_keymap(&content).map_err(|error| {
-                AppError::http(
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Invalid IR keymap {}: {error}", path.display()),
-                )
-            })?,
-            Err(_) => {
-                tracing::debug!(path = %path.display(), "no IR keymap yet, starting empty");
-                HashMap::new()
-            }
-        };
+        let raw: HashMap<String, IrBinding> = store::read_json(path, Corrupt::Fail)?;
+        let keymap = numeric_keys(raw).map_err(|error| {
+            AppError::http(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid IR keymap {}: {error}", path.display()),
+            )
+        })?;
         Ok(Self {
             path: Arc::new(path.to_path_buf()),
             keymap: Arc::new(RwLock::new(keymap)),
             recent: Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_EVENTS_CAP))),
+            seq: Arc::default(),
             last_press: Arc::new(Mutex::new(HashMap::new())),
+            queues: Arc::default(),
         })
+    }
+
+    /// Runs `job` in the background, after every job queued earlier for the same key: a
+    /// binding's actions finish even when the caller hangs up, and two presses of one
+    /// key never interleave. Other keys run alongside.
+    pub fn run_in_order(&self, code: u16, job: impl Future<Output = ()> + Send + 'static) {
+        let mut queues = self.queues.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut job: KeyJob = Box::pin(job);
+        if let Some(queue) = queues.get(&code) {
+            match queue.send(job) {
+                Ok(()) => return,
+                // the key's task is gone (a job panicked): start a new one
+                Err(mpsc::error::SendError(back)) => job = back,
+            }
+        }
+        let (queue, mut jobs) = mpsc::unbounded_channel::<KeyJob>();
+        let _ = queue.send(job);
+        queues.insert(code, queue);
+        tokio::spawn(async move {
+            while let Some(job) = jobs.recv().await {
+                job.await;
+            }
+        });
     }
 
     /// Returns `false` when this press is a phantom double (see
@@ -268,20 +314,27 @@ impl IrManager {
         self.keymap.read().await.clone()
     }
 
+    /// Saved first, then kept: a failed save leaves memory as it is on disk.
     pub async fn set_binding(&self, code: u16, binding: IrBinding) -> Result<(), AppError> {
         let mut map = self.keymap.write().await;
-        map.insert(code, binding);
-        self.persist(&map)
+        let mut next = map.clone();
+        next.insert(code, binding);
+        self.persist(&next)?;
+        *map = next;
+        Ok(())
     }
 
     /// Returns `true` when a binding existed and was removed.
     pub async fn remove_binding(&self, code: u16) -> Result<bool, AppError> {
         let mut map = self.keymap.write().await;
-        let removed = map.remove(&code).is_some();
-        if removed {
-            self.persist(&map)?;
+        if !map.contains_key(&code) {
+            return Ok(false);
         }
-        Ok(removed)
+        let mut next = map.clone();
+        next.remove(&code);
+        self.persist(&next)?;
+        *map = next;
+        Ok(true)
     }
 
     pub async fn record_event(&self, code: u16, value: i32, mapped: bool) {
@@ -290,6 +343,7 @@ impl IrManager {
             recent.pop_front();
         }
         recent.push_back(IrEventLog {
+            seq: self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
             code,
             value,
             mapped,
@@ -308,24 +362,17 @@ impl IrManager {
             .iter()
             .map(|(code, binding)| (code.to_string(), binding))
             .collect();
-        let payload = serde_json::to_string_pretty(&as_strings).map_err(|error| {
-            AppError::http(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to serialize IR keymap: {error}"),
-            )
-        })?;
-        std::fs::write(self.path.as_ref(), format!("{payload}\n")).map_err(|error| {
-            AppError::http(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to write {}: {error}", self.path.display()),
-            )
-        })
+        store::write_json(&self.path, &as_strings, Access::Shared)
     }
 }
 
+/// A keymap file's text (the `keymap_file_check` test checks a hand-written one).
 pub fn parse_keymap(content: &str) -> Result<HashMap<u16, IrBinding>, String> {
-    let raw: HashMap<String, IrBinding> =
-        serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
+    numeric_keys(serde_json::from_str(content.trim()).map_err(|error| error.to_string())?)
+}
+
+/// JSON keys are strings; keycodes are numbers.
+fn numeric_keys(raw: HashMap<String, IrBinding>) -> Result<HashMap<u16, IrBinding>, String> {
     raw.into_iter()
         .map(|(key, binding)| {
             key.parse::<u16>()
@@ -338,6 +385,16 @@ pub fn parse_keymap(content: &str) -> Result<HashMap<u16, IrBinding>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn events_are_numbered_in_order_whatever_the_clock_says() {
+        let manager = IrManager::new(&std::env::temp_dir().join(format!("{}.json", uuid::Uuid::new_v4()))).unwrap();
+        for code in [10, 11, 12] {
+            manager.record_event(code, 1, false).await;
+        }
+        let seqs: Vec<(u64, u16)> = manager.recent_events().await.iter().map(|e| (e.seq, e.code)).collect();
+        assert_eq!(seqs, [(3, 12), (2, 11), (1, 10)], "newest first, one more each time");
+    }
 
     #[test]
     fn parses_all_action_kinds_and_multi_action_bindings() {
@@ -560,6 +617,59 @@ mod tests {
             "immediate second press is a phantom"
         );
         assert!(manager.accept_press(117).await, "other keys are independent");
+    }
+
+    #[tokio::test]
+    async fn resolve_asks_the_current_state_only_to_toggle() {
+        let never = || async { panic!("not asked for a forced state") };
+        assert!(SwitchState::On.resolve(never).await.unwrap());
+        assert!(!SwitchState::Off.resolve(never).await.unwrap());
+        assert!(!SwitchState::Toggle.resolve(|| async { Ok(true) }).await.unwrap());
+        assert!(SwitchState::Toggle.resolve(|| async { Ok(false) }).await.unwrap());
+        assert!(SwitchState::Toggle.resolve(|| async { Err(AppError::not_found("x")) }).await.is_err());
+    }
+
+    /// A failed save must not leave a binding that exists in memory only (and vanishes on
+    /// the next restart).
+    #[tokio::test]
+    async fn a_failed_save_changes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ir-keymap.json");
+        let manager = IrManager::new(&path).expect("empty manager");
+        std::fs::create_dir(&path).expect("a directory where the file goes");
+        let binding = IrBinding {
+            actions: vec![IrAction::Nabaztag { command: "ping".into() }],
+            label: None,
+            repeat: false,
+            debounce_ms: None,
+        };
+        assert!(manager.set_binding(1, binding).await.is_err());
+        assert!(manager.binding(1).await.is_none());
+    }
+
+    /// Presses of one key run in arrival order even when an earlier one is slower; other
+    /// keys do not wait for them.
+    #[tokio::test]
+    async fn jobs_run_in_order_per_key() {
+        let manager = IrManager::new(&std::env::temp_dir().join(format!("{}.json", uuid::Uuid::new_v4())))
+            .expect("manager");
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (done, mut finished) = mpsc::unbounded_channel();
+        for (code, label, wait_ms) in [(1, "1a", 80), (1, "1b", 0), (2, "2a", 0), (1, "1c", 10)] {
+            let (log, done) = (log.clone(), done.clone());
+            manager.run_in_order(code, async move {
+                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                log.lock().unwrap().push(label);
+                let _ = done.send(());
+            });
+        }
+        for _ in 0..4 {
+            finished.recv().await.expect("every job runs");
+        }
+        let log = log.lock().unwrap().clone();
+        assert_eq!(log.first(), Some(&"2a"), "key 2 did not wait for key 1: {log:?}");
+        let key_one: Vec<_> = log.iter().filter(|l| l.starts_with('1')).copied().collect();
+        assert_eq!(key_one, ["1a", "1b", "1c"]);
     }
 
     #[tokio::test]

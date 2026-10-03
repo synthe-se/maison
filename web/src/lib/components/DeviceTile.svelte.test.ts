@@ -98,4 +98,32 @@ describe('DeviceTile', () => {
 		retry.click();
 		expect(ontoggle).toHaveBeenCalledExactlyOnceWith(true);
 	});
+
+	it('unreachable: its gesture stays, unavailable, with the reason as its description', async () => {
+		const ontoggle = vi.fn();
+		await render(DeviceTile, { ...base, on: true, ontoggle, offline: true, state: 'Injoignable depuis 3 min' });
+		const button = page.getByRole('button', { name: base.name });
+		await expect.element(button).toHaveAttribute('aria-disabled', 'true');
+		await expect.element(button).toHaveAccessibleDescription('Injoignable depuis 3 min');
+		await expect.element(button).toHaveAttribute('aria-pressed', 'false');
+		(button.element() as HTMLElement).click();
+		expect(ontoggle).not.toHaveBeenCalled();
+		await expect.element(page.getByText('Injoignable depuis 3 min')).toHaveClass('warn');
+	});
+
+	it('its name and state are one link, a 44 px target, with an underline', async () => {
+		await render(DeviceTile, { ...base, href: '/hue-lamp/1' });
+		const link = page.getByRole('link', { name: base.name });
+		await expect.element(link).toHaveAccessibleDescription(base.state);
+		const area = (link.element() as HTMLElement).closest('.text')!.getBoundingClientRect();
+		expect(area.height).toBeGreaterThanOrEqual(44);
+		expect(getComputedStyle(link.element()).textDecorationLine).toBe('underline');
+	});
+
+	it('off: a disc, not a rounded square', async () => {
+		await render(DeviceTile, { ...base, on: false, ontoggle: () => {} });
+		const button = page.getByRole('button', { name: base.name }).element() as HTMLElement;
+		const style = getComputedStyle(button);
+		expect(style.borderTopLeftRadius).toBe('50%');
+	});
 });

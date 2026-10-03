@@ -5,6 +5,7 @@ import { m } from '#lib/paraglide/messages.js';
 import type { Device } from '#lib/api.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
+import { tuyaDevice } from '#lib/test/tuya.ts';
 import DevicePage from './+page.svelte';
 
 // the route's parameters, as SvelteKit would give them
@@ -12,10 +13,10 @@ const route = vi.hoisted(() => ({ params: { deviceId: 'f1' } as { deviceId?: str
 vi.mock('$app/state', () => ({ page: route }));
 
 const devices: Device[] = [
-	{ id: 'f1', name: 'Distributeur', type: 'feeder', product_name: 'Petlibro Air', ip: '192.168.1.20', version: '3.3', connected: true },
-	{ id: 'w1', name: 'Fontaine', type: 'fountain', ip: '192.168.1.21', connected: false },
-	{ id: 'l1', name: 'Litière', type: 'litter-box', connected: true },
-	{ id: 'u1', name: 'Mystère', type: 'unknown', connected: true }
+	tuyaDevice({ product_name: 'Petlibro Air', ip: '192.168.1.20', version: '3.3' }),
+	tuyaDevice({ id: 'w1', name: 'Fontaine', type: 'fountain', ip: '192.168.1.21', connected: false }),
+	tuyaDevice({ id: 'l1', name: 'Litière', type: 'litter-box' }),
+	tuyaDevice({ id: 'u1', name: 'Mystère', type: 'unknown' })
 ];
 const open = async (id: string | undefined, list: unknown = { success: true, devices, total: devices.length, message: '' }) => {
 	route.params = { deviceId: id };
@@ -44,7 +45,7 @@ describe('device page', () => {
 		await open('f1');
 		await expect.element(title('Distributeur')).toBeVisible();
 		await expect.element(page.getByText(`${m.device_online()} · Petlibro Air · 192.168.1.20 · ${m.device_version({ version: '3.3' })}`)).toBeVisible();
-		await expect.element(page.getByRole('button', { name: m.device_disconnect({ name: 'Distributeur' }) })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.device_connection({ name: 'Distributeur' }) })).toBeVisible();
 		await expect.element(page.getByRole('heading', { name: m.feeder_manual_distribution() })).toBeVisible();
 	});
 
@@ -52,7 +53,7 @@ describe('device page', () => {
 		await open('w1');
 		await expect.element(title('Fontaine')).toBeVisible();
 		await expect.element(page.getByText(`${m.device_offline()} · ${m.device_types_fountain()} · 192.168.1.21`)).toBeVisible();
-		await expect.element(page.getByRole('button', { name: m.device_connect({ name: 'Fontaine' }) })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.device_connection({ name: 'Fontaine' }) })).toBeVisible();
 	});
 
 	it('shows a litter box’s controls', async () => {

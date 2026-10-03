@@ -174,7 +174,7 @@ cat <<-SETUP > /tmp/sys-setup.sh
 
 	cat > /etc/mosquitto/conf.d/maison.conf <<'MQEOF'
 # Installed by maison unattended bootstrap
-listener 1883 0.0.0.0
+listener 1883 127.0.0.1
 allow_anonymous true
 log_dest file /var/log/mosquitto/mosquitto.log
 log_type warning
@@ -191,8 +191,8 @@ MQEOF
 	rc-update add sshd default 2>/dev/null || true
 	rc-update add chronyd default 2>/dev/null || true
 
-	# Ensure sshd allows root login and key auth
-	sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+	# Ensure sshd allows root login by key only (never by password)
+	sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 	sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 	# motd

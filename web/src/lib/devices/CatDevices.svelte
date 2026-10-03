@@ -6,8 +6,9 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { devicesApi, type Device } from '#lib/api.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
+	import Loaded from '#lib/components/Loaded.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import ConnectButton from './cats/ConnectButton.svelte';
 	import { ICON, devices, feed, served } from './cats/tuya.svelte.ts';
@@ -54,40 +55,22 @@
 		</DropdownMenu.Root>
 	</div>
 
-	{#if list.loading}
-		<p class="sr-only" role="status">{m.common_loading()}</p>
-		<div class="tiles" aria-hidden="true">
-			{#each { length: SKELETONS }, i (i)}<div class="tile skeleton"></div>{/each}
-		</div>
-	{:else if list.error && !list.data}
-		<div class="empty">
-			<p>{m.dashboard_loading_error()}</p>
-			<button class="btn" onclick={() => list.refresh()}><Icon name="refresh-cw" />{m.common_retry()}</button>
-		</div>
-	{:else if all.length === 0}
-		<div class="empty">
-			<p>{m.dashboard_no_devices()}</p>
-			<p class="hint">{m.dashboard_no_devices_hint()}</p>
-		</div>
-	{:else}
+	<Loaded value={list} skeletons={SKELETONS} empty={all.length === 0} emptyText={m.dashboard_no_devices()} emptyHint={m.dashboard_no_devices_hint()}>
 		<div class="tiles">
 			{#each all as d (d.id)}
 				<DeviceTile name={d.name} icon={ICON[d.type]} href="/device/{d.id}" state={describe(d)} warn={!d.connected} on={d.connected}>
 					{#snippet end()}<ConnectButton device={d} />{/snippet}
 					{#if d.type === 'feeder'}
-						<button class="btn give" disabled={!d.connected || feeding.is(d.id)} aria-busy={feeding.is(d.id)} onclick={() => give(d)}>
-							<Icon name={feeding.is(d.id) ? 'loader-circle' : 'utensils'} class={feeding.is(d.id) ? 'spin' : undefined} />{m.feeder_distribute({ count: 1 })}
+						<button class="btn give" disabled={!d.connected} {...pending(feeding.is(d.id))} onclick={() => give(d)}>
+							<Icon name="utensils" busy={feeding.is(d.id)} />{m.feeder_distribute({ count: 1 })}
 						</button>
 					{/if}
 				</DeviceTile>
 			{/each}
 		</div>
-	{/if}
+	</Loaded>
 </section>
 
 <style>
 	.give { min-height: var(--control-h); justify-content: center; }
-	/* a tile's final height: head row plus padding (no jump when the list arrives) */
-	.skeleton { min-height: calc(var(--tile-icon) + 2 * var(--s-4)); background: var(--ground-raised); border-color: transparent; }
-	.empty .btn { margin-top: var(--s-3); }
 </style>

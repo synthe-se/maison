@@ -4,7 +4,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { zigbeeLampsApi, type ZigbeeLamp } from '#lib/api.ts';
 	import { refresh } from '#lib/live.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import { css, EFFECTS, paintWheel, PRESETS, rgbToXy, STOP_EFFECT, wheelColor, wheelPosition } from './color.ts';
 	import { zigbee } from './lamp.ts';
 
@@ -19,6 +19,7 @@
 		lamp.state.colorX !== null && lamp.state.colorY !== null ? wheelPosition(lamp.state.colorX, lamp.state.colorY) : null
 	);
 
+	// one order at a time: a swatch or an effect pressed while one travels does nothing (busy, not disabled: the focus stays)
 	const act = (run: () => Promise<unknown>) => g.run(run, () => refresh(zigbee.key));
 
 	const setColour = (xy: { x: number; y: number }) => act(() => zigbeeLampsApi.color(lamp.id, xy.x, xy.y));
@@ -39,7 +40,7 @@
 				style:background={css(p.rgb)}
 				aria-label={p.name()}
 				title={p.name()}
-				disabled={disabled || g.is()}
+				{disabled} {...pending(g.is())}
 				onclick={() => setColour(rgbToXy(p.rgb))}
 			></button>
 		{/each}
@@ -55,9 +56,9 @@
 		<h3 id="zigbee-effects" class="label">{m.zigbee_lamps_effects()}</h3>
 		<div class="actions">
 			{#each EFFECTS as eff (eff.id)}
-				<button class="btn" disabled={disabled || g.is()} onclick={() => act(() => zigbeeLampsApi.effect(lamp.id, eff.id))}>{eff.name()}</button>
+				<button class="btn" {disabled} {...pending(g.is())} onclick={() => act(() => zigbeeLampsApi.effect(lamp.id, eff.id))}>{eff.name()}</button>
 			{/each}
-			<button class="btn ghost" disabled={disabled || g.is()} onclick={() => act(() => zigbeeLampsApi.effect(lamp.id, STOP_EFFECT))}>
+			<button class="btn ghost" {disabled} {...pending(g.is())} onclick={() => act(() => zigbeeLampsApi.effect(lamp.id, STOP_EFFECT))}>
 				{m.zigbee_lamps_effect_stop_effect()}
 			</button>
 		</div>
@@ -78,5 +79,4 @@
 		border: 2px solid var(--surface); box-shadow: var(--shadow); pointer-events: none;
 	}
 	section { display: grid; gap: var(--s-2); }
-	.label { font: var(--t-label); margin: 0; }
 </style>

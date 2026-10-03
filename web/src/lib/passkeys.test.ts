@@ -10,16 +10,15 @@ import {
 	inviteGreeting,
 	listInvites,
 	listPasskeys,
-	passkeyMessage,
 	register,
 	removePasskey,
 	renamePasskey,
 	requestOptions,
 	revokeInvite,
 	signIn,
-	toJSON,
-	worded
+	toJSON
 } from './passkeys.ts';
+import { errorText } from './errors.ts';
 
 const bytes = (b: BufferSource) => [...new Uint8Array(b as ArrayBuffer)];
 const text = (s: string) => [...new TextEncoder().encode(s)];
@@ -80,8 +79,9 @@ describe('passkeys: the ceremonies', () => {
 		const { credentials } = browser();
 		const api = stubApi(passkeyRoutes());
 		expect(await signIn()).toEqual({ success: true, user: leonard });
-		expect(api.sent('POST', '/passkeys/login/start')[0].body).toEqual({ conditional: false });
-		expect(credentials.get).toHaveBeenCalledWith(expect.objectContaining({ mediation: undefined }));
+		// no autofill sign-in any more: nothing to say but « start »
+		expect(api.sent('POST', '/passkeys/login/start')[0].body).toEqual({});
+		expect(credentials.get).toHaveBeenCalledWith({ publicKey: expect.anything() });
 		expect(api.sent('POST', '/passkeys/login/finish')[0].body).toEqual({ ceremony: 'c1', credential: credentialJson });
 	});
 
@@ -89,7 +89,7 @@ describe('passkeys: the ceremonies', () => {
 		browser(null);
 		const api = stubApi(passkeyRoutes());
 		const refused = await signIn().catch((e) => e);
-		expect(passkeyMessage(refused)).toBe(m.pk_cancelled());
+		expect(errorText(refused)).toBe(m.pk_cancelled());
 		expect(api.sent('POST', '/passkeys/login/finish')).toEqual([]);
 	});
 
@@ -117,6 +117,37 @@ describe('passkeys: the ceremonies', () => {
 		await register();
 		expect(api.sent('POST', '/passkeys/register/start')[0].body).toEqual({});
 	});
+
+	it('an old sign-in: asks the passkey again, then starts the registration again, once', async () => {
+		const { credentials } = browser();
+		let refused = false;
+		const onReauth = vi.fn();
+		const api = stubApi({
+			...passkeyRoutes(),
+			'POST /passkeys/register/start': () => {
+				if (refused) return { ceremony: 'c2', options: { publicKey: creationJson } };
+				refused = true;
+				return json({ error: 'Sign in again', code: 'reauth_needed' }, 403);
+			}
+		});
+		await register({ onReauth });
+		expect(onReauth).toHaveBeenCalledOnce();
+		expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+			'POST /passkeys/register/start',
+			'POST /passkeys/login/start',
+			'POST /passkeys/login/finish',
+			'POST /passkeys/register/start',
+			'POST /passkeys/register/finish'
+		]);
+		expect(credentials.get).toHaveBeenCalledOnce();
+		expect(credentials.create).toHaveBeenCalledOnce();
+	});
+
+	it('an invitation never asks for a sign-in: its refusal stands', async () => {
+		browser();
+		stubApi({ ...passkeyRoutes(), 'POST /passkeys/register/start': json({ error: 'x', code: 'reauth_needed' }, 403) });
+		await expect(register({ invite: 'tok' })).rejects.toMatchObject({ code: 'reauth_needed' });
+	});
 });
 
 describe('passkeys: the rest of the API', () => {
@@ -127,39 +158,12 @@ describe('passkeys: the rest of the API', () => {
 		['greeting', () => inviteGreeting('tok'), 'GET', '/invites/tok'],
 		['invitations', () => listInvites(), 'GET', '/invites'],
 		['invite', () => createInvite('Alex', false), 'POST', '/invites', { name: 'Alex', admin: false }],
+		['access back', () => createInvite('Alex', false, 'alex'), 'POST', '/invites', { name: 'Alex', admin: false, person: 'alex' }],
 		['revoke', () => revokeInvite('i1'), 'DELETE', '/invites/i1']
 	];
 	it.each(cases)('%s', async (_, call, method, path, body) => {
 		const api = stubApi({ [`${method} ${path}`]: {} });
 		await call();
 		expect(api.calls).toEqual([{ method, path, body }]);
-	});
-});
-
-describe('passkeys: what went wrong, in words', () => {
-	it('words each refusal of the server and of the browser', () => {
-		const coded = (code: string) => new ApiError('x', 400, code);
-		const cases: [unknown, string][] = [
-			[coded('passkey_rejected'), m.pk_rejected()],
-			[coded('passkey_exists'), m.pk_exists()],
-			[coded('invite_invalid'), m.pk_invite_invalid()],
-			[coded('ceremony_expired'), m.pk_expired()],
-			[coded('unknown_passkey'), m.pk_unknown()],
-			[coded('last_passkey'), m.pk_last()],
-			[coded('too_many_attempts'), m.pk_too_many()],
-			[coded('passkey_off'), m.pk_off()],
-			[new DOMException('closed', 'NotAllowedError'), m.pk_cancelled()],
-			[new DOMException('aborted', 'AbortError'), m.pk_cancelled()],
-			[new DOMException('wrong site', 'SecurityError'), m.pk_insecure()],
-			[new DOMException('again', 'InvalidStateError'), m.pk_exists()],
-			[new ApiError('TV unreachable', 503), 'TV unreachable'],
-			['?', m.common_error()]
-		];
-		for (const [e, said] of cases) expect(passkeyMessage(e)).toBe(said);
-	});
-
-	it('rewords a failure for a gesture to show', async () => {
-		await expect(worded(Promise.reject(new ApiError('x', 409, 'last_passkey')))).rejects.toThrow(m.pk_last());
-		await expect(worded(Promise.resolve(1))).resolves.toBe(1);
 	});
 });

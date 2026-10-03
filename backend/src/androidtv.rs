@@ -22,19 +22,30 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
+use axum::{body::Bytes, http::StatusCode};
+use futures::{Stream, StreamExt};
 use rsa::RsaPrivateKey;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
+    AppState,
     adb::{self, AdbDevice},
     atvremote::{Identity, Pairing, Session},
+    broadlink::device_host,
     error::AppError,
+    json_config::JsonConfig,
+    store,
+    util::non_blank,
 };
 
 const DEFAULT_ADB_PORT: u16 = 5555;
+/// After a failed Remote v2 connect, how long to stay on ADB before trying again: an
+/// unpaired box would otherwise cost an RSA handshake on every status poll.
+const REMOTE_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Remote-control keys, mapped to Android keycodes. An enum rather than a
 /// string so no caller can smuggle shell syntax into `input keyevent`.
@@ -170,10 +181,9 @@ pub struct AndroidTvStatus {
 
 #[derive(Clone)]
 pub struct AndroidTvManager {
-    config_path: PathBuf,
     key_path: PathBuf,
     identity_path: PathBuf,
-    config: Arc<RwLock<AndroidTvConfig>>,
+    config: Arc<JsonConfig<AndroidTvConfig>>,
     key: Arc<Mutex<Option<RsaPrivateKey>>>,
     /// Reused across calls; also serializes them, which suits a remote
     /// control and keeps a single ADB stream open at a time.
@@ -184,6 +194,10 @@ pub struct AndroidTvManager {
     /// A pairing in flight. It spans two HTTP requests — the TV shows a code
     /// between them — so the open TLS session has to be held here.
     pending_pairing: Arc<Mutex<Option<Pairing>>>,
+    /// When a Remote v2 connect last failed (see `REMOTE_RETRY_AFTER`).
+    remote_failed_at: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// One APK install at a time: each holds an upload and an ADB transfer.
+    installing: Arc<Semaphore>,
 }
 
 impl AndroidTvManager {
@@ -192,58 +206,58 @@ impl AndroidTvManager {
         key_path: &Path,
         identity_path: &Path,
     ) -> Result<Self, AppError> {
-        let config = match std::fs::read_to_string(config_path) {
-            Ok(content) if !content.trim().is_empty() => {
-                serde_json::from_str(&content).map_err(|error| {
-                    AppError::http(
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        format!(
-                            "invalid Android TV config at {}: {error}",
-                            config_path.display()
-                        ),
-                    )
-                })?
-            }
-            _ => AndroidTvConfig::default(),
-        };
-
         Ok(Self {
-            config_path: config_path.to_path_buf(),
             key_path: key_path.to_path_buf(),
             identity_path: identity_path.to_path_buf(),
-            config: Arc::new(RwLock::new(config)),
+            config: Arc::new(JsonConfig::load(config_path)?),
             key: Arc::new(Mutex::new(None)),
             device: Arc::new(Mutex::new(None)),
             remote: Arc::new(Mutex::new(None)),
             pending_pairing: Arc::new(Mutex::new(None)),
+            remote_failed_at: Arc::default(),
+            installing: Arc::new(Semaphore::new(1)),
         })
     }
 
     pub async fn config(&self) -> AndroidTvConfig {
-        self.config.read().await.clone()
+        self.config.get().await
     }
 
-    pub async fn set_config(
-        &self,
-        config: AndroidTvConfig,
-    ) -> Result<AndroidTvConfig, AppError> {
+    /// The host must be a LAN device address; package names are checked since they
+    /// reach the shell.
+    pub async fn set_config(&self, mut config: AndroidTvConfig) -> Result<AndroidTvConfig, AppError> {
+        config.host = non_blank(config.host).map(|host| device_host(&host)).transpose()?;
         for app in &config.favourite_apps {
             validate_package(&app.package)?;
         }
-        std::fs::write(&self.config_path, serde_json::to_string_pretty(&config)?)?;
-        *self.config.write().await = config.clone();
-        // The address may have changed; drop any connection to the old one.
+        let config = self.config.set(config).await?;
+        // The address may have changed: nothing may keep talking to the old box.
         *self.device.lock().await = None;
+        *self.remote.lock().await = None;
+        *self.pending_pairing.lock().await = None;
+        self.set_remote_failed(None);
         Ok(config)
     }
 
+    /// The box's host, checked again on use (a hand-edited file never went through
+    /// `set_config`).
+    async fn host(&self) -> Result<String, AppError> {
+        let host = self.config().await.host.ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))?;
+        device_host(&host)
+    }
+
     async fn address(&self) -> Result<String, AppError> {
-        let config = self.config.read().await;
-        let host = config
-            .host
-            .clone()
-            .ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))?;
-        Ok(format!("{host}:{}", config.port.unwrap_or(DEFAULT_ADB_PORT)))
+        let host = self.host().await?;
+        Ok(format!("{host}:{}", self.config().await.port.unwrap_or(DEFAULT_ADB_PORT)))
+    }
+
+    fn set_remote_failed(&self, at: Option<Instant>) {
+        *self.remote_failed_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = at;
+    }
+
+    fn remote_backing_off(&self) -> bool {
+        let failed = *self.remote_failed_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        failed.is_some_and(|at| at.elapsed() < REMOTE_RETRY_AFTER)
     }
 
     /// Loads the signing key, generating and persisting one on first use.
@@ -254,25 +268,22 @@ impl AndroidTvManager {
             return Ok(key.clone());
         }
 
-        let key = match std::fs::read(&self.key_path) {
-            Ok(der) if !der.is_empty() => adb::decode_key(&der)?,
-            _ => {
-                tracing::info!("generating an ADB key (slow on the Pi, done once)");
-                let generated =
-                    tokio::task::spawn_blocking(adb::generate_key).await??;
-                std::fs::write(&self.key_path, adb::encode_key(&generated)?)?;
-                // The key authenticates this host to the box; keep it private.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &self.key_path,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
-                }
-                generated
-            }
-        };
+        // The key authenticates this host to the box: written 0600 from the start, and a
+        // torn one is replaced (the box asks to allow it once more) rather than fatal.
+        let path = self.key_path.clone();
+        let key = tokio::task::spawn_blocking(move || {
+            store::load_or_create_secret(
+                &path,
+                |der| adb::decode_key(der).ok(),
+                || {
+                    tracing::info!("generating an ADB key (slow on the Pi, done once)");
+                    let key = adb::generate_key()?;
+                    let der = adb::encode_key(&key)?;
+                    Ok((key, der))
+                },
+            )
+        })
+        .await??;
 
         *slot = Some(key.clone());
         Ok(key)
@@ -341,15 +352,20 @@ impl AndroidTvManager {
             }
         }
 
-        let host = self.config.read().await.host.clone()?;
+        if self.remote_backing_off() {
+            return None;
+        }
+        let host = self.host().await.ok()?;
         let identity = self.identity().await.ok()?;
         match Session::connect(&host, &identity).await {
             Ok(session) => {
                 *slot = Some(session.clone());
+                self.set_remote_failed(None);
                 Some(session)
             }
             Err(error) => {
                 tracing::debug!(%error, "no Remote v2 session (not paired?)");
+                self.set_remote_failed(Some(Instant::now()));
                 None
             }
         }
@@ -362,13 +378,7 @@ impl AndroidTvManager {
 
     /// Opens a pairing session; the TV shows a six hex-digit code afterwards.
     pub async fn start_pairing(&self) -> Result<(), AppError> {
-        let host = self
-            .config
-            .read()
-            .await
-            .host
-            .clone()
-            .ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))?;
+        let host = self.host().await?;
         let identity = self.identity().await?;
         let pairing = Pairing::start(&host, &identity).await?;
         *self.pending_pairing.lock().await = Some(pairing);
@@ -378,23 +388,18 @@ impl AndroidTvManager {
     /// Completes pairing with the code from the screen.
     pub async fn finish_pairing(&self, code: &str) -> Result<(), AppError> {
         let pairing = self.pending_pairing.lock().await.take().ok_or_else(|| {
-            AppError::http(
-                axum::http::StatusCode::CONFLICT,
-                "no pairing in progress — start one first",
-            )
+            AppError::http(StatusCode::CONFLICT, "no pairing in progress — start one first")
         })?;
         pairing.finish(code).await?;
-        // Force the next key onto the freshly paired session.
+        // Force the next key onto the freshly paired session, without waiting out the
+        // back-off of the attempts made while unpaired.
         *self.remote.lock().await = None;
+        self.set_remote_failed(None);
         Ok(())
     }
 
-    pub async fn is_paired(&self) -> bool {
-        self.remote_session().await.is_some()
-    }
-
     pub async fn status(&self) -> AndroidTvStatus {
-        let configured = self.config.read().await.host.is_some();
+        let configured = self.config().await.host.is_some();
         if !configured {
             return AndroidTvStatus {
                 configured: false,
@@ -485,38 +490,53 @@ impl AndroidTvManager {
         self.send_key(AndroidKey::Sleep).await
     }
 
-    /// Installs an APK: push it to the box's temp directory, hand it to the
-    /// package manager, then clean up. `-r` reinstalls over an existing copy,
-    /// which is what makes iterating on your own app painless.
+    /// The right to install an APK, one at a time: a second upload is refused while the
+    /// first runs (409), before its bytes are read.
+    pub fn install_permit(&self) -> Result<OwnedSemaphorePermit, AppError> {
+        self.installing
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::http(StatusCode::CONFLICT, "an APK install is already running"))
+    }
+
+    /// Installs an APK as it is uploaded: push it to the box's temp directory,
+    /// hand it to the package manager, then clean up. `-r` reinstalls over an
+    /// existing copy, which is what makes iterating on your own app painless.
     ///
-    /// The payload is held in memory, so callers must bound it — the Pi 1 has
-    /// 512 MB and no swap worth the name.
-    pub async fn install_apk(&self, apk: &[u8]) -> Result<String, AppError> {
+    /// The upload streams through to the box, never held whole: the Pi 1 has
+    /// 512 MB and no swap worth the name. The caller holds `install_permit`.
+    pub async fn install_apk<S>(&self, mut apk: S) -> Result<String, AppError>
+    where
+        S: Stream<Item = Result<Bytes, AppError>> + Unpin + Send,
+    {
         const REMOTE_PATH: &str = "/data/local/tmp/maison-install.apk";
 
-        if apk.is_empty() {
-            return Err(AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                "empty APK",
-            ));
-        }
         // ZIP local file header: every APK is a zip, so this catches a wrong
         // upload before it costs a slow transfer.
-        if !apk.starts_with(b"PK\x03\x04") {
-            return Err(AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                "that file is not an APK (missing zip signature)",
-            ));
+        let mut head = Vec::new();
+        while head.len() < 4 {
+            match apk.next().await.transpose()? {
+                Some(chunk) => head.extend_from_slice(&chunk),
+                None => break,
+            }
+        }
+        if head.is_empty() {
+            return Err(AppError::bad_request("empty APK"));
+        }
+        if !head.starts_with(b"PK\x03\x04") {
+            return Err(AppError::bad_request("that file is not an APK (missing zip signature)"));
         }
 
         let address = self.address().await?;
         let key = self.signing_key().await?;
-        let mut slot = self.device.lock().await;
 
         // The sync service runs on its own connection: keep the shared one
         // clean by dialling a dedicated device for the transfer.
         let mut transfer = AdbDevice::connect(&address, &key).await?;
-        transfer.push(REMOTE_PATH, apk, 0o644).await?;
+        let whole = futures::stream::iter([Ok(Bytes::from(head))]).chain(apk);
+        transfer.push_stream(REMOTE_PATH, whole, 0o644).await?;
+
+        let mut slot = self.device.lock().await;
 
         let device = match slot.as_mut() {
             Some(device) => device,
@@ -546,9 +566,21 @@ impl AndroidTvManager {
     }
 }
 
-/// Package names reach the shell, so they are checked against the Android
-/// naming rules rather than trusted.
-fn validate_package(package: &str) -> Result<(), AppError> {
+/// Launches an app on the box, first powering the television on and routing it to the
+/// box when asked: launching on a dark screen is rarely what is meant. Best-effort for
+/// the TV: a dead TV link does not stop the launch.
+pub async fn launch_with_tv(state: &AppState, package: &str, ensure_tv_on: bool) -> Result<(), AppError> {
+    if ensure_tv_on {
+        if let Err(error) = crate::tv::ensure_on(state).await {
+            tracing::debug!(%error, "could not power the TV on before launching");
+        }
+    }
+    state.androidtv.launch_app(package).await
+}
+
+/// Package names reach the shell (and DIAL app names a URL path), so they are checked
+/// against the Android naming rules rather than trusted.
+pub(crate) fn validate_package(package: &str) -> Result<(), AppError> {
     let valid = !package.is_empty()
         && package.len() <= 255
         && package
@@ -557,10 +589,7 @@ fn validate_package(package: &str) -> Result<(), AppError> {
     if valid {
         Ok(())
     } else {
-        Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("invalid package name {package:?}"),
-        ))
+        Err(AppError::bad_request(format!("invalid package name {package:?}")))
     }
 }
 
@@ -656,6 +685,85 @@ mod tests {
         let status = manager.status().await;
         assert!(!status.configured);
         assert!(!status.reachable);
+    }
+
+    fn new_manager(dir: &tempfile::TempDir) -> AndroidTvManager {
+        AndroidTvManager::new(
+            &dir.path().join("androidtv.json"),
+            &dir.path().join("adb-key"),
+            &dir.path().join("atv-identity"),
+        )
+        .expect("manager")
+    }
+
+    #[tokio::test]
+    async fn the_host_must_be_a_lan_device_and_a_new_one_forgets_the_old_box() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = new_manager(&dir);
+        for bad in ["127.0.0.1", "8.8.8.8", "192.168.1.153:5555", "box.example.com", "a/b.local"] {
+            let config = AndroidTvConfig { host: Some(bad.into()), ..AndroidTvConfig::default() };
+            assert!(manager.set_config(config).await.is_err(), "{bad} accepted");
+        }
+        manager.set_remote_failed(Some(Instant::now()));
+        assert!(manager.remote_backing_off());
+        let config = AndroidTvConfig { host: Some(" box.local ".into()), port: Some(5555), ..AndroidTvConfig::default() };
+        let saved = manager.set_config(config).await.expect("saved");
+        assert_eq!(saved.host.as_deref(), Some("box.local"));
+        assert!(!manager.remote_backing_off(), "a new box gets a fresh try");
+        assert!(manager.remote.lock().await.is_none());
+        assert!(manager.pending_pairing.lock().await.is_none());
+    }
+
+    #[test]
+    fn remote_v2_backs_off_after_a_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = new_manager(&dir);
+        assert!(!manager.remote_backing_off());
+        manager.set_remote_failed(Some(Instant::now()));
+        assert!(manager.remote_backing_off());
+        manager.set_remote_failed(Instant::now().checked_sub(REMOTE_RETRY_AFTER + Duration::from_secs(1)));
+        assert!(!manager.remote_backing_off());
+    }
+
+    #[test]
+    fn one_install_at_a_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = new_manager(&dir);
+        let first = manager.install_permit().expect("free");
+        assert!(manager.install_permit().is_err(), "busy while the first runs");
+        drop(first);
+        assert!(manager.install_permit().is_ok());
+    }
+
+    /// The signature is read off the stream's first bytes, however they are cut.
+    #[tokio::test]
+    async fn an_upload_that_is_not_an_apk_is_refused_before_any_transfer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = new_manager(&dir);
+        let chunks = |parts: Vec<&'static [u8]>| futures::stream::iter(parts.into_iter().map(|p| Ok(Bytes::from_static(p))));
+        let error = manager.install_apk(chunks(vec![b"MZ", b"\x90\x00"])).await.unwrap_err();
+        assert!(error.to_string().contains("not an APK"), "{error}");
+        let error = manager.install_apk(chunks(vec![])).await.unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+        // a real zip head, cut in two: it gets past the check, to the missing box
+        let error = manager.install_apk(chunks(vec![b"P", b"K\x03\x04rest"])).await.unwrap_err();
+        assert!(error.to_string().contains("No Android TV box"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_torn_adb_key_is_replaced_and_kept_private() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = new_manager(&dir);
+        std::fs::write(dir.path().join("adb-key"), b"torn").unwrap();
+        let key = manager.signing_key().await.expect("a new key");
+        let reread = new_manager(&dir).signing_key().await.expect("kept");
+        assert_eq!(key, reread);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("adb-key")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 
     #[tokio::test]

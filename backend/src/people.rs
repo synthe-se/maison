@@ -2,18 +2,22 @@
 //! file (`auth.json`, 0600). There are no passwords: a person exists once an invitation has
 //! registered their first passkey (`routes::passkeys`, after Ariane's passkey mode).
 //!
-//! The file is the truth, read on every use and replaced whole (temp file + rename) under
-//! one lock: the server and `maison-backend invite` (run as root on the Pi) both write it.
-//! It lives in a directory the service user owns (`auth/`: the temp file is made there),
-//! and the replacement keeps the owner of the file, or of that directory for a first one.
+//! The file is the truth, read on every use and replaced whole (`store::write_json`) under
+//! an OS lock (`store::locked`): the server and `maison-backend invite` (run as root on the
+//! Pi) both edit it. It lives in a directory the service user owns (`auth/`: the temp file
+//! is made there); the replacement keeps the owner. An empty or torn file is an error,
+//! never « nobody ».
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::error::AppError;
+use crate::{
+    error::AppError,
+    store::{self, Access, Corrupt},
+    util::constant_time_eq,
+};
 
 pub const ADMIN: &str = "admin";
 pub const MEMBER: &str = "member";
@@ -29,6 +33,19 @@ pub struct Person {
     pub role: String,
     /// The WebAuthn user handle (a random UUID, never shown): what a passkey says it is for.
     pub user_handle: String,
+    /// Sessions issued before this (ms) are over: « sign out everywhere », a removed passkey.
+    #[serde(default)]
+    pub not_before_ms: i64,
+}
+
+/// What the admins see of someone.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonInfo {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub passkeys: usize,
 }
 
 /// A registered passkey: webauthn-rs's credential as JSON, and what the list shows of it.
@@ -109,28 +126,93 @@ pub struct PasskeyTaken;
 
 pub struct People {
     path: PathBuf,
-    lock: Mutex<()>,
+    /// The book as last read, and the file's (modified, length) then: every request asks
+    /// who is signed in, the file is read again only when it changed.
+    cache: Mutex<Option<(Stamp, Book)>>,
+}
+
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 impl People {
     pub fn new(path: &Path) -> Self {
-        Self { path: path.to_path_buf(), lock: Mutex::new(()) }
+        Self { path: path.to_path_buf(), cache: Mutex::new(None) }
     }
 
     async fn read<T>(&self, f: impl FnOnce(&Book) -> T) -> Result<T, AppError> {
-        let _guard = self.lock.lock().await;
-        Ok(f(&load(&self.path)?))
+        let mut cache = self.cache.lock().await;
+        let now = stamp(&self.path);
+        match cache.as_ref() {
+            Some((at, book)) if *at == now && now.is_some() => Ok(f(book)),
+            _ => {
+                let book: Book = store::read_json(&self.path, Corrupt::Fail)?;
+                let out = f(&book);
+                *cache = Some((now, book));
+                Ok(out)
+            }
+        }
     }
 
-    /// Reads, changes, writes back (when `f` says so), all under the lock.
+    /// Reads, changes, writes back (when `f` says so): one task at a time here, one process
+    /// at a time on the file.
     async fn edit<T>(&self, f: impl FnOnce(&mut Book) -> (T, bool)) -> Result<T, AppError> {
-        let _guard = self.lock.lock().await;
-        let mut book = load(&self.path)?;
-        let (out, changed) = f(&mut book);
-        if changed {
-            save(&self.path, &book)?;
-        }
-        Ok(out)
+        let mut cache = self.cache.lock().await;
+        store::locked(&self.path, || {
+            let mut book: Book = store::read_json(&self.path, Corrupt::Fail)?;
+            let (out, changed) = f(&mut book);
+            if changed {
+                store::write_json(&self.path, &book, Access::Private)?;
+            }
+            *cache = Some((stamp(&self.path), book));
+            Ok(out)
+        })
+    }
+
+    /// Everyone, for the admins.
+    pub async fn people(&self) -> Result<Vec<PersonInfo>, AppError> {
+        self.read(|b| {
+            b.people
+                .iter()
+                .map(|p| PersonInfo {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    role: p.role.clone(),
+                    passkeys: b.passkeys.iter().filter(|k| k.person == p.id).count(),
+                })
+                .collect()
+        })
+        .await
+    }
+
+    /// The person, their passkeys and pending invitations go. False when unknown.
+    pub async fn remove_person(&self, id: &str) -> Result<bool, AppError> {
+        self.edit(|b| {
+            let before = b.people.len();
+            b.people.retain(|p| p.id != id);
+            let gone = b.people.len() != before;
+            if gone {
+                b.passkeys.retain(|k| k.person != id);
+                b.invites.retain(|i| i.person != id);
+            }
+            (gone, gone)
+        })
+        .await
+    }
+
+    /// Every session of the person issued until now is over.
+    pub async fn end_sessions(&self, id: &str, now_ms: i64) -> Result<(), AppError> {
+        self.edit(|b| match b.people.iter_mut().find(|p| p.id == id) {
+            Some(p) => {
+                p.not_before_ms = now_ms;
+                ((), true)
+            }
+            None => ((), false),
+        })
+        .await
     }
 
     pub async fn person(&self, id: &str) -> Result<Option<Person>, AppError> {
@@ -293,6 +375,7 @@ impl People {
                         name: invite.name.clone(),
                         role: invite.role.clone(),
                         user_handle: user_handle.to_string(),
+                        not_before_ms: 0,
                     };
                     b.people.push(p.clone());
                     p
@@ -319,24 +402,10 @@ fn pending(i: &StoredInvite, now_ms: i64) -> bool {
     i.used_ms.is_none() && i.expires_ms > now_ms
 }
 
-/// Two hex hashes compared without an early exit (the lookup is by hash, which says
-/// nothing of the token; constant time anyway).
+/// Two hex hashes compared in constant time (the lookup is by hash, which says nothing of
+/// the token; constant time anyway).
 fn same_hash(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-/// 256 random bits, in hex: invitation tokens, ceremony and record ids.
-pub fn random_secret() -> String {
-    hex(&rand::random::<[u8; 32]>())
-}
-
-/// What is kept of a secret: SHA-256 with a domain prefix.
-pub fn hash_secret(secret: &str) -> String {
-    hex(&Sha256::new().chain_update(b"maison/secret/v1\0").chain_update(secret.as_bytes()).finalize())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    constant_time_eq(a.as_bytes(), b.as_bytes())
 }
 
 /// A person's id from their name: lowercase ASCII letters and digits, dashes between
@@ -370,37 +439,10 @@ pub fn clean_name(name: &str) -> Option<&str> {
     ok.then_some(name)
 }
 
-fn load(path: &Path) -> Result<Book, AppError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) if text.trim().is_empty() => Ok(Book::default()),
-        Ok(text) => Ok(serde_json::from_str(&text)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Book::default()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Temp file + rename, 0600, owned as the file it replaces (or its directory, for a first
-/// one): root's CLI writes it for the service.
-fn save(path: &Path, book: &Book) -> Result<(), AppError> {
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{}\n", serde_json::to_string_pretty(book)?))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        if let Ok(owner) = std::fs::metadata(path).or_else(|_| std::fs::metadata(dir)) {
-            std::os::unix::fs::chown(&tmp, Some(owner.uid()), Some(owner.gid()))?;
-        }
-    }
-    std::fs::rename(&tmp, path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::{hash_secret, random_secret};
 
     fn key(id: &str, person: &str, credential: &str) -> StoredPasskey {
         StoredPasskey {

@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
-    auth::AuthenticatedUser,
+    auth::AdminUser,
     error::AppError,
     ir::SwitchState,
-    tv::{TvAmbilight, TvConfig, TvKey, TvPower, TvStatus, TvVolume},
+    routes::SimpleResponse,
+    tv::{self, TvAmbilight, TvConfig, TvKey, TvPower, TvStatus, TvVolume},
 };
 
 #[derive(Debug, Serialize)]
@@ -19,15 +20,6 @@ struct StatusResponse {
     success: bool,
     config: TvConfig,
     status: TvStatus,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConfigRequest {
-    host: Option<String>,
-    ir_blaster_host: Option<String>,
-    box_host: Option<String>,
-    box_wake_app: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,13 +78,6 @@ struct AmbilightResponse {
     ambilight: TvAmbilight,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SimpleResponse {
-    success: bool,
-    message: String,
-}
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(status))
@@ -105,120 +90,43 @@ pub fn router() -> Router<AppState> {
         .route("/source/box", post(switch_to_box))
 }
 
-/// Wakes the box and routes the set to its HDMI input.
-///
-/// Waking matters as much as the CEC: asserting One Touch Play against a
-/// sleeping box turns the television on to a black screen, which then powers
-/// itself back off for want of a signal. `wake()` does both, in that order.
-///
-/// The DIAL fallback works by *launching an app*, so it would yank the viewer
-/// out of what they were watching — it is only worth it when ADB is down.
-pub async fn route_to_box(state: &AppState) -> Result<(), AppError> {
-    match state.androidtv.wake().await {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            tracing::debug!(%error, "CEC route failed, falling back to DIAL");
-            state.tv.switch_to_box().await
-        }
-    }
-}
-
-/// Powers the set on, then optionally routes it to the box. The two are
-/// separate steps so the input switch can go through CEC rather than the
-/// app-launching DIAL path.
-async fn power_on_and_route(state: &AppState, switch: bool) -> Result<TvPower, AppError> {
-    let power = state.tv.power_on(false).await?;
-    if switch {
-        if let Err(error) = route_to_box(state).await {
-            tracing::debug!(%error, "could not route the TV to the box");
-        }
-    }
-    Ok(power)
-}
-
-/// Powers the set on and routes it to the box unless it is already on.
-/// Shared with the Android TV routes, where launching an app on a dark screen
-/// is never what the caller meant.
-pub async fn ensure_on(state: &AppState) -> Result<(), AppError> {
-    if state.tv.power().await == TvPower::On {
-        return Ok(());
-    }
-    power_on_and_route(state, true).await.map(|_| ())
-}
-
-async fn status(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<StatusResponse>, AppError> {
-    let _ = user.0;
-    Ok(Json(StatusResponse {
+async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
+    Json(StatusResponse {
         success: true,
         config: state.tv.config().await,
         status: state.tv.status().await,
-    }))
+    })
 }
 
 async fn set_config(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
-    Json(body): Json<ConfigRequest>,
+    _admin: AdminUser,
+    Json(body): Json<TvConfig>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
-    let blank_to_none = |value: Option<String>| value.filter(|v| !v.trim().is_empty());
-    state
-        .tv
-        .set_config(TvConfig {
-            host: blank_to_none(body.host),
-            ir_blaster_host: blank_to_none(body.ir_blaster_host),
-            box_host: blank_to_none(body.box_host),
-            box_wake_app: blank_to_none(body.box_wake_app),
-        })
-        .await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "TV configuration saved".to_string(),
-    }))
+    state.tv.set_config(body).await?;
+    Ok(SimpleResponse::ok("TV configuration saved"))
 }
 
 async fn power(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     Json(body): Json<PowerRequest>,
 ) -> Result<Json<PowerResponse>, AppError> {
-    let _ = user.0;
-    let power = match body.state {
-        SwitchState::On => power_on_and_route(&state, body.switch_to_box).await?,
-        SwitchState::Off => state.tv.power_off().await?,
-        SwitchState::Toggle => match state.tv.power().await {
-            TvPower::On => state.tv.power_off().await?,
-            _ => power_on_and_route(&state, body.switch_to_box).await?,
-        },
-    };
-    Ok(Json(PowerResponse {
-        success: true,
-        power,
-    }))
+    let power = tv::tv_power(&state, body.state, body.switch_to_box).await?;
+    Ok(Json(PowerResponse { success: true, power }))
 }
 
 async fn send_key(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     Json(body): Json<KeyRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
     state.tv.send_key(body.key).await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Key sent".to_string(),
-    }))
+    Ok(SimpleResponse::ok("Key sent"))
 }
 
 async fn set_volume(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     Json(body): Json<VolumeRequest>,
 ) -> Result<Json<VolumeResponse>, AppError> {
-    let _ = user.0;
     let volume = match body.level {
         Some(level) => state.tv.set_volume(level, body.muted).await?,
         // A mute-only request still has to go through the absolute-volume
@@ -231,23 +139,14 @@ async fn set_volume(
             }
         }
     };
-    Ok(Json(VolumeResponse {
-        success: true,
-        volume,
-    }))
+    Ok(Json(VolumeResponse { success: true, volume }))
 }
 
 async fn set_ambilight(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     Json(body): Json<AmbilightRequest>,
 ) -> Result<Json<AmbilightResponse>, AppError> {
-    let _ = user.0;
-    let on = match body.state {
-        SwitchState::On => true,
-        SwitchState::Off => false,
-        SwitchState::Toggle => !state.tv.ambilight().await?.power,
-    };
+    let on = body.state.resolve(|| async { Ok(state.tv.ambilight().await?.power) }).await?;
     state.tv.set_ambilight_power(on).await?;
     Ok(Json(AmbilightResponse {
         success: true,
@@ -255,24 +154,13 @@ async fn set_ambilight(
     }))
 }
 
-async fn ambilight_styles(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let _ = user.0;
+async fn ambilight_styles(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
     state.tv.ambilight_styles().await.map(Json)
 }
 
-async fn switch_to_box(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
+async fn switch_to_box(State(state): State<AppState>) -> Result<Json<SimpleResponse>, AppError> {
     // CEC first: the DIAL fallback inside `route_to_box` wakes the box by
     // launching an app, which would interrupt whatever is playing.
-    route_to_box(&state).await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "TV routed to the box's HDMI input".to_string(),
-    }))
+    tv::route_to_box(&state).await?;
+    Ok(SimpleResponse::ok("TV routed to the box's HDMI input"))
 }

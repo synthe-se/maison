@@ -54,7 +54,15 @@ pub fn jwt_secret() -> String {
 
 /// Defaults under the repository root, local-only and with Bluetooth off.
 pub fn test_config() -> Config {
-    let source_root = workspace_root();
+    Config {
+        matter_state_dir: std::env::temp_dir().join("maison-matter-tests-unused"),
+        ..for_tests(Config::defaults(workspace_root()))
+    }
+}
+
+/// What every test config changes: local-only, Bluetooth off, the test secrets, no public
+/// address (passkeys off unless a test sets one).
+fn for_tests(defaults: Config) -> Config {
     Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -62,23 +70,54 @@ pub fn test_config() -> Config {
         auth_cookie_secure: false,
         disable_bluetooth: true,
         ir_api_token: Some(TEST_IR_TOKEN.into()),
-        matter_state_dir: std::env::temp_dir().join("maison-matter-tests-unused"),
         public_url: None,
-        ..Config::defaults(source_root)
+        auth_path: test_people(),
+        ..defaults
     }
 }
 
-/// A never-expiring admin token for user `leonard`.
-pub fn test_token() -> String {
-    let claims = Claims {
-        user_id: "1".to_string(),
-        name: "Léonard".to_string(),
-        role: "admin".to_string(),
-        exp: 4_102_444_800,
-    };
+/// A fresh people file holding `TEST_PEOPLE`.
+fn test_people() -> PathBuf {
+    let path = temp_root("maison-test-people").join("auth.json");
+    std::fs::write(&path, TEST_PEOPLE).expect("people file should be written");
+    path
+}
+
+/// The test config on a fresh, empty root of its own (`<tmp>/<name>/<uuid>`): every state
+/// file starts missing, nothing in the repository is read or rewritten.
+pub fn isolated_config(name: &str) -> Config {
+    let root = temp_root(name);
+    Config { matter_state_dir: root.join("matter"), ..for_tests(Config::defaults(root)) }
+}
+
+/// A never-expiring token for `person` (one of `TEST_PEOPLE`), as if they had just signed in.
+pub fn token_for(person: &str) -> String {
+    token_signed_in_ago(person, 0)
+}
+
+/// A token for `person` whose last passkey sign-in was `age_ms` ago.
+pub fn token_signed_in_ago(person: &str, age_ms: i64) -> String {
+    let now = chrono::Utc::now().timestamp_millis();
+    let claims = Claims { user_id: person.to_string(), issued_ms: now, auth_ms: now - age_ms, exp: 4_102_444_800 };
     encode(&Header::default(), &claims, &EncodingKey::from_secret(jwt_secret().as_bytes()))
         .expect("test token should encode")
 }
+
+/// A never-expiring admin token for `leonard`.
+pub fn test_token() -> String {
+    token_for("leonard")
+}
+
+/// A never-expiring member token for `alex` (no admin rights).
+pub fn member_token() -> String {
+    token_for("alex")
+}
+
+/// Who exists in every test config: an admin and a member.
+const TEST_PEOPLE: &str = r#"{"people": [
+  {"id": "leonard", "name": "Léonard", "role": "admin", "userHandle": "0b3f2a4e-1c5d-4e6f-8a9b-0c1d2e3f4a5b"},
+  {"id": "alex", "name": "Alex", "role": "member", "userHandle": "1c4a3b5f-2d6e-4f70-9bac-1d2e3f4a5b6c"}
+]}"#;
 
 /// The full app built from `config`, reachable as if from localhost.
 pub fn app(config: Config) -> Router {

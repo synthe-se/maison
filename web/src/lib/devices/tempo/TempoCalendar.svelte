@@ -6,18 +6,18 @@
 	// above with the season's counters in words. Weeks start on Monday, as in France.
 	import Select from '#lib/components/Select.svelte';
 	import { m } from '#lib/paraglide/messages.js';
-	import type { TempoCalendarData, TempoCalendarDay } from '#lib/api.ts';
+	import type { TempoCalendar, TempoCalendarDay } from '#lib/api.ts';
 	import type { Live } from '#lib/live.svelte.ts';
 	import { date, isoDay, longDay, percent, weekday } from '#lib/i18n.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
-	import { TEMPO, TEMPO_COLORS, dayWords } from './colors.ts';
+	import { TEMPO, TEMPO_COLORS, UNSURE, dayWords } from './colors.ts';
 	import { seasonOf } from './dates.ts';
 	import { tempoCalendar } from './data.ts';
 	import Swatch from './Swatch.svelte';
 
-	/** RTE's history in the cache starts with this season. */
-	const FIRST_SEASON_YEAR = 2020;
+	/** RTE's Tempo data starts with this season (cache/tempo/ holds every one since). */
+	const FIRST_SEASON_YEAR = 2014;
 	/** Forecasts reach a week ahead: no month beyond that one. */
 	const FORECAST_DAYS = 7;
 
@@ -38,7 +38,7 @@
 	const caption = (i: number) => date(new Date(Math.floor(i / 12), i % 12, 1), { month: 'long', year: 'numeric' });
 
 	// one live value per season; changing season stops the old one's polling
-	let cal = $state.raw<Live<TempoCalendarData>>();
+	let cal = $state.raw<Live<TempoCalendar>>();
 	$effect(() => {
 		cal = tempoCalendar(season);
 	});
@@ -78,12 +78,12 @@
 
 	const words = (d: TempoCalendarDay | undefined) =>
 		d?.color ? dayWords(d.color, d.is_prediction, d.confidence) : '';
-	const stats = $derived(data?.statistics);
 	const stock = $derived(data?.stock);
+	const forecasts = $derived(data?.calendar.filter((d) => d.is_prediction).length ?? 0);
 	const legend = $derived({
-		BLUE: stats ? m.tempo_legend_blue({ count: stats.color_counts.BLUE }) : TEMPO.BLUE.name(),
-		WHITE: stats && stock ? m.tempo_legend_white({ count: stats.color_counts.WHITE, total: stock.white_total }) : TEMPO.WHITE.name(),
-		RED: stats && stock ? m.tempo_legend_red({ count: stats.color_counts.RED, total: stock.red_total }) : TEMPO.RED.name()
+		BLUE: stock ? m.tempo_legend_blue({ count: stock.blue.used }) : TEMPO.BLUE.name(),
+		WHITE: stock ? m.tempo_legend_white({ count: stock.white.used, total: stock.white.total }) : TEMPO.WHITE.name(),
+		RED: stock ? m.tempo_legend_red({ count: stock.red.used, total: stock.red.total }) : TEMPO.RED.name()
 	});
 </script>
 
@@ -107,7 +107,7 @@
 		{/each}
 		<li>
 			<Swatch color="BLUE" forecast />
-			{stats ? m.tempo_legend_forecast({ count: stats.predictions_count }) : m.tempo_calendar_prediction()}
+			{stock ? m.tempo_legend_forecast({ count: forecasts }) : m.tempo_calendar_prediction()}
 		</li>
 	</ul>
 
@@ -115,9 +115,8 @@
 		<button class="btn" aria-label={m.tempo_prev_month()} disabled={month <= MIN} onclick={() => go(month - 1)}>
 			<Icon name="chevron-left" />
 		</button>
-		{#if month !== thisMonth}
-			<button class="btn" onclick={() => go(thisMonth)}>{m.day_today()}</button>
-		{/if}
+		<!-- always there: pressed on another month, it does not vanish under the focus -->
+		<button class="btn" aria-disabled={month === thisMonth ? 'true' : undefined} onclick={() => go(thisMonth)}>{m.day_today()}</button>
 		<button class="btn" aria-label={m.tempo_next_month()} disabled={month >= MAX} onclick={() => go(month + 1)}>
 			<Icon name="chevron-right" />
 		</button>
@@ -140,7 +139,7 @@
 							{@const d = byDate.get(iso)}
 							{@const isToday = iso === todayIso}
 							<td aria-current={isToday ? 'date' : undefined}>
-								<Swatch color={d?.color} forecast={d?.is_prediction} size="cell" current={isToday}>
+								<Swatch color={d?.color} forecast={d?.is_prediction} unsure={d?.is_prediction && (d.confidence ?? 0) < UNSURE} size="cell" current={isToday}>
 									<span>{Number(iso.slice(8))}</span>
 									{#if d?.is_prediction && d.confidence !== undefined}<span class="pct">{percent(d.confidence)}</span>{/if}
 								</Swatch>
@@ -154,7 +153,7 @@
 			{/each}
 		</tbody>
 	</table>
-	{#if cal?.loading}<p class="hint" role="status">{m.common_loading()}</p>{/if}
+	{#if cal?.loading}<p class="hint">{m.common_loading()}</p>{/if}
 
 	<p class="hint" id="tempo-calendar-info">{m.tempo_calendar_info()}</p>
 </section>
@@ -172,5 +171,6 @@
 	th { font: var(--t-meta); color: var(--ink-muted); padding-bottom: var(--s-1); }
 	td { padding: 2px; text-align: center; vertical-align: middle; }
 	td :global(.swatch) { margin-inline: auto; }
-	.pct { font-size: 0.625rem; opacity: 0.85; margin-top: 2px; }
+	/* the forecast's probability: small, never below 12 px, never faded */
+	.pct { font-size: 0.75rem; margin-top: 2px; }
 </style>

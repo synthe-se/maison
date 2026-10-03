@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
+import { session } from '#lib/session.svelte.ts';
+import { alex, leonard } from '#lib/test/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { json, stubFetch } from '#lib/test/fetch.ts';
 import { zigbeeLamp } from '#lib/test/lamps.ts';
@@ -20,6 +22,8 @@ function backend({ disabled = false, lamps = [zigbeeLamp()] } = {}) {
 }
 
 describe('ZigbeeLamps', () => {
+	beforeEach(() => session.adopt(leonard));
+
 	it('lists the lamps of the coordinator', async () => {
 		backend();
 		await render(ZigbeeLamps);
@@ -33,6 +37,14 @@ describe('ZigbeeLamps', () => {
 		await render(ZigbeeLamps);
 		await expect.element(page.getByText(m.zigbee_lamps_no_lamps())).toBeVisible();
 		await expect.element(page.getByText(m.zigbee_lamps_no_lamps_hint())).toBeVisible();
+	});
+
+	it('a member cannot pair new lamps', async () => {
+		session.adopt(alex);
+		backend();
+		await render(ZigbeeLamps);
+		await expect.element(page.getByRole('heading', { name: m.zigbee_lamps_title() })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.action_pair() })).not.toBeInTheDocument();
 	});
 
 	it('« Appairer » unfolds the pairing panel, and folds it again', async () => {

@@ -24,7 +24,7 @@
  *   Maison (2026-10-02), on ground
  *     tempo-bleu   #2B5BA8 5.82:1         #7FA7E8 7.15:1
  *     tempo-rouge  #B3261E 5.74:1         #F08A7E 7.19:1
- *     tempo-blanc  ring #525A66 6.12:1    #EAE7E0 14.15:1
+ *     tempo-blanc  ring #525A66 6.12:1    ring #EAE7E0 14.15:1 (no fill in dark)
  */
 
 :root { color-scheme: light dark; }
@@ -72,7 +72,9 @@
   --blocked-wash: light-dark(#f3e2dc, #33211f);
   /* Tempo days: colour + shape + name, never colour alone (bleu filled, blanc ring, rouge hatched) */
   --tempo-bleu: light-dark(#2b5ba8, #7fa7e8);
-  --tempo-blanc: light-dark(#ffffff, var(--raw-paper-dark));
+  /* blanc is an empty ring: white inside it on the light ground, nothing inside it on the dark
+     one (a light fill there would match its ring and read as a filled disc) */
+  --tempo-blanc: light-dark(#ffffff, transparent);
   --tempo-blanc-ring: light-dark(var(--raw-ink-soft), var(--raw-paper-dark));
   --tempo-rouge: light-dark(#b3261e, #f08a7e);
   --on-tempo: var(--on-accent);
@@ -149,4 +151,8 @@
 }
 @media (max-width: 599px) {
   :root { --row-min: 56px; --bottom-h: calc(64px + env(safe-area-inset-bottom, 0px)); }
+}
+/* a finger, not a mouse: every compact control grows to the 44 px target (WCAG 2.5.5, Apple 44pt) */
+@media (pointer: coarse) {
+  :root { --control-h-s: 44px; --control-h-xs: 44px; }
 }

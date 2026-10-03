@@ -279,3 +279,33 @@ async fn passkeys_are_off_without_a_public_address() {
     let (s, v) = Browser::new(&app).post("/api/passkeys/login/start", json!({})).await;
     assert_eq!((s, v["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("passkey_off")));
 }
+
+#[tokio::test]
+async fn secure_cookies_are_host_bound_and_a_replayed_refresh_token_ends_its_sign_in() {
+    let root = common::temp_root("maison-passkeys-secure");
+    let config = Config {
+        public_url: Some(ORIGIN.into()),
+        auth_path: root.join("auth.json"),
+        refresh_tokens_path: root.join("refresh-tokens.json"),
+        auth_cookie_secure: true,
+        ..common::test_config()
+    };
+    let app = common::app(config.clone());
+    let token = invite(&config, "leonard", "Léonard", true).await;
+    let mut b = Browser::new(&app);
+    b.register(&mut Device::new(), Some(&token)).await;
+    let names: Vec<&str> = b.cookies.keys().map(String::as_str).collect();
+    assert_eq!(names, ["__Host-maison_refresh", "__Host-maison_session"], "bound to this host, path /");
+
+    let first = b.cookies["__Host-maison_refresh"].clone();
+    assert_eq!(b.post("/api/auth/refresh", json!({})).await.0, StatusCode::OK);
+    let second = b.cookies["__Host-maison_refresh"].clone();
+    assert_ne!(first, second, "rotated");
+
+    // someone replays the first one: refused, and the sign-in it came from ends
+    let mut thief = Browser::new(&app);
+    thief.cookies.insert("__Host-maison_refresh".into(), first);
+    assert_eq!(thief.post("/api/auth/refresh", json!({})).await.0, StatusCode::UNAUTHORIZED);
+    b.cookies.remove("__Host-maison_session");
+    assert_eq!(b.post("/api/auth/refresh", json!({})).await.0, StatusCode::UNAUTHORIZED, "the rightful one too: sign in again");
+}

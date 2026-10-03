@@ -36,8 +36,9 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
+    sync::{mpsc, oneshot},
     time::timeout,
 };
 use tokio_rustls::{
@@ -50,7 +51,7 @@ use tokio_rustls::{
     TlsConnector,
 };
 
-use crate::error::AppError;
+use crate::{broadlink::unreachable, error::AppError, store};
 
 pub const PAIRING_PORT: u16 = 6467;
 pub const REMOTE_PORT: u16 = 6466;
@@ -60,6 +61,14 @@ const IO_TIMEOUT: Duration = Duration::from_secs(10);
 /// The pairing code has to be read off the screen and typed, so this step is
 /// paced by a human, not by the network.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
+/// The TV pings a session every few seconds: this long without a word means it is gone
+/// (asleep, unplugged) even though no TCP error says so.
+const SESSION_SILENCE: Duration = Duration::from_secs(20);
+/// Negotiation is short; anything longer means the TV is not playing.
+const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(15);
+/// Largest message taken from the TV. Its real ones are a few hundred bytes; a length
+/// read from a desynchronised or hostile stream must not size an allocation.
+const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// PING | KEY | POWER | VOLUME | APP_LINK. IME and voice are deliberately left
 /// out: IME makes some devices show "use the keyboard on your phone", and
@@ -209,22 +218,16 @@ pub struct Identity {
 impl Identity {
     /// Loads the stored identity, minting one on first use. Generation is
     /// slow on an ARMv6 Pi, so callers should keep this off the async runtime.
+    /// A torn file is replaced (pairing again is the price), never a dead end.
     pub fn load_or_create(path: &Path) -> Result<Self, AppError> {
-        let der = match std::fs::read(path) {
-            Ok(der) if !der.is_empty() => der,
-            _ => {
-                let generated = Self::mint()?;
-                std::fs::write(path, &generated)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-                }
-                generated
-            }
-        };
-        Self::from_stored(&der)
+        store::load_or_create_secret(
+            path,
+            |stored| Self::from_stored(stored).ok(),
+            || {
+                let stored = Self::mint()?;
+                Ok((Self::from_stored(&stored)?, stored))
+            },
+        )
     }
 
     /// Stored form is the PKCS#8 key followed by the certificate, each
@@ -384,16 +387,19 @@ async fn connect_tls(
 
     let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port)))
         .await
-        .map_err(|_| AppError::service_unavailable(format!("{host}:{port} timed out")))??;
+        .map_err(|_| unreachable("Android TV", format!("{host}:{port} timed out")))?
+        .map_err(|error| unreachable("Android TV", error))?;
     // The name is irrelevant — the verifier above accepts anything — but
     // rustls requires one, so use a fixed placeholder rather than the IP,
     // which would not parse as a DNS name.
     let server_name = ServerName::try_from("androidtv").expect("static name is valid");
 
-    TlsConnector::from(Arc::new(config))
-        .connect(server_name, stream)
+    // Bounded too: a TV that accepts the connection and then stalls would otherwise hold
+    // the caller (and the manager's session lock) as long as it likes.
+    timeout(IO_TIMEOUT, TlsConnector::from(Arc::new(config)).connect(server_name, stream))
         .await
-        .map_err(|error| AppError::service_unavailable(format!("TLS handshake failed: {error}")))
+        .map_err(|_| unreachable("Android TV", "TLS handshake timed out"))?
+        .map_err(|error| unreachable("Android TV", format!("TLS handshake failed: {error}")))
 }
 
 // --------------------------------------------------------------- framing ---
@@ -409,7 +415,9 @@ where
 }
 
 /// Reads one length-delimited message. The length is a varint, so it is read
-/// a byte at a time before the payload can be sized.
+/// a byte at a time before the payload can be sized. Not cancellation safe: a
+/// message read half-way is lost, so a session reads from one task that nothing
+/// interrupts.
 async fn read_framed<R>(reader: &mut R, budget: Duration) -> Result<Vec<u8>, AppError>
 where
     R: AsyncReadExt + Unpin,
@@ -431,7 +439,11 @@ where
         }
     }
 
-    let mut payload = vec![0u8; length as usize];
+    let length = usize::try_from(length)
+        .ok()
+        .filter(|length| *length <= MAX_MESSAGE_BYTES)
+        .ok_or_else(|| AppError::service_unavailable("oversized message from the TV"))?;
+    let mut payload = vec![0u8; length];
     if length > 0 {
         timeout(budget, reader.read_exact(&mut payload))
             .await
@@ -565,16 +577,10 @@ impl Pairing {
     pub async fn finish(mut self, code: &str) -> Result<(), AppError> {
         let code = code.trim();
         if code.len() != 6 || !code.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                "the pairing code is six hexadecimal digits",
-            ));
+            return Err(AppError::bad_request("the pairing code is six hexadecimal digits"));
         }
         let code_bytes = decode_hex(code).ok_or_else(|| {
-            AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                "the pairing code is not valid hexadecimal",
-            )
+            AppError::bad_request("the pairing code is not valid hexadecimal")
         })?;
 
         let mut hasher = Sha256::new();
@@ -586,10 +592,7 @@ impl Pairing {
         let alpha = hasher.finalize();
 
         if alpha[0] != code_bytes[0] {
-            return Err(AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                "wrong pairing code",
-            ));
+            return Err(AppError::bad_request("wrong pairing code"));
         }
 
         write_framed(
@@ -641,6 +644,49 @@ fn server_public_numbers(cert: &CertificateDer<'_>) -> Result<(Vec<u8>, Vec<u8>)
 
 // --------------------------------------------------------------- session ---
 
+/// Stops the session's reader with the session.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// What the client answers to one field of the TV's message, if anything.
+fn answer_to(field: u32, value: &Field<'_>) -> Option<Vec<u8>> {
+    let mut m = ProtoBuf::default();
+    match (field, value) {
+        // remote_configure: echo our features and a device description back.
+        (1, _) => m.message(1, |cfg| {
+            cfg.int(1, ACTIVE_FEATURES);
+            cfg.message(2, |info| {
+                info.string(1, "maison");
+                info.string(2, "uplg");
+                info.int(3, 1);
+                info.string(4, "1");
+                info.string(5, "maison");
+                info.string(6, "1.0.0");
+            });
+        }),
+        // remote_set_active: acknowledge, and the session is usable from here on.
+        (2, _) => m.message(2, |active| active.int(1, ACTIVE_FEATURES)),
+        // remote_ping_request: echo val1 back. A missed ping drops the connection.
+        (8, Field::Bytes(body)) => {
+            let mut inner = ProtoReader::new(body);
+            let mut val1 = 0i64;
+            while let Some((f, v)) = inner.next_field() {
+                if let (1, Field::Varint(value)) = (f, v) {
+                    val1 = value as i64;
+                }
+            }
+            m.message(9, |pong| pong.int(1, val1));
+        }
+        _ => return None,
+    }
+    Some(m.frame())
+}
+
 /// Direction SHORT: a press and release in one message, which is what a tap
 /// on a remote is. Long presses would need START_LONG/END_LONG around a hold.
 const DIRECTION_SHORT: i64 = 3;
@@ -659,81 +705,57 @@ pub struct Session {
 impl Session {
     pub async fn connect(host: &str, identity: &Identity) -> Result<Self, AppError> {
         let stream = connect_tls(host, REMOTE_PORT, identity).await?;
-        let (mut reader, mut writer) = tokio::io::split(stream);
-        let (commands, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-        let (ready, wait_ready) = tokio::sync::oneshot::channel::<Result<(), AppError>>();
+        let (reader, writer) = tokio::io::split(stream);
+        Self::start(reader, writer).await
+    }
+
+    /// Runs the session over an open stream; ready once the TV has made it active.
+    async fn start<R, W>(mut reader: R, mut writer: W) -> Result<Self, AppError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let (commands, mut rx) = mpsc::channel::<Vec<u8>>(64);
+        let (ready, wait_ready) = oneshot::channel::<()>();
+
+        // The reader owns the read half and is never interrupted, so a key press
+        // arriving mid-message cannot cut a frame in two. Its read budget is also the
+        // liveness check: no ping for SESSION_SILENCE ends the session.
+        let (incoming_tx, mut incoming) = mpsc::channel::<Vec<u8>>(8);
+        let reader_task = tokio::spawn(async move {
+            loop {
+                match read_framed(&mut reader, SESSION_SILENCE).await {
+                    Ok(payload) => {
+                        if incoming_tx.send(payload).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "remote session over");
+                        return;
+                    }
+                }
+            }
+        });
 
         tokio::spawn(async move {
+            let _reader = AbortOnDrop(reader_task);
             let mut ready = Some(ready);
-
             loop {
                 tokio::select! {
-                    // Anything the TV says. A read error means the session is
-                    // over, which is the task's cue to stop.
-                    incoming = read_framed(&mut reader, Duration::from_secs(3600)) => {
-                        let Ok(payload) = incoming else {
-                            if let Some(ready) = ready.take() {
-                                let _ = ready.send(Err(AppError::service_unavailable(
-                                    "the TV closed the remote session",
-                                )));
-                            }
-                            return;
-                        };
-
+                    // Anything the TV says; `None` once the reader has stopped.
+                    payload = incoming.recv() => {
+                        let Some(payload) = payload else { return };
                         let mut parser = ProtoReader::new(&payload);
                         while let Some((field, value)) = parser.next_field() {
-                            let answer = match (field, &value) {
-                                // remote_configure: echo our features and a
-                                // device description back.
-                                (1, _) => Some({
-                                    let mut m = ProtoBuf::default();
-                                    m.message(1, |cfg| {
-                                        cfg.int(1, ACTIVE_FEATURES);
-                                        cfg.message(2, |info| {
-                                            info.string(1, "maison");
-                                            info.string(2, "uplg");
-                                            info.int(3, 1);
-                                            info.string(4, "1");
-                                            info.string(5, "maison");
-                                            info.string(6, "1.0.0");
-                                        });
-                                    });
-                                    m.frame()
-                                }),
-                                // remote_set_active: acknowledge, and the
-                                // session is usable from here on.
-                                (2, _) => Some({
-                                    let mut m = ProtoBuf::default();
-                                    m.message(2, |active| active.int(1, ACTIVE_FEATURES));
-                                    m.frame()
-                                }),
-                                // remote_ping_request: echo val1 back. A
-                                // missed ping drops the connection.
-                                (8, Field::Bytes(body)) => {
-                                    let mut inner = ProtoReader::new(body);
-                                    let mut val1 = 0i64;
-                                    while let Some((f, v)) = inner.next_field() {
-                                        if f == 1 {
-                                            if let Field::Varint(value) = v {
-                                                val1 = value as i64;
-                                            }
-                                        }
-                                    }
-                                    let mut m = ProtoBuf::default();
-                                    m.message(9, |pong| pong.int(1, val1));
-                                    Some(m.frame())
-                                }
-                                _ => None,
-                            };
-
-                            if let Some(answer) = answer {
-                                if write_framed(&mut writer, answer).await.is_err() {
-                                    return;
-                                }
-                                if field == 2 {
-                                    if let Some(ready) = ready.take() {
-                                        let _ = ready.send(Ok(()));
-                                    }
+                            let Some(answer) = answer_to(field, &value) else { continue };
+                            if write_framed(&mut writer, answer).await.is_err() {
+                                return;
+                            }
+                            // remote_set_active answered: the session is usable
+                            if field == 2 {
+                                if let Some(ready) = ready.take() {
+                                    let _ = ready.send(());
                                 }
                             }
                         }
@@ -750,10 +772,8 @@ impl Session {
             }
         });
 
-        // Negotiation is short; anything longer means the TV is not playing.
-        match timeout(Duration::from_secs(15), wait_ready).await {
-            Ok(Ok(Ok(()))) => Ok(Self { commands }),
-            Ok(Ok(Err(error))) => Err(error),
+        match timeout(NEGOTIATION_TIMEOUT, wait_ready).await {
+            Ok(Ok(())) => Ok(Self { commands }),
             Ok(Err(_)) => Err(AppError::service_unavailable(
                 "the remote session ended during negotiation",
             )),
@@ -796,5 +816,110 @@ impl Session {
     /// False once the background task has stopped, so callers can reconnect.
     pub fn is_open(&self) -> bool {
         !self.commands.is_closed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn first_field(payload: &[u8]) -> (u32, Option<u64>) {
+        let mut reader = ProtoReader::new(payload);
+        let (field, value) = reader.next_field().expect("a field");
+        let scalar = match value {
+            Field::Bytes(body) => match ProtoReader::new(body).next_field() {
+                Some((_, Field::Varint(v))) => Some(v),
+                _ => None,
+            },
+            _ => None,
+        };
+        (field, scalar)
+    }
+
+    fn varint(value: u64) -> Vec<u8> {
+        let mut m = ProtoBuf::default();
+        m.varint(value);
+        m.bytes
+    }
+
+    #[tokio::test]
+    async fn an_oversized_length_is_refused_before_allocating() {
+        for length in [MAX_MESSAGE_BYTES as u64 + 1, 1 << 32, u64::MAX >> 1] {
+            let bytes = varint(length);
+            let mut reader = bytes.as_slice();
+            assert!(read_framed(&mut reader, Duration::from_secs(1)).await.is_err(), "{length}");
+        }
+        let mut frame = varint(3);
+        frame.extend_from_slice(b"abc");
+        assert_eq!(read_framed(&mut frame.as_slice(), Duration::from_secs(1)).await.unwrap(), b"abc");
+    }
+
+    #[tokio::test]
+    async fn a_frame_split_across_reads_decodes() {
+        let (mut tv, mut client) = tokio::io::duplex(1024);
+        let payload = vec![7u8; 300];
+        let mut frame = varint(payload.len() as u64);
+        frame.extend_from_slice(&payload);
+        let (head, tail) = frame.split_at(1);
+        let (head, tail) = (head.to_vec(), tail.to_vec());
+        let writer = tokio::spawn(async move {
+            tv.write_all(&head).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            tv.write_all(&tail[..100]).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            tv.write_all(&tail[100..]).await.unwrap();
+            tv
+        });
+        assert_eq!(read_framed(&mut client, Duration::from_secs(2)).await.unwrap(), payload);
+        writer.await.unwrap();
+    }
+
+    /// The bug this guards: a key press arriving while a ping was half read cut the ping
+    /// in two, and every message after it was garbage.
+    #[tokio::test]
+    async fn key_presses_mid_frame_keep_the_framing() {
+        let (client, mut tv) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(client);
+        let starting = tokio::spawn(Session::start(reader, writer));
+
+        let mut active = ProtoBuf::default();
+        active.message(2, |m| m.int(1, ACTIVE_FEATURES));
+        tv.write_all(&active.frame()).await.unwrap();
+        let answer = read_framed(&mut tv, Duration::from_secs(2)).await.unwrap();
+        assert_eq!(first_field(&answer).0, 2, "set_active acknowledged");
+        let session = starting.await.unwrap().expect("session ready");
+
+        let mut ping = ProtoBuf::default();
+        ping.message(8, |m| m.int(1, 42));
+        let ping = ping.frame();
+        tv.write_all(&ping[..2]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        session.key(20).await.unwrap();
+        let key = read_framed(&mut tv, Duration::from_secs(2)).await.unwrap();
+        assert_eq!(first_field(&key), (10, Some(20)), "the key went out");
+        tv.write_all(&ping[2..]).await.unwrap();
+        let pong = read_framed(&mut tv, Duration::from_secs(2)).await.unwrap();
+        assert_eq!(first_field(&pong), (9, Some(42)), "the ping was read whole");
+        assert!(session.is_open());
+
+        // the TV going away ends the session
+        drop(tv);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!session.is_open());
+    }
+
+    #[tokio::test]
+    async fn a_torn_identity_is_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("atv-identity");
+        std::fs::write(&path, b"torn").unwrap();
+        let identity = Identity::load_or_create(&path).expect("a new identity");
+        let again = Identity::load_or_create(&path).expect("kept");
+        assert_eq!(identity.certificate, again.certificate);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
     }
 }

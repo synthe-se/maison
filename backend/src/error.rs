@@ -10,7 +10,15 @@ pub enum AppError {
     /// A refusal the app explains in its own words: `code` names it (`passkey_rejected`,
     /// `last_passkey`…), the message is for the logs and curl.
     #[error("{code}: {message}")]
-    Coded { status: StatusCode, code: &'static str, message: &'static str, retry_after_s: Option<u64> },
+    Coded {
+        status: StatusCode,
+        code: &'static str,
+        message: &'static str,
+        retry_after_s: Option<u64>,
+        /// What the app needs to act on the refusal (e.g. who already has a name), sent as
+        /// `detail`.
+        detail: Option<Box<serde_json::Value>>,
+    },
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
@@ -29,6 +37,8 @@ struct ErrorBody {
     error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<Box<serde_json::Value>>,
 }
 
 impl AppError {
@@ -40,7 +50,29 @@ impl AppError {
     }
 
     pub fn coded(status: StatusCode, code: &'static str, message: &'static str) -> Self {
-        Self::Coded { status, code, message, retry_after_s: None }
+        Self::Coded { status, code, message, retry_after_s: None, detail: None }
+    }
+
+    /// A coded refusal with what the app needs to act on it.
+    pub fn with_detail(self, value: serde_json::Value) -> Self {
+        match self {
+            Self::Coded { status, code, message, retry_after_s, .. } => {
+                Self::Coded { status, code, message, retry_after_s, detail: Some(Box::new(value)) }
+            }
+            other => other,
+        }
+    }
+
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::http(StatusCode::BAD_REQUEST, message)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::http(StatusCode::NOT_FOUND, message)
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::http(StatusCode::FORBIDDEN, message)
     }
 
     pub fn unauthorized(message: impl Into<String>) -> Self {
@@ -80,14 +112,15 @@ impl IntoResponse for AppError {
         } else if status.is_server_error() {
             error!(error = %self, "request failed");
         }
-        let (code, retry_after_s) = match &self {
-            Self::Coded { code, retry_after_s, .. } => (Some(*code), *retry_after_s),
-            _ => (None, None),
+        let (code, retry_after_s, detail) = match &self {
+            Self::Coded { code, retry_after_s, detail, .. } => (Some(*code), *retry_after_s, detail.clone()),
+            _ => (None, None, None),
         };
         let body = ErrorBody {
             success: false,
             error: self.client_message(),
             code,
+            detail,
         };
         let mut response = (status, Json(body)).into_response();
         if let Some(seconds) = retry_after_s {

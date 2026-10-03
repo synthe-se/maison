@@ -7,10 +7,14 @@ import { html } from '#lib/test/snippet.ts';
 import { hueLamp } from '#lib/test/lamps.ts';
 import LampGroup from './LampGroup.svelte';
 import { fromHue, hue } from './lamp.ts';
+import type { Live } from '#lib/live.svelte.ts';
+
+/** A list as `live` gives it: read, still loading, or failed. */
+const list = (state: Partial<Live<unknown>> = {}) => ({ loading: false, failed: false, data: {}, error: undefined, refresh: async () => {}, ...state }) as unknown as Live<unknown>;
 
 afterEach(() => forgetAll());
 
-const props = { title: 'Lampes Hue', driver: hue, empty: 'Aucune lampe', emptyHint: 'Allume-les', loading: false, reachable: 0, lamps: [] };
+const props = { title: 'Lampes Hue', driver: hue, empty: 'Aucune lampe', emptyHint: 'Allume-les', list: list(), reachable: 0, lamps: [] };
 
 describe('LampGroup', () => {
 	it('is a region named by its title, with its actions and unfolded panel', async () => {
@@ -21,9 +25,17 @@ describe('LampGroup', () => {
 		await expect.element(page.getByText('Panneau')).toBeVisible();
 	});
 
-	it('says it is loading, politely', async () => {
-		await render(LampGroup, { ...props, loading: true });
-		await expect.element(page.getByRole('status')).toHaveTextContent(m.common_loading());
+	it('says it is loading, without announcing it (§ 4)', async () => {
+		await render(LampGroup, { ...props, list: list({ loading: true }) });
+		await expect.element(page.getByText(m.common_loading())).toBeVisible();
+		await expect.element(page.getByRole('status')).not.toBeInTheDocument();
+	});
+
+	it('a list that cannot be read says so, never « no lamp »', async () => {
+		await render(LampGroup, { ...props, list: list({ failed: true, error: new Error('Bluetooth down') }) });
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
+		await expect.element(page.getByText('Bluetooth down')).toBeVisible();
+		await expect.element(page.getByText('Aucune lampe')).not.toBeInTheDocument();
 	});
 
 	it('says why there is no lamp, and no count', async () => {

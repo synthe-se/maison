@@ -17,7 +17,7 @@ describe('PlugTile', () => {
 		await render(PlugTile, { id: 'p1', name: 'Radiateur', on: true, online: true, fact: '42 W' });
 		await expect.element(page.getByRole('button', { name: 'Radiateur' })).toHaveAttribute('aria-pressed', 'true');
 		await expect.element(page.getByRole('link', { name: 'Radiateur' })).toHaveAttribute('href', '/meross/p1');
-		await expect.element(page.getByText(m.meross_state_on())).toBeVisible();
+		await expect.element(page.getByText(m.state_on())).toBeVisible();
 		await expect.element(page.getByText('42 W')).toBeVisible();
 	});
 
@@ -43,11 +43,12 @@ describe('PlugTile', () => {
 		expect(calls).toHaveLength(2);
 	});
 
-	it('offline: no toggle, « unreachable »; on its page, no link', async () => {
+	it('offline: its toggle unavailable, « unreachable since »; on its page, no link', async () => {
 		stubFetch(() => json({}));
-		await render(PlugTile, { id: 'p1', name: 'Radiateur', on: true, online: false, link: false });
-		await expect.element(page.getByText(m.state_unreachable())).toBeVisible();
-		await expect.element(page.getByRole('button', { name: 'Radiateur' })).not.toBeInTheDocument();
+		await render(PlugTile, { id: 'p1', name: 'Radiateur', on: true, online: false, lastPing: Date.now() - 3 * 60_000, link: false });
+		const since = m.state_unreachable_for({ duration: m.duration_minutes({ m: 3 }) });
+		await expect.element(page.getByText(since)).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Radiateur' })).toHaveAttribute('aria-disabled', 'true');
 		await expect.element(page.getByRole('link')).not.toBeInTheDocument();
 	});
 });

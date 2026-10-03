@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import { formatDuration, formatMinutes } from './format.ts';
+import { formatDuration, formatMinutes, unreachableSince } from './format.ts';
+import { when } from '#lib/i18n.svelte.ts';
 
 describe('formatDuration', () => {
 	it('says seconds under a minute, rounded, never negative', () => {
@@ -30,5 +31,20 @@ describe('formatMinutes', () => {
 	it('reads a counter in minutes', () => {
 		expect(formatMinutes(90)).toBe(formatDuration(5400));
 		expect(formatMinutes(0.5)).toBe(m.duration_seconds({ s: 30 }));
+	});
+});
+
+describe('unreachableSince', () => {
+	it('within the hour: « depuis 12 min »; then the time it was last heard', () => {
+		const now = Date.now();
+		expect(unreachableSince(now - 12 * 60_000)).toBe(m.state_unreachable_for({ duration: m.duration_minutes({ m: 12 }) }));
+		expect(unreachableSince(new Date(now - 30_000).toISOString())).toBe(m.state_unreachable_for({ duration: m.duration_minutes({ m: 1 }) }));
+		const old = now - 3 * 3_600_000;
+		expect(unreachableSince(old)).toBe(m.state_unreachable_since({ when: when(old) }));
+	});
+
+	it('never heard: says so', () => {
+		expect(unreachableSince(0)).toBe(m.state_never_seen());
+		expect(unreachableSince(null)).toBe(m.state_never_seen());
 	});
 });

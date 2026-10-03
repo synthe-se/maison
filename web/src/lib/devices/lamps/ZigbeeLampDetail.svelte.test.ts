@@ -31,14 +31,15 @@ function backend(lamp: ZigbeeLamp) {
 
 describe('ZigbeeLampDetail', () => {
 	it('shows its network details', async () => {
-		backend(zigbeeLamp({ linkQuality: null, interviewCompleted: false }));
+		backend(zigbeeLamp({ interviewCompleted: false }));
 		await render(ZigbeeLampDetail, { id: 'zb-1' });
 		await expect.element(page.getByRole('heading', { level: 1 })).toHaveTextContent('Suspension');
 		await expect.element(page.getByText('0x0017880104b2c3d4')).toBeVisible();
 		await expect.element(page.getByText('00:17:88:01:0b:2c:3d:4e')).toBeVisible();
 		await expect.element(page.getByText(m.zigbee_lamps_interview_pending())).toBeVisible();
-		const quality = [...document.querySelectorAll('dl div')].find((d) => d.querySelector('dt')?.textContent === m.zigbee_lamps_link_quality());
-		expect(quality?.querySelector('dd')?.textContent).toBe(m.common_unknown());
+		// the coordinator reads neither the link quality nor the firmware: not shown
+		const terms = [...document.querySelectorAll('dl dt')].map((d) => d.textContent);
+		expect(terms).not.toContain(m.device_firmware());
 	});
 
 	it('a colour lamp in white mode opens on the white tab', async () => {
@@ -86,18 +87,16 @@ describe('ZigbeeLampDetail', () => {
 		await expect.element(page.getByRole('tab')).not.toBeInTheDocument();
 	});
 
-	it('renaming: the button waits for a new name, sends it trimmed and says it', async () => {
+	it('renaming: sends the name trimmed, says it, the focus staying in the field', async () => {
 		const say = vi.spyOn(ui, 'say');
 		const { calls } = backend(zigbeeLamp());
 		await render(ZigbeeLampDetail, { id: 'zb-1' });
 		const input = page.getByLabelText(m.zigbee_lamps_name());
-		const button = page.getByRole('button', { name: m.common_rename() });
 		await expect.element(input).toHaveValue('Suspension');
-		await expect.element(button).toBeDisabled();
 		await input.fill('  Plafonnier ');
-		await expect.element(button).toBeEnabled();
 		await userEvent.keyboard('{Enter}');
-		await expect.poll(() => say.mock.calls.flat()).toContain(m.zigbee_lamps_renamed({ name: 'Plafonnier' }));
+		await expect.element(input).toHaveFocus();
+		await expect.poll(() => say.mock.calls.flat()).toContain(m.common_renamed({ name: 'Plafonnier' }));
 		const rename = calls.filter((c) => c.url === '/api/zigbee/lamps/zb-1/rename');
 		expect(rename.map((c) => [c.init?.method, sentBody(c)])).toEqual([['POST', { name: 'Plafonnier' }]]);
 	});
@@ -120,6 +119,6 @@ describe('ZigbeeLampDetail', () => {
 		release();
 		await expect.poll(() => say.mock.calls.length).toBe(1);
 		vi.useRealTimers();
-		expect(say).toHaveBeenCalledWith(m.zigbee_lamps_renamed({ name: 'Plafonnier' }));
+		expect(say).toHaveBeenCalledWith(m.common_renamed({ name: 'Plafonnier' }));
 	});
 });

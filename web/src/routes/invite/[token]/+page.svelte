@@ -6,7 +6,10 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
-	import { inviteGreeting, passkeyMessage, register, supported, type Registered } from '#lib/passkeys.ts';
+	import { inviteGreeting, register, supported, type Registered } from '#lib/passkeys.ts';
+	import { errorText } from '#lib/errors.ts';
+	import { refocus } from '#lib/focus.ts';
+	import { pending } from '#lib/gesture.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
 	import AuthCard from '#lib/components/AuthCard.svelte';
 	import Icon from '#lib/components/Icon.svelte';
@@ -17,11 +20,12 @@
 	let busy = $state(false);
 	let created = $state.raw<Registered | null>(null);
 	const secure = supported();
+	let doneTitle = $state<HTMLElement>();
 
 	$effect(() => {
 		void inviteGreeting(token)
 			.then((r) => (name = r.name))
-			.catch((e) => (error = passkeyMessage(e)));
+			.catch((e) => (error = errorText(e)));
 	});
 
 	async function create() {
@@ -29,8 +33,10 @@
 		error = '';
 		try {
 			created = await register({ invite: token });
+			// the button pressed is gone with the step: the focus goes to the new step's title
+			void refocus(() => doneTitle);
 		} catch (e) {
-			error = passkeyMessage(e);
+			error = errorText(e);
 		} finally {
 			busy = false;
 		}
@@ -43,12 +49,12 @@
 	}
 </script>
 
-<svelte:head><title>{name ? m.invite_title({ name }) : m.invite_checking()} · {m.branding_name()}</title></svelte:head>
+<svelte:head><title>{name ? m.invite_title({ name }) : error ? m.invite_invalid_title() : m.invite_checking()} · {m.branding_name()}</title></svelte:head>
 
 <AuthCard>
 	{#if created}
 		<p class="done" aria-hidden="true"><Icon name="check" size={28} /></p>
-		<h1 tabindex="-1">{m.invite_done_title()}</h1>
+		<h1 tabindex="-1" bind:this={doneTitle}>{m.invite_done_title()}</h1>
 		<p class="hint">{m.invite_done_body()}</p>
 		<button class="btn primary big" onclick={enter}>{m.invite_enter()}</button>
 	{:else if name}
@@ -61,10 +67,12 @@
 				<li><Icon name="key" /><span>{m.invite_why_nopassword()}</span></li>
 				<li><Icon name="copy" /><span>{m.invite_why_devices()}</span></li>
 			</ul>
-			<button class="btn primary big" disabled={busy} onclick={create}>{busy ? m.pk_waiting() : m.invite_create()}</button>
+			<button class="btn primary big" {...pending(busy)} onclick={() => !busy && create()}>{busy ? m.pk_waiting() : m.invite_create()}</button>
 			<p class="hint">{m.pk_handshake()}</p>
 		{/if}
-	{:else if !error}
+	{:else if error}
+		<h1 tabindex="-1">{m.invite_invalid_title()}</h1>
+	{:else}
 		<h1 tabindex="-1">{m.invite_checking()}</h1>
 	{/if}
 	<p class="form-error" role="alert">{error}</p>

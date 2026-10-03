@@ -11,24 +11,16 @@
 	import SettingRow from '#lib/components/SettingRow.svelte';
 	import StatusRow from './StatusRow.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import type { LitterBoxPreference as Preference, LitterBoxSettings as Settings, LitterBoxStatus as LitterStatus } from '#lib/api.ts';
+	import Loaded from '#lib/components/Loaded.svelte';
 	import { reread, status } from './tuya.svelte.ts';
-
-	type Settings = Parameters<typeof litterBoxApi.settings>[1];
-	type Preference = keyof NonNullable<Settings['preferences']>;
-	interface LitterStatus {
-		clean_delay?: { seconds?: number };
-		sleep_mode?: { enabled?: boolean; start_time_formatted?: string; end_time_formatted?: string };
-		sensors?: { litter_level?: string; fault_alarm?: number };
-		system?: { state?: string; maintenance_required?: boolean };
-		settings?: Partial<Record<Preference, boolean>>;
-	}
 
 	const STATE: Record<string, () => string> = {
 		cleaning: m.litter_box_status_cleaning,
 		cat_inside: m.litter_box_status_cat_inside,
 		clumping: m.litter_box_status_clumping,
-		satnd_by: m.litter_box_status_standby // sic: the device's spelling
+		satnd_by: m.state_standby // sic: the device's spelling
 	};
 	const LEVEL: Record<string, () => string> = { full: m.litter_box_filled, half: m.litter_box_half_filled };
 	const PREFERENCES: { key: Preference; icon: IconName; label: () => string }[] = [
@@ -73,14 +65,12 @@
 	}
 </script>
 
-{#if st.loading}
-	<p class="hint" role="status">{m.common_loading()}</p>
-{:else}
+<Loaded value={st}>
 	<DeviceTabs other={{ label: m.litter_box_settings(), icon: 'settings' }}>
 		{#snippet controls()}
 			<Section title={m.litter_box_litter_status()} icon="trash">
-				<button class="btn primary wide" disabled={g.is('clean')} aria-busy={g.is('clean')} onclick={clean}>
-					{#if g.is('clean')}<Icon name="loader-circle" class="spin" />{m.litter_box_cleaning()}{:else}<Icon name="trash" />{m.litter_box_start_cleaning()}{/if}
+				<button class="btn primary wide" {...pending(g.is('clean'))} onclick={clean}>
+					<Icon name="trash" busy={g.is('clean')} />{g.is('clean') ? m.litter_box_cleaning() : m.litter_box_start_cleaning()}
 				</button>
 				<Range
 					label={m.litter_box_clean_delay_before()}
@@ -89,7 +79,6 @@
 					max={DELAY.max}
 					step={DELAY.step}
 					valueText={formatDuration}
-					disabled={g.is('delay')}
 					oncommit={(v) => save('delay', { clean_delay: v })}
 				/>
 				<dl class="facts">
@@ -145,8 +134,8 @@
 							<input id="night-end-{id}" type="time" value={end} oninput={(e) => (endDraft = e.currentTarget.value)} required />
 						</div>
 					</fieldset>
-					<button class="btn wide" disabled={g.is('night')} aria-busy={g.is('night')}>
-						{#if g.is('night')}<Icon name="loader-circle" class="spin" />{/if}{m.litter_box_apply_schedule()}
+					<button class="btn wide" {...pending(g.is('night'))}>
+						<Icon name="clock" busy={g.is('night')} />{m.litter_box_apply_schedule()}
 					</button>
 				</form>
 			</Section>
@@ -165,7 +154,7 @@
 			</Section>
 		{/snippet}
 	</DeviceTabs>
-{/if}
+</Loaded>
 
 <style>
 	.night { display: grid; gap: var(--s-3); }

@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
 import type { IrBinding } from '#lib/api.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
+import { session } from '#lib/session.svelte.ts';
+import { alex, leonard } from '#lib/test/passkeys.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { remoteSources, sourceRoutes } from '#lib/test/remote.ts';
 import { summarize } from '#lib/devices/remote/actions.ts';
@@ -20,6 +22,7 @@ const site = (map: Record<string, IrBinding> = keymap, more: Record<string, unkn
 const bindings = () => page.getByRole('region', { name: m.remote_bindings_title() }).getByRole('heading', { level: 3 });
 
 describe('remote page', () => {
+	beforeEach(() => session.adopt(leonard));
 	afterEach(() => {
 		forgetAll();
 		ui.toasts = [];
@@ -39,6 +42,33 @@ describe('remote page', () => {
 		await expect.element(page.getByRole('button', { name: m.remote_key_mapped({ key: 'OK', label: 'Taichi' }) })).toBeVisible();
 	});
 
+	it('is titled the Maison way (« Télécommande · Maison »), with one h1', async () => {
+		site();
+		await render(RemotePage);
+		await expect.poll(() => document.title).toBe(`${m.remote_title()} · ${m.branding_name()}`);
+	});
+
+	it('a member sees what each button does, but configures nothing', async () => {
+		session.adopt(alex);
+		site();
+		await render(RemotePage);
+		await expect.element(bindings()).toHaveLength(2);
+		await expect.element(page.getByText(m.admin_only())).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.remote_add_binding() })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: m.remote_edit_binding({ key: keyName(115) }) })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: m.remote_key_mapped({ key: 'OK', label: 'Taichi' }) })).not.toBeInTheDocument();
+	});
+
+	it('a binding edited and not saved is not lost to Escape: the sheet asks first', async () => {
+		site();
+		await render(RemotePage);
+		await page.getByRole('button', { name: m.remote_edit_binding({ key: keyName(115) }) }).click();
+		const sheet = page.getByRole('dialog', { name: m.remote_edit_binding({ key: keyName(115) }) });
+		await sheet.getByLabelText(m.remote_label()).fill('Lampe');
+		await (await import('vitest/browser')).userEvent.keyboard('{Escape}');
+		await expect.element(page.getByRole('alertdialog', { name: m.sheet_discard_title() })).toBeVisible();
+	});
+
 	it('says when nothing is configured yet', async () => {
 		site({});
 		await render(RemotePage);
@@ -49,7 +79,7 @@ describe('remote page', () => {
 	it('says when the configuration cannot be read, and tries again', async () => {
 		const api = site(keymap, { '/ir/keymap': new Response('{"error":"down"}', { status: 500 }) });
 		await render(RemotePage);
-		await expect.element(page.getByText(m.remote_loading_error())).toBeVisible();
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
 		api.routes['/ir/keymap'] = { success: true, keymap };
 		await page.getByRole('button', { name: m.common_retry() }).click();
 		await expect.element(bindings()).toHaveLength(2);

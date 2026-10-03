@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- web/static/brand.svg at 82 %, full bleed: the launcher crops it (safe zone 80 %). -->
+  <rect width="48" height="48" fill="#0E5E68"/>
+  <g transform="translate(4.32 4.32) scale(0.82)">
+  <ellipse cx="18.7" cy="13.8" rx="3.4" ry="8" transform="rotate(-12 18.7 13.8)" fill="#7FA7E8"/>
+  <ellipse cx="31.6" cy="14.7" rx="3.4" ry="8" transform="rotate(30 31.6 14.7)" fill="#F08A7E"/>
+  <path d="M12.5 26.9 24 16.4 35.5 26.9V40.4H12.5Z" fill="#F2F0EA" stroke="#F2F0EA" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M17.1 33.4a2.3 2.3 0 0 1 4.4 0M26.5 33.4a2.3 2.3 0 0 1 4.4 0" fill="none" stroke="#0E5E68" stroke-width="1.7" stroke-linecap="round"/>
+  <ellipse cx="15.9" cy="36.7" rx="2" ry="1.2" fill="#E6A49A" opacity=".85"/>
+  <ellipse cx="32.1" cy="36.7" rx="2" ry="1.2" fill="#E6A49A" opacity=".85"/>
+  </g>
+</svg>
+

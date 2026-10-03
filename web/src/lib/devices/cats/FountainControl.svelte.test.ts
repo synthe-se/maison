@@ -18,7 +18,7 @@ describe('FountainControl', () => {
 	it('says it is loading until the fountain answers', async () => {
 		stubApi({ [STATUS]: () => new Promise(() => {}) });
 		await render(FountainControl, { id: 'w1' });
-		await expect.element(page.getByRole('status')).toHaveTextContent(m.common_loading());
+		await expect.element(page.getByText(m.common_loading())).toBeVisible();
 	});
 
 	it('shows its settings as switches, its levels and counters in words', async () => {

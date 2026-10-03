@@ -41,7 +41,9 @@ describe('layout', () => {
 	it('says it is loading while the session is checked, with a skip link', async () => {
 		stubApi({ 'POST /auth/verify': () => new Promise(() => {}) });
 		await show();
-		await expect.element(page.getByRole('status')).toHaveTextContent(m.common_loading());
+		await expect.element(page.getByRole('main')).toHaveTextContent(m.common_loading());
+		// the one status region is there from the start, empty: a load is not announced (§ 4)
+		await expect.element(page.getByRole('status')).toHaveTextContent('');
 		await expect.element(page.getByRole('link', { name: m.skip_to_content() })).toHaveAttribute('href', '#main');
 		await expect.element(page.getByRole('main')).toHaveAttribute('id', 'main');
 	});
@@ -60,6 +62,21 @@ describe('layout', () => {
 		await expect.element(page.getByRole('heading', { level: 1, name: m.pk_signin_title() })).toBeVisible();
 		await expect.element(page.getByText('Salon')).not.toBeInTheDocument();
 		await expect.element(page.getByRole('navigation', { name: m.nav_label() })).not.toBeInTheDocument();
+	});
+
+	it('signed in from the door: the focus goes to the page’s title, not to the void', async () => {
+		stubApi({ 'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }), 'POST /auth/refresh': new Response('{}', { status: 401 }) });
+		await show();
+		await expect.element(page.getByRole('heading', { level: 1, name: m.pk_signin_title() })).toBeVisible();
+		session.adopt({ id: 'leonard', name: 'Léonard', role: 'admin' });
+		await expect.element(page.getByRole('heading', { name: 'Salon' })).toHaveFocus();
+	});
+
+	it('the server not answering: the window says so too', async () => {
+		stubApi({ 'POST /auth/verify': new Response('<html>', { status: 502 }) });
+		await show();
+		await expect.element(page.getByRole('heading', { level: 1, name: m.unreachable_title() })).toBeVisible();
+		await expect.poll(() => document.title).toContain(m.unreachable_title());
 	});
 
 	it('opens an invitation signed out: it is how one gets a first passkey', async () => {

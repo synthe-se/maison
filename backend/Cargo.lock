@@ -91,7 +91,7 @@ dependencies = [
 [[package]]
 name = "ashv2"
 version = "13.0.0"
-source = "git+https://github.com/uplg/ashv2/?branch=main#a6ab7043d7bc9924114ae22fc0abf73298645d7e"
+source = "git+https://github.com/uplg/ashv2/?rev=a6ab7043d7bc9924114ae22fc0abf73298645d7e#a6ab7043d7bc9924114ae22fc0abf73298645d7e"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -1294,7 +1294,7 @@ dependencies = [
 [[package]]
 name = "ezsp"
 version = "17.0.0"
-source = "git+https://github.com/uplg/ezsp?branch=main#edec778da0e65934976913b9f6ef1663367bfac3"
+source = "git+https://github.com/uplg/ezsp?rev=edec778da0e65934976913b9f6ef1663367bfac3#edec778da0e65934976913b9f6ef1663367bfac3"
 dependencies = [
  "bitflags 2.13.2",
  "const_env",
@@ -2242,7 +2242,6 @@ dependencies = [
  "axum-extra",
  "base64 0.23.1",
  "btleplug",
- "bytes",
  "chrono",
  "chrono-tz",
  "dotenvy",

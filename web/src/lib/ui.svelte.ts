@@ -1,8 +1,8 @@
 // What the interface remembers about itself: the theme, the toasts, and the two live regions
 // that say each outcome once (the layout mounts them, only their text changes).
 
-import { m } from '#lib/paraglide/messages.js';
 import { haptic, FAILURE } from '#lib/haptics.ts';
+import { errorText } from '#lib/errors.ts';
 import { PUBLIC_THEME_KEY as THEME_KEY } from '$app/env/public';
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -44,6 +44,9 @@ class Ui {
 
 	/** A short message under the fingers, read once. Errors stay until dismissed. */
 	toast(text: string, warn = false) {
+		// the same words again replace the toast already saying them (a failure repeated by a
+		// poll or a search does not stack up errors that never leave)
+		for (const t of this.toasts) if (t.text === text && t.warn === warn) this.dismiss(t.id);
 		const id = this.#next++;
 		this.toasts.push({ id, text, warn });
 		if (warn) {
@@ -55,11 +58,10 @@ class Ui {
 		}
 	}
 
-	/** A gesture failed: felt, said, and shown until read. */
+	/** A gesture failed: felt, said in plain words (errors.ts), and shown until read. */
 	fail(error: unknown) {
 		haptic(FAILURE);
-		const detail = error instanceof Error ? error.message : String(error);
-		this.toast(`${m.common_error()}. ${detail}`, true);
+		this.toast(errorText(error), true);
 	}
 
 	dismiss(id: number) {

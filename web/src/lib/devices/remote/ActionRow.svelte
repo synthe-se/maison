@@ -213,6 +213,5 @@
 	.danger { color: var(--status-down-text); }
 	.grid { display: grid; gap: var(--s-3); grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); }
 	.grid.three { grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr)); }
-	.field input { width: 100%; min-width: 0; }
 	.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>

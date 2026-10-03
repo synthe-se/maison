@@ -5,9 +5,8 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { zigbeeLampsApi } from '#lib/api.ts';
 	import { live, refresh } from '#lib/live.svelte.ts';
-	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
-	import Icon from '#lib/components/Icon.svelte';
+	import RenameField from '#lib/components/RenameField.svelte';
 	import LampPage from './LampPage.svelte';
 	import LampTemperature from './LampTemperature.svelte';
 	import ZigbeeColour from './ZigbeeColour.svelte';
@@ -17,7 +16,7 @@
 	const COLOR_MODE_TEMPERATURE = 2;
 
 	let { id }: { id: string } = $props();
-	const status = live(untrack(() => `${zigbee.key}:${id}`), () => zigbeeLampsApi.status(id), DETAIL_EVERY);
+	const status = live(untrack(() => zigbee.keys.detail(id)), () => zigbeeLampsApi.status(id), DETAIL_EVERY);
 	const raw = $derived(status.data?.lamp);
 	const lamp = $derived(raw ? fromZigbee(raw) : undefined);
 
@@ -26,7 +25,6 @@
 			? [
 					[m.zigbee_lamps_friendly_name(), raw.friendlyName],
 					[m.zigbee_lamps_address(), raw.address],
-					[m.zigbee_lamps_link_quality(), raw.linkQuality === null ? m.common_unknown() : String(raw.linkQuality)],
 					[m.zigbee_lamps_interview(), raw.interviewCompleted ? m.zigbee_lamps_interview_complete() : m.zigbee_lamps_interview_pending()]
 				]
 			: []
@@ -47,23 +45,6 @@
 		}
 	}
 
-	let renameDraft = $state<string | null>(null);
-	const draft = $derived(renameDraft ?? raw?.name ?? '');
-	function rename(e: SubmitEvent) {
-		e.preventDefault();
-		// the name sent is what is said: a poll already in flight when the rename left may
-		// still carry the old one, so the field keeps the new name until a read shows it
-		const name = draft.trim();
-		return g.run(
-			() => zigbeeLampsApi.rename(id, name),
-			async () => {
-				ui.say(m.zigbee_lamps_renamed({ name }));
-				await refresh(zigbee.key);
-				if (raw?.name === name) renameDraft = null;
-			},
-			'rename'
-		);
-	}
 </script>
 
 {#snippet colour(l: Lamp)}
@@ -96,20 +77,12 @@
 {/snippet}
 
 <LampPage {lamp} loading={status.loading} driver={zigbee} {rows} colour={raw?.supportsColor ? colour : undefined}>
-	{#snippet children()}
-		<form class="field" onsubmit={rename}>
-			<label for="zigbee-rename">{m.zigbee_lamps_name()}</label>
-			<div class="actions">
-				<input id="zigbee-rename" value={draft} oninput={(e) => (renameDraft = e.currentTarget.value)} required />
-				<button class="btn" disabled={g.is('rename') || !draft.trim() || draft.trim() === raw?.name}>
-					{#if g.is('rename')}<Icon name="loader-circle" class="spin" />{/if}{m.common_rename()}
-				</button>
-			</div>
-		</form>
+	{#snippet children(l: Lamp)}
+		<RenameField label={m.zigbee_lamps_name()} value={l.name} save={(name) => zigbeeLampsApi.rename(id, name).then(() => refresh(zigbee.key))} said={(name) => m.common_renamed({ name })} />
 	{/snippet}
 </LampPage>
 
 <style>
-	input { flex: 1; min-width: 0; }
+
 	.colour :global(.tabs-trigger) { display: inline-flex; align-items: center; gap: var(--s-2); }
 </style>

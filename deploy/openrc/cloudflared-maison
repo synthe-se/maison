@@ -35,7 +35,7 @@ start() {
 	start-stop-daemon --start --background --make-pidfile --pidfile "${pidfile}" \
 		--user "${service_user}" --group "${service_group}" --chdir "${app_dir}" \
 		--stdout "${logfile}" --stderr "${logfile}" \
-		--exec /bin/sh -- -lc 'set -a; . "'"${env_file}"'"; set +a; exec cloudflared tunnel --no-autoupdate --protocol "${CLOUDFLARED_PROTOCOL:-http2}" run --token "${CLOUDFLARE_TUNNEL_TOKEN}"'
+		--exec /bin/sh -- -lc 'set -a; . "'"${env_file}"'"; set +a; export TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN}"; exec cloudflared tunnel --no-autoupdate --protocol "${CLOUDFLARED_PROTOCOL:-http2}" run'
 	eend $?
 }
 

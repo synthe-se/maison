@@ -30,7 +30,8 @@
 			? [
 					[m.device_model(), lamp.model ?? m.lamps_unknown_model()],
 					[m.lamps_manufacturer(), lamp.manufacturer],
-					[m.lamps_firmware(), lamp.firmware ?? m.common_unknown()],
+					// only the Hue lamps say their firmware
+					...(lamp.firmware ? [[m.device_firmware(), lamp.firmware] as [string, string]] : []),
 					...rows,
 					[m.lamps_last_seen(), lamp.lastSeen ? when(lamp.lastSeen) : m.common_unknown()]
 				]

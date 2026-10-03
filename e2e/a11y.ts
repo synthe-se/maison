@@ -47,8 +47,8 @@ for (const scheme of ['light', 'dark'] as const) {
 		await audit(p, `${where} session panel`);
 		await p.keyboard.press('Escape');
 		// a confirmation dialog (removing a shutter)
-		await p.getByRole('article', { name: 'Volet salon', exact: true }).getByRole('button', { name: 'Réglages' }).click();
-		await p.getByRole('button', { name: 'Retirer' }).click();
+		await p.getByRole('article', { name: 'Volet salon', exact: true }).getByRole('button', { name: 'Réglages de Volet salon' }).click();
+		await p.getByRole('button', { name: 'Retirer Volet salon' }).click();
 		await audit(p, `${where} confirmation dialog`);
 		await p.keyboard.press('Escape');
 		await p.context().close();

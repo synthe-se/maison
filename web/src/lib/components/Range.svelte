@@ -6,7 +6,8 @@
 	// - a device: `send` on release, and with `live` also while dragging, at most every
 	//   EVERY ms (a lamp, a volume); the thumb keeps the sent value until the device reports it (± `near`) or
 	//   `hold` ms pass, so a slow device never makes it jump back; `settle` reads the device
-	//   again after the gesture.
+	//   again after the gesture. Without `live` (a shutter's motor), keys do not send one
+	//   target each: the last one goes KEYS_SETTLE ms after the last key (§ 3).
 	import { Slider } from 'bits-ui';
 	import { ui } from '#lib/ui.svelte.ts';
 
@@ -14,6 +15,8 @@
 	const HOLD = 3_000;
 	/** While dragging a `live` slider, at most one send per this many ms (doc § 3). */
 	const EVERY = 300;
+	/** A device sent on release only gets its target this long after the last key (§ 3). */
+	const KEYS_SETTLE = 400;
 
 	interface Props {
 		label: string;
@@ -32,8 +35,10 @@
 		settle?: () => Promise<unknown>;
 		/** A reported value this close to the sent one counts as reached. */
 		near?: number;
-		/** Track-end labels (« Chaud » … « Froid »). */
+		/** Track-end labels (« Fermé » … « Ouvert »). */
 		ends?: [string, string];
+		/** The value the device reports while it moves to the thumb's (a fine mark on the track). */
+		mark?: number;
 		disabled?: boolean;
 		/** Hide the visible label when the card already says it; it stays for readers. */
 		hideLabel?: boolean;
@@ -52,6 +57,7 @@
 		settle,
 		near = step,
 		ends,
+		mark,
 		disabled = false,
 		hideLabel = false
 	}: Props = $props();
@@ -66,9 +72,13 @@
 	let release: ReturnType<typeof setTimeout> | undefined;
 	let queued: { v: number; final: boolean } | null = null;
 	let lastSent: number | null = null;
+	/** The gesture comes from the keyboard (until a pointer takes over). */
+	let keyed = false;
+	let settling: ReturnType<typeof setTimeout> | undefined;
 	$effect(() => () => {
 		clearTimeout(gate);
 		clearTimeout(release);
+		clearTimeout(settling);
 	});
 
 	function push(v: number, final: boolean) {
@@ -77,6 +87,15 @@
 			return;
 		}
 		if (!final && !live) return;
+		if (final && !live && keyed) {
+			held = v;
+			clearTimeout(settling);
+			settling = setTimeout(() => {
+				keyed = false;
+				push(v, true);
+			}, KEYS_SETTLE);
+			return;
+		}
 		held = v;
 		clearTimeout(release);
 		if (gate) queued = { v, final };
@@ -109,6 +128,7 @@
 	}
 
 	function onkeydown(e: KeyboardEvent) {
+		keyed = true;
 		const dir = e.key === 'PageUp' ? 1 : e.key === 'PageDown' ? -1 : 0;
 		if (!dir || disabled) return;
 		e.preventDefault();
@@ -131,9 +151,15 @@
 		{disabled}
 		onValueChange={(v) => push(v, false)}
 		onValueCommit={(v) => push(v, true)}
+		onpointerdown={() => (keyed = false)}
 		class="range-band"
 	>
-		<span class="track"><Slider.Range class="range-fill" /></span>
+		<span class="track">
+			<Slider.Range class="range-fill" />
+			{#if mark !== undefined && Math.abs(mark - draft) > near}
+				<span class="mark" style:left="{((mark - min) / (max - min)) * 100}%" aria-hidden="true"></span>
+			{/if}
+		</span>
 		<Slider.Thumb
 			index={0}
 			id="{id}-thumb"
@@ -157,6 +183,8 @@
 	.range :global(.range-band) { position: relative; display: flex; align-items: center; min-height: var(--control-h); user-select: none; }
 	.track { position: relative; flex: 1; height: 6px; border-radius: var(--radius-pill); background: var(--ground-raised); overflow: hidden; }
 	.range :global(.range-fill) { position: absolute; height: 100%; background: var(--accent); }
+	/* where the device is while it travels to the thumb */
+	.mark { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--ink); }
 	.range :global(.range-thumb) {
 		display: block; width: 24px; height: 24px; border-radius: 50%; background: var(--surface);
 		border: 2px solid var(--accent); box-shadow: var(--shadow); cursor: grab;

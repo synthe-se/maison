@@ -37,3 +37,26 @@ describe('Sheet', () => {
 		expect(onclose).toHaveBeenCalledOnce();
 	});
 });
+
+describe('Sheet with unsaved changes', () => {
+	it('asks before Escape loses them, and keeps the form on « Continuer »', async () => {
+		const onclose = vi.fn();
+		await render(Sheet, { open: true, onclose, title: 'Liaison', dirty: true, children: body });
+		await expect.element(page.getByRole('dialog')).toBeVisible();
+		await userEvent.keyboard('{Escape}');
+		const ask = page.getByRole('alertdialog', { name: m.sheet_discard_title() });
+		await expect.element(ask).toBeVisible();
+		await ask.getByRole('button', { name: m.sheet_keep_editing() }).click();
+		await expect.element(ask).not.toBeInTheDocument();
+		expect(onclose).not.toHaveBeenCalled();
+		await expect.element(page.getByRole('textbox', { name: 'Nom' })).toBeVisible();
+	});
+
+	it('closes once the changes are given up', async () => {
+		const onclose = vi.fn();
+		await render(Sheet, { open: true, onclose, title: 'Liaison', dirty: true, children: body });
+		await page.getByRole('button', { name: m.dismiss() }).click();
+		await page.getByRole('alertdialog').getByRole('button', { name: m.sheet_discard() }).click();
+		expect(onclose).toHaveBeenCalledOnce();
+	});
+});

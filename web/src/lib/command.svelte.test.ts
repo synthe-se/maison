@@ -30,6 +30,15 @@ describe('Command', () => {
 		expect(c.shown(false)).toBe(false);
 	});
 
+	it('leaves no timer behind once answered (the limit is cleared, not left to fire)', async () => {
+		const c = new Command(() => 'Lampe', 30_000);
+		const d = deferred();
+		const run = c.run(true, d.send);
+		d.resolve();
+		await run;
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
 	it('says it is working after 1 s, not before', async () => {
 		const c = new Command(() => 'Lampe', 3000);
 		const d = deferred();

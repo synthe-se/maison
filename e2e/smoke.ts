@@ -16,8 +16,10 @@ check('a page asks for a passkey first, no field to fill', (await p.locator('mai
 await signIn(p);
 check('in by an invitation', await p.getByRole('heading', { level: 1, name: 'Accueil' }).isVisible());
 
-// the three destinations, by the header's navigation
+// the three destinations, by the header's navigation, in the owner's order
 const nav = p.getByRole('navigation', { name: 'Navigation principale' }).first();
+const names = (await nav.getByRole('link').allInnerTexts()).map((t) => t.trim());
+check('the destinations in order: Accueil, Tempo, Télécommande', JSON.stringify(names) === JSON.stringify(['Accueil', 'Tempo', 'Télécommande']), JSON.stringify(names));
 for (const [link, h1] of [
 	['Télécommande', /Télécommande/],
 	['Accueil', 'Accueil'],

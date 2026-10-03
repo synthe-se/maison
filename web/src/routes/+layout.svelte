@@ -9,6 +9,7 @@
 	import { session } from '#lib/session.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { cleanupLegacyServiceWorker } from '#lib/legacy.ts';
+	import { refocus } from '#lib/focus.ts';
 	import Header from '#lib/components/Header.svelte';
 	import SignIn from '#lib/components/SignIn.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
@@ -27,6 +28,15 @@
 		const root = document.documentElement;
 		if (ui.theme === 'system') delete root.dataset.theme;
 		else root.dataset.theme = ui.theme;
+	});
+
+	// signed in (a passkey, an invitation): the page replaces the door under the focus, which
+	// goes to the page's title
+	let was = session.status;
+	$effect(() => {
+		const now = session.status;
+		if (now === 'signed_in' && was !== 'signed_in' && was !== 'loading') void refocus('main h1');
+		was = now;
 	});
 
 	// on a change of view, focus goes to the new view's title
@@ -52,11 +62,16 @@
 	});
 </script>
 
+<!-- the screens before a page keep a title of their own, not the asked page's -->
+<svelte:head>
+	{#if session.status === 'unreachable'}<title>{m.unreachable_title()} · {m.branding_name()}</title>{/if}
+</svelte:head>
+
 <nav class="skip" aria-label={m.skip_to_content()}><a href="#main">{m.skip_to_content()}</a></nav>
 {#if session.status === 'signed_in'}<Header />{/if}
 <main id="main" class:page={session.status === 'signed_in'} tabindex="-1">
 	{#if session.status === 'loading'}
-		<p class="muted loading" role="status">{m.common_loading()}</p>
+		<p class="muted loading">{m.common_loading()}</p>
 	{:else if session.status === 'unreachable'}
 		<section class="notice">
 			<h1 tabindex="-1">{m.unreachable_title()}</h1>
@@ -70,8 +85,9 @@
 	{/if}
 </main>
 <Toasts />
-<!-- two live regions mounted once; only their text changes -->
-<div class="sr-only" aria-live="polite" aria-atomic="true">{ui.polite}</div>
+<!-- two live regions mounted once; only their text changes: the one status region (§ 4), and
+     the alert for a failure -->
+<div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{ui.polite}</div>
 <div class="sr-only" role="alert">{ui.assertive}</div>
 
 <style>

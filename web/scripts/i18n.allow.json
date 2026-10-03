@@ -12,19 +12,5 @@
 			"device_level_low"
 		],
 		"reason": "« Bas »: the AC vane's position vs a low water or food level."
-	},
-	{
-		"keys": [
-			"nav_home",
-			"remote_keys_home"
-		],
-		"reason": "« Accueil »: Maison's home page vs the name of the remote's Home key."
-	},
-	{
-		"keys": [
-			"remote_keys_stop",
-			"shutters_stop"
-		],
-		"reason": "« Stop »: the name of the remote's Stop key vs the shutter's stop action."
 	}
 ]

@@ -97,12 +97,14 @@
 		/** A label makes the icon speak; without one it is decoration, hidden from readers. */
 		label?: string;
 		class?: string;
+		/** A gesture in flight: the spinning loader in place of the icon (one place for it). */
+		busy?: boolean;
 	}
-	let { name, size = 18, label, class: cls = '' }: Props = $props();
+	let { name, size = 18, label, class: cls = '', busy = false }: Props = $props();
 </script>
 
 <svg
-	class="icon {cls}"
+	class={['icon', cls, busy && 'spin']}
 	width={size}
 	height={size}
 	viewBox="0 0 24 24"
@@ -117,7 +119,7 @@
 	focusable="false"
 >
 	<!-- constant markup from the table above, never user data -->
-	{@html ICONS[name]}
+	{@html ICONS[busy ? 'loader-circle' : name]}
 </svg>
 
 <style>

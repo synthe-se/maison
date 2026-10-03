@@ -10,7 +10,10 @@
 	import { ui } from '#lib/ui.svelte.ts';
 	import { clock } from '#lib/i18n.svelte.ts';
 	import { Command, LIMIT } from '#lib/command.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { refocus } from '#lib/focus.ts';
+	import AdminOnly from '#lib/components/AdminOnly.svelte';
+	import Loaded from '#lib/components/Loaded.svelte';
 	import { CONFIRM, haptic, TAP } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Range from '#lib/components/Range.svelte';
@@ -29,15 +32,16 @@
 	const tv = live('tv', tvApi.status, REMOTE_POLL);
 	const status = $derived(tv.data?.status);
 	const config = $derived(tv.data?.config);
-	const name = $derived(status?.name || m.tv_title());
+	// the set's own name, else one that is not the group's (« Télévision » > « TV du salon »)
+	const name = $derived(status?.name || m.tv_default_name());
 	const configured = $derived(status?.configured ?? false);
 	/** Powered up, JointSPACE silent: the backend reports « on » but reads nothing else. */
 	const assumed = $derived(status?.power === 'on' && !status.volume);
 	const volume = $derived(status?.power === 'on' ? status.volume : undefined);
 
 	const POWER_STATE: Record<TvPower, () => string> = {
-		on: m.meross_state_on,
-		standby: m.litter_box_status_standby,
+		on: m.state_on,
+		standby: m.state_standby,
 		deep_standby: m.tv_deep_standby
 	};
 	/** The pad's keys in JointSPACE's names; the volume keys go through setVolume instead. */
@@ -54,6 +58,7 @@
 
 	const power = new Command(() => name, LIMIT.tv);
 	let settingsOpen = $state(false);
+	let settingsButton = $state<HTMLButtonElement>();
 	// two gestures: keys and volume fly while a button's gesture travels (box, Ambilight, power
 	// when assumed), and must not clear that button's mark; they show nothing in flight
 	const g = new Gesture();
@@ -63,7 +68,9 @@
 		if (tv.data) tv.set({ ...tv.data, status: { ...tv.data.status, ...next } });
 	}
 
-	const run = (send: () => Promise<unknown>) => pad.run(send);
+	// each key its own gesture: keys never wait for one another (the pacing is remote.ts's)
+	let sent = 0;
+	const run = (send: () => Promise<unknown>) => pad.run(send, undefined, `key-${++sent}`);
 
 	// ── last order: what an assumed-state tile says instead of a state (§ 2, case 3) ──
 	const ORDER_KEY = 'maison-tv-last-order';
@@ -169,13 +176,9 @@
 		<h2 id="tv-title" class="group-title">{m.tv_title()}</h2>
 	</div>
 
-	{#if tv.loading}
-		<p class="hint" role="status">{m.common_loading()}</p>
-	{:else}
+	<Loaded value={tv}>
 		<div class="tiles">
-			{#if !status}
-				<DeviceTile {name} icon="tv" state={m.command_no_answer_short()} warn />
-			{:else}
+			{#if status}
 			<DeviceTile
 				{name}
 				icon="tv"
@@ -187,15 +190,19 @@
 				{fact}
 			>
 				{#snippet end()}
-					<button
-						class="icon-btn"
-						aria-label={m.common_settings()}
-						aria-expanded={settingsOpen}
-						onclick={() => (settingsOpen = !settingsOpen)}><Icon name="settings-2" /></button
-					>
+					<AdminOnly reason={false}>
+						<button
+							class="icon-btn"
+							bind:this={settingsButton}
+							aria-label={m.common_settings_of({ name })}
+							aria-expanded={settingsOpen}
+							onclick={() => (settingsOpen = !settingsOpen)}><Icon name="settings-2" /></button
+						>
+					</AdminOnly>
 				{/snippet}
 
 				{#if settingsOpen || !configured}
+					<AdminOnly reason={configured ? false : m.tv_configure_admin()}>
 					<Settings
 						fields={[
 							{ key: 'host', label: m.tv_host(), placeholder: '192.168.1.52' },
@@ -209,18 +216,23 @@
 							await tv.refresh();
 						}}
 						saved={m.tv_saved()}
-						onsaved={() => (settingsOpen = false)}
+						onsaved={() => {
+							settingsOpen = false;
+							// the form is gone: back to the button that opened it
+							void refocus(settingsButton);
+						}}
 					/>
+					</AdminOnly>
 				{/if}
 
 				{#if configured}
 					{#if assumed}
 						<div class="btn-row">
-							<button class="btn" disabled={g.is('on')} onclick={() => assumedPower(true)}>
-								{#if g.is('on')}<Icon name="loader-circle" class="spin" />{:else}<Icon name="power" />{/if}{m.action_turn_on()}
+							<button class="btn" {...pending(g.is('on'))} onclick={() => assumedPower(true)}>
+								<Icon name="power" busy={g.is('on')} /><span class="btn-text">{m.action_turn_on()}</span>
 							</button>
-							<button class="btn" disabled={g.is('off')} onclick={() => assumedPower(false)}>
-								{#if g.is('off')}<Icon name="loader-circle" class="spin" />{:else}<Icon name="power" />{/if}{m.action_turn_off()}
+							<button class="btn" {...pending(g.is('off'))} onclick={() => assumedPower(false)}>
+								<Icon name="power" busy={g.is('off')} /><span class="btn-text">{m.action_turn_off()}</span>
 							</button>
 						</div>
 						{#if lastOrder}
@@ -253,8 +265,8 @@
 					{/if}
 
 					<div class="actions">
-						<button class="btn" disabled={g.is('box')} onclick={switchToBox}>
-							{#if g.is('box')}<Icon name="loader-circle" class="spin" />{:else}<Icon name="house" />{/if}{m.tv_switch_to_box()}
+						<button class="btn" {...pending(g.is('box'))} onclick={switchToBox}>
+							<Icon name="house" busy={g.is('box')} />{m.tv_switch_to_box()}
 						</button>
 					</div>
 
@@ -279,8 +291,8 @@
 								{/snippet}
 							</Pad>
 							<div class="actions">
-								<button class="btn" aria-pressed={status.ambilight?.power ?? false} disabled={g.is('ambilight')} onclick={ambilight}>
-									{#if g.is('ambilight')}<Icon name="loader-circle" class="spin" />{:else}<Icon name="sparkles" />{/if}{m.tv_ambilight()}
+								<button class="btn" aria-pressed={status.ambilight?.power ?? false} {...pending(g.is('ambilight'))} onclick={ambilight}>
+									<Icon name="sparkles" busy={g.is('ambilight')} />{m.tv_ambilight()}
 								</button>
 							</div>
 						</More>
@@ -289,7 +301,7 @@
 			</DeviceTile>
 			{/if}
 		</div>
-	{/if}
+	</Loaded>
 </section>
 
 <style>

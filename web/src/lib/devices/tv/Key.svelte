@@ -67,6 +67,11 @@
 	onpointercancel={end}
 	onlostpointercapture={end}
 	oncontextmenu={(e) => e.preventDefault()}
+	onkeydown={(e) => {
+		// a held Enter repeats clicks with no pacing: a burst the TV does not survive (§ 7); the
+		// pad's own shortcuts pace a hold, a button pressed from the keyboard sends once
+		if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault();
+	}}
 	onclick={(e) => {
 		if (e.detail === 0) {
 			haptic(pattern);

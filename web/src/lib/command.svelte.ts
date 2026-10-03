@@ -39,7 +39,8 @@ export class Command {
 		this.slow = false;
 		this.late = false;
 		const slow = setTimeout(() => gen === this.#gen && (this.slow = true), 1_000);
-		const limit = new Promise<'late'>((r) => setTimeout(() => r('late'), this.#limit));
+		let limitTimer: ReturnType<typeof setTimeout> | undefined;
+		const limit = new Promise<'late'>((r) => (limitTimer = setTimeout(() => r('late'), this.#limit)));
 		try {
 			const outcome = await Promise.race([send().then(() => 'done' as const), limit]);
 			if (gen !== this.#gen) return false; // a newer gesture took over
@@ -50,6 +51,7 @@ export class Command {
 			return false;
 		} finally {
 			clearTimeout(slow);
+			clearTimeout(limitTimer);
 			if (gen === this.#gen) {
 				this.target = undefined;
 				this.slow = false;

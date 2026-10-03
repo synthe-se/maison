@@ -2,8 +2,7 @@
 // asks the authenticator. Discoverable credentials: signing in needs no name.
 // docs/dependances/passkeys.md
 
-import { api, ApiError, type SessionResponse, type User } from '#lib/api.ts';
-import { m } from '#lib/paraglide/messages.js';
+import { ApiError, del, get, patch, path, post, type SessionResponse, type User } from '#lib/api.ts';
 
 export interface PasskeyInfo {
 	id: string;
@@ -101,21 +100,17 @@ export function toJSON(c: PublicKeyCredential): Json {
 	return { id: c.id, rawId: b64.encode(c.rawId), type: c.type, response, clientExtensionResults: c.getClientExtensionResults(), authenticatorAttachment: c.authenticatorAttachment };
 }
 
-/** Signs in with a passkey. `conditional`: offered in the field's autofill, until aborted. */
-export async function signIn(opts: { conditional?: boolean; signal?: AbortSignal } = {}): Promise<SessionResponse> {
-	const start = await api<{ ceremony: string; options: { publicKey: Json; mediation?: CredentialMediationRequirement } }>('/passkeys/login/start', {
-		method: 'POST',
-		body: { conditional: !!opts.conditional }
-	});
+/** A ceremony begun by the server: its id and the browser's options. */
+type Started = { ceremony: string; options: { publicKey: Json } };
+
+/** Signs in with a passkey (also to confirm it is still me before adding one). */
+export async function signIn(): Promise<SessionResponse> {
+	const start = await post<Started>('/passkeys/login/start', {});
 	const publicKey = requestOptions(start.options.publicKey);
-	const credential = (await navigator.credentials.get({
-		publicKey,
-		mediation: opts.conditional ? 'conditional' : undefined,
-		signal: opts.signal
-	})) as PublicKeyCredential | null;
+	const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
 	if (!credential) throw cancelled();
 	try {
-		return await api<SessionResponse>('/passkeys/login/finish', { method: 'POST', body: { ceremony: start.ceremony, credential: toJSON(credential) } });
+		return await post<SessionResponse>('/passkeys/login/finish', { ceremony: start.ceremony, credential: toJSON(credential) });
 	} catch (e) {
 		// the passkey was removed here: tell the password manager to forget it
 		if (e instanceof ApiError && e.code === 'unknown_passkey' && publicKey.rpId)
@@ -124,62 +119,35 @@ export async function signIn(opts: { conditional?: boolean; signal?: AbortSignal
 	}
 }
 
-/** Creates a passkey: from an invitation (a new person), or for the signed-in person. */
-export async function register(opts: { invite?: string; name?: string } = {}): Promise<Registered> {
-	const start = await api<{ ceremony: string; options: { publicKey: Json } }>('/passkeys/register/start', {
-		method: 'POST',
-		body: opts.invite ? { invite: opts.invite } : {}
-	});
+/**
+ * Creates a passkey: from an invitation (a new person), or for the signed-in person. Adding one
+ * to a session whose last passkey sign-in is old asks the passkey again first (the server says
+ * `reauth_needed`): then the registration starts again, once.
+ */
+export async function register(opts: { invite?: string; name?: string; onReauth?: () => void } = {}): Promise<Registered> {
+	const begin = () => post<Started>('/passkeys/register/start', opts.invite ? { invite: opts.invite } : {});
+	let start: Started;
+	try {
+		start = await begin();
+	} catch (e) {
+		if (opts.invite || !(e instanceof ApiError) || e.code !== 'reauth_needed') throw e;
+		opts.onReauth?.();
+		await signIn();
+		start = await begin();
+	}
 	const credential = (await navigator.credentials.create({ publicKey: creationOptions(start.options.publicKey) })) as PublicKeyCredential | null;
 	if (!credential) throw cancelled();
-	return api<Registered>('/passkeys/register/finish', { method: 'POST', body: { ceremony: start.ceremony, credential: toJSON(credential), name: opts.name } });
+	return post<Registered>('/passkeys/register/finish', { ceremony: start.ceremony, credential: toJSON(credential), name: opts.name });
 }
 
-const id = encodeURIComponent;
+export const listPasskeys = () => get<PasskeyInfo[]>('/passkeys');
+export const renamePasskey = (key: string, name: string) => patch<PasskeyInfo>(path`/passkeys/${key}`, { name });
+export const removePasskey = (key: string) => del<void>(path`/passkeys/${key}`);
 
-export const listPasskeys = () => api<PasskeyInfo[]>('/passkeys');
-export const renamePasskey = (key: string, name: string) => api<PasskeyInfo>(`/passkeys/${id(key)}`, { method: 'PATCH', body: { name } });
-export const removePasskey = (key: string) => api<void>(`/passkeys/${id(key)}`, { method: 'DELETE' });
-
-export const inviteGreeting = (token: string) => api<{ name: string }>(`/invites/${id(token)}`);
-export const listInvites = () => api<Invite[]>('/invites');
-export const createInvite = (name: string, admin: boolean) => api<CreatedInvite>('/invites', { method: 'POST', body: { name, admin } });
-export const revokeInvite = (invite: string) => api<void>(`/invites/${id(invite)}`, { method: 'DELETE' });
-
-/** What went wrong, said plainly, with what to do. */
-export function passkeyMessage(e: unknown): string {
-	const code = e instanceof ApiError ? e.code : e instanceof DOMException ? e.name : undefined;
-	switch (code) {
-		case 'NotAllowedError':
-		case 'AbortError':
-		case 'cancelled':
-			return m.pk_cancelled();
-		case 'SecurityError':
-			return m.pk_insecure();
-		case 'InvalidStateError':
-		case 'passkey_exists':
-			return m.pk_exists();
-		case 'invite_invalid':
-			return m.pk_invite_invalid();
-		case 'ceremony_expired':
-			return m.pk_expired();
-		case 'passkey_rejected':
-			return m.pk_rejected();
-		case 'unknown_passkey':
-			return m.pk_unknown();
-		case 'last_passkey':
-			return m.pk_last();
-		case 'too_many_attempts':
-			return m.pk_too_many();
-		case 'passkey_off':
-			return m.pk_off();
-		default:
-			return e instanceof Error && e.message ? e.message : m.common_error();
-	}
-}
-
-/** `promise`, its failure worded by `passkeyMessage`: for a Gesture, which shows what it throws. */
-export const worded = <T>(promise: Promise<T>): Promise<T> =>
-	promise.catch((e) => {
-		throw new Error(passkeyMessage(e));
-	});
+export const inviteGreeting = (token: string) => get<{ name: string }>(path`/invites/${token}`);
+export const listInvites = () => get<Invite[]>('/invites');
+/** A link for `name`; with `person`, a way back in for someone who lost every passkey (without
+ * it, a name already someone's is refused: `person_exists`). */
+export const createInvite = (name: string, admin: boolean, person?: string) =>
+	post<CreatedInvite>('/invites', person ? { name, admin, person } : { name, admin });
+export const revokeInvite = (invite: string) => del<void>(path`/invites/${invite}`);

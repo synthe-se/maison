@@ -16,6 +16,8 @@ import {
 	type ZigbeeLamp
 } from '#lib/api.ts';
 import { live } from '#lib/live.svelte.ts';
+import { LIST_EVERY, zigbee } from '#lib/devices/lamps/lamp.ts';
+import { LIST_EVERY_MS, LIST_KEY } from '#lib/devices/meross/keys.ts';
 import { buildClimateCommand, parseClimateCommand } from '#lib/devices/climate/command.ts';
 import { degrees, FAN_LABEL, MODE_LABEL, VANE_LABEL } from '#lib/devices/climate/labels.ts';
 
@@ -56,12 +58,13 @@ export interface Sources {
 }
 
 /**
- * The pickers' devices, asked once when the configurator opens (no polling: the React page
- * kept them a minute). Call during component initialisation.
+ * The pickers' devices. The lamps and plugs are the dashboard's own lists (same keys, same
+ * pace: a gesture's `refresh` reaches them too); the IR blaster and its codes are asked once.
+ * Call during component initialisation.
  */
 export function liveSources(): { readonly current: Sources } {
-	const lamps = live('remote-src-lamps', zigbeeLampsApi.list);
-	const plugs = live('remote-src-plugs', merossApi.list);
+	const lamps = live(zigbee.keys.list, zigbeeLampsApi.list, LIST_EVERY);
+	const plugs = live(LIST_KEY, merossApi.list, LIST_EVERY_MS);
 	const hosts = live('remote-src-hosts', () => broadlinkApi.discover());
 	const codes = live('remote-src-codes', broadlinkApi.listCodes);
 	return {

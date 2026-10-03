@@ -17,7 +17,6 @@ webauthn-rs-proto = "0.5.5"   # the same version webauthn-rs pins; for the optio
 # webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the Pi
 # carries it (cargo-zigbuild compiles it with zig cc)
 openssl = { version = "0.10", features = ["vendored"] }
-async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.23.1"
@@ -30,7 +29,8 @@ dotenvy = "0.15.7"
 # ashv2's `ezsp` feature provides the Transmit/Receive adapters; the ezsp
 # crate itself resolves through [patch.crates-io] below so both the direct
 # dependency and ashv2's internal one use the same patched source.
-ashv2 = { git = "https://github.com/uplg/ashv2/", branch = "main", version = "13.0.0", features = ["ezsp"] }
+# the uplg forks (main = upstream + our fixes), pinned: `cargo update` must not follow a branch
+ashv2 = { git = "https://github.com/uplg/ashv2/", rev = "a6ab7043d7bc9924114ae22fc0abf73298645d7e", version = "13.0.0", features = ["ezsp"] }
 ezsp = "17.0.0"
 silizium = { version = "3", features = ["le-stream"] }
 futures = "0.3.34"
@@ -73,14 +73,14 @@ matter-codec = "0.3.1"
 sunrise = "3.0.0"
 
 [dev-dependencies]
+# paused time in tests (the Tuya worker lifecycle)
+tokio = { version = "1.53.1", features = ["test-util"] }
 # a software authenticator and client: passkeys end to end, discoverable ones included
 passkey = { version = "0.6.0", features = ["rust-crypto"] }
 async-trait = "0.1"
 public-suffix = "0.1"
-bytes = "1.12.1"
 tempfile = "3.27.0"
 tower = "0.5.3"
-uuid = { version = "1.26.1", features = ["v4"] }
 
 [patch.crates-io]
-ezsp = { git = "https://github.com/uplg/ezsp", branch = "main" }
+ezsp = { git = "https://github.com/uplg/ezsp", rev = "edec778da0e65934976913b9f6ef1663367bfac3" }

@@ -1,13 +1,18 @@
 <script lang="ts">
 	// « Télécommande »: the infrared buttons of the AirTies set-top box (README « IR remote »).
 	// The remote's picture and the list of configured buttons both open one editor, in a sheet.
-	import { tick } from 'svelte';
+	// Configuring is an admin's: a member sees what each button does.
 	import { m } from '#lib/paraglide/messages.js';
 	import { irApi, type IrBinding } from '#lib/api.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { refocus } from '#lib/focus.ts';
+	import { session } from '#lib/session.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
+	import PageHead from '#lib/components/PageHead.svelte';
+	import Loaded from '#lib/components/Loaded.svelte';
+	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import Sheet from '#lib/components/Sheet.svelte';
 	import RemoteMap from '#lib/devices/remote/RemoteMap.svelte';
@@ -27,6 +32,7 @@
 	/** The editor: closed, a new button (capture), or a key's binding. */
 	let editing = $state<{ code?: number } | null>(null);
 	let listTitle = $state<HTMLElement | null>(null);
+	let editorDirty = $state(false);
 
 	const g = new Gesture();
 	const remove = (code: number) =>
@@ -36,42 +42,36 @@
 				ui.say(m.remote_deleted({ key: keyName(code) }));
 				await keymap.refresh();
 				// the row and its button are gone: the focus goes to the list it was in
-				await tick();
-				listTitle?.focus();
-			}
+				await refocus(listTitle);
+			},
+			String(code)
 		);
 </script>
 
-<svelte:head><title>{m.remote_title()}</title></svelte:head>
+<PageHead title={m.remote_title()}>
+	{#snippet sub()}{m.remote_subtitle()}{/snippet}
+	{#snippet end()}
+		<AdminOnly>
+			<button class="btn primary" onclick={() => (editing = {})}><Icon name="plus" />{m.remote_add_binding()}</button>
+		</AdminOnly>
+	{/snippet}
+</PageHead>
 
-<div class="page-head">
-	<h1 tabindex="-1">{m.remote_title()}</h1>
-	<p class="sub">{m.remote_subtitle()}</p>
-	<div class="end">
-		<button class="btn primary" onclick={() => (editing = {})}><Icon name="plus" />{m.remote_add_binding()}</button>
-	</div>
-</div>
-
-{#if keymap.error && !keymap.data}
-	<div class="empty">
-		<p>{m.remote_loading_error()}</p>
-		<button class="btn" onclick={() => keymap.refresh()}><Icon name="refresh-cw" />{m.common_retry()}</button>
-	</div>
-{:else}
+<Loaded value={keymap}>
 	<div class="layout">
-		<section class="group" aria-labelledby="remote-map-title">
-			<h2 id="remote-map-title" class="group-title">{m.remote_map_title()}</h2>
-			<RemoteMap keymap={map} onselect={(code) => (editing = { code })} />
-		</section>
+		{#if session.admin}
+			<section class="group" aria-labelledby="remote-map-title">
+				<h2 id="remote-map-title" class="group-title">{m.remote_map_title()}</h2>
+				<RemoteMap keymap={map} onselect={(code) => (editing = { code })} />
+			</section>
+		{/if}
 
 		<section class="group" aria-labelledby="remote-list-title">
 			<div class="group-head">
 				<h2 id="remote-list-title" class="group-title" tabindex="-1" bind:this={listTitle}>{m.remote_bindings_title()}</h2>
 				{#if bindings.length}<span class="fact">{m.remote_binding_count({ count: bindings.length })}</span>{/if}
 			</div>
-			{#if keymap.loading}
-				<p class="hint" role="status">{m.common_loading()}</p>
-			{:else if bindings.length === 0}
+			{#if bindings.length === 0}
 				<div class="empty">
 					<p>{m.remote_no_bindings()}</p>
 					<p class="hint">{m.remote_no_bindings_hint()}</p>
@@ -93,30 +93,34 @@
 							<ol class="summary">
 								{#each b.actions as a, i (i)}<li>{summarize(a, sources.current)}</li>{/each}
 							</ol>
-							<div class="actions end">
-								<button class="btn" aria-label={m.remote_edit_binding({ key: keyName(code) })} onclick={() => (editing = { code })}>
-									<Icon name="pen" />{m.common_edit()}
-								</button>
-								<ConfirmDialog
-									label={m.remote_delete_key({ key: keyName(code) })}
-									icon="trash"
-									title={m.remote_delete_title({ key: keyName(code) })}
-									description={m.remote_delete_consequence()}
-									action={m.remote_delete_key({ key: keyName(code) })}
-									onconfirm={() => remove(code)}
-								/>
-							</div>
+							<AdminOnly reason={false}>
+								<div class="actions end">
+									<button class="btn" aria-label={m.remote_edit_binding({ key: keyName(code) })} onclick={() => (editing = { code })}>
+										<Icon name="pen" />{m.common_edit()}
+									</button>
+									<ConfirmDialog
+										label={m.remote_delete_key({ key: keyName(code) })}
+										icon="trash"
+										title={m.remote_delete_title({ key: keyName(code) })}
+										description={m.remote_delete_consequence()}
+										action={m.remote_delete_key({ key: keyName(code) })}
+										pending={g.is(String(code))}
+										onconfirm={() => remove(code)}
+									/>
+								</div>
+							</AdminOnly>
 						</li>
 					{/each}
 				</ul>
 			{/if}
 		</section>
 	</div>
-{/if}
+</Loaded>
 
 <Sheet
 	open={editing !== null}
 	onclose={() => (editing = null)}
+	dirty={editorDirty}
 	title={editing?.code === undefined ? m.remote_new_key() : m.remote_edit_binding({ key: keyName(editing.code) })}
 	description={m.remote_editor_description()}
 >
@@ -125,6 +129,7 @@
 			code={editing.code}
 			keymap={map}
 			sources={sources.current}
+			bind:dirty={editorDirty}
 			onsaved={() => {
 				editing = null;
 				void keymap.refresh();
@@ -149,5 +154,4 @@
 	.summary { margin: 0; padding-left: var(--s-5); font: var(--t-secondary); color: var(--ink-muted); display: grid; gap: var(--s-1); }
 	.summary li { overflow-wrap: anywhere; }
 	.binding :global(.btn) { min-height: var(--control-h); }
-	.empty .btn { margin-top: var(--s-3); }
 </style>

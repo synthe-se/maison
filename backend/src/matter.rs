@@ -32,11 +32,10 @@ use matter_controller::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
-use chrono::Datelike;
-
 use crate::{
     config::Config,
     error::AppError,
+    store::{self, Access, Corrupt},
     sun::{self, Place},
 };
 
@@ -49,7 +48,6 @@ const ATTR_OPERATIONAL_STATUS: u32 = 0x000A;
 const ATTR_TARGET_LIFT_PERCENT100THS: u32 = 0x000B;
 const ATTR_CURRENT_LIFT_PERCENT100THS: u32 = 0x000E;
 const ATTR_CLUSTER_REVISION: u32 = 0xFFFD;
-
 
 const OPERATIONAL_CREDENTIALS: u32 = 0x003E;
 const ATTR_CURRENT_FABRIC_INDEX: u32 = 0x0005;
@@ -146,9 +144,7 @@ struct Inner {
     /// Where the house is, for the sun schedule.
     place: RwLock<Option<Place>>,
     http: reqwest::Client,
-    /// The scheduler's last look: an event between it and now is due (never caught up
-    /// after a restart: it starts at boot, and `due` looks back `CATCH_UP` at most).
-    last_tick: Mutex<chrono::DateTime<chrono::Utc>>,
+    schedule: Mutex<ScheduleState>,
 }
 
 impl MatterManager {
@@ -166,7 +162,7 @@ impl MatterManager {
         test_roots: bool,
     ) -> Result<Self, AppError> {
         let covers = load_covers(&covers_path(state_dir))?;
-        let place = read_json::<Option<Place>>(&place_path(state_dir))?.flatten();
+        let place = store::read_json::<Option<Place>>(&place_path(state_dir), Corrupt::Fail)?;
         Ok(Self {
             inner: Arc::new(Inner {
                 state_dir: state_dir.to_path_buf(),
@@ -177,7 +173,7 @@ impl MatterManager {
                 commissioning: Mutex::new(()),
                 place: RwLock::new(place),
                 http: reqwest::Client::new(),
-                last_tick: Mutex::new(chrono::Utc::now()),
+                schedule: Mutex::new(ScheduleState::default()),
             }),
         })
     }
@@ -214,10 +210,7 @@ impl MatterManager {
         let code = normalize_setup_code(code)?;
         let name = normalize_name(name)?;
         let Ok(_guard) = self.inner.commissioning.try_lock() else {
-            return Err(AppError::http(
-                StatusCode::CONFLICT,
-                "A commissioning is already in progress",
-            ));
+            return Err(AppError::http(StatusCode::CONFLICT, "A commissioning is already in progress"));
         };
 
         let controller = self.controller().await?;
@@ -239,10 +232,7 @@ impl MatterManager {
                 // we found it rather than squatting one of its fabric slots.
                 decommission(&controller, info.node_id).await;
                 return Err(match outcome {
-                    Ok(_) => AppError::http(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "This Matter device exposes no window covering",
-                    ),
+                    Ok(_) => AppError::http(StatusCode::UNPROCESSABLE_ENTITY, "This Matter device exposes no window covering"),
                     Err(error) => operation_error(error),
                 });
             }
@@ -269,32 +259,12 @@ impl MatterManager {
         Ok(read_cover(&controller, cover, self.next_events().await).await)
     }
 
+    /// A person's order: it also replaces any schedule order still being retried.
     pub async fn command(&self, id: &str, command: CoverCommand) -> Result<CoverView, AppError> {
         let cover = self.cover(id).await?;
+        self.inner.schedule.lock().await.pending.remove(&cover.node_id);
         let controller = self.controller().await?;
-        let (command_id, fields) = match command {
-            CoverCommand::Open => (CMD_UP_OR_OPEN, Value::Structure(Vec::new())),
-            CoverCommand::Close => (CMD_DOWN_OR_CLOSE, Value::Structure(Vec::new())),
-            CoverCommand::Stop => (CMD_STOP_MOTION, Value::Structure(Vec::new())),
-            CoverCommand::OpenPercent(open) => (
-                CMD_GO_TO_LIFT_PERCENTAGE,
-                Value::Structure(vec![(
-                    Tag::Context(0),
-                    Value::Uint(u64::from(open_to_closure_100ths(open))),
-                )]),
-            ),
-        };
-        let path = CommandPath {
-            endpoint: cover.endpoint,
-            cluster: WINDOW_COVERING,
-            command: command_id,
-        };
-        let result = within(COMMAND_TIMEOUT, controller.node(cover.node_id).invoke(path, fields))
-            .await
-            .map_err(operation_error)?;
-        if let matter_controller::InvokeResult::Status(status) = result {
-            rejected(&cover, [status])?;
-        }
+        invoke(&controller, &cover, command).await?;
         Ok(read_cover(&controller, cover, self.next_events().await).await)
     }
 
@@ -306,7 +276,7 @@ impl MatterManager {
     pub async fn set_schedule(&self, id: &str, schedule: SunSchedule) -> Result<CoverView, AppError> {
         let within = -MAX_SUN_OFFSET_MIN..=MAX_SUN_OFFSET_MIN;
         if !within.contains(&schedule.sunrise_offset_min) || !within.contains(&schedule.sunset_offset_min) {
-            return Err(AppError::http(StatusCode::BAD_REQUEST, "Offsets must stay within 3 hours"));
+            return Err(AppError::bad_request("Offsets must stay within 3 hours"));
         }
         self.update(id, |cover| cover.schedule = schedule).await
     }
@@ -315,7 +285,7 @@ impl MatterManager {
         let node_id = parse_id(id)?;
         let cover = {
             let mut covers = self.inner.covers.write().await;
-            let cover = covers.get_mut(&node_id).ok_or_else(not_found)?;
+            let cover = covers.get_mut(&node_id).ok_or_else(unknown_shutter)?;
             change(cover);
             let cover = cover.clone();
             self.persist(&covers)?;
@@ -333,10 +303,10 @@ impl MatterManager {
 
     pub async fn set_place(&self, place: Place) -> Result<Place, AppError> {
         if !(-90.0..=90.0).contains(&place.latitude) || !(-180.0..=180.0).contains(&place.longitude) {
-            return Err(AppError::http(StatusCode::BAD_REQUEST, "Invalid coordinates"));
+            return Err(AppError::bad_request("Invalid coordinates"));
         }
-        create_private_dir(&self.inner.state_dir)?;
-        write_json(&place_path(&self.inner.state_dir), &Some(&place))?;
+        store::private_dir(&self.inner.state_dir)?;
+        store::write_json(&place_path(&self.inner.state_dir), &Some(&place), Access::Private)?;
         *self.inner.place.write().await = Some(place.clone());
         Ok(place)
     }
@@ -351,23 +321,32 @@ impl MatterManager {
         next_sun(&place, chrono::Utc::now())
     }
 
-    /// One look of the scheduler: the latest open or close that fell between its last look
-    /// and now is sent, one command per cover at most. Does nothing while the clock is unset
-    /// (no RTC on the Pi before NTP).
+    /// One look of the scheduler (every 30 s): sends what fell due, and retries what failed.
     pub async fn run_schedule(&self) {
-        let now = chrono::Utc::now();
-        let since = std::mem::replace(&mut *self.inner.last_tick.lock().await, now);
-        if now.year() < 2025 {
-            return;
-        }
-        let Some(place) = self.place().await else { return };
+        self.schedule_tick(chrono::Utc::now(), clock_trusted(), |cover, command| {
+            let manager = self.clone();
+            async move {
+                let controller = manager.controller().await?;
+                invoke(&controller, &cover, command).await
+            }
+        })
+        .await;
+    }
+
+    /// The scheduler's look at `now`, `send` doing the sending (a fake in the tests).
+    async fn schedule_tick<F, Fut>(&self, now: chrono::DateTime<chrono::Utc>, trusted: bool, send: F)
+    where
+        F: Fn(CoverConfig, CoverCommand) -> Fut,
+        Fut: std::future::Future<Output = Result<(), AppError>>,
+    {
+        let place = self.place().await;
         let covers: Vec<CoverConfig> = self.inner.covers.read().await.values().cloned().collect();
-        for cover in covers {
-            if let Some((command, at)) = due(&cover.schedule, &place, since, now) {
-                tracing::info!(cover = %cover.name, ?command, %at, "sun schedule");
-                if let Err(error) = self.command(&format_id(cover.node_id), command).await {
-                    tracing::warn!(cover = %cover.name, %error, "sun schedule: command failed");
-                }
+        let orders = self.inner.schedule.lock().await.tick(now, trusted, place.as_ref(), &covers);
+        for (cover, order) in orders {
+            tracing::info!(cover = %cover.name, command = ?order.command, at = %order.at, "sun schedule");
+            match send(cover.clone(), order.command).await {
+                Ok(()) => self.inner.schedule.lock().await.sent(cover.node_id, order),
+                Err(error) => tracing::warn!(cover = %cover.name, %error, "sun schedule: command failed, retrying"),
             }
         }
     }
@@ -391,7 +370,7 @@ impl MatterManager {
             .await
             .get(&node_id)
             .cloned()
-            .ok_or_else(not_found)
+            .ok_or_else(unknown_shutter)
     }
 
     async fn controller(&self) -> Result<MatterController, AppError> {
@@ -411,7 +390,7 @@ impl MatterManager {
         } else {
             load_trust(&self.inner.trust_dir)?
         };
-        create_private_dir(&self.inner.state_dir)?;
+        store::private_dir(&self.inner.state_dir)?;
         let store = Arc::new(FileStore::new(self.inner.state_dir.join("controller.bin")));
         MatterController::builder(store)
             .attestation_trust(trust)
@@ -424,9 +403,9 @@ impl MatterManager {
     }
 
     fn persist(&self, covers: &BTreeMap<u64, CoverConfig>) -> Result<(), AppError> {
-        create_private_dir(&self.inner.state_dir)?;
+        store::private_dir(&self.inner.state_dir)?;
         let list: Vec<&CoverConfig> = covers.values().collect();
-        write_json(&covers_path(&self.inner.state_dir), &list)
+        store::write_json(&covers_path(&self.inner.state_dir), &list, Access::Private)
     }
 }
 
@@ -438,26 +417,8 @@ fn place_path(state_dir: &Path) -> PathBuf {
     state_dir.join("place.json")
 }
 
-/// A JSON state file; `None` when it is absent or empty.
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, AppError> {
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.iter().all(u8::is_ascii_whitespace) => Ok(None),
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Written whole or not at all (temp file + rename).
-fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), AppError> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
-}
-
 fn load_covers(path: &Path) -> Result<BTreeMap<u64, CoverConfig>, AppError> {
-    let list: Vec<CoverConfig> = read_json(path)?.unwrap_or_default();
+    let list: Vec<CoverConfig> = store::read_json(path, Corrupt::Fail)?;
     Ok(list
         .into_iter()
         .map(|cover| (cover.node_id, cover))
@@ -474,16 +435,6 @@ pub(crate) fn load_trust(trust_dir: &Path) -> Result<AttestationTrust, AppError>
             ),
         )
     })
-}
-
-fn create_private_dir(dir: &Path) -> Result<(), AppError> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
 }
 
 /// One fabric per Maison install, created on the first commissioning rather
@@ -557,6 +508,31 @@ async fn decommission(controller: &MatterController, node_id: u64) {
     if let Err(error) = controller.forget_node(node_id).await {
         tracing::warn!(%error, "matter: forget_node failed");
     }
+}
+
+/// Sends `command` to the cover's switch; a refusal is an error.
+async fn invoke(controller: &MatterController, cover: &CoverConfig, command: CoverCommand) -> Result<(), AppError> {
+    let (command_id, fields) = match command {
+        CoverCommand::Open => (CMD_UP_OR_OPEN, Value::Structure(Vec::new())),
+        CoverCommand::Close => (CMD_DOWN_OR_CLOSE, Value::Structure(Vec::new())),
+        CoverCommand::Stop => (CMD_STOP_MOTION, Value::Structure(Vec::new())),
+        CoverCommand::OpenPercent(open) => (
+            CMD_GO_TO_LIFT_PERCENTAGE,
+            Value::Structure(vec![(Tag::Context(0), Value::Uint(u64::from(open_to_closure_100ths(open))))]),
+        ),
+    };
+    let path = CommandPath {
+        endpoint: cover.endpoint,
+        cluster: WINDOW_COVERING,
+        command: command_id,
+    };
+    let result = within(COMMAND_TIMEOUT, controller.node(cover.node_id).invoke(path, fields))
+        .await
+        .map_err(operation_error)?;
+    if let matter_controller::InvokeResult::Status(status) = result {
+        rejected(cover, [status])?;
+    }
+    Ok(())
 }
 
 async fn read_cover(controller: &MatterController, cover: CoverConfig, next: NextSun) -> CoverView {
@@ -691,6 +667,94 @@ fn due(
     out.into_iter().max_by_key(|(_, at)| *at)
 }
 
+/// How long a schedule order is retried (Wi-Fi off at sunset: the shutters still close when
+/// it comes back, but not hours later).
+const RETRY_FOR: chrono::TimeDelta = chrono::TimeDelta::minutes(30);
+
+/// A schedule order not sent yet: the event and when it fell due.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Order {
+    command: CoverCommand,
+    at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The scheduler's memory: its last look (an event between it and now is due; none while the
+/// clock is not trusted) and, per cover, the one order still to send.
+#[derive(Debug, Default)]
+struct ScheduleState {
+    last_tick: Option<chrono::DateTime<chrono::Utc>>,
+    pending: BTreeMap<u64, Order>,
+}
+
+impl ScheduleState {
+    /// The orders to send at `now`. An untrusted clock (swclock's days-old time before NTP)
+    /// sends nothing; the first trusted look starts from now, replaying nothing. A newer event
+    /// replaces a cover's pending order; one older than `RETRY_FOR` is dropped.
+    fn tick(
+        &mut self,
+        now: chrono::DateTime<chrono::Utc>,
+        trusted: bool,
+        place: Option<&Place>,
+        covers: &[CoverConfig],
+    ) -> Vec<(CoverConfig, Order)> {
+        if !trusted {
+            self.last_tick = None;
+            return Vec::new();
+        }
+        let since = self.last_tick.replace(now).unwrap_or(now);
+        if let Some(place) = place {
+            for cover in covers {
+                if let Some((command, at)) = due(&cover.schedule, place, since, now) {
+                    self.pending.insert(cover.node_id, Order { command, at });
+                }
+            }
+        }
+        self.pending.retain(|node_id, order| {
+            let keep = now - order.at <= RETRY_FOR && covers.iter().any(|c| c.node_id == *node_id);
+            if !keep {
+                tracing::warn!(node_id = format_args!("{node_id:016x}"), ?order, "sun schedule: order given up");
+            }
+            keep
+        });
+        covers
+            .iter()
+            .filter_map(|cover| self.pending.get(&cover.node_id).map(|order| (cover.clone(), *order)))
+            .collect()
+    }
+
+    /// `order` went through: done, unless a newer one replaced it meanwhile.
+    fn sent(&mut self, node_id: u64, order: Order) {
+        if self.pending.get(&node_id) == Some(&order) {
+            self.pending.remove(&node_id);
+        }
+    }
+}
+
+/// Whether the system clock can be acted on. Linux: the kernel's NTP state (`adjtimex`
+/// answers `TIME_ERROR` while `STA_UNSYNC` is set, i.e. until chrony has synchronised it;
+/// the Pi has no RTC and boots on swclock's saved time). Elsewhere (a dev Mac): trusted.
+#[cfg(target_os = "linux")]
+fn clock_trusted() -> bool {
+    // Only the return value is read: `modes` (the first field) is 0, so the kernel changes
+    // nothing, and the buffer is larger than any libc's `struct timex`.
+    #[repr(C, align(8))]
+    struct Timex([u8; 512]);
+    extern "C" {
+        fn adjtimex(buf: *mut Timex) -> std::ffi::c_int;
+    }
+    const TIME_ERROR: std::ffi::c_int = 5;
+    let mut buf = Timex([0; 512]);
+    // SAFETY: a zeroed, writable buffer larger than `struct timex`, read-only mode.
+    let state = unsafe { adjtimex(&mut buf) };
+    // -1 (no permission to ask): nothing better to go on than the clock itself
+    state != TIME_ERROR
+}
+
+#[cfg(not(target_os = "linux"))]
+fn clock_trusted() -> bool {
+    true
+}
+
 /// OperationalStatus bits 0–1 are the global movement state.
 fn motion_from_status(status: u64) -> CoverMotion {
     match status & 0b11 {
@@ -716,24 +780,19 @@ fn format_id(node_id: u64) -> String {
 
 fn parse_id(id: &str) -> Result<u64, AppError> {
     if id.len() != 16 {
-        return Err(not_found());
+        return Err(unknown_shutter());
     }
-    u64::from_str_radix(id, 16).map_err(|_| not_found())
+    u64::from_str_radix(id, 16).map_err(|_| unknown_shutter())
 }
 
-fn not_found() -> AppError {
-    AppError::http(StatusCode::NOT_FOUND, "Unknown shutter")
+fn unknown_shutter() -> AppError {
+    AppError::not_found("Unknown shutter")
 }
 
 fn normalize_name(name: &str) -> Result<String, AppError> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 64 {
-        return Err(AppError::http(
-            StatusCode::BAD_REQUEST,
-            "Name must be 1 to 64 characters",
-        ));
-    }
-    Ok(name.to_string())
+    crate::people::clean_name(name).map(str::to_string).ok_or_else(|| {
+        AppError::bad_request(format!("Name must be 1 to {} characters", crate::people::MAX_NAME))
+    })
 }
 
 /// Accept a QR payload (`MT:…`) as-is, and a manual pairing code with the
@@ -747,10 +806,7 @@ fn normalize_setup_code(code: &str) -> Result<String, AppError> {
     if (digits.len() == 11 || digits.len() == 21) && digits.bytes().all(|b| b.is_ascii_digit()) {
         Ok(digits)
     } else {
-        Err(AppError::http(
-            StatusCode::BAD_REQUEST,
-            "Expected an 11- or 21-digit pairing code, or an MT: QR payload",
-        ))
+        Err(AppError::bad_request("Expected an 11- or 21-digit pairing code, or an MT: QR payload"))
     }
 }
 
@@ -781,10 +837,7 @@ fn commission_error(error: CallError) -> AppError {
             StatusCode::GATEWAY_TIMEOUT,
             "Commissioning timed out: is the device on the Wi-Fi with its pairing window open?",
         ),
-        CallError::Matter(Error::SetupCode(detail)) => AppError::http(
-            StatusCode::BAD_REQUEST,
-            format!("Invalid pairing code: {detail}"),
-        ),
+        CallError::Matter(Error::SetupCode(detail)) => AppError::bad_request(format!("Invalid pairing code: {detail}")),
         CallError::Matter(Error::SystemClockUnset(_)) => AppError::service_unavailable(
             "The system clock is not set yet (waiting for NTP); retry in a minute",
         ),
@@ -903,6 +956,153 @@ mod tests {
         let id = format_id(0x00AB_CDEF_0123_4567);
         assert_eq!(parse_id(&id).unwrap(), 0x00AB_CDEF_0123_4567);
         assert!(parse_id("abc").is_err());
+    }
+
+    // ── the scheduler: retries, give-up, supersession, clock trust ──
+
+    /// A switch that answers or not, and what it was sent.
+    #[derive(Default)]
+    struct FakeSwitch {
+        sent: std::sync::Mutex<Vec<CoverCommand>>,
+        offline: std::sync::atomic::AtomicBool,
+    }
+
+    impl FakeSwitch {
+        fn sent(&self) -> Vec<CoverCommand> {
+            self.sent.lock().unwrap().clone()
+        }
+
+        fn set_offline(&self, offline: bool) {
+            self.offline.store(offline, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    async fn manager_with_one_cover(schedule: SunSchedule) -> MatterManager {
+        let dir = std::env::temp_dir().join(format!("maison-matter-{}", crate::util::random_secret()));
+        let manager = MatterManager::with_paths(&dir, &dir, true).unwrap();
+        let cover = CoverConfig { node_id: 1, name: "Salon".into(), endpoint: 1, vendor_id: None, product_id: None, schedule };
+        manager.inner.covers.write().await.insert(1, cover);
+        *manager.inner.place.write().await = Some(paris());
+        manager
+    }
+
+    async fn look(manager: &MatterManager, now: chrono::DateTime<chrono::Utc>, trusted: bool, switch: &FakeSwitch) {
+        manager
+            .schedule_tick(now, trusted, |_, command| {
+                switch.sent.lock().unwrap().push(command);
+                let offline = switch.offline.load(std::sync::atomic::Ordering::SeqCst);
+                async move { if offline { Err(AppError::service_unavailable("offline")) } else { Ok(()) } }
+            })
+            .await;
+    }
+
+    /// Looks every 30 s over `from..to`.
+    async fn looks(manager: &MatterManager, from: chrono::DateTime<chrono::Utc>, to: chrono::DateTime<chrono::Utc>, switch: &FakeSwitch) {
+        let mut now = from;
+        while now <= to {
+            look(manager, now, true, switch).await;
+            now += chrono::TimeDelta::seconds(30);
+        }
+    }
+
+    fn sunset(day: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
+        sun::sun_times(&paris(), day).1.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_failed_order_is_retried_until_it_goes_through() {
+        let manager = manager_with_one_cover(BOTH).await;
+        let switch = FakeSwitch::default();
+        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        switch.set_offline(true);
+        looks(&manager, set - chrono::TimeDelta::minutes(1), set + chrono::TimeDelta::minutes(10), &switch).await;
+        let tries = switch.sent().len();
+        assert!(tries >= 19, "retried every look: {tries}");
+        assert!(switch.sent().iter().all(|c| *c == CoverCommand::Close));
+        switch.set_offline(false);
+        looks(&manager, set + chrono::TimeDelta::minutes(11), set + chrono::TimeDelta::minutes(20), &switch).await;
+        assert_eq!(switch.sent().len(), tries + 1, "sent once more, then done");
+    }
+
+    #[tokio::test]
+    async fn a_failed_order_is_given_up_after_half_an_hour() {
+        let manager = manager_with_one_cover(BOTH).await;
+        let switch = FakeSwitch::default();
+        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        switch.set_offline(true);
+        looks(&manager, set - chrono::TimeDelta::minutes(1), set + RETRY_FOR, &switch).await;
+        let tries = switch.sent().len();
+        switch.set_offline(false);
+        looks(&manager, set + RETRY_FOR + chrono::TimeDelta::seconds(30), set + chrono::TimeDelta::hours(2), &switch).await;
+        assert_eq!(switch.sent().len(), tries, "nothing after 30 min: the shutter must not close hours late");
+    }
+
+    #[tokio::test]
+    async fn a_newer_event_or_a_person_replaces_a_pending_order() {
+        let manager = manager_with_one_cover(BOTH).await;
+        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        let old = Order { command: CoverCommand::Open, at: set - chrono::TimeDelta::minutes(10) };
+        manager.inner.schedule.lock().await.pending.insert(1, old);
+        let switch = FakeSwitch::default();
+        switch.set_offline(true);
+        looks(&manager, set - chrono::TimeDelta::minutes(1), set + chrono::TimeDelta::minutes(1), &switch).await;
+        assert_eq!(switch.sent().first(), Some(&CoverCommand::Open), "retried while it was the latest");
+        assert_eq!(switch.sent().last(), Some(&CoverCommand::Close), "then the sunset replaced it");
+        let mut state = manager.inner.schedule.lock().await;
+        state.sent(1, old);
+        assert!(state.pending.contains_key(&1), "the old order's success does not clear the new one");
+        drop(state);
+        // a person's order wins over the schedule's retries (the command fails here: no switch)
+        let _ = manager.command(&format_id(1), CoverCommand::Open).await;
+        assert!(manager.inner.schedule.lock().await.pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_fires_before_the_clock_is_trusted() {
+        let manager = manager_with_one_cover(BOTH).await;
+        let switch = FakeSwitch::default();
+        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        // swclock's stale time around a sunset, then NTP: neither is replayed
+        let mut now = set - chrono::TimeDelta::minutes(2);
+        while now <= set + chrono::TimeDelta::minutes(2) {
+            look(&manager, now, false, &switch).await;
+            now += chrono::TimeDelta::seconds(30);
+        }
+        look(&manager, set + chrono::TimeDelta::minutes(3), true, &switch).await;
+        look(&manager, set + chrono::TimeDelta::minutes(4), true, &switch).await;
+        assert!(switch.sent().is_empty(), "{:?}", switch.sent());
+        // trusted from then on: the next event fires
+        let next = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap());
+        looks(&manager, next - chrono::TimeDelta::minutes(1), next + chrono::TimeDelta::minutes(1), &switch).await;
+        assert_eq!(switch.sent(), vec![CoverCommand::Close]);
+    }
+
+    #[tokio::test]
+    async fn the_days_the_clocks_change_open_and_close_once_each() {
+        for (from, to) in [("2026-10-24T12:00:00Z", "2026-10-26T12:00:00Z"), ("2026-03-28T12:00:00Z", "2026-03-30T12:00:00Z")] {
+            let manager = manager_with_one_cover(BOTH).await;
+            let switch = FakeSwitch::default();
+            looks(&manager, utc(from), utc(to), &switch).await;
+            let sent = switch.sent();
+            let opens = sent.iter().filter(|c| **c == CoverCommand::Open).count();
+            let closes = sent.iter().filter(|c| **c == CoverCommand::Close).count();
+            assert_eq!((opens, closes), (2, 2), "{from}: {sent:?}");
+        }
+    }
+
+    #[test]
+    fn names_follow_the_people_rule() {
+        assert_eq!(normalize_name("  Volet salon ").unwrap(), "Volet salon");
+        assert!(normalize_name("   ").is_err());
+        assert!(normalize_name(&"x".repeat(crate::people::MAX_NAME + 1)).is_err());
+    }
+
+    #[test]
+    fn an_empty_covers_file_is_an_error_not_no_shutters() {
+        let dir = std::env::temp_dir().join(format!("maison-matter-{}", crate::util::random_secret()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(covers_path(&dir), "").unwrap();
+        assert!(MatterManager::with_paths(&dir, &dir, true).is_err());
     }
 
     /// Every vendored root must parse: `from_dirs` fails as a whole on a

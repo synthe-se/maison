@@ -13,8 +13,10 @@
 		meal?: MealPlanEntry;
 		onsave: (meal: MealPlanEntry) => void;
 		oncancel: () => void;
+		/** Changed from what it opened with (the sheet asks before losing it). */
+		dirty?: boolean;
 	}
-	let { meal, onsave, oncancel }: Props = $props();
+	let { meal, onsave, oncancel, dirty = $bindable(false) }: Props = $props();
 	/** What the feeder accepts in one meal. */
 	const MAX_PORTIONS = 12;
 	const DEFAULT_TIME = '08:00';
@@ -30,6 +32,11 @@
 	// svelte-ignore state_referenced_locally
 	let enabled = $state(meal?.status !== 'Disabled');
 	let error = $state('');
+	// svelte-ignore state_referenced_locally
+	const opened = JSON.stringify([time, portion, days, enabled]);
+	$effect(() => {
+		dirty = JSON.stringify([time, portion, days, enabled]) !== opened;
+	});
 
 	const toggleDay = (d: string) => {
 		days = days.includes(d) ? days.filter((x) => x !== d) : [...days, d];

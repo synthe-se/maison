@@ -141,7 +141,7 @@ sudo rc-service mosquitto restart
 
 This keeps:
 
-- `1883` for local debugging
+- `1883` for debugging on the Pi itself (bound to 127.0.0.1)
 - `8883` for Meross devices that need TLS MQTT
 
 ## OpenRC services

@@ -9,7 +9,10 @@
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Command, LIMIT } from '#lib/command.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { refocus } from '#lib/focus.ts';
+	import AdminOnly from '#lib/components/AdminOnly.svelte';
+	import Loaded from '#lib/components/Loaded.svelte';
 	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
@@ -35,16 +38,21 @@
 	const shortcuts = $derived(config?.favouriteApps?.length ? config.favouriteApps : SHORTCUTS);
 	const current = $derived(shortcuts.find((a) => a.package === status?.currentApp));
 
+	/** Not the group's name (« Android TV » > « Box du salon »). */
+	const name = $derived(status?.model || m.android_tv_box());
 	// waking the box wakes the TV through CEC: the TV's 30 s limit
-	const awake = new Command(() => m.android_tv_title(), LIMIT.tv);
+	const awake = new Command(() => name, LIMIT.tv);
 	let settingsOpen = $state(false);
+	let settingsButton = $state<HTMLButtonElement>();
 	// independent gestures, each free to travel while another does without clearing its mark:
 	// launching an app (keyed by package; any launch holds the shortcuts), the pairing, and the
 	// keys and the APK upload, which show nothing in flight (the upload has its own progress)
 	const apps = new Gesture();
 	const pairing = new Gesture();
 	const pad = new Gesture();
-	const run = (send: () => Promise<unknown>) => pad.run(send);
+	// each key its own gesture: keys never wait for one another (the pacing is remote.ts's)
+	let sent = 0;
+	const run = (send: () => Promise<unknown>) => pad.run(send, undefined, `key-${++sent}`);
 
 	async function toggle(on: boolean) {
 		haptic(CONFIRM);
@@ -73,6 +81,8 @@
 	let pairOpen = $state(false);
 	let pairCode = $state('');
 	let codeInput = $state<HTMLInputElement>();
+	/** The code typed is not six characters: said under the field. */
+	let codeProblem = $state('');
 
 	function pairStart() {
 		return pairing.run(
@@ -86,17 +96,27 @@
 		);
 	}
 
+	/** The code the TV shows: six characters. */
+	const CODE_LENGTH = 6;
+
 	function pairFinish(e: SubmitEvent) {
 		e.preventDefault();
+		const code = pairCode.trim();
+		codeProblem = code.length === CODE_LENGTH ? '' : m.android_tv_pair_code_length({ count: CODE_LENGTH });
+		if (codeProblem) return void codeInput?.focus();
 		return pairing.run(
-			() => androidTvApi.pairFinish(pairCode.trim()),
+			() => androidTvApi.pairFinish(code),
 			async () => {
 				haptic(CONFIRM);
 				ui.toast(m.android_tv_paired_ok());
 				pairOpen = false;
 				pairCode = '';
 				await box.refresh();
-			}
+				// the pairing form is gone: the focus goes back to the settings' button
+				await refocus(settingsButton);
+			},
+			'finish',
+			{ field: () => codeInput }
 		);
 	}
 
@@ -114,9 +134,12 @@
 				haptic(CONFIRM);
 				ui.toast(m.android_tv_apk_installed({ name: file.name }));
 				void box.refresh();
-			}
+			},
+			'apk'
 		);
 		apk = null;
+		// the upload's progress gave way to the button again: the focus goes back to it
+		await refocus('#atv-apk');
 	}
 
 	const describe = $derived(
@@ -135,35 +158,35 @@
 		<h2 id="android-tv-title" class="group-title">{m.android_tv_title()}</h2>
 	</div>
 
-	{#if box.loading}
-		<p class="hint" role="status">{m.common_loading()}</p>
-	{:else}
+	<Loaded value={box}>
 		<div class="tiles">
-			{#if !status}
-				<DeviceTile name={m.android_tv_title()} icon="play" state={m.command_no_answer_short()} warn />
-			{:else}
+			{#if status}
 				<DeviceTile
-					name={m.android_tv_title()}
+					{name}
 					icon="play"
 					state={describe}
-					on={reachable ? status.awake : undefined}
+					on={configured ? status.awake : undefined}
+					offline={configured && !reachable}
 					command={awake}
-					ontoggle={reachable ? toggle : undefined}
-					warn={configured && !reachable}
+					ontoggle={configured ? toggle : undefined}
 					fact={current?.label}
 				>
 					{#snippet end()}
 						<!-- which channel the keys take: the difference between 8 ms and 150 ms a press -->
 						{#if status.paired}<span class="chip accent"><Icon name="zap" size={12} />{m.android_tv_paired()}</span>{/if}
-						<button
-							class="icon-btn"
-							aria-label={m.common_settings()}
-							aria-expanded={settingsOpen}
-							onclick={() => (settingsOpen = !settingsOpen)}><Icon name="settings-2" /></button
-						>
+						<AdminOnly reason={false}>
+							<button
+								class="icon-btn"
+								bind:this={settingsButton}
+								aria-label={m.common_settings_of({ name })}
+								aria-expanded={settingsOpen}
+								onclick={() => (settingsOpen = !settingsOpen)}><Icon name="settings-2" /></button
+							>
+						</AdminOnly>
 					{/snippet}
 
 					{#if settingsOpen || !configured}
+						<AdminOnly reason={configured ? false : m.android_tv_configure_admin()}>
 						<Settings
 							fields={[{ key: 'host', label: m.android_tv_host(), placeholder: '192.168.1.153' }]}
 							initial={{ host: config?.host }}
@@ -173,7 +196,10 @@
 								await box.refresh();
 							}}
 							saved={m.android_tv_saved()}
-							onsaved={() => (settingsOpen = false)}
+							onsaved={() => {
+								settingsOpen = false;
+								void refocus(settingsButton);
+							}}
 						>
 							<p class="hint">{m.android_tv_first_run_hint()}</p>
 							{#if status.paired}
@@ -183,29 +209,34 @@
 								<div class="block">
 									<p class="hint">{m.android_tv_pair_hint()}</p>
 									{#if pairOpen}
-										<form class="actions pair" onsubmit={pairFinish}>
-											<div class="field">
-												<label for="atv-pair">{m.android_tv_pair_code()}</label>
-												<input
-													id="atv-pair"
-													bind:this={codeInput}
-													bind:value={pairCode}
-													maxlength={6}
-													autocomplete="one-time-code"
-													autocapitalize="characters"
-													spellcheck="false"
-												/>
+										<form class="pair" onsubmit={pairFinish} novalidate>
+											<div class="actions">
+												<div class="field">
+													<label for="atv-pair">{m.android_tv_pair_code()}</label>
+													<input
+														id="atv-pair"
+														bind:this={codeInput}
+														bind:value={pairCode}
+														oninput={() => (codeProblem = '')}
+														maxlength={CODE_LENGTH}
+														autocomplete="one-time-code"
+														autocapitalize="characters"
+														spellcheck="false"
+														aria-invalid={codeProblem || pairing.error ? 'true' : undefined}
+														aria-describedby="atv-pair-error"
+													/>
+												</div>
+												<button class="btn primary" {...pending(pairing.is('finish'))}>
+													<Icon name="check" busy={pairing.is('finish')} />{m.android_tv_pair_confirm()}
+												</button>
 											</div>
-											<button class="btn primary" disabled={pairCode.trim().length !== 6 || pairing.is()}>
-												{#if pairing.is()}<Icon name="loader-circle" class="spin" />{/if}{m.android_tv_pair_confirm()}
-											</button>
+											<p class="form-error" id="atv-pair-error">{codeProblem || pairing.error}</p>
 										</form>
 									{:else}
 										<div class="actions">
-											<button class="btn" disabled={pairing.is()} onclick={pairStart}>
-												{#if pairing.is()}<Icon name="loader-circle" class="spin" />{m.android_tv_pairing()}{:else}<Icon
-														name="zap"
-													/>{m.android_tv_pair()}{/if}
+											<!-- a stable button: its label says the wait, the focus stays on it -->
+											<button class="btn" {...pending(pairing.is())} onclick={pairStart}>
+												<Icon name="zap" busy={pairing.is()} />{pairing.is() ? m.android_tv_pairing() : m.android_tv_pair()}
 											</button>
 										</div>
 									{/if}
@@ -222,17 +253,18 @@
 										valueText={m.android_tv_upload_sent({ percent: Math.round(apk.sent * 100) })}
 									/>
 								{:else if apk}
-									<p class="hint"><Icon name="loader-circle" class="spin" />{m.android_tv_installing()}</p>
+									<p class="hint"><Icon name="upload" busy />{m.android_tv_installing()}</p>
 								{:else}
 									<div class="actions">
 										<label class="btn file">
 											<Icon name="upload" />{m.android_tv_install_apk()}
-											<input class="sr-only" type="file" accept=".apk,application/vnd.android.package-archive" onchange={install} />
+											<input id="atv-apk" class="sr-only" type="file" accept=".apk,application/vnd.android.package-archive" onchange={install} />
 										</label>
 									</div>
 								{/if}
 							{/if}
 						</Settings>
+						</AdminOnly>
 					{/if}
 
 					{#if configured}
@@ -242,16 +274,17 @@
 									class="pill-btn"
 									class:on={status.currentApp === app.package}
 									aria-current={status.currentApp === app.package ? 'true' : undefined}
-									disabled={!reachable || apps.is()}
-									onclick={() => launch(app)}
+									disabled={!reachable}
+									{...pending(apps.is())}
+									onclick={() => !apps.is() && launch(app)}
 								>
-									{#if apps.is(app.package)}<Icon name="loader-circle" class="spin" />{/if}{app.label}
+									{#if apps.is(app.package)}<Icon name="play" busy />{/if}{app.label}
 								</button>
 							{/each}
 						</div>
 
 						<More>
-							<Pad label={m.tv_pad({ name: m.android_tv_title() })} {keys} under={['back', 'home', 'menu']} volume disabled={!reachable} />
+							<Pad label={m.tv_pad({ name })} {keys} under={['back', 'home', 'menu']} volume disabled={!reachable} />
 							<div class="row">
 								<Key label={m.remote_keys_search()} icon="search" fire={key('search')} disabled={!reachable} />
 								<Key label={m.tv_key_previous()} icon="skip-back" fire={key('previous')} disabled={!reachable} />
@@ -268,15 +301,14 @@
 				</DeviceTile>
 			{/if}
 		</div>
-	{/if}
+	</Loaded>
 </section>
 
 <style>
 	.apps { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 	.apps .pill-btn { min-height: var(--control-h); }
 	.row { display: flex; justify-content: center; gap: var(--s-2); }
-	.block { display: grid; gap: var(--s-2); }
-	.pair { align-items: end; }
+	.pair .actions { align-items: end; }
 	.pair input { width: 9ch; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: 0.2em; }
 	.file { position: relative; }
 	.file:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }

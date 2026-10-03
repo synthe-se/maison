@@ -4,11 +4,14 @@ import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
+import { session } from '#lib/session.svelte.ts';
+import { alex, leonard } from '#lib/test/passkeys.ts';
 import type { AndroidTvConfig, AndroidTvStatus, AndroidTvStatusResponse } from '#lib/api.ts';
 import { json, sentBody, stubFetch, type FetchCall } from '#lib/test/fetch.ts';
 import AndroidTv from './AndroidTv.svelte';
 
-const TITLE = () => m.android_tv_title();
+/** The tile is named after the box (its model), not after its group. */
+const TITLE = () => 'LEAP-S1';
 
 function boxStatus(over: Partial<AndroidTvStatus> = {}, config: AndroidTvConfig = { host: '192.168.1.153' }): AndroidTvStatusResponse {
 	return {
@@ -63,6 +66,7 @@ class FakeXhr {
 }
 
 beforeEach(() => {
+	session.adopt(leonard);
 	vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList);
 });
 afterEach(() => forgetAll());
@@ -134,7 +138,7 @@ describe('AndroidTv', () => {
 			m.remote_keys_up(),
 			m.tv_key_ok(),
 			m.tv_key_back(),
-			m.remote_keys_home(),
+			m.nav_home(),
 			m.remote_keys_menu(),
 			m.remote_keys_search(),
 			m.tv_key_previous(),
@@ -151,11 +155,11 @@ describe('AndroidTv', () => {
 		expect(reads(calls)).toBe(1);
 	});
 
-	it('unreachable: said in words, no toggle, keys and apps disabled', async () => {
+	it('unreachable: said in words, the toggle kept but unavailable, keys and apps disabled', async () => {
 		serve(boxStatus({ reachable: false, awake: false }));
 		await render(AndroidTv);
 		await expect.element(page.getByText(m.state_unreachable(), { exact: true })).toBeVisible();
-		await expect.element(page.getByRole('button', { name: TITLE(), exact: true })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: TITLE(), exact: true })).toHaveAttribute('aria-disabled', 'true');
 		await expect.element(page.getByRole('button', { name: 'SmartTube' })).toBeDisabled();
 		await expect.element(page.getByRole('button', { name: m.remote_keys_up() })).toBeDisabled();
 		await expect.element(page.getByRole('button', { name: m.remote_keys_search() })).toBeDisabled();
@@ -178,7 +182,7 @@ describe('AndroidTv', () => {
 		serve(boxStatus({ paired: true }));
 		await render(AndroidTv);
 		await expect.element(page.getByText(m.android_tv_paired(), { exact: true })).toBeVisible();
-		const settings = page.getByRole('button', { name: m.common_settings() });
+		const settings = page.getByRole('button', { name: m.common_settings_of({ name: TITLE() }) });
 		await settings.click();
 		await expect.element(settings).toHaveAttribute('aria-expanded', 'true');
 		await expect.element(page.getByText(m.android_tv_paired_hint())).toBeVisible();
@@ -190,16 +194,18 @@ describe('AndroidTv', () => {
 		const toast = vi.spyOn(ui, 'toast');
 		const calls = serve(boxStatus());
 		await render(AndroidTv);
-		await page.getByRole('button', { name: m.common_settings() }).click();
+		await page.getByRole('button', { name: m.common_settings_of({ name: TITLE() }) }).click();
 		await page.getByRole('button', { name: m.android_tv_pair() }).click();
 		const code = page.getByLabelText(m.android_tv_pair_code());
 		await expect.element(code).toHaveFocus();
 		expect(say).toHaveBeenCalledWith(m.android_tv_pair_started());
 		const confirm = page.getByRole('button', { name: m.android_tv_pair_confirm() });
+		// too short: said under the field, nothing sent
 		await userEvent.fill(code.element(), 'AB12');
-		await expect.element(confirm).toBeDisabled();
+		await confirm.click();
+		await expect.element(code).toHaveAccessibleDescription(m.android_tv_pair_code_length({ count: 6 }));
+		await expect.element(code).toHaveFocus();
 		await userEvent.fill(code.element(), 'AB12CD');
-		await expect.element(confirm).toBeEnabled();
 		await confirm.click();
 		await expect.poll(() => reads(calls)).toBe(2);
 		expect(sent(calls)).toEqual([
@@ -208,6 +214,37 @@ describe('AndroidTv', () => {
 		]);
 		expect(toast).toHaveBeenCalledWith(m.android_tv_paired_ok());
 		await expect.element(code).not.toBeInTheDocument();
+		// the form is gone: the focus is back on the settings' button, not lost
+		await expect.element(page.getByRole('button', { name: m.common_settings_of({ name: TITLE() }) })).toHaveFocus();
+	});
+
+	it('a code the TV refuses: said under the field, which keeps the focus', async () => {
+		serve(boxStatus(), { 'POST /api/androidtv/pair/finish': () => json({ success: false, error: 'Wrong code' }, 400) });
+		await render(AndroidTv);
+		await page.getByRole('button', { name: m.common_settings_of({ name: TITLE() }) }).click();
+		await page.getByRole('button', { name: m.android_tv_pair() }).click();
+		const code = page.getByLabelText(m.android_tv_pair_code());
+		await userEvent.fill(code.element(), 'AB12CD');
+		await page.getByRole('button', { name: m.android_tv_pair_confirm() }).click();
+		await expect.element(code).toHaveAccessibleDescription('Wrong code');
+		await expect.element(code).toHaveFocus();
+		await expect.element(code).toHaveValue('AB12CD');
+	});
+
+	it('a member sees no settings: no pairing, no APK', async () => {
+		session.adopt(alex);
+		serve(boxStatus());
+		await render(AndroidTv);
+		await expect.element(page.getByRole('button', { name: TITLE(), exact: true })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.common_settings_of({ name: TITLE() }) })).not.toBeInTheDocument();
+	});
+
+	it('not configured, for a member: says an admin sets it up', async () => {
+		session.adopt(alex);
+		serve(boxStatus({ configured: false, reachable: false, awake: false }, {}));
+		await render(AndroidTv);
+		await expect.element(page.getByText(m.android_tv_configure_admin())).toBeVisible();
+		await expect.element(page.getByLabelText(m.android_tv_host())).not.toBeInTheDocument();
 	});
 
 	it('an APK: the upload in percent, then « installing », then said installed', async () => {
@@ -216,7 +253,7 @@ describe('AndroidTv', () => {
 		vi.stubGlobal('XMLHttpRequest', FakeXhr);
 		const calls = serve(boxStatus());
 		await render(AndroidTv);
-		await page.getByRole('button', { name: m.common_settings() }).click();
+		await page.getByRole('button', { name: m.common_settings_of({ name: TITLE() }) }).click();
 		const input = page.getByLabelText(m.android_tv_install_apk());
 		await userEvent.upload(input, new File(['apk'], 'iris.apk', { type: 'application/vnd.android.package-archive' }));
 		await expect.poll(() => xhrs.length).toBe(1);
@@ -240,6 +277,7 @@ describe('AndroidTv', () => {
 	it('no answer at all: the tile says so', async () => {
 		serve(() => json({ success: false, error: 'down' }, 502));
 		await render(AndroidTv);
-		await expect.element(page.getByText(m.command_no_answer_short())).toBeVisible();
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.common_retry() })).toBeVisible();
 	});
 });

@@ -135,6 +135,17 @@ celui qu'on utilise le plus.
   un deuxième appui annule l'intention et envoie l'ordre inverse.
 - Une commande de plus de 10 s (réveil TV) affiche sa durée attendue : « Réveil de la TV…
   jusqu'à 30 s », barre déterminée sur le temps écoulé (NN/g).
+- **Le focus ne tombe jamais** (WCAG 2.4.3). Un contrôle dont l'ordre voyage (interrupteur
+  d'une liste de réglages, bouton d'un formulaire, déclencheur d'une confirmation) n'est jamais
+  `disabled` : il garde le focus, porte `aria-busy` et `aria-disabled`, et un second appui ne
+  renvoie rien. Quand le contrôle pressé disparaît avec ce qu'il retirait (une ligne, un
+  formulaire, une étape), le focus va au titre de la section (`tabindex="-1"`) ou au bouton qui
+  avait ouvert le formulaire ; un bouton dont les mots changent (« Démarrer » / « Arrêter »)
+  reste le même élément.
+- **Une erreur vit près de ce qu'elle concerne** : sous le champ (`aria-describedby`, le focus y
+  revient) pour un formulaire ; « Impossible de lire l'état pour l'instant » avec « Réessayer »
+  pour une liste jamais lue, jamais une liste vide qui mentirait (« Aucun volet »). Le texte est
+  celui du serveur ou une phrase qui dit quoi faire, jamais « Erreur. » devant.
 - L'erreur reste sur la tuile tant qu'on n'a pas réessayé ou que l'appareil n'a pas changé ;
   le bandeau global n'est qu'un écho, pas le seul endroit où elle vit.
 
@@ -252,7 +263,9 @@ celui qu'on utilise le plus.
   (`--t-group`, Fraunces 19 px) et ses tuiles en liste. Le protocole n'apparaît que dans le
   détail, sauf là où deux familles cohabitent (Hue et Zigbee). Pas de groupe « Maintenant » :
   une seule pièce, tout tient à l'écran.
-- **Ordre fixe**, celui de la configuration, à toutes les largeurs ; groupes placés en colonnes
+- **Ordre fixe**, choisi par le propriétaire (3 octobre 2026) : Tempo EDF, Lampes Hue, Lampes,
+  Coin du chat, Climatisation, Volets, Prises, Garenne (le Nabaztag), puis les télécommandes en
+  bas, peu servies (Télécommande, TV, box Android TV) ; le même à toutes les largeurs ; groupes placés en colonnes
   sans trous comme les pelotes d'Ariane (22rem minimum, six colonnes au plus, jamais plus que de
   groupes).
 - **Barre du bas (< 600 px), trois destinations** : Accueil, Tempo, Télécommande. Les pages
@@ -347,12 +360,17 @@ celui qu'on utilise le plus.
 | Jeton | Clair | Sombre | Texte dessus |
 |---|---|---|---|
 | `--tempo-bleu` | `#2B5BA8` (5,82:1) | `#7FA7E8` (7,15:1) | `--ground` clair / `--ground` sombre |
-| `--tempo-blanc` | `#FFFFFF` + contour `#525A66` (6,12:1) | `#EAE7E0` (14,15:1) | `--ink` / `#151A21` |
+| `--tempo-blanc` | `#FFFFFF` + contour `#525A66` (6,12:1) | vide + contour `#EAE7E0` (14,15:1) ; un fond clair égal au contour se lirait comme un disque plein | `--ink` |
 | `--tempo-rouge` | `#B3261E` (5,74:1) | `#F08A7E` (7,19:1) | `--ground` clair / `--ground` sombre |
 
 - **Confirmé ou prévu** : un jour publié par RTE est plein ; une prévision a un contour pointillé
-  et sa probabilité (« Rouge probable, 62 % »). Avant 10 h 30, la tuile dit « Demain : annoncé à
-  10 h 30 » puis la prévision.
+  et sa probabilité (« Rouge probable · 62 % ») ; sous 60 %, un contour en points sans aplat
+  (« pas sûr »). Avant 10 h 40, la tuile dit « Demain : annoncé vers 10 h 40 » puis la prévision.
+  Au-delà de demain, c’est la prévision de Maison, dite non officielle, avec sa fiabilité mesurée
+  (docs/tempo.md).
+- **Le prix en cours** : la couleur du jour Tempo (6 h → 6 h : avant 6 h, celle de la veille) et
+  la période (HP de 6 h à 22 h, HC sinon), « HP bleu · 0,1654 €/kWh » jusqu’à 22:00, recalculé
+  sur place à chaque bascule, sans requête.
 - **Le calendrier** est un `<table>` simple (rien à sélectionner, donc pas de `role="grid"`),
   `<caption>` « Novembre 2026 », en-têtes « lun. » avec `abbr="lundi"`. Chaque cellule se lit
   « mardi 12 novembre, rouge » ; aujourd'hui porte `aria-current="date"` et un contour

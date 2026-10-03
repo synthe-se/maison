@@ -18,8 +18,10 @@
 	const s = $derived(cover.schedule);
 	const known = $derived(!!place.data?.place);
 
-	function save(next: SunSchedule) {
-		return g.run(() => shuttersApi.setSchedule(cover.id, next), (r) => onchange(r.cover));
+	// keyed by the control that asked: busy, it keeps the focus and ignores presses
+	// (docs/ux/tableau-de-bord.md § 2); the others stay free
+	function save(next: SunSchedule, key: string) {
+		return g.run(() => shuttersApi.setSchedule(cover.id, next), (r) => onchange(r.cover), key);
 	}
 </script>
 
@@ -38,8 +40,8 @@
 				icon="sun"
 				label={m.shutters_open_at_sunrise()}
 				checked={s.openAtSunrise}
-				pending={g.is()}
-				onchange={(on) => save(toggled(s, 'sunrise', on))}
+				pending={g.is('sunrise')}
+				onchange={(on) => save(toggled(s, 'sunrise', on), 'sunrise')}
 				hint={s.openAtSunrise && cover.nextOpen ? m.shutters_next_open({ when: dayAndTime(cover.nextOpen) }) : undefined}
 			/>
 			{#if s.openAtSunrise}
@@ -48,8 +50,7 @@
 						label={m.shutters_offset()}
 						value={String(s.sunriseOffsetMin)}
 						options={offsetOptions()}
-						onchange={(v) => save({ ...s, sunriseOffsetMin: Number(v) })}
-						disabled={g.is()}
+						onchange={(v) => save({ ...s, sunriseOffsetMin: Number(v) }, 'sunrise-offset')}
 					/>
 				</li>
 			{/if}
@@ -57,8 +58,8 @@
 				icon="moon"
 				label={m.shutters_close_at_sunset()}
 				checked={s.closeAtSunset}
-				pending={g.is()}
-				onchange={(on) => save(toggled(s, 'sunset', on))}
+				pending={g.is('sunset')}
+				onchange={(on) => save(toggled(s, 'sunset', on), 'sunset')}
 				hint={s.closeAtSunset && cover.nextClose ? m.shutters_next_close({ when: dayAndTime(cover.nextClose) }) : undefined}
 			/>
 			{#if s.closeAtSunset}
@@ -67,8 +68,7 @@
 						label={m.shutters_offset()}
 						value={String(s.sunsetOffsetMin)}
 						options={offsetOptions()}
-						onchange={(v) => save({ ...s, sunsetOffsetMin: Number(v) })}
-						disabled={g.is()}
+						onchange={(v) => save({ ...s, sunsetOffsetMin: Number(v) }, 'sunset-offset')}
 					/>
 				</li>
 			{/if}
@@ -80,7 +80,6 @@
 
 <style>
 	.sun { display: grid; gap: var(--s-3); }
-	.label { font: var(--t-label); margin: 0; }
 	.settings { list-style: none; margin: 0; padding: 0; }
 	.offset { padding: var(--s-1) 0 var(--s-3) calc(20px + var(--s-3)); border-bottom: 1px solid var(--line); }
 </style>

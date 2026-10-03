@@ -61,7 +61,8 @@ a { color: var(--accent); }
 .skip:focus-within { transform: none; }
 .skip a { background: var(--accent); color: var(--on-accent); padding: var(--s-2) var(--s-3); border-radius: var(--radius); text-decoration: none; font-weight: 600; }
 
-/* buttons: 36px targets, 24px minimum (2.5.8) everywhere; 44px for a gesture's actions */
+/* buttons: 36px targets (44 on a touch screen: tokens.css), 24px minimum (2.5.8) everywhere;
+   44px for a gesture's actions */
 .btn {
 	display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-h-s); padding: 0 14px;
 	border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); cursor: pointer;
@@ -81,7 +82,6 @@ a { color: var(--accent); }
 	display: inline-grid; place-items: center; width: var(--control-h-xs); height: var(--control-h-xs); border-radius: var(--radius);
 	border: 0; background: transparent; cursor: pointer; color: var(--ink-muted);
 }
-.icon-btn.round { border-radius: 50%; }
 .icon-btn:hover { background: var(--ground-raised); color: var(--ink); }
 /* a button that reads as a link: in the accent, underlined; `plain` in ink, underlined on
    hover; `quiet` muted */
@@ -122,9 +122,6 @@ kbd {
 	background: var(--ground); color: var(--ink); font: var(--t-body);
 }
 :where(textarea) { padding-block: var(--s-2); }
-/* compact, in a row of options: on the control, or on what holds it */
-:where(.control-s, .control-s input, .control-s select) { min-height: var(--control-h-s); padding-inline: var(--s-2); font: var(--t-secondary); }
-
 /* fields */
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > label, .field > .label { font-weight: 600; font-size: 0.85rem; }
@@ -132,30 +129,25 @@ kbd {
 .field .help { font-size: 0.8rem; color: var(--ink-muted); }
 .field .error { font-size: 0.85rem; color: var(--blocked); font-weight: 500; }
 .field [aria-invalid='true'] { border-color: var(--blocked); }
+/* a field never pushes its row wider than the screen */
+.field input, .field select { min-width: 0; }
 /* a form's error, under it: nothing while there is none */
 .form-error { margin: 0; font: var(--t-secondary); color: var(--warn-text); }
 .form-error:empty { display: none; }
 
 /* floating content from Bits UI (portalled: global styles) */
-.menu, .panel, .select-content, .help-pop {
+.menu, .panel, .select-content {
 	border: 1px solid var(--line); border-radius: var(--radius-l); background: var(--surface); color: var(--ink);
 	/* above the toasts: a menu just opened comes first */
 	padding: 6px; box-shadow: var(--shadow-pop); z-index: 60;
 }
 .menu { min-width: 220px; }
-/* a help popover (Help.svelte), from its round « ? » */
-.help-btn { vertical-align: middle; }
-.help-btn[data-state='open'] { background: var(--ground-raised); color: var(--ink); }
-.help-pop { max-width: min(24rem, calc(100vw - 32px)); padding: var(--s-3) var(--s-4); font: var(--t-secondary); display: grid; gap: var(--s-2); }
-.help-pop p { margin: 0; }
 /* an item of a menu, a select, a list of options (a combobox's) */
 .menu-item, .select-item { display: flex; align-items: center; gap: 10px; width: 100%; }
 .menu-item, .select-item, .option { min-height: var(--control-h-s); padding: 6px 10px; border-radius: var(--radius); cursor: pointer; outline: none; }
 .menu-item[data-highlighted], .select-item[data-highlighted], .option[aria-selected='true'] { background: var(--accent-wash); }
 .menu-item.danger { color: var(--status-down-text); }
 .menu-item[data-disabled] { opacity: 0.55; cursor: default; }
-.menu-sep { border-top: 1px solid var(--line); margin: var(--s-1) 0; }
-.menu-label { font-size: 0.75rem; color: var(--ink-muted); padding: 6px 10px 2px; }
 .panel { width: min(360px, calc(100vw - 32px)); padding: 14px; display: flex; flex-direction: column; gap: 14px; }
 .panel h2 { font-size: 1.2rem; }
 .panel .row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -176,11 +168,6 @@ kbd {
 .sheet .dlg-head { padding-top: 0; align-items: center; }
 .sheet .sheet-title { font-size: 1.3rem; margin: 0; }
 .sheet .sheet-body { overflow-y: auto; overscroll-behavior: contain; padding: var(--s-4) 20px; }
-/* its buttons stay in reach at its foot while the rest scrolls */
-.sheet .sheet-actions {
-	position: sticky; bottom: calc(-1 * var(--s-4)); margin: 0 -20px calc(-1 * var(--s-4)); padding: var(--s-3) 20px;
-	background: var(--surface); border-top: 1px solid var(--line);
-}
 @keyframes sheet-up { from { transform: translateY(100%); } }
 /* from the right on a wide screen, full height (Material 3: a side sheet there) */
 @media (min-width: 840px) {
@@ -242,7 +229,8 @@ kbd {
 .columns { columns: 22rem 4; column-gap: var(--s-5); }
 .columns > * { break-inside: avoid; margin-block-end: var(--s-5); }
 /* a group title: 44px target, the name in Fraunces, a short fact on the right */
-.group-head { display: flex; align-items: center; gap: var(--s-3); min-height: var(--control-h); margin: 0 0 var(--s-1); }
+/* on a narrow screen the fact goes under the title rather than widening the page (1.4.10) */
+.group-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-3); min-height: var(--control-h); margin: 0 0 var(--s-1); }
 .group-head .fact { margin-left: auto; font: var(--t-meta); color: var(--ink-muted); white-space: nowrap; }
 /* a list row: leading state, the title in full, one short fact on the right */
 .list { list-style: none; margin: 0; padding: 0; }
@@ -259,9 +247,12 @@ kbd {
 .list-row.warn > .second, .list-row.warn > .meta { color: var(--warn-text); }
 
 /* ── Maison: the dashboard's bricks ── */
-/* a group of devices: its title, then its tiles, as many columns as fit (one on a phone) */
+/* a group of devices: its title, then its tiles, as many columns as fit (one on a phone);
+   never more than 24 px between two groups */
 .group { display: grid; gap: var(--s-3); }
-.group + .group { margin-top: var(--s-6); }
+.group + .group { margin-top: var(--s-5); }
+/* a button at the end of a group's head (add, open the page) */
+.group-head .fact-btn { margin-left: auto; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(20rem, 100%), 1fr)); gap: var(--s-5); align-items: start; }
 /* one device: what it is, its state in words, then its controls */
 .tile {
@@ -279,12 +270,26 @@ kbd {
 .tile-state { font: var(--t-secondary); color: var(--ink-muted); margin: 0; }
 .tile-state.warn { color: var(--warn-text); }
 .tile-head .end { margin-left: auto; display: flex; gap: var(--s-1); align-items: center; }
-/* a row of equal buttons (open · stop · close; a remote's keys) */
-.btn-row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--s-2); }
-.btn-row .btn { justify-content: center; min-height: var(--control-h); }
+/* a row of equal buttons (open · stop · close; a remote's keys); each may shrink below its
+   text, and in a row narrower than 17.5rem (a 320 px screen, WCAG 1.4.10) the words leave the
+   eye, kept for readers (`.btn-text`), the icons alone stay */
+.btn-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--s-2); container-type: inline-size; }
+.btn-row .btn { justify-content: center; min-height: var(--control-h); padding-inline: var(--s-2); min-width: 0; }
+@container (max-width: 17.5rem) {
+	.btn-row .btn-text { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+}
 /* a box inside a tile: settings, a form that unfolds */
 .inset { display: grid; gap: var(--s-3); padding: var(--s-3); border-radius: var(--radius-m); background: var(--ground); }
 .empty { padding: var(--s-6) var(--s-4); text-align: center; color: var(--ink-muted); border: 1px dashed var(--line); border-radius: var(--radius-l); }
 .empty p { margin: 0; }
+.empty .btn { margin-top: var(--s-3); }
+/* a tile's final height: head row plus padding (no jump when the list arrives) */
+.skeleton { min-height: calc(var(--tile-icon) + 2 * var(--s-4)); background: var(--ground-raised); border-color: transparent; }
+/* a small title over a few rows (a section inside a tile, a list's caption) */
+.label { font: var(--t-label); margin: 0; }
+/* a few lines stacked */
+.block { display: grid; gap: var(--s-2); }
+/* a sentence that needs a hand: the words say it, the colour only repeats it */
+.warn-text { margin: 0; color: var(--warn-text); font-weight: 600; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

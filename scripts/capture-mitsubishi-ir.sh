@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
+#
+# Learns the Mitsubishi remote's codes one by one through the Broadlink blaster, saving
+# each into broadlink-codes.json, resumable (progress file).
+#
+# Signing in takes a passkey, which a script cannot hold: it borrows the browser's
+# session instead. Sign in to maison as an admin (learning is admin-only), open the
+# developer tools > Application (Storage) > Cookies, and copy the value of
+# `maison_session` (`__Host-maison_session` over HTTPS):
+#
+#   MAISON_SESSION=eyJ... BROADLINK_HOST=192.168.1.73 scripts/capture-mitsubishi-ir.sh
+#
+# The session lasts 15 minutes: when a call answers 401, copy a fresh one and run the
+# script again; finished captures are skipped.
 
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:3033}"
-USERNAME="${USERNAME:-}"
-PASSWORD="${PASSWORD:-}"
+MAISON_SESSION="${MAISON_SESSION:-}"
 BROADLINK_HOST="${BROADLINK_HOST:-}"
 LOCAL_IP="${LOCAL_IP:-}"
 MODEL="${MODEL:-msz-hj5va}"
-COOKIE_JAR="${COOKIE_JAR:-/tmp/maison-cookies.txt}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-30}"
 TAG1="${TAG1:-clim}"
 TAG2="${TAG2:-salon}"
@@ -130,13 +141,16 @@ curl_json() {
 
   tmp_body="$(mktemp)"
   if [[ -n "$body" ]]; then
-    http_code="$(curl -sS -b "$COOKIE_JAR" -c "$COOKIE_JAR" -o "$tmp_body" -w '%{http_code}' -X "$method" "$url" -H 'Content-Type: application/json' --data "$body")"
+    http_code="$(curl -sS -H "Authorization: Bearer $MAISON_SESSION" -o "$tmp_body" -w '%{http_code}' -X "$method" "$url" -H 'Content-Type: application/json' --data "$body")"
   else
-    http_code="$(curl -sS -b "$COOKIE_JAR" -c "$COOKIE_JAR" -o "$tmp_body" -w '%{http_code}' -X "$method" "$url")"
+    http_code="$(curl -sS -H "Authorization: Bearer $MAISON_SESSION" -o "$tmp_body" -w '%{http_code}' -X "$method" "$url")"
   fi
 
   if [[ "$http_code" != 2* ]]; then
     printf 'HTTP %s for %s %s\n' "$http_code" "$method" "$url" >&2
+    if [[ "$http_code" == 401 ]]; then
+      printf 'The session has expired: copy a fresh MAISON_SESSION from the browser and run again.\n' >&2
+    fi
     cat "$tmp_body" >&2
     rm -f "$tmp_body"
     return 1
@@ -146,12 +160,9 @@ curl_json() {
   rm -f "$tmp_body"
 }
 
-login() {
-  require_var USERNAME "$USERNAME"
-  require_var PASSWORD "$PASSWORD"
-
-  printf 'Logging in to %s\n' "$BASE_URL"
-  curl_json "POST" "$BASE_URL/api/auth/login" "{\"username\":$(escape_json "$USERNAME"),\"password\":$(escape_json "$PASSWORD")}" >/dev/null
+check_session() {
+  require_var MAISON_SESSION "$MAISON_SESSION"
+  printf 'Using the browser session against %s\n' "$BASE_URL"
 }
 
 load_remote_saved_commands() {
@@ -355,7 +366,7 @@ main() {
   normalize_group_filter
   init_progress_file
   load_progress_file
-  login
+  check_session
   load_remote_saved_commands
   build_task_list
 

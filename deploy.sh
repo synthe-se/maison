@@ -257,9 +257,13 @@ push_to_pi() {
   log "Pushing web bundle"
   rsync_pi -avz "${ROOT_DIR}/${REMOTE_WEB_DIR}/" "${PI_HOST}:${PI_APP_DIR}/${REMOTE_WEB_DIR}/"
 
+  # Secrets (.env holds JWT_SECRET and the tunnel token; devices.json the Tuya local keys,
+  # meross-devices.json the Meross key): root's, readable by the service's group only.
+  local secret=(--chown="root:${PI_SERVICE_GROUP}" --chmod=F640)
+
   if [ -f "${PI_ENV_FILE}" ]; then
     log "Pushing env file"
-    rsync_pi -avz "${PI_ENV_FILE}" "${PI_HOST}:${PI_APP_DIR}/.env"
+    rsync_pi -avz "${secret[@]}" "${PI_ENV_FILE}" "${PI_HOST}:${PI_APP_DIR}/.env"
   else
     warn "Env file not found at ${PI_ENV_FILE}; keeping remote .env untouched"
   fi
@@ -294,7 +298,7 @@ push_to_pi() {
   for relative_path in "${RUNTIME_FILES[@]}"; do
     if [ -f "${ROOT_DIR}/${relative_path}" ]; then
       log "Pushing ${relative_path}"
-      rsync_pi -avz "${ROOT_DIR}/${relative_path}" "${PI_HOST}:${PI_APP_DIR}/"
+      rsync_pi -avz "${secret[@]}" "${ROOT_DIR}/${relative_path}" "${PI_HOST}:${PI_APP_DIR}/"
     fi
   done
 
@@ -310,7 +314,11 @@ push_to_pi() {
 
   if [ -d "${ROOT_DIR}/cache" ]; then
     log "Pushing cache directory"
-    rsync_pi -avz "${ROOT_DIR}/cache/" "${PI_HOST}:${PI_APP_DIR}/cache/"
+    # --update: what the Pi has learnt since (Tempo seasons, netload.json, weather.json) is
+    # newer than this machine's copy and stays. model.json is fitted here (fit_tempo) and
+    # versioned: always this machine's.
+    rsync_pi -avz --update "${ROOT_DIR}/cache/" "${PI_HOST}:${PI_APP_DIR}/cache/"
+    rsync_pi -avz "${ROOT_DIR}/cache/tempo/model.json" "${PI_HOST}:${PI_APP_DIR}/cache/tempo/"
   fi
 
   fix_state_ownership

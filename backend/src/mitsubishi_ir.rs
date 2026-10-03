@@ -1,13 +1,18 @@
-const BROADLINK_TICK_US: f32 = 32.84;
-const BROADLINK_IR_TOKEN: u8 = 0x26;
-const MITSUBISHI_HDR_MARK_US: u16 = 3400;
-const MITSUBISHI_HDR_SPACE_US: u16 = 1750;
-const MITSUBISHI_BIT_MARK_US: u16 = 450;
-const MITSUBISHI_ONE_SPACE_US: u16 = 1300;
-const MITSUBISHI_ZERO_SPACE_US: u16 = 420;
-const MITSUBISHI_REPEAT_MARK_US: u16 = 440;
-const MITSUBISHI_REPEAT_GAP_US: u16 = 15500;
-const MITSUBISHI_STATE_LEN: usize = 18;
+//! Mitsubishi heat-pump infrared frames (the 144-bit state protocol), built from a
+//! `state-…` command and sent as Broadlink packets; and read back from learnt packets.
+
+use crate::broadlink_ir;
+
+pub const MITSUBISHI_HDR_MARK_US: u32 = 3400;
+pub const MITSUBISHI_HDR_SPACE_US: u32 = 1750;
+pub const MITSUBISHI_BIT_MARK_US: u32 = 450;
+pub const MITSUBISHI_ONE_SPACE_US: u32 = 1300;
+pub const MITSUBISHI_ZERO_SPACE_US: u32 = 420;
+pub const MITSUBISHI_REPEAT_MARK_US: u32 = 440;
+pub const MITSUBISHI_REPEAT_GAP_US: u32 = 15500;
+pub const MITSUBISHI_STATE_LEN: usize = 18;
+/// Header mark and space, two durations per bit, the closing mark.
+pub const MITSUBISHI_FRAME_DURATIONS: usize = 2 + (MITSUBISHI_STATE_LEN * 8 * 2) + 1;
 /// The Mitsubishi clock counts in 10-minute ticks; one day is 144 ticks.
 const TICKS_PER_DAY: u16 = 144;
 
@@ -255,9 +260,18 @@ fn parse_state_command(command: &str) -> Result<MitsubishiState, String> {
 
     while index < tokens.len() {
         match tokens[index] {
+            // `left-max` / `right-max` hold a dash themselves: two tokens once split
             "wide" => {
                 index += 1;
-                state.wide_vane = parse_wide_vane(tokens.get(index).copied())?;
+                let side = tokens.get(index).copied();
+                let max = matches!(side, Some("left" | "right"))
+                    && tokens.get(index + 1).copied() == Some("max");
+                state.wide_vane = if max {
+                    index += 1;
+                    parse_wide_vane(side.map(|side| if side == "left" { "left-max" } else { "right-max" }))?
+                } else {
+                    parse_wide_vane(side)?
+                };
                 index += 1;
             }
             "econo" => {
@@ -521,33 +535,65 @@ fn checksum(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> u8 {
 }
 
 fn encode_broadlink_packet(state: &[u8; MITSUBISHI_STATE_LEN]) -> Vec<u8> {
-    let mut pulses = Vec::with_capacity((2 + state.len() * 16 + 1) * 2 + 1);
+    let mut pulses = Vec::with_capacity(MITSUBISHI_FRAME_DURATIONS * 2 + 1);
     append_frame(&mut pulses, state);
     pulses.push(MITSUBISHI_REPEAT_GAP_US);
     append_frame(&mut pulses, state);
-
-    let mut packet = Vec::with_capacity(4 + pulses.len() * 2 + 2);
-    packet.extend_from_slice(&[BROADLINK_IR_TOKEN, 0x00, 0x00, 0x00]);
-
-    for pulse in pulses {
-        let ticks = ((pulse as f32) / BROADLINK_TICK_US).round() as u16;
-        if ticks >= 256 {
-            packet.push(0x00);
-            packet.push((ticks >> 8) as u8);
-            packet.push((ticks & 0xFF) as u8);
-        } else {
-            packet.push(ticks as u8);
-        }
-    }
-
-    packet.extend_from_slice(&[0x00, 0x0D]);
-    let encoded_len = (packet.len() - 4 + 1) as u16;
-    packet[2] = (encoded_len & 0xFF) as u8;
-    packet[3] = (encoded_len >> 8) as u8;
-    packet
+    broadlink_ir::encode(pulses)
 }
 
-fn append_frame(pulses: &mut Vec<u16>, state: &[u8; MITSUBISHI_STATE_LEN]) {
+/// One frame read back from the durations of a packet.
+#[derive(Debug)]
+pub struct MitsubishiFrame {
+    pub header_mark_us: u32,
+    pub header_space_us: u32,
+    pub footer_mark_us: u32,
+    pub bytes: [u8; MITSUBISHI_STATE_LEN],
+}
+
+/// The frames of a packet's durations and the gaps between them.
+pub fn decode_frames(durations_us: &[u32]) -> Result<(Vec<MitsubishiFrame>, Vec<u32>), String> {
+    let mut frames = Vec::new();
+    let mut repeat_gaps_us = Vec::new();
+    let mut index = 0;
+    while let Some(frame) = durations_us.get(index..index + MITSUBISHI_FRAME_DURATIONS) {
+        frames.push(decode_frame(frame));
+        index += MITSUBISHI_FRAME_DURATIONS;
+        match durations_us.get(index) {
+            Some(gap) if *gap > 5000 => {
+                repeat_gaps_us.push(*gap);
+                index += 1;
+            }
+            _ => break,
+        }
+    }
+    if frames.is_empty() {
+        return Err("no Mitsubishi 144-bit frame found".to_string());
+    }
+    Ok((frames, repeat_gaps_us))
+}
+
+fn decode_frame(durations_us: &[u32]) -> MitsubishiFrame {
+    let mut bytes = [0_u8; MITSUBISHI_STATE_LEN];
+    let bit_pairs = &durations_us[2..MITSUBISHI_FRAME_DURATIONS - 1];
+    for (bit_index, [_, space]) in bit_pairs.as_chunks::<2>().0.iter().enumerate() {
+        let one = *space > (MITSUBISHI_ONE_SPACE_US + MITSUBISHI_ZERO_SPACE_US) / 2;
+        bytes[bit_index / 8] |= u8::from(one) << (bit_index % 8);
+    }
+    MitsubishiFrame {
+        header_mark_us: durations_us[0],
+        header_space_us: durations_us[1],
+        footer_mark_us: durations_us[MITSUBISHI_FRAME_DURATIONS - 1],
+        bytes,
+    }
+}
+
+/// Whether the last byte is the sum of the others.
+pub fn checksum_valid(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> bool {
+    checksum(bytes) == bytes[MITSUBISHI_STATE_LEN - 1]
+}
+
+fn append_frame(pulses: &mut Vec<u32>, state: &[u8; MITSUBISHI_STATE_LEN]) {
     pulses.push(MITSUBISHI_HDR_MARK_US);
     pulses.push(MITSUBISHI_HDR_SPACE_US);
     for byte in state {
@@ -681,6 +727,35 @@ mod tests {
         assert_eq!(bytes[8], 0x36);
         assert_eq!(bytes[9], 0x7B);
         assert_eq!(bytes[17], checksum(&bytes));
+    }
+
+    /// Encoded, sent as a Broadlink packet, read back: every wide vane position survives,
+    /// the two with a dash in their name included.
+    #[test]
+    fn every_wide_vane_round_trips_through_a_packet() {
+        for (token, code) in [
+            ("left-max", 0x1),
+            ("left", 0x2),
+            ("center", 0x3),
+            ("right", 0x4),
+            ("right-max", 0x5),
+            ("wide", 0x6),
+            ("auto", 0x8),
+        ] {
+            let command = format!("state-cool-20-fan-auto-vane-auto-wide-{token}-econo-on");
+            let packet = encode_mitsubishi_command(&command, 0)
+                .unwrap_or_else(|error| panic!("{command}: {error}"))
+                .expect("a state command");
+            let durations = broadlink_ir::decode(&packet).expect("decodes");
+            let (frames, gaps) = decode_frames(&durations).expect("frames");
+            assert_eq!(frames.len(), 2, "sent twice");
+            assert_eq!(gaps.len(), 1);
+            let bytes = frames[0].bytes;
+            assert_eq!(bytes[8] >> 4, code, "{token}");
+            assert_eq!(bytes[14], 0x20, "econo after the wide vane still parsed ({token})");
+            assert!(checksum_valid(&bytes));
+        }
+        assert!(parse_state_command("state-cool-20-fan-auto-vane-auto-wide-max").is_err());
     }
 
     #[test]

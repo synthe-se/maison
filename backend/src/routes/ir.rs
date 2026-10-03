@@ -3,15 +3,18 @@ use std::collections::HashMap;
 use axum::{
     Json, Router,
     extract::{Path, State},
+    http::StatusCode,
     routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
-    auth::{AuthenticatedUser, MachineClient},
+    auth::{AdminUser, AuthenticatedUser, MachineClient},
     error::AppError,
-    ir::{IrAction, IrBinding, IrEventLog, SwitchState},
+    ir::{IrAction, IrBinding, IrEventLog},
+    routes::SimpleResponse,
+    tv,
 };
 
 /// One evdev key event as forwarded by kird from the STB:
@@ -24,18 +27,18 @@ struct KeyEvent {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SimpleResponse {
-    success: bool,
-    message: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct KeyResponse {
     success: bool,
     message: String,
-    /// One entry per executed action ("ok: ..." / "failed: ...").
+    /// One entry per executed action ("ok: ..." / "failed: ..."); empty for a key press,
+    /// whose actions run after the answer.
     results: Vec<String>,
+}
+
+impl KeyResponse {
+    fn nothing(message: String) -> Json<Self> {
+        Json(Self { success: true, message, results: Vec::new() })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -67,7 +70,7 @@ async fn key_event(
     State(state): State<AppState>,
     _machine: MachineClient,
     Json(event): Json<KeyEvent>,
-) -> Result<Json<KeyResponse>, AppError> {
+) -> Result<(StatusCode, Json<KeyResponse>), AppError> {
     let binding = state.ir.binding(event.code).await;
     state
         .ir
@@ -79,52 +82,32 @@ async fn key_event(
         // an unmapped key is not an error. The event lands in /recent, which
         // is how the configurator captures new keys.
         tracing::info!(code = event.code, value = event.value, "unmapped IR key");
-        return Ok(Json(KeyResponse {
-            success: true,
-            message: format!("Key {} is not mapped", event.code),
-            results: Vec::new(),
-        }));
+        return Ok((StatusCode::OK, KeyResponse::nothing(format!("Key {} is not mapped", event.code))));
     };
 
     let fire = event.value == 1 || (event.value == 2 && binding.repeat);
     if !fire {
-        return Ok(Json(KeyResponse {
-            success: true,
-            message: format!("Key {} ignored (value {})", event.code, event.value),
-            results: Vec::new(),
-        }));
+        let message = format!("Key {} ignored (value {})", event.code, event.value);
+        return Ok((StatusCode::OK, KeyResponse::nothing(message)));
     }
 
     // Phantom double-press filter (marginal IR reception splits one hold
     // into several presses — fatal for toggles, which cancel themselves).
     if event.value == 1 && !state.ir.accept_press(event.code).await {
         tracing::info!(code = event.code, "IR press debounced (phantom double)");
-        return Ok(Json(KeyResponse {
-            success: true,
-            message: format!("Key {} debounced", event.code),
-            results: Vec::new(),
-        }));
+        return Ok((StatusCode::OK, KeyResponse::nothing(format!("Key {} debounced", event.code))));
     }
 
-    let results = execute_all(&state, &binding.actions).await;
-    let failures = results.iter().filter(|r| r.starts_with("failed")).count();
-    tracing::info!(
-        code = event.code,
-        value = event.value,
-        label = binding.label.as_deref().unwrap_or(""),
-        ?results,
-        "IR key fired"
-    );
-    Ok(Json(KeyResponse {
-        success: failures == 0,
-        message: format!(
-            "Key {}: {}/{} actions ok",
-            event.code,
-            results.len() - failures,
-            results.len()
-        ),
-        results,
-    }))
+    // Accepted, then run: a TV power-on takes ~16 s, and kird hanging up must not stop
+    // a binding halfway through its actions. Presses of one key keep their order.
+    let code = event.code;
+    let value = event.value;
+    let worker = state.clone();
+    state.ir.run_in_order(code, async move {
+        let results = execute_all(&worker, &binding.actions).await;
+        tracing::info!(code, value, label = binding.label.as_deref().unwrap_or(""), ?results, "IR key fired");
+    });
+    Ok((StatusCode::ACCEPTED, KeyResponse::nothing(format!("Key {code} accepted"))))
 }
 
 /// Runs every action in order; a failing action never stops the others.
@@ -146,19 +129,12 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             Ok(format!("Nabaztag: {command}"))
         }
         IrAction::ZigbeePower { lamp, state: switch } => {
-            let on = match switch {
-                SwitchState::On => true,
-                SwitchState::Off => false,
-                SwitchState::Toggle => {
-                    let view = state.zigbee.get_lamp(lamp).await.ok_or_else(|| {
-                        AppError::http(
-                            axum::http::StatusCode::NOT_FOUND,
-                            format!("Unknown Zigbee lamp {lamp}"),
-                        )
-                    })?;
-                    !view.state.is_on
-                }
-            };
+            let on = switch
+                .resolve(|| async {
+                    let view = state.zigbee.get_lamp(lamp).await;
+                    Ok(view.ok_or_else(|| AppError::not_found(format!("Unknown Zigbee lamp {lamp}")))?.state.is_on)
+                })
+                .await?;
             state.zigbee.set_power(lamp, on).await?;
             Ok(format!("Zigbee {lamp}: power {}", if on { "on" } else { "off" }))
         }
@@ -174,11 +150,7 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             Ok(format!("Broadlink {host}: {code_id}"))
         }
         IrAction::MerossPower { device, state: switch } => {
-            let on = match switch {
-                SwitchState::On => true,
-                SwitchState::Off => false,
-                SwitchState::Toggle => !state.meross.get_status(device).await?.1.on,
-            };
+            let on = switch.resolve(|| async { Ok(state.meross.get_status(device).await?.1.on) }).await?;
             state.meross.toggle(device, on).await?;
             Ok(format!("Meross {device}: {}", if on { "on" } else { "off" }))
         }
@@ -186,14 +158,7 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             state: switch,
             switch_to_box,
         } => {
-            let power = match switch {
-                SwitchState::On => state.tv.power_on(*switch_to_box).await?,
-                SwitchState::Off => state.tv.power_off().await?,
-                SwitchState::Toggle => match state.tv.power().await {
-                    crate::tv::TvPower::On => state.tv.power_off().await?,
-                    _ => state.tv.power_on(*switch_to_box).await?,
-                },
-            };
+            let power = tv::tv_power(state, *switch, *switch_to_box).await?;
             Ok(format!("TV: {power:?}"))
         }
         IrAction::TvKey { key } => {
@@ -205,11 +170,7 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             Ok(format!("TV volume: {}", volume.current))
         }
         IrAction::TvAmbilight { state: switch } => {
-            let on = match switch {
-                SwitchState::On => true,
-                SwitchState::Off => false,
-                SwitchState::Toggle => !state.tv.ambilight().await?.power,
-            };
+            let on = switch.resolve(|| async { Ok(state.tv.ambilight().await?.power) }).await?;
             state.tv.set_ambilight_power(on).await?;
             Ok(format!("TV Ambilight: {}", if on { "on" } else { "off" }))
         }
@@ -217,12 +178,7 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             package,
             ensure_tv_on,
         } => {
-            if *ensure_tv_on {
-                if let Err(error) = crate::routes::tv::ensure_on(state).await {
-                    tracing::debug!(%error, "could not power the TV on before launching");
-                }
-            }
-            state.androidtv.launch_app(package).await?;
+            crate::androidtv::launch_with_tv(state, package, *ensure_tv_on).await?;
             Ok(format!("Android TV: launched {package}"))
         }
         IrAction::AndroidTvKey { key } => {
@@ -256,69 +212,45 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
     }
 }
 
-async fn keymap(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<KeymapResponse>, AppError> {
-    let _ = user.0;
-    Ok(Json(KeymapResponse {
+async fn keymap(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<KeymapResponse> {
+    Json(KeymapResponse {
         success: true,
         keymap: state.ir.keymap().await,
-    }))
+    })
 }
 
 async fn set_binding(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Path(code): Path<u16>,
     Json(binding): Json<IrBinding>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
     if binding.actions.is_empty() {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "A binding needs at least one action",
-        ));
+        return Err(AppError::bad_request("A binding needs at least one action"));
     }
-    crate::ir::validate_actions(&binding.actions)
-        .map_err(|error| AppError::http(axum::http::StatusCode::BAD_REQUEST, error))?;
+    crate::ir::validate_actions(&binding.actions).map_err(AppError::bad_request)?;
     state.ir.set_binding(code, binding).await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: format!("Key {code} saved"),
-    }))
+    Ok(SimpleResponse::ok(format!("Key {code} saved")))
 }
 
 async fn remove_binding(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Path(code): Path<u16>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
-    let removed = state.ir.remove_binding(code).await?;
-    if !removed {
-        return Err(AppError::http(
-            axum::http::StatusCode::NOT_FOUND,
-            format!("Key {code} is not mapped"),
-        ));
+    if !state.ir.remove_binding(code).await? {
+        return Err(AppError::not_found(format!("Key {code} is not mapped")));
     }
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: format!("Key {code} removed"),
-    }))
+    Ok(SimpleResponse::ok(format!("Key {code} removed")))
 }
 
 /// Last received key events, most recent first — the configurator polls this
 /// while asking the user to press the button they want to map.
-async fn recent(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<RecentResponse>, AppError> {
-    let _ = user.0;
-    Ok(Json(RecentResponse {
+async fn recent(State(state): State<AppState>, _admin: AdminUser) -> Json<RecentResponse> {
+    Json(RecentResponse {
         success: true,
         events: state.ir.recent_events().await,
-    }))
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -327,21 +259,17 @@ struct TestRequest {
 }
 
 /// Dry-run a list of actions from the configurator ("test this binding"
-/// button) without saving anything.
+/// button) without saving anything. Run inside the request: the configurator shows
+/// each action's result.
 async fn test_actions(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<TestRequest>,
 ) -> Result<Json<KeyResponse>, AppError> {
-    let _ = user.0;
     if body.actions.is_empty() {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Nothing to test",
-        ));
+        return Err(AppError::bad_request("Nothing to test"));
     }
-    crate::ir::validate_actions(&body.actions)
-        .map_err(|error| AppError::http(axum::http::StatusCode::BAD_REQUEST, error))?;
+    crate::ir::validate_actions(&body.actions).map_err(AppError::bad_request)?;
     let results = execute_all(&state, &body.actions).await;
     let failures = results.iter().filter(|r| r.starts_with("failed")).count();
     Ok(Json(KeyResponse {

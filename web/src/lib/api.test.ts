@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { json as jsonBody, scriptFetch as script, sentBody, stubFetch } from '#lib/test/fetch.ts';
 import {
 	androidTvApi,
+	ApiError,
+	UNREACHABLE,
 	api,
 	authApi,
 	broadlinkApi,
@@ -14,6 +16,8 @@ import {
 	merossApi,
 	nabaztagApi,
 	onUnauthorized,
+	path,
+	peopleApi,
 	shuttersApi,
 	tempoApi,
 	tvApi,
@@ -58,6 +62,30 @@ describe('api', () => {
 		expect(over).toHaveBeenCalledOnce();
 	});
 
+	it('does not sign out over a brief outage: a renewal answered 502 is « unreachable »', async () => {
+		const over = vi.fn();
+		onUnauthorized(over);
+		script(json(401, {}), new Response('<html>', { status: 502 }));
+		await expect(api('/lamps')).rejects.toMatchObject({ code: UNREACHABLE, status: 502 });
+		expect(over).not.toHaveBeenCalled();
+	});
+
+	it('does not sign out when the renewal gets no answer at all', async () => {
+		const over = vi.fn();
+		onUnauthorized(over);
+		script(json(401, {}), new TypeError('Failed to fetch'));
+		await expect(api('/lamps')).rejects.toMatchObject({ code: UNREACHABLE });
+		expect(over).not.toHaveBeenCalled();
+	});
+
+	it('a renewal refused with 403 ends the session too', async () => {
+		const over = vi.fn();
+		onUnauthorized(over);
+		script(json(401, {}), json(403, {}));
+		await expect(api('/lamps')).rejects.toMatchObject({ status: 401 });
+		expect(over).toHaveBeenCalledOnce();
+	});
+
 	it('does not end the session for a refused session check', async () => {
 		const over = vi.fn();
 		onUnauthorized(over);
@@ -71,11 +99,18 @@ describe('api', () => {
 		await expect(api('/passkeys/k1', { method: 'DELETE' })).rejects.toMatchObject({ status: 409, code: 'last_passkey' });
 	});
 
-	it('uses the server’s error message, or says the status when there is none', async () => {
+	it('uses the server’s error message, or leaves it empty for errors.ts to word the status', async () => {
 		script(json(503, { success: false, error: 'TV unreachable' }));
 		await expect(api('/tv')).rejects.toThrow('TV unreachable');
 		script(new Response('<html>', { status: 502 }));
-		await expect(api('/tv')).rejects.toThrow('(502)');
+		await expect(api('/tv')).rejects.toMatchObject({ status: 502, message: '' });
+	});
+
+	it('sends no JSON content type without a body', async () => {
+		const calls = script(json(200, {}));
+		await api('/x', { method: 'POST' });
+		expect(calls[0].init?.body).toBeUndefined();
+		expect(new Headers(calls[0].init?.headers).has('content-type')).toBe(false);
 	});
 
 	it('accepts an empty body', async () => {
@@ -89,13 +124,11 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['auth.verify', () => authApi.verify(), 'POST /auth/verify'],
 	['auth.logout', () => authApi.logout(), 'POST /auth/logout'],
 	['auth.logoutEverywhere', () => authApi.logoutEverywhere(), 'POST /auth/logout-everywhere'],
-	['auth.refresh', () => authApi.refresh(), 'POST /auth/refresh'],
 	['devices.list', () => devicesApi.list(), 'GET /devices'],
 	['devices.connect', () => devicesApi.connect('d1'), 'POST /devices/d1/connect'],
 	['devices.connectAll', () => devicesApi.connectAll(), 'POST /devices/connect'],
 	['devices.disconnect', () => devicesApi.disconnect('d1'), 'POST /devices/d1/disconnect'],
 	['devices.disconnectAll', () => devicesApi.disconnectAll(), 'POST /devices/disconnect'],
-	['devices.status', () => devicesApi.status('d1'), 'GET /devices/d1/status'],
 	['feeder.status', () => feederApi.status('d1'), 'GET /devices/d1/feeder/status'],
 	['feeder.feed (one portion by default)', () => feederApi.feed('d1'), 'POST /devices/d1/feeder/feed', { portion: 1 }],
 	['feeder.getMealPlan', () => feederApi.getMealPlan('d1'), 'GET /devices/d1/feeder/meal-plan'],
@@ -113,16 +146,10 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['hue.list', () => hueLampsApi.list(), 'GET /hue-lamps'],
 	['hue.scan', () => hueLampsApi.scan(), 'POST /hue-lamps/scan'],
 	['hue.stats', () => hueLampsApi.stats(), 'GET /hue-lamps/stats'],
-	['hue.connectAll', () => hueLampsApi.connectAll(), 'POST /hue-lamps/connect'],
-	['hue.disconnectAll', () => hueLampsApi.disconnectAll(), 'POST /hue-lamps/disconnect'],
 	['hue.status', () => hueLampsApi.status('l1'), 'GET /hue-lamps/l1'],
-	['hue.connect', () => hueLampsApi.connect('l1'), 'POST /hue-lamps/l1/connect'],
-	['hue.disconnect', () => hueLampsApi.disconnect('l1'), 'POST /hue-lamps/l1/disconnect'],
 	['hue.power', () => hueLampsApi.power('l1', true), 'POST /hue-lamps/l1/power', { enabled: true }],
 	['hue.brightness', () => hueLampsApi.brightness('l1', 80), 'POST /hue-lamps/l1/brightness', { brightness: 80 }],
 	['hue.temperature', () => hueLampsApi.temperature('l1', 300), 'POST /hue-lamps/l1/temperature', { temperature: 300 }],
-	['hue.state', () => hueLampsApi.state('l1', true, 40), 'POST /hue-lamps/l1/state', { isOn: true, brightness: 40 }],
-	['hue.rename', () => hueLampsApi.rename('l1', 'Salon'), 'POST /hue-lamps/l1/rename', { name: 'Salon' }],
 	['hue.blacklist', () => hueLampsApi.blacklist('l1'), 'POST /hue-lamps/l1/blacklist'],
 	['zigbee.list', () => zigbeeLampsApi.list(), 'GET /zigbee/lamps'],
 	['zigbee.stats', () => zigbeeLampsApi.stats(), 'GET /zigbee/lamps/stats'],
@@ -141,33 +168,24 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['meross.status', () => merossApi.status('p1'), 'GET /meross/p1/status'],
 	['meross.electricity', () => merossApi.electricity('p1'), 'GET /meross/p1/electricity'],
 	['meross.toggle', () => merossApi.toggle('p1', true), 'POST /meross/p1/toggle', { on: true }],
-	['meross.turnOn', () => merossApi.turnOn('p1'), 'POST /meross/p1/on'],
-	['meross.turnOff', () => merossApi.turnOff('p1'), 'POST /meross/p1/off'],
 	['meross.consumption', () => merossApi.consumption('p1'), 'GET /meross/p1/consumption'],
 	['meross.dnd', () => merossApi.dnd('p1', true), 'POST /meross/p1/dnd', { enabled: true }],
 	['broadlink.discover', () => broadlinkApi.discover(), 'GET /broadlink/discover'],
 	['broadlink.discover (from an address, fresh)', () => broadlinkApi.discover('192.168.1.10', true), 'GET /broadlink/discover?localIp=192.168.1.10&forceRefresh=true'],
 	['broadlink.listCodes', () => broadlinkApi.listCodes(), 'GET /broadlink/codes'],
-	['broadlink.listMitsubishiCodes', () => broadlinkApi.listMitsubishiCodes(), 'GET /broadlink/mitsubishi/codes'],
-	['broadlink.listMitsubishiCodes (a model, encoded)', () => broadlinkApi.listMitsubishiCodes('MSZ AP/25'), 'GET /broadlink/mitsubishi/codes?model=MSZ%20AP%2F25'],
 	['broadlink.getMitsubishiState', () => broadlinkApi.getMitsubishiState(), 'GET /broadlink/mitsubishi/state'],
 	['broadlink.sendMitsubishiCommand', () => broadlinkApi.sendMitsubishiCommand('h', 'heat_21'), 'POST /broadlink/mitsubishi/send', { host: 'h', command: 'heat_21' }],
 	['tempo.get', () => tempoApi.get(), 'GET /tempo'],
-	['tempo.refresh', () => tempoApi.refresh(), 'POST /tempo/refresh'],
-	['tempo.getPredictions', () => tempoApi.getPredictions(), 'GET /tempo/predictions'],
-	['tempo.getState', () => tempoApi.getState(), 'GET /tempo/state'],
-	['tempo.getCalendar', () => tempoApi.getCalendar(), 'GET /tempo/calendar'],
-	['tempo.getCalendar (a season)', () => tempoApi.getCalendar('2025-2026'), 'GET /tempo/calendar?season=2025-2026'],
-	['tempo.getHistory', () => tempoApi.getHistory(), 'GET /tempo/history'],
-	['tempo.getHistory (a season)', () => tempoApi.getHistory('2024-2025'), 'GET /tempo/history?season=2024-2025'],
-	['tempo.getCalibration', () => tempoApi.getCalibration(), 'GET /tempo/calibration'],
+	['tempo.forecast', () => tempoApi.forecast(), 'GET /tempo/forecast'],
+	['tempo.calendar', () => tempoApi.calendar(), 'GET /tempo/calendar'],
+	['tempo.calendar (a season)', () => tempoApi.calendar('2025-2026'), 'GET /tempo/calendar?season=2025-2026'],
 	['ir.keymap', () => irApi.keymap(), 'GET /ir/keymap'],
 	['ir.removeBinding', () => irApi.removeBinding(12), 'DELETE /ir/keymap/12'],
 	['ir.recent', () => irApi.recent(), 'GET /ir/recent'],
 	['ir.test', () => irApi.test([]), 'POST /ir/test', { actions: [] }],
 	['nabaztag.status', () => nabaztagApi.status(), 'GET /nabaztag'],
-	['nabaztag.setConfig', () => nabaztagApi.setConfig({ tempoEnabled: true }), 'PUT /nabaztag/config', { tempoEnabled: true }],
-	['nabaztag.sendCommand', () => nabaztagApi.sendCommand('ears'), 'POST /nabaztag/ctl', { command: 'ears' }],
+	['people.list', () => peopleApi.list(), 'GET /people'],
+	['people.remove', () => peopleApi.remove('alex'), 'DELETE /people/alex'],
 	['nabaztag.pushTempo (cached by default)', () => nabaztagApi.pushTempo(), 'POST /nabaztag/tempo/push', { forceRefresh: false }],
 	['tv.status', () => tvApi.status(), 'GET /tv'],
 	['tv.power (to the box by default)', () => tvApi.power('on'), 'POST /tv/power', { state: 'on', switchToBox: true }],
@@ -192,6 +210,19 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['androidTv.pairStart', () => androidTvApi.pairStart(), 'POST /androidtv/pair/start'],
 	['androidTv.pairFinish', () => androidTvApi.pairFinish('A1B2C3'), 'POST /androidtv/pair/finish', { code: 'A1B2C3' }]
 ];
+
+describe('path', () => {
+	it('encodes every interpolated value, so an id never breaks out of its segment', () => {
+		expect(path`/meross/${'a/b?c'}/status`).toBe('/meross/a%2Fb%3Fc/status');
+		expect(path`/ir/keymap/${12}`).toBe('/ir/keymap/12');
+	});
+
+	it('is used by the wrappers', async () => {
+		const calls = stubFetch(() => jsonBody({ success: true }));
+		await merossApi.status('../auth');
+		expect(calls[0].url).toBe('/api/meross/..%2Fauth/status');
+	});
+});
 
 describe('endpoints', () => {
 	afterEach(() => vi.unstubAllGlobals());
@@ -237,7 +268,9 @@ class FakeXhr {
 	body: unknown;
 	upload: { onprogress?: (e: { lengthComputable: boolean; loaded: number; total: number }) => void; onload?: () => void } = {};
 	onerror?: () => void;
+	ontimeout?: () => void;
 	onload?: () => void;
+	timeout = 0;
 	constructor() {
 		FakeXhr.last = this;
 	}
@@ -275,20 +308,36 @@ describe('androidTvApi.installApk', () => {
 		await expect(done).resolves.toEqual({ success: true, message: 'installed' });
 	});
 
-	it('fails with the server’s words, or the status', async () => {
+	it('fails with the server’s words, or its status', async () => {
 		vi.stubGlobal('XMLHttpRequest', FakeXhr);
 		const refused = androidTvApi.installApk(apk());
 		FakeXhr.last.answer(500, { error: 'INSTALL_FAILED_VERSION_DOWNGRADE' });
 		await expect(refused).rejects.toThrow('INSTALL_FAILED_VERSION_DOWNGRADE');
 		const silent = androidTvApi.installApk(apk());
 		FakeXhr.last.answer(413, null);
-		await expect(silent).rejects.toThrow('Install failed (413)');
+		await expect(silent).rejects.toMatchObject({ status: 413 });
 	});
 
-	it('fails when the network drops', async () => {
+	it('fails as « unreachable » when the network drops, or after its time limit', async () => {
 		vi.stubGlobal('XMLHttpRequest', FakeXhr);
 		const lost = androidTvApi.installApk(apk());
+		expect(FakeXhr.last.timeout).toBeGreaterThan(0);
 		FakeXhr.last.onerror?.();
-		await expect(lost).rejects.toThrow('Install failed (network)');
+		await expect(lost).rejects.toMatchObject({ code: UNREACHABLE });
+		const slow = androidTvApi.installApk(apk());
+		FakeXhr.last.ontimeout?.();
+		await expect(slow).rejects.toBeInstanceOf(ApiError);
+	});
+
+	it('renews an expired session once, then uploads again', async () => {
+		vi.stubGlobal('XMLHttpRequest', FakeXhr);
+		const calls = stubFetch(() => jsonBody({}));
+		const done = androidTvApi.installApk(apk());
+		const first = FakeXhr.last;
+		first.answer(401, { error: 'expired' });
+		await vi.waitFor(() => expect(FakeXhr.last).not.toBe(first));
+		expect(calls.map((c) => c.url)).toEqual(['/api/auth/refresh']);
+		FakeXhr.last.answer(200, { success: true, message: 'installed' });
+		await expect(done).resolves.toEqual({ success: true, message: 'installed' });
 	});
 });

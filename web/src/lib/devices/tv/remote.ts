@@ -76,7 +76,7 @@ export const PAD_KEY: Record<PadKey, { label: () => string; icon?: IconName; pat
 	right: { label: m.remote_keys_right, icon: 'chevron-right', pattern: TAP },
 	ok: { label: m.tv_key_ok, icon: 'circle', pattern: CONFIRM },
 	back: { label: m.tv_key_back, icon: 'corner-up-left', pattern: TAP },
-	home: { label: m.remote_keys_home, icon: 'house', pattern: TAP },
+	home: { label: m.nav_home, icon: 'house', pattern: TAP },
 	menu: { label: m.remote_keys_menu, icon: 'menu', pattern: TAP },
 	volume_up: { label: m.tv_volume_up, icon: 'plus', pattern: TAP },
 	volume_down: { label: m.tv_volume_down, icon: 'minus', pattern: TAP },

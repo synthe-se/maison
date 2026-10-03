@@ -31,7 +31,7 @@ describe('SignIn', () => {
 		await render(SignIn);
 		await button().click();
 		await expect.poll(() => session.status).toBe('signed_in');
-		expect(api.sent('POST', '/passkeys/login/start')[0].body).toEqual({ conditional: false });
+		expect(api.sent('POST', '/passkeys/login/start')[0].body).toEqual({});
 	});
 
 	it('says plainly when the dialog was closed, and the button comes back', async () => {

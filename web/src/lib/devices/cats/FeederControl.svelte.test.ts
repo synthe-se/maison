@@ -42,7 +42,7 @@ describe('FeederControl', () => {
 	it('says when the status cannot be read', async () => {
 		stubApi({ [STATUS]: new Response('{"error":"offline"}', { status: 503 }), [MEALS]: { success: true, decoded: [] } });
 		await render(FeederControl, { id: 'f1' });
-		await expect.element(page.getByText(m.feeder_status_fetch_error())).toBeVisible();
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
 	});
 
 	it('serves the portions chosen, the count in the button, and says when it served', async () => {

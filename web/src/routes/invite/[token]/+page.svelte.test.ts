@@ -36,7 +36,8 @@ describe('invitation page', () => {
 		const api = site();
 		await render(InvitePage);
 		await create().click();
-		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_done_title() })).toBeVisible();
+		// the button pressed went with its step: the focus is on the new step's title
+		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_done_title() })).toHaveFocus();
 		expect(api.sent('POST', '/passkeys/register/start')[0].body).toEqual({ invite: 'tok' });
 		expect(session.status).not.toBe('signed_in');
 		await page.getByRole('button', { name: m.invite_enter() }).click();
@@ -48,6 +49,7 @@ describe('invitation page', () => {
 		site({ 'GET /invites/tok': json({ error: 'x', code: 'invite_invalid' }, 404) });
 		await render(InvitePage);
 		await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_invite_invalid());
+		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_invalid_title() })).toBeVisible();
 		await expect.element(page.getByRole('button')).not.toBeInTheDocument();
 	});
 

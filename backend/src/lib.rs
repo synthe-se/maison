@@ -3,6 +3,7 @@ pub mod androidtv;
 pub mod atvremote;
 pub mod auth;
 pub mod broadlink;
+pub mod broadlink_ir;
 pub mod config;
 pub mod error;
 #[cfg(feature = "bluetooth")]
@@ -11,6 +12,8 @@ pub mod hue;
 #[path = "hue_stub.rs"]
 pub mod hue;
 pub mod ir;
+pub mod json_config;
+pub mod lamps;
 pub mod matter;
 pub mod meross;
 pub mod mitsubishi_ir;
@@ -19,10 +22,12 @@ pub mod passkey;
 pub mod people;
 pub mod philips_ir;
 pub mod routes;
+pub mod store;
 pub mod sun;
 pub mod tempo;
 pub mod tuya;
 pub mod tv;
+pub mod util;
 pub mod zigbee;
 pub mod zigbee_native;
 
@@ -33,7 +38,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::middleware::{self, Next};
 use axum::http::header;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use auth::RefreshTokenStore;
 use broadlink::BroadlinkManager;
 use config::Config;
@@ -103,7 +108,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         &config.nabaztag_config_path,
         config.nabaztag_host.as_deref(),
     )?;
-    let tempo = TempoService::new(config.source_root.clone())?;
+    let tempo = TempoService::from_config(&config)?;
     let tuya = TuyaManager::new(&config.devices_path, &config.device_cache_path)?;
     let tv = TvManager::new(&config.tv_config_path, broadlink.clone())?;
     let androidtv =
@@ -133,62 +138,28 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
     };
 
     let startup_tuya = state.tuya.clone();
-    tokio::spawn(async move {
-        let device_ids = startup_tuya
-            .list_devices()
-            .await
-            .into_iter()
-            .map(|device| device.id)
-            .collect::<Vec<_>>();
-        for device_id in device_ids {
-            let _ = startup_tuya.connect_device(&device_id).await;
-        }
-    });
+    tokio::spawn(async move { startup_tuya.connect_all_devices().await });
 
     // The shutters' sun schedule: a look every 30 s sends what fell due since the last one.
     let schedule = state.matter.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            schedule.run_schedule().await;
-        }
+    every("sun schedule", std::time::Duration::from_secs(30), move || {
+        let schedule = schedule.clone();
+        async move { schedule.run_schedule().await }
     });
 
-    // Mirror the daily Tempo colors on the Nabaztag. The push is two UDP
-    // datagrams and idempotent, so it simply repeats every 15 minutes: that
-    // also re-applies the colors after a rabbit reboot.
+    // Mirror the daily Tempo colors on the Nabaztag. The push is two UDP datagrams and
+    // idempotent, so it simply repeats every 15 minutes: that also re-applies the colors
+    // after a rabbit reboot.
     let tempo_rabbit = state.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(900));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tick.tick().await;
-            let config = tempo_rabbit.nabaztag.config().await;
+    every("tempo on the rabbit", std::time::Duration::from_secs(900), move || {
+        let state = tempo_rabbit.clone();
+        async move {
+            let config = state.nabaztag.config().await;
             if !config.tempo_enabled || config.host.is_none() {
-                continue;
+                return;
             }
-            match tempo_rabbit.tempo.get_tempo_data(false).await {
-                Ok((data, _)) => {
-                    if let Some(today) = data.today.color.as_deref() {
-                        // Ears show tomorrow: the official color when RTE has
-                        // published it, the model's prediction otherwise.
-                        let (tomorrow, predicted) =
-                            tempo_rabbit.tempo.tomorrow_color_or_predicted().await;
-                        if predicted {
-                            tracing::debug!(color = ?tomorrow, "using predicted color for tomorrow");
-                        }
-                        if let Err(error) = tempo_rabbit
-                            .nabaztag
-                            .push_tempo(today, tomorrow.as_deref())
-                            .await
-                        {
-                            tracing::debug!(%error, "tempo push to the rabbit failed");
-                        }
-                    }
-                }
-                Err(error) => tracing::debug!(%error, "tempo data unavailable for rabbit push"),
+            if let Err(error) = state.nabaztag.push_tempo_from(&state.tempo, false).await {
+                tracing::debug!(%error, "tempo push to the rabbit failed");
             }
         }
     });
@@ -197,22 +168,48 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
     Ok((app, state))
 }
 
+/// A background job run every `period`, for the life of the process: a panic in one run is
+/// logged and the next run happens anyway (a bare loop would die silently).
+fn every<F, Fut>(name: &'static str, period: std::time::Duration, job: F)
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(period);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            if let Err(error) = tokio::spawn(job()).await {
+                tracing::error!(job = name, %error, "background job panicked; it runs again next time");
+            }
+        }
+    });
+}
+
 pub fn build_app(state: AppState) -> Router {
-    let api_router = Router::<AppState>::new()
-        .merge(routes::root::api_router())
-        .nest("/auth", routes::auth::router())
-        .merge(routes::passkeys::router())
+    // Every device and settings route needs someone signed in, said once here: a handler
+    // never has to remember it. Admin-only ones add `AdminUser`. Signing in itself
+    // (`auth`, `passkeys`), `/health` and the IR bridge's machine route (`ir`, whose
+    // handlers name their own extractor) stay outside.
+    let signed_in = Router::<AppState>::new()
         .nest("/broadlink", routes::broadlink::router())
         .nest("/devices", routes::devices::router())
         .nest("/hue-lamps", routes::hue::router())
-        .nest("/ir", routes::ir::router())
         .nest("/matter", routes::matter::router())
         .nest("/meross", routes::meross::router())
         .nest("/nabaztag", routes::nabaztag::router())
         .nest("/tempo", routes::tempo::router())
         .nest("/tv", routes::tv::router())
         .nest("/androidtv", routes::androidtv::router())
-        .nest("/zigbee", routes::zigbee::router());
+        .nest("/zigbee", routes::zigbee::router())
+        .route_layer(middleware::from_extractor_with_state::<auth::AuthenticatedUser, AppState>(state.clone()));
+    let api_router = Router::<AppState>::new()
+        .merge(routes::root::api_router())
+        .nest("/auth", routes::auth::router())
+        .merge(routes::passkeys::router())
+        .nest("/ir", routes::ir::router())
+        .merge(signed_in);
 
     let app = Router::<AppState>::new()
         .merge(routes::root::health_router())
@@ -233,6 +230,7 @@ pub fn build_app(state: AppState) -> Router {
     app.layer(middleware::from_fn(move |request, next| {
         security_headers(request, next, csp.clone())
     }))
+        .layer(middleware::from_fn(guard_request))
         .layer(CorsLayer::new())
         // Last-resort guard so no request can hang a connection forever; the
         // limit sits above every legitimate long operation (IR learning,
@@ -247,11 +245,73 @@ pub fn build_app(state: AppState) -> Router {
                     tracing::info_span!(
                         "http",
                         method = %request.method(),
-                        uri = %request.uri(),
+                        uri = %loggable_path(request.uri().path()),
                     )
                 }),
         )
         .with_state(state)
+}
+
+/// What a request may do before any route sees it (`request_allowed`).
+async fn guard_request(request: axum::extract::Request, next: Next) -> Response {
+    use axum::extract::{ConnectInfo, connect_info::MockConnectInfo};
+    // the server's peer address, or the one a test mocks (as axum's ConnectInfo reads it)
+    let extensions = request.extensions();
+    let peer = extensions
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0)
+        .or_else(|| extensions.get::<MockConnectInfo<std::net::SocketAddr>>().map(|m| m.0))
+        .map(|addr| addr.ip());
+    match request_allowed(peer, request.method(), request.uri().path(), request.headers()) {
+        Ok(()) => next.run(request).await,
+        Err(why) => {
+            tracing::warn!(?peer, path = %loggable_path(request.uri().path()), why, "request refused");
+            AppError::forbidden(why).into_response()
+        }
+    }
+}
+
+/// Two rules, before routing:
+/// - From the LAN (not loopback, where cloudflared and the dev proxy are), only `/health`
+///   and the IR bridge's `/api/ir/key`: everything else goes through the tunnel's HTTPS.
+///   Passkeys cannot sign in over the LAN address anyway; this also keeps the API and its
+///   cookies off cleartext HTTP.
+/// - A request that changes something must come from this site: a browser says where it
+///   comes from (`Sec-Fetch-Site`, else `Origin` against `Host`); a sibling subdomain is
+///   « same-site » but not this site. Clients that say nothing (kird, curl) pass.
+fn request_allowed(
+    peer: Option<std::net::IpAddr>,
+    method: &axum::http::Method,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), &'static str> {
+    let local = peer.is_none_or(|ip| ip.to_canonical().is_loopback());
+    if !local && !matches!(path, "/health" | "/api/ir/key") {
+        return Err("Use the public address");
+    }
+    if matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS) {
+        return Ok(());
+    }
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    match header("sec-fetch-site") {
+        Some("same-origin" | "none") => Ok(()),
+        Some(_) => Err("Cross-site request refused"),
+        None => match (header("origin"), header("host")) {
+            (Some(origin), Some(host)) if origin.split_once("://").map(|(_, h)| h) != Some(host) => {
+                Err("Cross-origin request refused")
+            }
+            _ => Ok(()),
+        },
+    }
+}
+
+/// A path as logs keep it: an invitation's token is a secret (the query string, a town
+/// searched for, is left out altogether).
+fn loggable_path(path: &str) -> std::borrow::Cow<'_, str> {
+    match path.strip_prefix("/api/invites/") {
+        Some(rest) if rest.len() > 16 => "/api/invites/…".into(),
+        _ => path.into(),
+    }
 }
 
 async fn security_headers(
@@ -259,8 +319,18 @@ async fn security_headers(
     next: Next,
     csp: header::HeaderValue,
 ) -> Response {
+    let api = request.uri().path().starts_with("/api/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
+    if api {
+        // answers about the house and its people are never kept by a cache
+        headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    }
+    headers.insert("cross-origin-opener-policy", "same-origin".parse().unwrap());
+    headers.insert(
+        "permissions-policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()".parse().unwrap(),
+    );
     headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     headers.insert(
@@ -290,7 +360,7 @@ fn content_security_policy(dist_dir: &std::path::Path) -> header::HeaderValue {
         })
         .collect();
     format!(
-        "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'"
+        "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
     )
     .parse()
     .expect("a CSP made of ASCII")
@@ -307,19 +377,82 @@ fn inline_scripts(page: &str) -> impl Iterator<Item = &str> {
 
 impl AppState {
     pub fn validate_runtime_security(&self) -> Result<(), AppError> {
-        if self.config.jwt_secret == config::DEFAULT_JWT_SECRET {
-            return Err(AppError::http(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Refusing to start with the default JWT secret. Set JWT_SECRET in .env.",
-            ));
-        }
-
-        Ok(())
+        jwt_secret_problem(&self.config.jwt_secret).map_or(Ok(()), |why| {
+            Err(AppError::http(axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Refusing to start: {why}")))
+        })
     }
 
     pub async fn shutdown(&self) {
         self.hue.shutdown().await;
         self.zigbee.shutdown().await;
+    }
+}
+
+/// Why `secret` cannot sign sessions: anyone who guesses it forges an admin's token from
+/// the internet. At least 32 bytes, and none of the placeholders the examples ship.
+fn jwt_secret_problem(secret: &str) -> Option<&'static str> {
+    const PLACEHOLDERS: &[&str] = &[config::DEFAULT_JWT_SECRET, "change-me", "changeme", "secret"];
+    if PLACEHOLDERS.iter().any(|p| secret.eq_ignore_ascii_case(p)) {
+        Some("JWT_SECRET is a placeholder; set a random one in .env (openssl rand -hex 32)")
+    } else if secret.len() < 32 {
+        Some("JWT_SECRET is shorter than 32 bytes; set a random one in .env (openssl rand -hex 32)")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use axum::http::{HeaderMap, Method};
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn the_lan_reaches_only_health_and_the_ir_bridge() {
+        let lan = Some("192.168.1.20".parse().unwrap());
+        let tunnel = Some("127.0.0.1".parse().unwrap());
+        let none = HeaderMap::new();
+        assert!(request_allowed(lan, &Method::POST, "/api/ir/key", &none).is_ok());
+        assert!(request_allowed(lan, &Method::GET, "/health", &none).is_ok());
+        assert!(request_allowed(lan, &Method::GET, "/api/meross", &none).is_err());
+        assert!(request_allowed(lan, &Method::GET, "/", &none).is_err());
+        assert!(request_allowed(tunnel, &Method::GET, "/api/meross", &none).is_ok());
+        assert!(request_allowed(Some("::ffff:127.0.0.1".parse().unwrap()), &Method::GET, "/x", &none).is_ok());
+    }
+
+    #[test]
+    fn a_change_must_come_from_this_site() {
+        let local = Some("127.0.0.1".parse().unwrap());
+        let post = |h: &[(&'static str, &str)]| request_allowed(local, &Method::POST, "/api/meross/x/toggle", &headers(h));
+        assert!(post(&[("sec-fetch-site", "same-origin")]).is_ok());
+        assert!(post(&[("sec-fetch-site", "cross-site")]).is_err());
+        assert!(post(&[("sec-fetch-site", "same-site")]).is_err(), "a sibling subdomain is not this site");
+        assert!(post(&[("origin", "https://evil.example"), ("host", "home.kahn.studio")]).is_err());
+        assert!(post(&[("origin", "https://home.kahn.studio"), ("host", "home.kahn.studio")]).is_ok());
+        assert!(post(&[]).is_ok(), "kird and curl say nothing");
+        assert!(request_allowed(local, &Method::GET, "/api/x", &headers(&[("sec-fetch-site", "cross-site")])).is_ok(), "reads are harmless");
+    }
+
+    #[test]
+    fn invitation_tokens_stay_out_of_the_logs() {
+        assert_eq!(loggable_path(&format!("/api/invites/{}", "a".repeat(64))), "/api/invites/…");
+        assert_eq!(loggable_path("/api/invites/0123456789abcdef"), "/api/invites/0123456789abcdef", "an invitation's id is not secret");
+        assert_eq!(loggable_path("/api/meross"), "/api/meross");
+    }
+
+    #[test]
+    fn a_guessable_secret_is_refused() {
+        assert!(jwt_secret_problem("change-me").is_some());
+        assert!(jwt_secret_problem(config::DEFAULT_JWT_SECRET).is_some());
+        assert!(jwt_secret_problem("short-but-not-a-placeholder").is_some());
+        assert!(jwt_secret_problem(&"x".repeat(32)).is_none());
     }
 }
 

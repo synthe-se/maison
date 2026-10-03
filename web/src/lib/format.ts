@@ -2,6 +2,7 @@
 // « 1 h 30 », « 2 j 4 h ». Two units at most; the units come from the messages.
 
 import { m } from '#lib/paraglide/messages.js';
+import { when } from '#lib/i18n.svelte.ts';
 
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
@@ -29,4 +30,19 @@ export function formatDuration(seconds: number): string {
 /** A duration given in minutes (device counters). */
 export function formatMinutes(minutes: number): string {
 	return formatDuration(minutes * MINUTE);
+}
+
+/**
+ * Since when a device is out of reach, for every tile alike (docs/ux/tableau-de-bord.md § 4):
+ * « Injoignable depuis 12 min » within the hour, then the time it was last heard
+ * (« Injoignable depuis 14:20 », with the day when not today), « Injoignable, jamais vu »
+ * when it never answered. `at`: ISO text or ms since the epoch; 0 or null is never.
+ */
+export function unreachableSince(at: string | number | null | undefined): string {
+	if (!at) return m.state_never_seen();
+	const ms = typeof at === 'number' ? at : new Date(at).getTime();
+	const minutes = Math.max(1, Math.round((Date.now() - ms) / 60_000));
+	return minutes < HOUR / MINUTE
+		? m.state_unreachable_for({ duration: formatMinutes(minutes) })
+		: m.state_unreachable_since({ when: when(ms) });
 }

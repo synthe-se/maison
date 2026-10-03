@@ -5,7 +5,7 @@ import { text } from '#lib/test/snippet.ts';
 import type { TempoColor } from './colors.ts';
 import Swatch from './Swatch.svelte';
 
-async function mark(props: { color: TempoColor | null; forecast?: boolean; size?: 'dot' | 'tile' | 'cell'; current?: boolean }) {
+async function mark(props: { color: TempoColor | null; forecast?: boolean; unsure?: boolean; size?: 'dot' | 'tile' | 'cell'; current?: boolean }) {
 	const { container } = await render(Swatch, props);
 	const el = container.querySelector<HTMLElement>('.swatch')!;
 	return { el, style: getComputedStyle(el) };
@@ -42,6 +42,17 @@ describe('Swatch', () => {
 		const unknown = await mark({ color: null });
 		expect(unknown.style.borderStyle).toBe('dashed');
 		expect(unknown.style.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+	});
+
+	it('draws a forecast under 60 % dotted, without a wash, rouge still hatched', async () => {
+		const bleu = await mark({ color: 'BLUE', forecast: true, unsure: true });
+		expect(bleu.style.borderStyle).toBe('dotted');
+		expect(bleu.style.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+		const rouge = await mark({ color: 'RED', forecast: true, unsure: true });
+		expect(rouge.style.borderStyle).toBe('dotted');
+		expect(rouge.style.backgroundImage).toContain('repeating-linear-gradient');
+		// a published day is never « unsure »
+		expect((await mark({ color: 'BLUE', unsure: true })).style.borderStyle).toBe('solid');
 	});
 
 	it('outlines today, and holds a calendar cell’s content', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Gesture } from './gesture.svelte.ts';
+import { Gesture, pending } from './gesture.svelte.ts';
 import { ui } from './ui.svelte.ts';
 
 describe('Gesture', () => {
@@ -15,6 +15,36 @@ describe('Gesture', () => {
 		expect(await run).toBe(3);
 		expect(then).toHaveBeenCalledWith(3);
 		expect(g.is()).toBe(false);
+	});
+
+	it('a second press of a control already in flight does nothing; another key goes', async () => {
+		const g = new Gesture();
+		const send = vi.fn(() => new Promise<void>(() => {}));
+		void g.run(send, undefined, 'a');
+		expect(await g.run(send, undefined, 'a')).toBeUndefined();
+		expect(send).toHaveBeenCalledOnce();
+		void g.run(send, undefined, 'b');
+		expect(send).toHaveBeenCalledTimes(2);
+	});
+
+	it('a failure about a field: said under it (`error`), not in a toast, the focus back on it', async () => {
+		const fail = vi.spyOn(ui, 'fail').mockImplementation(() => {});
+		const field = document.createElement('input');
+		document.body.append(field);
+		const g = new Gesture();
+		await g.run(() => Promise.reject(new Error('Code refusé')), undefined, 'pair', { field: () => field });
+		expect(g.error).toBe('Code refusé');
+		expect(fail).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(field);
+		// the next try starts clean
+		void g.run(() => new Promise(() => {}), undefined, 'again');
+		expect(g.error).toBe('');
+		field.remove();
+	});
+
+	it('`pending` marks a busy control without disabling it', () => {
+		expect(pending(true)).toEqual({ 'aria-disabled': 'true', 'aria-busy': 'true' });
+		expect(pending(false)).toEqual({ 'aria-disabled': undefined, 'aria-busy': undefined });
 	});
 
 	it('tells a failure once and answers undefined', async () => {

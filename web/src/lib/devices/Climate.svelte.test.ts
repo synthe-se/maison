@@ -1,14 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
 import type { BroadlinkClimateState, BroadlinkDevice } from '#lib/api.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
+import { session } from '#lib/session.svelte.ts';
+import { alex, leonard } from '#lib/test/passkeys.ts';
 import { json, sentBody, stubFetch, type FetchCall } from '#lib/test/fetch.ts';
 import { degrees } from './climate/labels.ts';
 import Climate from './Climate.svelte';
 
+beforeEach(() => session.adopt(leonard));
 afterEach(() => {
 	vi.useRealTimers();
 	forgetAll();
@@ -49,6 +52,12 @@ const sends = (calls: FetchCall[]) => calls.filter((c) => c.url === '/api/broadl
 /** A list's trigger, named « label value » (Select.svelte). */
 const choice = (label: string) => page.getByRole('button', { name: new RegExp(`^${label} `) });
 const settings = () => page.getByRole('button', { name: m.climate_settings() });
+/** The generated infrared order, folded under its disclosure: unfolded to be read. */
+function code() {
+	const raw = document.querySelector<HTMLDetailsElement>('details.raw');
+	if (raw) raw.open = true;
+	return page.getByRole('code');
+}
 
 describe('Climate', () => {
 	it('no order yet: says so; Allumer sends the default settings to the RM4 Pro for the living-room model', async () => {
@@ -96,7 +105,7 @@ describe('Climate', () => {
 		await settings().click();
 		await expect.element(settings()).toHaveAttribute('aria-expanded', 'true');
 		await expect.element(page.getByText(m.climate_remote_connected({ host: RM4.host }))).toBeVisible();
-		await expect.element(page.getByRole('code')).toHaveTextContent('state-heat-23-fan-2-vane-low-wide-center-stopin-90');
+		await expect.element(code()).toHaveTextContent('state-heat-23-fan-2-vane-low-wide-center-stopin-90');
 		// the restored timer is on, its odd duration kept in the list
 		await expect.element(page.getByRole('button', { name: m.climate_timer_modes_stop() })).toHaveAttribute('aria-pressed', 'true');
 		await expect.element(page.getByRole('button', { name: m.climate_timer_modes_none() })).toHaveAttribute('aria-pressed', 'false');
@@ -108,7 +117,7 @@ describe('Climate', () => {
 		);
 
 		await page.getByRole('button', { name: m.climate_timer_modes_none() }).click();
-		await expect.element(page.getByRole('code')).toHaveTextContent('state-heat-23-fan-2-vane-low-wide-center');
+		await expect.element(code()).toHaveTextContent('state-heat-23-fan-2-vane-low-wide-center');
 		await page.getByRole('button', { name: m.climate_send_structured_command() }).click();
 		await expect.poll(() => sends(calls).map(([, b]) => b.command)).toEqual(['state-heat-23-fan-2-vane-low-wide-center']);
 		// a re-read of the state does not overwrite the form
@@ -122,9 +131,9 @@ describe('Climate', () => {
 		const slider = page.getByRole('slider', { name: m.climate_temperature() });
 		(slider.element() as HTMLElement).focus();
 		await userEvent.keyboard('{PageUp}');
-		await expect.element(page.getByRole('code')).toHaveTextContent('state-cool-30-fan-auto-vane-auto-wide-center');
+		await expect.element(code()).toHaveTextContent('state-cool-30-fan-auto-vane-auto-wide-center');
 		await page.getByRole('button', { name: m.climate_reset() }).click();
-		await expect.element(page.getByRole('code')).toHaveTextContent('state-cool-20-fan-auto-vane-auto-wide-center');
+		await expect.element(code()).toHaveTextContent('state-cool-20-fan-auto-vane-auto-wide-center');
 	});
 
 	it('econo and the sleep timer in cool', async () => {
@@ -135,7 +144,7 @@ describe('Climate', () => {
 		await expect.element(econo).toBeEnabled();
 		await econo.click();
 		await page.getByRole('button', { name: m.climate_timer_modes_stop() }).click();
-		await expect.element(page.getByRole('code')).toHaveTextContent('state-cool-20-fan-auto-vane-auto-wide-center-econo-on-stopin-180');
+		await expect.element(code()).toHaveTextContent('state-cool-20-fan-auto-vane-auto-wide-center-econo-on-stopin-180');
 	});
 
 	it('choosing heat in the mode list turns econo off', async () => {
@@ -145,7 +154,7 @@ describe('Climate', () => {
 		await page.getByRole('switch', { name: m.climate_econo_cool() }).click();
 		await choice(m.climate_mode()).click();
 		await page.getByRole('option', { name: m.climate_modes_heat() }).click();
-		await expect.element(page.getByRole('code')).toHaveTextContent('state-heat-20-fan-auto-vane-auto-wide-center');
+		await expect.element(code()).toHaveTextContent('state-heat-20-fan-auto-vane-auto-wide-center');
 		await expect.element(page.getByRole('switch', { name: m.climate_econo_cool() })).toBeDisabled();
 	});
 
@@ -160,7 +169,7 @@ describe('Climate', () => {
 		await page.getByRole('button', { name: m.climate_timer_modes_stop() }).click();
 		await choice(m.climate_stop_after()).last().click();
 		await page.getByRole('option').first().click();
-		await expect.element(page.getByRole('code')).toHaveTextContent('state-cool-20-fan-silent-vane-swing-wide-center-stopin-30');
+		await expect.element(code()).toHaveTextContent('state-cool-20-fan-silent-vane-swing-wide-center-stopin-30');
 	});
 
 	it('no remote yet: searching; after 2 min it says none answered and stops asking', async () => {
@@ -190,7 +199,27 @@ describe('Climate', () => {
 		const search = page.getByRole('button', { name: m.climate_search_remote() });
 		await search.click();
 		await expect.poll(() => calls.some((c) => c.url === '/api/broadlink/discover?forceRefresh=true')).toBe(true);
-		await expect.element(search).toBeEnabled();
+		await expect.element(search).not.toHaveAttribute('aria-busy');
+		// once: the next reads go to the server's cache again
+		await search.click();
+		await expect.poll(() => calls.filter((c) => c.url === '/api/broadlink/discover?forceRefresh=true').length).toBe(2);
+	});
+
+	it('the order itself is folded away, under a disclosure', async () => {
+		server({ state: stored() });
+		await render(Climate);
+		await settings().click();
+		const raw = document.querySelector<HTMLDetailsElement>('details.raw')!;
+		expect(raw.open).toBe(false);
+		await expect.element(page.getByText(m.climate_generated_command())).toBeVisible();
+	});
+
+	it('a member cannot force a network search (an admin’s)', async () => {
+		session.adopt(alex);
+		server({ devices: [] });
+		await render(Climate);
+		await expect.element(page.getByRole('heading', { name: m.climate_dashboard_title() })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.climate_search_remote() })).not.toBeInTheDocument();
 	});
 
 	it('a failed send is told', async () => {

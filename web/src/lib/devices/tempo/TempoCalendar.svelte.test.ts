@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import type { TempoCalendarData } from '#lib/api.ts';
+import type { TempoCalendar as Calendar } from '#lib/api.ts';
+import { tempoStock } from '#lib/test/tempo.ts';
 import { date, longDay, percent, weekday } from '#lib/i18n.svelte.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
@@ -11,7 +12,7 @@ import { dayWords } from './colors.ts';
 import TempoCalendar from './TempoCalendar.svelte';
 
 const month = (y: number, mo: number) => date(new Date(y, mo, 1), { month: 'long', year: 'numeric' });
-const season: TempoCalendarData = {
+const season: Calendar = {
 	success: true,
 	season: '2026-2027',
 	calendar: [
@@ -19,8 +20,7 @@ const season: TempoCalendarData = {
 		{ date: '2026-12-02', color: 'RED', is_actual: true, is_prediction: false },
 		{ date: '2026-12-29', color: 'WHITE', is_actual: false, is_prediction: true, confidence: 0.47 }
 	],
-	statistics: { total_days: 3, color_counts: { BLUE: 1, WHITE: 0, RED: 1 }, predictions_count: 1 },
-	stock: { red_remaining: 21, red_total: 22, white_remaining: 43, white_total: 43 }
+	stock: tempoStock({ blue: { used: 1, total: 300, remaining: 299 }, white: { used: 0, total: 43, remaining: 43 }, red: { used: 1, total: 22, remaining: 21 } })
 };
 const table = () => page.getByRole('table');
 const caption = (y: number, mo: number) => expect.element(table()).toHaveAccessibleName(month(y, mo));
@@ -30,7 +30,7 @@ describe('TempoCalendar', () => {
 	beforeEach(() => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2026-12-28T12:00:00'));
-		api = stubApi({ '/tempo/calendar?season=2026-2027': season, '/tempo/calendar?season=2025-2026': { success: true, calendar: [] } });
+		api = stubApi({ '/tempo/calendar?season=2026-2027': season, '/tempo/calendar?season=2025-2026': { success: true, season: '2025-2026', calendar: [], stock: tempoStock({ season: '2025-2026' }) } });
 	});
 	afterEach(() => {
 		vi.useRealTimers();
@@ -53,7 +53,8 @@ describe('TempoCalendar', () => {
 		const current = container.querySelectorAll('[aria-current="date"]');
 		expect(current).toHaveLength(1);
 		expect(current[0].textContent).toContain(longDay('2026-12-28'));
-		// a forecast day: its probability, on the cell and in words
+		// a forecast day: its probability, on the cell and in words; under 60 %, « not sure »
+		expect(container.querySelectorAll('.swatch.unsure')).toHaveLength(1);
 		await expect.element(page.getByText(m.tempo_day_label({ date: longDay('2026-12-29'), state: dayWords('WHITE', true, 0.47) }))).toBeInTheDocument();
 		await expect.element(page.getByText(percent(0.47), { exact: true })).toBeVisible();
 		// December 2026 starts on a Tuesday: one empty cell before the 1st
@@ -71,7 +72,7 @@ describe('TempoCalendar', () => {
 	it('names the colours alone while the counters are not known', async () => {
 		api.routes['/tempo/calendar?season=2026-2027'] = () => new Promise(() => {});
 		await render(TempoCalendar);
-		await expect.element(page.getByRole('status')).toHaveTextContent(m.common_loading());
+		await expect.element(page.getByText(m.common_loading())).toBeVisible();
 		await expect.element(page.getByText(m.color_red(), { exact: true })).toBeVisible();
 		await expect.element(page.getByText(m.tempo_calendar_prediction(), { exact: true })).toBeVisible();
 	});
@@ -87,9 +88,12 @@ describe('TempoCalendar', () => {
 		await page.getByRole('button', { name: m.tempo_prev_month() }).click();
 		await page.getByRole('button', { name: m.tempo_prev_month() }).click();
 		await caption(2026, 10);
-		await page.getByRole('button', { name: m.day_today() }).click();
+		const today = page.getByRole('button', { name: m.day_today() });
+		await today.click();
 		await caption(2026, 11);
-		await expect.element(page.getByRole('button', { name: m.day_today() })).not.toBeInTheDocument();
+		// still there, unavailable: pressed, it does not vanish under the focus
+		await expect.element(today).toHaveAttribute('aria-disabled', 'true');
+		await expect.element(today).toHaveFocus();
 	});
 
 	it('Page Up / Page Down move a month while the table has focus, Shift a year; a season change asks its days', async () => {
@@ -111,8 +115,8 @@ describe('TempoCalendar', () => {
 	it('stops at the first season RTE’s history holds', async () => {
 		await render(TempoCalendar);
 		(table().element() as HTMLElement).focus();
-		for (let i = 0; i < 8; i++) await userEvent.keyboard('{Shift>}{PageUp}{/Shift}');
-		await caption(2020, 8);
+		for (let i = 0; i < 14; i++) await userEvent.keyboard('{Shift>}{PageUp}{/Shift}');
+		await caption(2014, 8);
 		await expect.element(page.getByRole('button', { name: m.tempo_prev_month() })).toBeDisabled();
 	});
 

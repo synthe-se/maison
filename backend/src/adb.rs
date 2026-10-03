@@ -37,7 +37,10 @@ use tokio::{
     time::timeout,
 };
 
-use crate::error::AppError;
+use axum::body::Bytes;
+use futures::{Stream, StreamExt};
+
+use crate::{broadlink::unreachable, error::AppError};
 
 const A_CNXN: u32 = 0x4e58_4e43;
 const A_AUTH: u32 = 0x4854_5541;
@@ -244,7 +247,8 @@ impl AdbDevice {
     pub async fn connect(address: &str, key: &RsaPrivateKey) -> Result<Self, AppError> {
         let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
             .await
-            .map_err(|_| protocol_error(format!("ADB connect to {address} timed out")))??;
+            .map_err(|_| unreachable("Android TV box", format!("ADB connect to {address} timed out")))?
+            .map_err(|error| unreachable("Android TV box", error))?;
         let mut device = Self {
             stream,
             next_local_id: 1,
@@ -410,13 +414,24 @@ impl AdbDevice {
         Ok(String::from_utf8_lossy(&output).into_owned())
     }
 
-    /// Pushes a file with the `sync:` service — the transport `adb push` uses.
+    /// Pushes a file held in memory (see `push_stream`).
+    pub async fn push(&mut self, remote_path: &str, data: &[u8], mode: u32) -> Result<(), AppError> {
+        let whole = futures::stream::iter([Ok(Bytes::copy_from_slice(data))]);
+        self.push_stream(remote_path, whole, mode).await
+    }
+
+    /// Pushes a file with the `sync:` service — the transport `adb push` uses —
+    /// as its bytes arrive: an upload is passed on chunk by chunk, never held
+    /// whole (the Pi has 512 MB).
     ///
     /// Sync framing is its own little protocol carried inside the stream: a
     /// four-byte id, a little-endian length, then the payload. `SEND` names
     /// the target as `path,mode`, `DATA` carries at most 64 KiB per chunk,
     /// and `DONE` passes the mtime and asks for the verdict.
-    pub async fn push(&mut self, remote_path: &str, data: &[u8], mode: u32) -> Result<(), AppError> {
+    pub async fn push_stream<S>(&mut self, remote_path: &str, mut data: S, mode: u32) -> Result<(), AppError>
+    where
+        S: Stream<Item = Result<Bytes, AppError>> + Unpin,
+    {
         const SYNC_CHUNK: usize = 64 * 1024;
 
         let remote_id = self.open("sync:").await?;
@@ -428,12 +443,25 @@ impl AdbDevice {
         header.extend_from_slice(target.as_bytes());
         self.write_stream(remote_id, &header).await?;
 
-        for chunk in data.chunks(SYNC_CHUNK) {
-            let mut frame = Vec::with_capacity(8 + chunk.len());
-            frame.extend_from_slice(b"DATA");
-            frame.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-            frame.extend_from_slice(chunk);
-            self.write_stream(remote_id, &frame).await?;
+        // Uploads arrive in chunks of any size: gathered into full DATA frames.
+        let mut pending: Vec<u8> = Vec::with_capacity(SYNC_CHUNK);
+        loop {
+            let next = data.next().await.transpose()?;
+            if let Some(bytes) = &next {
+                pending.extend_from_slice(bytes);
+            }
+            let take = if next.is_some() { pending.len() - pending.len() % SYNC_CHUNK } else { pending.len() };
+            for chunk in pending[..take].chunks(SYNC_CHUNK) {
+                let mut frame = Vec::with_capacity(8 + chunk.len());
+                frame.extend_from_slice(b"DATA");
+                frame.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+                frame.extend_from_slice(chunk);
+                self.write_stream(remote_id, &frame).await?;
+            }
+            pending.drain(..take);
+            if next.is_none() {
+                break;
+            }
         }
 
         let mut done = Vec::from(*b"DONE");

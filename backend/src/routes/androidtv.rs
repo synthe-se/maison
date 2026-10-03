@@ -1,15 +1,17 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, State},
+    extract::{DefaultBodyLimit, Multipart, State, multipart::MultipartError},
     routing::{get, post, put},
 };
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
-    androidtv::{AndroidApp, AndroidKey, AndroidTvConfig, AndroidTvStatus},
-    auth::AuthenticatedUser,
+    androidtv::{self, AndroidKey, AndroidTvConfig, AndroidTvStatus},
+    auth::AdminUser,
     error::AppError,
+    routes::SimpleResponse,
 };
 
 #[derive(Debug, Serialize)]
@@ -18,15 +20,6 @@ struct StatusResponse {
     success: bool,
     config: AndroidTvConfig,
     status: AndroidTvStatus,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConfigRequest {
-    host: Option<String>,
-    port: Option<u16>,
-    #[serde(default)]
-    favourite_apps: Vec<AndroidApp>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,13 +54,6 @@ fn default_true() -> bool {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SimpleResponse {
-    success: bool,
-    message: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct AppsResponse {
     success: bool,
     packages: Vec<String>,
@@ -92,172 +78,89 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn status(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<StatusResponse>, AppError> {
-    let _ = user.0;
-    Ok(Json(StatusResponse {
+async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
+    Json(StatusResponse {
         success: true,
         config: state.androidtv.config().await,
         status: state.androidtv.status().await,
-    }))
+    })
 }
 
 async fn set_config(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
-    Json(body): Json<ConfigRequest>,
+    _admin: AdminUser,
+    Json(body): Json<AndroidTvConfig>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
-    state
-        .androidtv
-        .set_config(AndroidTvConfig {
-            host: body.host.filter(|host| !host.trim().is_empty()),
-            port: body.port,
-            favourite_apps: body.favourite_apps,
-        })
-        .await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Android TV configuration saved".to_string(),
-    }))
+    state.androidtv.set_config(body).await?;
+    Ok(SimpleResponse::ok("Android TV configuration saved"))
 }
 
 async fn send_key(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     Json(body): Json<KeyRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
     state.androidtv.send_key(body.key).await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Key sent".to_string(),
-    }))
+    Ok(SimpleResponse::ok("Key sent"))
 }
 
 async fn launch(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     Json(body): Json<LaunchRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
-    if body.ensure_tv_on {
-        // Best-effort: a dead TV link should not stop the app from launching.
-        if let Err(error) = crate::routes::tv::ensure_on(&state).await {
-            tracing::debug!(%error, "could not power the TV on before launching");
-        }
-    }
-    state.androidtv.launch_app(&body.package).await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: format!("Launched {}", body.package),
-    }))
+    androidtv::launch_with_tv(&state, &body.package, body.ensure_tv_on).await?;
+    Ok(SimpleResponse::ok(format!("Launched {}", body.package)))
 }
 
-async fn apps(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<AppsResponse>, AppError> {
-    let _ = user.0;
+async fn apps(State(state): State<AppState>) -> Result<Json<AppsResponse>, AppError> {
     Ok(Json(AppsResponse {
         success: true,
         packages: state.androidtv.apps().await?,
     }))
 }
 
-async fn wake(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
+async fn wake(State(state): State<AppState>) -> Result<Json<SimpleResponse>, AppError> {
     state.androidtv.wake().await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Box woken (CEC should power the TV on)".to_string(),
-    }))
+    Ok(SimpleResponse::ok("Box woken (CEC should power the TV on)"))
 }
 
-async fn sleep(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
+async fn sleep(State(state): State<AppState>) -> Result<Json<SimpleResponse>, AppError> {
     state.androidtv.sleep().await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Box asleep (CEC should power the TV off)".to_string(),
-    }))
+    Ok(SimpleResponse::ok("Box asleep (CEC should power the TV off)"))
 }
 
+/// Streams the `apk` field through to the box. One install at a time: a second one
+/// is refused (409) before its upload is read.
 async fn install_apk(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     mut multipart: Multipart,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
-
-    let mut apk: Option<Vec<u8>> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|error| {
-        AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("malformed upload: {error}"),
-        )
-    })? {
+    let _permit = state.androidtv.install_permit()?;
+    let malformed = |error: MultipartError| {
+        tracing::debug!(%error, "unreadable APK upload");
+        AppError::bad_request("malformed upload")
+    };
+    while let Some(field) = multipart.next_field().await.map_err(malformed)? {
         if field.name() == Some("apk") {
-            apk = Some(
-                field
-                    .bytes()
-                    .await
-                    .map_err(|error| {
-                        AppError::http(
-                            axum::http::StatusCode::BAD_REQUEST,
-                            format!("could not read the APK: {error}"),
-                        )
-                    })?
-                    .to_vec(),
-            );
+            let message = state.androidtv.install_apk(field.map_err(malformed)).await?;
+            return Ok(SimpleResponse::ok(message));
         }
     }
-
-    let apk = apk.ok_or_else(|| {
-        AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "no `apk` field in the upload",
-        )
-    })?;
-
-    let message = state.androidtv.install_apk(&apk).await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message,
-    }))
+    Err(AppError::bad_request("no `apk` field in the upload"))
 }
 
 /// Opens a pairing session. The TV shows a six hex-digit code once this
 /// returns; the caller then posts it to `/pair/finish`.
-async fn pair_start(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
+async fn pair_start(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<SimpleResponse>, AppError> {
     state.androidtv.start_pairing().await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Enter the code shown on the TV".to_string(),
-    }))
+    Ok(SimpleResponse::ok("Enter the code shown on the TV"))
 }
 
 async fn pair_finish(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
+    _admin: AdminUser,
     Json(body): Json<PairFinishRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let _ = user.0;
     state.androidtv.finish_pairing(&body.code).await?;
-    Ok(Json(SimpleResponse {
-        success: true,
-        message: "Paired — keys now go over the fast channel".to_string(),
-    }))
+    Ok(SimpleResponse::ok("Paired — keys now go over the fast channel"))
 }

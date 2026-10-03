@@ -41,7 +41,7 @@ describe('tv/Settings', () => {
 		expect(toast).toHaveBeenCalledWith(m.tv_saved());
 	});
 
-	it('a refused save is told, the settings stay open, the button comes back', async () => {
+	it('a refused save is said under the fields, the focus on the first, the settings stay open', async () => {
 		const fail = vi.spyOn(ui, 'fail').mockImplementation(() => {});
 		let reject!: (e: Error) => void;
 		const save = vi.fn(() => new Promise((_, r) => (reject = r)));
@@ -49,10 +49,14 @@ describe('tv/Settings', () => {
 		await render(Settings, { fields, initial: {}, save, saved: m.tv_saved(), onsaved });
 		const button = page.getByRole('button', { name: m.common_save() });
 		await button.click();
-		await expect.element(button).toBeDisabled();
+		// busy: said so, still focusable
+		await expect.element(button).toHaveAttribute('aria-busy', 'true');
 		reject(new Error('TV unreachable'));
-		await expect.element(button).toBeEnabled();
-		expect(fail).toHaveBeenCalledOnce();
+		await expect.element(button).not.toHaveAttribute('aria-busy');
+		const first = page.getByLabelText(fields[0].label);
+		await expect.element(first).toHaveAccessibleDescription('TV unreachable');
+		await expect.element(first).toHaveFocus();
+		expect(fail).not.toHaveBeenCalled();
 		expect(onsaved).not.toHaveBeenCalled();
 	});
 });

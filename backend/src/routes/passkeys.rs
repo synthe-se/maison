@@ -28,8 +28,10 @@ use crate::{
     auth::{AdminUser, AuthenticatedUser},
     error::AppError,
     passkey::{Ceremony, INVITE_DAYS, PasskeyState, Refusal, Via, client_ip, device_label},
-    people::{ADMIN, Invite, MEMBER, PasskeyInfo, Removed, StoredInvite, StoredPasskey, People, clean_name, hash_secret, random_secret, slug},
-    routes::auth::{SessionResponse, open_session, refresh_cookie},
+    people::{ADMIN, Invite, MEMBER, PasskeyInfo, PersonInfo, Removed, StoredInvite, StoredPasskey, People, clean_name, slug},
+    util::{hash_secret, random_secret},
+    auth::REAUTH_MS,
+    routes::auth::{SessionResponse, end_sessions, open_session},
 };
 
 pub fn router() -> Router<AppState> {
@@ -41,6 +43,8 @@ pub fn router() -> Router<AppState> {
         .route("/passkeys/register/start", post(register_start))
         .route("/passkeys/register/finish", post(register_finish))
         .route("/invites", get(list_invites).post(create_invite))
+        .route("/people", get(list_people))
+        .route("/people/{id}", delete(remove_person))
         .route("/invites/{key}", get(greet).delete(delete_invite))
 }
 
@@ -132,19 +136,57 @@ async fn invite_by_token(state: &AppState, token: &str) -> Result<StoredInvite, 
 
 #[derive(Deserialize)]
 struct InviteRequest {
-    /// the person's id; from the name when absent
+    /// Someone's id, to give them their access back (a new passkey for the same person).
+    /// Absent: a new person, whose id comes from the name.
     person: Option<String>,
     name: String,
     #[serde(default)]
     admin: bool,
 }
 
+/// A new person's invitation, or someone's way back in when `person` names them. A name
+/// that is already someone's id is refused: an invitation must never hand over an existing
+/// account by accident (« Léonard » the guest is not Léonard).
 async fn create_invite(State(state): State<AppState>, admin: AdminUser, Json(req): Json<InviteRequest>) -> Result<Json<CreatedInvite>, AppError> {
     let p = passkeys(&state)?;
-    let person = req.person.unwrap_or_else(|| slug(&req.name));
+    let (person, recovery) = match req.person {
+        Some(person) => (person, true),
+        None => {
+            let person = slug(&req.name);
+            if let Some(existing) = state.people.person(&person).await? {
+                // who has it: the admin may mean them (their access back) or someone else
+                let who = serde_json::json!({ "person": { "id": existing.id, "name": existing.name } });
+                return Err(AppError::from(Refusal::PersonExists).with_detail(who));
+            }
+            (person, false)
+        }
+    };
     let created = new_invite(&state.people, &p.public_url, &person, &req.name, req.admin, Some(&admin.0.id)).await?;
-    tracing::info!(by = %admin.0.id, %person, admin = req.admin, "invitation made");
+    if recovery {
+        tracing::warn!(by = %admin.0.id, %person, "invitation to recover an account");
+    } else {
+        tracing::info!(by = %admin.0.id, %person, admin = req.admin, "invitation made");
+    }
     Ok(Json(created))
+}
+
+/// Everyone, for the admins.
+async fn list_people(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<Vec<PersonInfo>>, AppError> {
+    Ok(Json(state.people.people().await?))
+}
+
+/// Someone goes: their passkeys, invitations and sessions with them. Never oneself (the
+/// last admin cannot lock the house).
+async fn remove_person(State(state): State<AppState>, admin: AdminUser, Path(id): Path<String>) -> Result<StatusCode, AppError> {
+    if id == admin.0.id {
+        return Err(Refusal::Forbidden.into());
+    }
+    end_sessions(&state, &id).await?;
+    if !state.people.remove_person(&id).await? {
+        return Err(Refusal::NotFound.into());
+    }
+    tracing::warn!(by = %admin.0.id, person = %id, "person removed");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_invites(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<Vec<Invite>>, AppError> {
@@ -213,6 +255,10 @@ async fn register_start(
         }
         None => {
             let user = user.ok_or(Refusal::NotSignedIn)?.0;
+            // a stolen session cookie alone must not be enough to plant a passkey
+            if now_ms() - user.auth_ms > REAUTH_MS {
+                return Err(Refusal::ReauthNeeded.into());
+            }
             let me = state.people.person(&user.id).await?.ok_or(Refusal::NotSignedIn)?;
             (me.id, me.name, me.user_handle, Via::Session)
         }
@@ -293,51 +339,46 @@ async fn finish_registration(
         last_used_ms: None,
     };
     let key_id = key.id.clone();
-    let (person, cookies) = match via {
+    let info = |person: &str| {
+        let person = person.to_string();
+        async move {
+            let found = state.people.passkeys_of(&person).await?.into_iter().find(|k| k.id == key_id);
+            found.ok_or_else(|| AppError::from(Refusal::NotFound))
+        }
+    };
+    match via {
         Via::Invite { id } => {
             let redeemed = state.people.redeem_invite(&id, &handle.to_string(), key, now_ms()).await?;
             let person = redeemed.ok_or(Refusal::InviteInvalid)?.map_err(|_| Refusal::PasskeyExists)?;
             tracing::info!(person = %person.id, "invitation redeemed: passkey registered");
-            let cookies = open_session(state, &person).await?;
-            (person, Some(cookies))
+            let (cookies, Json(session)) = open_session(state, &person, now_ms(), None).await?;
+            Ok((cookies, Json(Registered { passkey: info(&person.id).await?, session })).into_response())
         }
         Via::Session => {
             state.people.add_passkey(key).await?.map_err(|_| Refusal::PasskeyExists)?;
-            tracing::info!(%person, "passkey added");
-            (state.people.person(&person).await?.ok_or(Refusal::NotSignedIn)?, None)
+            tracing::warn!(%person, "passkey added");
+            let user = user.ok_or(Refusal::NotSignedIn)?.0;
+            let session = SessionResponse::of(user).0;
+            Ok(Json(Registered { passkey: info(&person).await?, session }).into_response())
         }
-    };
-    let passkey = state.people.passkeys_of(&person.id).await?.into_iter().find(|k| k.id == key_id).ok_or(Refusal::NotFound)?;
-    let body = Json(Registered { passkey, session: SessionResponse::of(&person).0 });
-    Ok(match cookies {
-        Some(c) => (c, body).into_response(),
-        None => body.into_response(),
-    })
+    }
 }
 
 // ---------- sign-in ----------
 
-#[derive(Deserialize)]
-struct LoginStart {
-    /// autofill (`mediation: "conditional"`), or a modal request from a button
-    #[serde(default)]
-    conditional: bool,
-}
-
 #[derive(Serialize)]
 struct RequestOptions {
     ceremony: String,
-    /// for `navigator.credentials.get()`: `publicKey` through `parseRequestOptionsFromJSON`,
-    /// and `mediation` when conditional
+    /// for `navigator.credentials.get()`: `publicKey` through `parseRequestOptionsFromJSON`
     options: RequestChallengeResponse,
 }
 
-/// A challenge for any passkey of this site.
+/// A challenge for any passkey of this site, for a modal request from the sign-in button
+/// (no autofill: the sign-in page has no field).
 async fn login_start(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(req): Json<LoginStart>,
 ) -> Result<Json<RequestOptions>, AppError> {
     let p = passkeys(&state)?;
     let ip = client_ip(addr, &headers);
@@ -346,9 +387,7 @@ async fn login_start(
         tracing::error!(error = %e, "passkey sign-in could not start");
         AppError::http(StatusCode::INTERNAL_SERVER_ERROR, "passkey sign-in could not start")
     })?;
-    if !req.conditional {
-        options.mediation = None;
-    }
+    options.mediation = None;
     let ceremony = p.ceremonies.put(ip, Ceremony::Login { state: auth });
     Ok(Json(RequestOptions { ceremony, options }))
 }
@@ -393,9 +432,8 @@ async fn finish_login(state: &AppState, p: &PasskeyState, req: LoginFinish) -> R
     }
     let update = if pk.update_credential(&result) == Some(true) { Some(stored(&pk)?) } else { None };
     state.people.passkey_used(&row.id, update, now_ms()).await?;
-    let cookies = open_session(state, &person).await?;
     tracing::info!(person = %person.id, "signed in with a passkey");
-    Ok((cookies, SessionResponse::of(&person)).into_response())
+    Ok(open_session(state, &person, now_ms(), None).await?.into_response())
 }
 
 // ---------- my passkeys ----------
@@ -421,19 +459,17 @@ async fn rename(
     state.people.rename_passkey(&user.0.id, &id, name).await?.map(Json).ok_or_else(|| Refusal::NotFound.into())
 }
 
-/// Never the last one. Whatever it opened elsewhere closes; this browser stays signed in.
-async fn remove(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
+/// Never the last one. Every session it may have opened ends; this browser gets a fresh one.
+async fn remove(State(state): State<AppState>, user: AuthenticatedUser, Path(id): Path<String>) -> Result<Response, AppError> {
     passkeys(&state)?;
-    match state.people.delete_passkey(&user.0.id, &id).await? {
+    let user = user.0;
+    match state.people.delete_passkey(&user.id, &id).await? {
         Removed::Yes => {
-            let ended = state.refresh_store.remove_person(&user.0.id, refresh_cookie(&headers)).await;
-            tracing::info!(person = %user.0.id, ended, "passkey removed");
-            Ok(StatusCode::NO_CONTENT)
+            end_sessions(&state, &user.id).await?;
+            let person = state.people.person(&user.id).await?.ok_or(Refusal::NotSignedIn)?;
+            let (cookies, _) = open_session(&state, &person, user.auth_ms, None).await?;
+            tracing::warn!(person = %user.id, "passkey removed");
+            Ok((StatusCode::NO_CONTENT, cookies).into_response())
         }
         Removed::NotFound => Err(Refusal::NotFound.into()),
         Removed::Last => Err(Refusal::LastPasskey.into()),

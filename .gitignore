@@ -31,6 +31,12 @@ zigbee-lamps-blacklist.json
 broadlink-codes.json
 # Matter fabric private keys + commissioned covers
 matter/
+# People, passkeys, invitations
+auth/
+nabaztag.json
+# A torn state file kept aside, and the cross-process lock files
+*.corrupt
+*.json.lock
 
 # Mosquitto runtime data
 mosquitto/certs/
@@ -42,10 +48,10 @@ mosquitto/certs/
 *.swp
 *.swo
 
-# screenshot tool profile
-scripts/.shot-profile/
 ir-keymap.json
 tv.json
 androidtv.json
 adb-key
 atv-identity
+# Tempo: the weather forecast the backend saves (written at runtime, not versioned)
+cache/tempo/weather.json

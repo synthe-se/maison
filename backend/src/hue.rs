@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
-    path::{Path, PathBuf},
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -26,7 +25,11 @@ use tokio::{
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{config::Config, error::AppError};
+use crate::{
+    config::Config,
+    error::AppError,
+    lamps::{HueLampView, LampRecord, LampState, LampStats, LampStore},
+};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const SCAN_DURATION: Duration = Duration::from_secs(5);
@@ -50,44 +53,7 @@ const PHILIPS_MANUFACTURER_ID: u16 = 0x0075;
 const SIGNIFY_MANUFACTURER_ID: u16 = 0x0105;
 const ZERO_BLE_ADDRESS: &str = "00:00:00:00:00:00";
 
-#[derive(Debug, Clone, Serialize)]
-pub struct HueLampState {
-    #[serde(rename = "isOn")]
-    pub is_on: bool,
-    pub brightness: u8,
-    pub temperature: Option<u8>,
-    #[serde(rename = "temperatureMin")]
-    pub temperature_min: Option<u8>,
-    #[serde(rename = "temperatureMax")]
-    pub temperature_max: Option<u8>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct HueLampView {
-    pub id: String,
-    pub name: String,
-    pub address: String,
-    pub model: Option<String>,
-    pub manufacturer: String,
-    pub firmware: Option<String>,
-    pub connected: bool,
-    pub connecting: bool,
-    pub reachable: bool,
-    pub state: HueLampState,
-    #[serde(rename = "lastSeen")]
-    pub last_seen: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct HueStats {
-    pub total: usize,
-    pub connected: usize,
-    pub reachable: usize,
-    pub disabled: bool,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredLampConfig {
     id: String,
@@ -101,13 +67,19 @@ struct StoredLampConfig {
     last_temperature: Option<u8>,
 }
 
+impl LampRecord for StoredLampConfig {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 #[derive(Clone)]
 pub struct HueManager {
     inner: Arc<HueManagerInner>,
 }
 
 struct HueManagerInner {
-    store: HueStore,
+    store: LampStore<StoredLampConfig>,
     lamps: RwLock<HashMap<String, LampRuntime>>,
     blacklisted_addresses: RwLock<HashSet<String>>,
     adapter: RwLock<Option<Adapter>>,
@@ -122,7 +94,7 @@ struct HueManagerInner {
 
 struct LampRuntime {
     config: StoredLampConfig,
-    state: RuntimeLampState,
+    state: LampState,
     info: LampInfo,
     connected: bool,
     connecting: bool,
@@ -132,15 +104,6 @@ struct LampRuntime {
     characteristics: HueCharacteristics,
     connection_failures: u8,
     notification_task: Option<JoinHandle<()>>,
-}
-
-#[derive(Clone)]
-struct RuntimeLampState {
-    is_on: bool,
-    brightness: u8,
-    temperature: Option<u8>,
-    temperature_min: Option<u8>,
-    temperature_max: Option<u8>,
 }
 
 #[derive(Clone)]
@@ -163,37 +126,32 @@ struct HueCharacteristics {
 }
 
 #[derive(Clone)]
-struct HueStore {
-    lamps_path: PathBuf,
-    blacklist_path: PathBuf,
-}
-
-#[derive(Clone)]
 struct ConnectionReady {
     peripheral: Peripheral,
     characteristics: HueCharacteristics,
     info: LampInfo,
-    state: RuntimeLampState,
+    state: LampState,
 }
 
 impl HueManager {
     pub fn new(config: &Config) -> Result<Self, AppError> {
-        let store = HueStore {
-            lamps_path: config.hue_lamps_path.clone(),
-            blacklist_path: config.hue_blacklist_path.clone(),
-        };
-
-        let stored_configs = store.load_lamps();
-        let blacklisted_addresses = store.load_blacklist();
+        let store = LampStore::new(&config.hue_lamps_path, &config.hue_blacklist_path);
+        let stored_configs = dedupe_stored_lamps(store.load_lamps()?);
+        let blacklisted_addresses = store
+            .load_blacklist()?
+            .into_iter()
+            .map(|address| normalize_address(&address))
+            .collect();
         let lamps = stored_configs
             .into_iter()
             .map(|lamp| {
-                let state = RuntimeLampState {
+                let state = LampState {
                     is_on: false,
                     brightness: 100,
                     temperature: lamp.last_temperature,
                     temperature_min: lamp.temperature_min,
                     temperature_max: lamp.temperature_max,
+                    colour: None,
                 };
                 let info = LampInfo {
                     manufacturer: "Philips Hue".to_string(),
@@ -283,14 +241,14 @@ impl HueManager {
         lamps.get(&lamp_key).map(to_view)
     }
 
-    pub async fn stats(&self) -> HueStats {
+    pub async fn stats(&self) -> LampStats {
         let lamps = self.inner.lamps.read().await;
         let total = lamps.len();
         let connected = lamps.values().filter(|lamp| lamp.connected).count();
         let reachable = lamps.values().filter(|lamp| lamp.reachable).count();
         let message = self.inner.availability_message.read().await.clone();
 
-        HueStats {
+        LampStats {
             total,
             connected,
             reachable,
@@ -330,15 +288,12 @@ impl HueManager {
             return Ok(false);
         }
 
-        let lamp_key = self
-            .resolve_lamp_key(lamp_id)
-            .await
-            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"))?;
+        let lamp_key = self.lamp_key(lamp_id).await?;
 
         let peripheral = {
             let mut lamps = self.inner.lamps.write().await;
             let Some(lamp) = lamps.get_mut(&lamp_key) else {
-                return Err(AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"));
+                return Err(lamp_not_found());
             };
             if lamp.connected || lamp.connecting {
                 return Ok(lamp.connected);
@@ -367,15 +322,12 @@ impl HueManager {
     }
 
     pub async fn disconnect_lamp(&self, lamp_id: &str) -> Result<(), AppError> {
-        let lamp_key = self
-            .resolve_lamp_key(lamp_id)
-            .await
-            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"))?;
+        let lamp_key = self.lamp_key(lamp_id).await?;
 
         let (peripheral, notification_task) = {
             let mut lamps = self.inner.lamps.write().await;
             let Some(lamp) = lamps.get_mut(&lamp_key) else {
-                return Err(AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"));
+                return Err(lamp_not_found());
             };
             lamp.connected = false;
             lamp.connecting = false;
@@ -398,16 +350,13 @@ impl HueManager {
         Ok(())
     }
 
-    pub async fn refresh_lamp_state(&self, lamp_id: &str) -> Result<Option<HueLampState>, AppError> {
-        let lamp_key = self
-            .resolve_lamp_key(lamp_id)
-            .await
-            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"))?;
+    pub async fn refresh_lamp_state(&self, lamp_id: &str) -> Result<Option<LampState>, AppError> {
+        let lamp_key = self.lamp_key(lamp_id).await?;
 
         let (peripheral, characteristics) = {
             let lamps = self.inner.lamps.read().await;
             let Some(lamp) = lamps.get(&lamp_key) else {
-                return Err(AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"));
+                return Err(lamp_not_found());
             };
             if !lamp.connected {
                 return Ok(None);
@@ -429,16 +378,10 @@ impl HueManager {
             }
         }
 
-        Ok(Some(HueLampState {
-            is_on: state.is_on,
-            brightness: state.brightness,
-            temperature: state.temperature,
-            temperature_min: state.temperature_min,
-            temperature_max: state.temperature_max,
-        }))
+        Ok(Some(state))
     }
 
-    pub async fn set_power(&self, lamp_id: &str, enabled: bool) -> Result<HueLampState, AppError> {
+    pub async fn set_power(&self, lamp_id: &str, enabled: bool) -> Result<LampState, AppError> {
         let (peripheral, characteristics) = self.connected_target(lamp_id).await?;
         if let Some(power) = characteristics.power.as_ref() {
             self.write_characteristic(&peripheral, power, &[u8::from(enabled)]).await?;
@@ -452,7 +395,7 @@ impl HueManager {
         self.update_state_after_write(lamp_id, |state| state.is_on = enabled).await
     }
 
-    pub async fn set_brightness(&self, lamp_id: &str, brightness: u8) -> Result<HueLampState, AppError> {
+    pub async fn set_brightness(&self, lamp_id: &str, brightness: u8) -> Result<LampState, AppError> {
         let brightness = brightness.clamp(1, 100);
         let raw = to_brightness(brightness);
         let (peripheral, characteristics) = self.connected_target(lamp_id).await?;
@@ -469,10 +412,13 @@ impl HueManager {
         self.update_state_after_write(lamp_id, |state| state.brightness = brightness).await
     }
 
-    pub async fn set_temperature(&self, lamp_id: &str, temperature: u8) -> Result<HueLampState, AppError> {
+    pub async fn set_temperature(&self, lamp_id: &str, temperature: u8) -> Result<LampState, AppError> {
         let temperature = temperature.clamp(0, 100);
         let raw = to_temperature(temperature);
-        let (peripheral, characteristics) = self.connected_target(lamp_id).await?;
+        // the key, not the id it was asked by (a MAC address, a stale id): the kept
+        // temperature must land on the lamp itself
+        let lamp_key = self.lamp_key(lamp_id).await?;
+        let (peripheral, characteristics) = self.connected_target(&lamp_key).await?;
 
         if let Some(characteristic) = characteristics.temperature.as_ref() {
             self.write_characteristic(&peripheral, characteristic, &[raw, 0x01]).await?;
@@ -485,13 +431,13 @@ impl HueManager {
 
         {
             let mut lamps = self.inner.lamps.write().await;
-            if let Some(lamp) = lamps.get_mut(lamp_id) {
+            if let Some(lamp) = lamps.get_mut(&lamp_key) {
                 lamp.config.last_temperature = Some(temperature);
             }
         }
         self.persist_state().await?;
 
-        self.update_state_after_write(lamp_id, |state| state.temperature = Some(temperature)).await
+        self.update_state_after_write(&lamp_key, |state| state.temperature = Some(temperature)).await
     }
 
     pub async fn set_lamp_state(
@@ -499,7 +445,7 @@ impl HueManager {
         lamp_id: &str,
         is_on: bool,
         brightness: Option<u8>,
-    ) -> Result<HueLampState, AppError> {
+    ) -> Result<LampState, AppError> {
         let (peripheral, characteristics) = self.connected_target(lamp_id).await?;
         if let Some(control) = characteristics.control.as_ref() {
             let command = build_control_command(
@@ -525,32 +471,28 @@ impl HueManager {
         }
     }
 
-    pub async fn rename_lamp(&self, lamp_id: &str, name: &str) -> Result<bool, AppError> {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(AppError::http(axum::http::StatusCode::BAD_REQUEST, "Lamp name cannot be empty"));
-        }
-
-        let lamp_key = self
-            .resolve_lamp_key(lamp_id)
-            .await
-            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"))?;
+    /// Renames the lamp here and, when it is connected, on the lamp itself (the Hue app
+    /// shows that name): a lamp that refuses the new name leaves both as they were.
+    pub async fn rename_lamp(&self, lamp_id: &str, name: &str) -> Result<(), AppError> {
+        let name = crate::people::clean_name(name)
+            .ok_or_else(|| AppError::bad_request("A lamp name is 1 to 60 characters, without control characters"))?;
+        let lamp_key = self.lamp_key(lamp_id).await?;
 
         let (peripheral, device_name) = {
-            let mut lamps = self.inner.lamps.write().await;
-            let Some(lamp) = lamps.get_mut(&lamp_key) else {
-                return Err(AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"));
-            };
-            lamp.config.name = trimmed.to_string();
+            let lamps = self.inner.lamps.read().await;
+            let lamp = lamps.get(&lamp_key).ok_or_else(lamp_not_found)?;
             (lamp.peripheral.clone(), lamp.characteristics.device_name.clone())
         };
-        self.persist_state().await?;
-
         if let (Some(peripheral), Some(device_name)) = (peripheral, device_name) {
-            let _ = self.write_characteristic(&peripheral, &device_name, trimmed.as_bytes()).await;
+            self.write_characteristic(&peripheral, &device_name, name.as_bytes()).await?;
         }
 
-        Ok(true)
+        {
+            let mut lamps = self.inner.lamps.write().await;
+            let lamp = lamps.get_mut(&lamp_key).ok_or_else(lamp_not_found)?;
+            lamp.config.name = name.to_string();
+        }
+        self.persist_state().await
     }
 
     pub async fn blacklist_lamp(&self, lamp_id: &str) -> Result<bool, AppError> {
@@ -754,12 +696,13 @@ impl HueManager {
                         id.clone(),
                         LampRuntime {
                             config,
-                            state: RuntimeLampState {
+                            state: LampState {
                                 is_on: false,
                                 brightness: 100,
                                 temperature: None,
                                 temperature_min: None,
                                 temperature_max: None,
+                                colour: None,
                             },
                             info: LampInfo {
                                 manufacturer: "Philips Hue".to_string(),
@@ -872,22 +815,10 @@ impl HueManager {
     ) -> Result<ConnectionReady, AppError> {
         {
             let _guard = self.inner.ble_lock.lock().await;
-            let already_connected = peripheral
-                .is_connected()
-                .await
-                .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))?;
-
-            if !already_connected {
-                timeout(CONNECT_TIMEOUT, peripheral.connect())
-                    .await
-                    .map_err(|_| AppError::service_unavailable("Hue lamp connection timed out"))?
-                    .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))?;
+            if !ble(peripheral.is_connected(), "connection check", IO_TIMEOUT).await? {
+                ble(peripheral.connect(), "connection", CONNECT_TIMEOUT).await?;
             }
-
-            timeout(IO_TIMEOUT, peripheral.discover_services())
-                .await
-                .map_err(|_| AppError::service_unavailable("Hue lamp service discovery timed out"))?
-                .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))?;
+            ble(peripheral.discover_services(), "service discovery", IO_TIMEOUT).await?;
         }
 
         let characteristics = HueCharacteristics::from_peripheral(&peripheral);
@@ -1008,15 +939,12 @@ impl HueManager {
         &self,
         lamp_id: &str,
     ) -> Result<(Peripheral, HueCharacteristics), AppError> {
-        let lamp_key = self
-            .resolve_lamp_key(lamp_id)
-            .await
-            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"))?;
+        let lamp_key = self.lamp_key(lamp_id).await?;
 
         let (peripheral, characteristics, connected) = {
             let lamps = self.inner.lamps.read().await;
             let Some(lamp) = lamps.get(&lamp_key) else {
-                return Err(AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"));
+                return Err(lamp_not_found());
             };
             (
                 lamp.peripheral.clone(),
@@ -1043,28 +971,19 @@ impl HueManager {
         payload: &[u8],
     ) -> Result<(), AppError> {
         let _guard = self.inner.ble_lock.lock().await;
-        timeout(
-            IO_TIMEOUT,
-            peripheral.write(characteristic, payload, WriteType::WithoutResponse),
-        )
-        .await
-        .map_err(|_| AppError::service_unavailable("Hue lamp write timed out"))?
-        .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))
+        ble(peripheral.write(characteristic, payload, WriteType::WithoutResponse), "write", IO_TIMEOUT).await
     }
 
-    async fn update_state_after_write<F>(&self, lamp_id: &str, update: F) -> Result<HueLampState, AppError>
+    async fn update_state_after_write<F>(&self, lamp_id: &str, update: F) -> Result<LampState, AppError>
     where
-        F: FnOnce(&mut RuntimeLampState),
+        F: FnOnce(&mut LampState),
     {
-        let lamp_key = self
-            .resolve_lamp_key(lamp_id)
-            .await
-            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"))?;
+        let lamp_key = self.lamp_key(lamp_id).await?;
 
         {
             let mut lamps = self.inner.lamps.write().await;
             let Some(lamp) = lamps.get_mut(&lamp_key) else {
-                return Err(AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"));
+                return Err(lamp_not_found());
             };
             update(&mut lamp.state);
             lamp.connected = true;
@@ -1073,62 +992,43 @@ impl HueManager {
         self.current_state(&lamp_key).await
     }
 
-    async fn current_state(&self, lamp_id: &str) -> Result<HueLampState, AppError> {
-        let lamp_key = self
-            .resolve_lamp_key(lamp_id)
-            .await
-            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"))?;
+    async fn current_state(&self, lamp_id: &str) -> Result<LampState, AppError> {
+        let lamp_key = self.lamp_key(lamp_id).await?;
 
         let lamps = self.inner.lamps.read().await;
-        let Some(lamp) = lamps.get(&lamp_key) else {
-            return Err(AppError::http(axum::http::StatusCode::NOT_FOUND, "Hue lamp not found"));
-        };
-        Ok(HueLampState {
-            is_on: lamp.state.is_on,
-            brightness: lamp.state.brightness,
-            temperature: lamp.state.temperature,
-            temperature_min: lamp.state.temperature_min,
-            temperature_max: lamp.state.temperature_max,
-        })
+        let lamp = lamps.get(&lamp_key).ok_or_else(lamp_not_found)?;
+        Ok(lamp.state.clone())
     }
 
     async fn read_state(
         &self,
         peripheral: &Peripheral,
         characteristics: &HueCharacteristics,
-    ) -> Result<RuntimeLampState, AppError> {
+    ) -> Result<LampState, AppError> {
         let _guard = self.inner.ble_lock.lock().await;
-        let mut state = RuntimeLampState {
+        let mut state = LampState {
             is_on: false,
             brightness: 100,
             temperature: None,
             temperature_min: Some(0),
             temperature_max: Some(100),
+            colour: None,
         };
 
         if let Some(power) = characteristics.power.as_ref() {
-            let bytes = timeout(IO_TIMEOUT, peripheral.read(power))
-                .await
-                .map_err(|_| AppError::service_unavailable("Hue lamp read timed out"))?
-                .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))?;
+            let bytes = ble(peripheral.read(power), "read", IO_TIMEOUT).await?;
             state.is_on = bytes.first().copied().unwrap_or_default() == 0x01;
         }
 
         if let Some(brightness) = characteristics.brightness.as_ref() {
-            let bytes = timeout(IO_TIMEOUT, peripheral.read(brightness))
-                .await
-                .map_err(|_| AppError::service_unavailable("Hue lamp read timed out"))?
-                .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))?;
+            let bytes = ble(peripheral.read(brightness), "read", IO_TIMEOUT).await?;
             if let Some(raw) = bytes.first().copied() {
                 state.brightness = parse_brightness(raw);
             }
         }
 
         if let Some(temperature) = characteristics.temperature.as_ref() {
-            let bytes = timeout(IO_TIMEOUT, peripheral.read(temperature))
-                .await
-                .map_err(|_| AppError::service_unavailable("Hue lamp read timed out"))?
-                .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))?;
+            let bytes = ble(peripheral.read(temperature), "read", IO_TIMEOUT).await?;
             if let Some(raw) = bytes.first().copied() {
                 state.temperature = Some(parse_temperature(raw));
             }
@@ -1165,7 +1065,7 @@ impl HueManager {
         characteristic: Option<&Characteristic>,
     ) -> Option<String> {
         let characteristic = characteristic?;
-        let value = timeout(IO_TIMEOUT, peripheral.read(characteristic)).await.ok()?.ok()?;
+        let value = ble(peripheral.read(characteristic), "read", IO_TIMEOUT).await.ok()?;
         let parsed = String::from_utf8(value).ok()?;
         let trimmed = parsed.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
@@ -1220,8 +1120,12 @@ impl HueManager {
             }
         });
 
+        let Some(lamp_key) = self.resolve_lamp_key(lamp_id).await else {
+            task.abort();
+            return;
+        };
         let mut lamps = self.inner.lamps.write().await;
-        if let Some(lamp) = lamps.get_mut(lamp_id) {
+        if let Some(lamp) = lamps.get_mut(&lamp_key) {
             if let Some(previous) = lamp.notification_task.replace(task) {
                 previous.abort();
             }
@@ -1229,10 +1133,14 @@ impl HueManager {
     }
 
     async fn handle_notification(&self, lamp_id: &str, notification: ValueNotification) {
+        // a scan may have re-keyed the lamp since this listener started
+        let Some(lamp_key) = self.resolve_lamp_key(lamp_id).await else {
+            return;
+        };
         let mut refresh_full_state = false;
         {
             let mut lamps = self.inner.lamps.write().await;
-            let Some(lamp) = lamps.get_mut(lamp_id) else {
+            let Some(lamp) = lamps.get_mut(&lamp_key) else {
                 return;
             };
             let uuid = normalize_uuid(notification.uuid);
@@ -1256,23 +1164,25 @@ impl HueManager {
         }
 
         if refresh_full_state {
-            let _ = self.refresh_lamp_state(lamp_id).await;
+            let _ = self.refresh_lamp_state(&lamp_key).await;
         }
     }
 
+    /// Saves the names and the blacklist; a file is only rewritten when it changed (a scan
+    /// every 15 s would otherwise write the SD card thousands of times a day). The snapshot
+    /// is taken under the store's lock: the newest state is always the one written.
     async fn persist_state(&self) -> Result<(), AppError> {
-        let lamp_configs = {
-            let lamps = self.inner.lamps.read().await;
-            lamps.values().map(|lamp| lamp.config.clone()).collect::<Vec<_>>()
-        };
-        let blacklist = {
-            let blacklist = self.inner.blacklisted_addresses.read().await;
-            blacklist.iter().cloned().collect::<Vec<_>>()
-        };
-
-        self.inner.store.save_lamps(&lamp_configs)?;
-        self.inner.store.save_blacklist(&blacklist)?;
+        let mut store = self.inner.store.lock().await;
+        let lamps = self.inner.lamps.read().await.values().map(|lamp| lamp.config.clone()).collect();
+        let blacklist = self.inner.blacklisted_addresses.read().await.clone();
+        store.save_lamps(lamps).await?;
+        store.save_blacklist(&blacklist).await?;
         Ok(())
+    }
+
+    /// The key a lamp is kept under, from its key, id or address.
+    async fn lamp_key(&self, lamp_id: &str) -> Result<String, AppError> {
+        self.resolve_lamp_key(lamp_id).await.ok_or_else(lamp_not_found)
     }
 
     async fn resolve_lamp_key(&self, lamp_id: &str) -> Option<String> {
@@ -1318,55 +1228,21 @@ impl HueCharacteristics {
     }
 }
 
-impl HueStore {
-    fn load_lamps(&self) -> Vec<StoredLampConfig> {
-        dedupe_stored_lamps(
-            self.read_json::<Vec<StoredLampConfig>>(&self.lamps_path)
-                .unwrap_or_default(),
-        )
-    }
+fn lamp_not_found() -> AppError {
+    AppError::not_found("Hue lamp not found")
+}
 
-    fn load_blacklist(&self) -> HashSet<String> {
-        self.read_json::<Vec<String>>(&self.blacklist_path)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|address| normalize_address(&address))
-            .collect()
-    }
-
-    fn save_lamps(&self, lamps: &[StoredLampConfig]) -> Result<(), AppError> {
-        self.write_json(&self.lamps_path, lamps)
-    }
-
-    fn save_blacklist(&self, blacklist: &[String]) -> Result<(), AppError> {
-        self.write_json(&self.blacklist_path, blacklist)
-    }
-
-    fn read_json<T>(&self, path: &Path) -> Option<T>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        let content = fs::read_to_string(path).ok()?;
-        match serde_json::from_str(&content) {
-            Ok(value) => Some(value),
-            Err(error) => {
-                warn!(path = %path.display(), error = %error, "Failed to parse Hue persistence file");
-                None
-            }
-        }
-    }
-
-    fn write_json<T>(&self, path: &Path, value: &T) -> Result<(), AppError>
-    where
-        T: Serialize + ?Sized,
-    {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let body = serde_json::to_vec_pretty(value)?;
-        fs::write(path, body)?;
-        Ok(())
-    }
+/// One Bluetooth operation, bounded by `limit`: a timeout or a Bluetooth error is the
+/// lamp being unavailable.
+async fn ble<T>(
+    op: impl Future<Output = btleplug::Result<T>>,
+    what: &str,
+    limit: Duration,
+) -> Result<T, AppError> {
+    timeout(limit, op)
+        .await
+        .map_err(|_| AppError::service_unavailable(format!("Hue lamp {what} timed out")))?
+        .map_err(|error| AppError::service_unavailable(format!("Bluetooth error: {error}")))
 }
 
 fn to_view(lamp: &LampRuntime) -> HueLampView {
@@ -1380,13 +1256,7 @@ fn to_view(lamp: &LampRuntime) -> HueLampView {
         connected: lamp.connected,
         connecting: lamp.connecting,
         reachable: lamp.reachable,
-        state: HueLampState {
-            is_on: lamp.state.is_on,
-            brightness: lamp.state.brightness,
-            temperature: lamp.state.temperature,
-            temperature_min: lamp.state.temperature_min,
-            temperature_max: lamp.state.temperature_max,
-        },
+        state: lamp.state.clone(),
         last_seen: lamp.last_seen.map(|value| value.to_rfc3339()),
     }
 }
@@ -1570,7 +1440,63 @@ fn fallback_lamp_name(address: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_control_command, parse_brightness, parse_temperature, to_brightness, to_temperature};
+    use super::{HueManager, StoredLampConfig, build_control_command, parse_brightness, parse_temperature, to_brightness, to_temperature};
+    use crate::{config::Config, store};
+    use std::path::Path;
+
+    /// A manager on `root` without Bluetooth, over one kept lamp.
+    fn manager(root: &Path) -> HueManager {
+        let lamp = StoredLampConfig {
+            id: "aabbccddeeff".into(),
+            name: "Hue Lamp ee:ff".into(),
+            address: "aa:bb:cc:dd:ee:ff".into(),
+            has_connected_once: true,
+            ..Default::default()
+        };
+        store::write_json(&root.join("hue-lamps.json"), &vec![lamp], store::Access::Shared).unwrap();
+        HueManager::new(&Config { disable_bluetooth: true, ..Config::defaults(root.to_path_buf()) }).unwrap()
+    }
+
+    fn kept(root: &Path) -> Vec<StoredLampConfig> {
+        store::read_json(&root.join("hue-lamps.json"), store::Corrupt::Fail).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_lamp_is_renamed_by_its_address_and_the_name_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path());
+        manager.rename_lamp("AA:BB:CC:DD:EE:FF", "  Bureau ").await.unwrap();
+        assert_eq!(kept(dir.path())[0].name, "Bureau");
+        assert_eq!(manager.get_lamp("aabbccddeeff").await.unwrap().name, "Bureau");
+
+        let long = "x".repeat(61);
+        for bad in ["  ", "a\nb", long.as_str()] {
+            assert!(manager.rename_lamp("aabbccddeeff", bad).await.is_err(), "{bad:?} accepted");
+        }
+        assert_eq!(kept(dir.path())[0].name, "Bureau");
+        assert!(manager.rename_lamp("nope", "Salon").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_blacklisted_lamp_is_gone_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path());
+        assert!(manager.blacklist_lamp("aa:bb:cc:dd:ee:ff").await.unwrap());
+        assert!(manager.list_lamps().await.is_empty());
+        assert!(kept(dir.path()).is_empty());
+        let blacklist: Vec<String> =
+            store::read_json(&dir.path().join("hue-lamps-blacklist.json"), store::Corrupt::Fail).unwrap();
+        assert_eq!(blacklist, vec!["aabbccddeeff".to_string()]);
+        assert!(!manager.blacklist_lamp("aa:bb:cc:dd:ee:ff").await.unwrap(), "already gone");
+    }
+
+    #[tokio::test]
+    async fn a_torn_names_file_stops_the_start_instead_of_forgetting_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hue-lamps.json"), "[{\"id\":").unwrap();
+        let config = Config { disable_bluetooth: true, ..Config::defaults(dir.path().to_path_buf()) };
+        assert!(HueManager::new(&config).is_err());
+    }
 
     #[test]
     fn brightness_conversion_round_trips_reasonably() {

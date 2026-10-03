@@ -172,13 +172,39 @@ describe('Range', () => {
 			expect(said()).toBe('Ouvert à 50 %');
 		});
 
-		it('Page Up sends a page of steps at once', async () => {
+		it('Page Up sends a page of steps, once the keys settle', async () => {
 			vi.useFakeTimers();
 			const send = vi.fn(async (_v: number) => {});
 			await render(Range, { ...base, send, page: 10 });
 			thumb().dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true, cancelable: true }));
-			await tick();
+			await vi.advanceTimersByTimeAsync(400);
 			expect(send).toHaveBeenCalledExactlyOnceWith(60);
+		});
+
+		it('keys: the motor gets one target, 0.4 s after the last key (§ 3)', async () => {
+			vi.useFakeTimers();
+			const send = vi.fn(async (_v: number) => {});
+			await render(Range, { ...base, send, step: 5 });
+			const key = (k: string) => thumb().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+			key('ArrowRight');
+			await vi.advanceTimersByTimeAsync(300);
+			key('ArrowRight');
+			await vi.advanceTimersByTimeAsync(300);
+			key('ArrowRight');
+			await vi.advanceTimersByTimeAsync(399);
+			expect(send).not.toHaveBeenCalled();
+			flushSync();
+			expect(said()).toBe('Ouvert à 65 %');
+			await vi.advanceTimersByTimeAsync(1);
+			expect(send).toHaveBeenCalledExactlyOnceWith(65);
+		});
+
+		it('shows where the device is while it travels to the thumb', async () => {
+			const { rerender } = await render(Range, { ...base, send: async () => {}, mark: 20, ends: ['Fermé', 'Ouvert'] });
+			expect(document.querySelector('.mark')).not.toBeNull();
+			await expect.element(page.getByText('Fermé')).toBeVisible();
+			await rerender({ mark: 50 });
+			expect(document.querySelector('.mark')).toBeNull();
 		});
 
 		it('a failed send is said, and the thumb goes back to the device', async () => {

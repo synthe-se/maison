@@ -35,9 +35,9 @@ describe('lampState (line 2 of the tile)', () => {
 	it('unreachable: since when, at least a minute; or never seen', () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date('2026-10-02T12:00:00Z'));
-		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: '2026-10-02T11:48:00Z' })))).toBe(m.lamps_unreachable_for({ duration: m.duration_minutes({ m: 12 }) }));
-		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: '2026-10-02T11:59:59Z' })))).toBe(m.lamps_unreachable_for({ duration: m.duration_minutes({ m: 1 }) }));
-		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })))).toBe(m.lamps_never_seen());
+		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: '2026-10-02T11:48:00Z' })))).toBe(m.state_unreachable_for({ duration: m.duration_minutes({ m: 12 }) }));
+		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: '2026-10-02T11:59:59Z' })))).toBe(m.state_unreachable_for({ duration: m.duration_minutes({ m: 1 }) }));
+		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })))).toBe(m.state_never_seen());
 	});
 });
 

@@ -3,7 +3,7 @@
 // this state, which the scenario can read back and change (a lamp that stops answering). The
 // shapes are the app's own types, so a changed API fails to type-check here too.
 import type { Page, Route } from 'playwright';
-import type { DevicesResponse, HueLampsResponse, MerossPlugsResponse, ShuttersResponse } from '../web/src/lib/api.ts';
+import type { DevicesResponse, HueLampsResponse, MealPlanEntry, MerossPlugsResponse, ShuttersResponse } from '../web/src/lib/api.ts';
 // the same fixtures as the unit tests: one description of what the backend sends
 import { hueLamp } from '../web/src/lib/test/lamps.ts';
 import { merossElectricity, merossPlug, merossStatus } from '../web/src/lib/test/meross.ts';
@@ -29,6 +29,7 @@ export function house() {
 		],
 		covers: [shutter({ id: '0000000000000002', name: 'Volet salon', openPercent: 100, targetOpenPercent: 100 })],
 		tuya: [tuyaDevice({ id: 'feeder-1', name: 'Pixi Feeder', product_name: 'Pixi Smart Feeder', ip: '192.168.1.174' })],
+		meals: [{ days_of_week: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], time: '08:00', portion: 2, status: 'Enabled' }] as MealPlanEntry[],
 		/** Every command the page sent, in order: « POST /api/hue-lamps/hue-01/power {"enabled":false} ». */
 		sent: [] as string[],
 		/** A device family that stops answering commands (to see « Pas de réponse »). */
@@ -116,8 +117,14 @@ export function house() {
 					message: ''
 				});
 			}
+			if (method === 'POST' && /^\/api\/devices\/[^/]+\/feeder\/meal-plan$/.test(pathname)) {
+				state.meals = body.meal_plan;
+				// a feeder takes a moment: long enough to see the switch stay busy, and focused
+				await new Promise((r) => setTimeout(r, 300));
+				return json(route, { success: true, message: '' });
+			}
 			if (method === 'GET' && /^\/api\/devices\/[^/]+\/feeder\/meal-plan$/.test(pathname)) {
-				return json(route, { success: true, device: { id: 'feeder-1', name: 'Pixi Feeder' }, decoded: [{ days_of_week: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], time: '08:00', portion: 2, status: 'Enabled' }], meal_plan: null, message: '' });
+				return json(route, { success: true, device: { id: 'feeder-1', name: 'Pixi Feeder' }, decoded: state.meals, meal_plan: null, message: '' });
 			}
 			return route.fallback(); // the real backend
 		});

@@ -1,6 +1,6 @@
 // `bun run check`: the message files say each thing once, in every locale, and every key is
 // said somewhere. Paraglide falls back to the base locale silently and keeps unused keys.
-// Used means `m.key` / `m['key']` in web/src. Duplicates: two keys with the same text in every
+// Used means `m.key` / `m['key']` in web/src, tests left out. Duplicates: two keys with the same text in every
 // locale; a legitimate one (same words, another meaning) goes in i18n.allow.json, with its reason.
 
 import { Glob } from 'bun';
@@ -23,7 +23,8 @@ for (const k of keys) {
 
 const used = new Set<string>();
 for await (const f of new Glob('web/src/**/*.{ts,svelte}').scan(root)) {
-	if (f.includes('/lib/paraglide/')) continue;
+	// the app's own code only: a key a test alone still names is unused
+	if (f.includes('/lib/paraglide/') || f.includes('/lib/test/') || f.endsWith('.test.ts')) continue;
 	const s = await Bun.file(root + f).text();
 	for (const x of s.matchAll(/\bm(?:\.([a-z][a-z0-9_]*)|\[['"]([a-z][a-z0-9_]*)['"]\])/g)) used.add(x[1] ?? x[2]);
 }

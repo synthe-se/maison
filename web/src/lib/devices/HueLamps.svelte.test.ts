@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
+import { session } from '#lib/session.svelte.ts';
+import { alex, leonard } from '#lib/test/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { json, stubFetch } from '#lib/test/fetch.ts';
@@ -26,13 +28,15 @@ function backend({ disabled = false, scan = Promise.resolve(json({ success: true
 }
 
 describe('HueLamps', () => {
+	beforeEach(() => session.adopt(leonard));
+
 	it('lists the lamps with « 1 joignable sur 2 »', async () => {
 		const calls = backend();
 		await render(HueLamps);
 		await expect.element(page.getByRole('region', { name: m.hue_lamps_title() })).toBeVisible();
 		await expect.element(page.getByText(m.lamps_reachable_of({ count: 1, total: 2 }))).toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Lampe du salon' })).toHaveAttribute('aria-pressed', 'true');
-		await expect.element(page.getByText(m.lamps_never_seen())).toBeVisible();
+		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
 		expect(calls.map((c) => c.url).sort()).toEqual(['/api/hue-lamps', '/api/hue-lamps/stats']);
 	});
 
@@ -41,6 +45,14 @@ describe('HueLamps', () => {
 		const { container } = await render(HueLamps);
 		await expect.poll(() => container.querySelector('section')).toBeNull();
 		await expect.element(page.getByText(m.hue_lamps_title())).not.toBeInTheDocument();
+	});
+
+	it('a member sees the lamps, not the search for new ones', async () => {
+		session.adopt(alex);
+		backend();
+		await render(HueLamps);
+		await expect.element(page.getByRole('button', { name: 'Lampe du salon' })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: m.hue_lamps_scan() })).not.toBeInTheDocument();
 	});
 
 	it('the scan button asks the server once, says so, then reads the lamps again', async () => {

@@ -1,11 +1,13 @@
 <script lang="ts">
 	// Opening the Zigbee network to new lamps (permit join) and the Touchlink scan for
-	// factory-new ones. The window's countdown is read every second while it is open.
+	// factory-new ones. The window's countdown is read every second while it is open. Start and
+	// Stop are one button whose words change (a plain button, not a pressed toggle): the focus
+	// stays on it from one to the other.
 	import { m } from '#lib/paraglide/messages.js';
 	import { zigbeeLampsApi } from '#lib/api.ts';
 	import { live, refresh } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import { zigbee } from './lamp.ts';
 
@@ -13,43 +15,42 @@
 	const OPEN_EVERY = 1_000;
 	const CLOSED_EVERY = 10_000;
 
+	// outside the lamps' prefix: refreshing the lamps after a pairing gesture must not read the
+	// window again before the coordinator has opened it
 	const status = live('zigbee-pairing', zigbeeLampsApi.pairingStatus, (d) => (d?.pairing.active ? OPEN_EVERY : CLOSED_EVERY));
 	const pairing = $derived(status.data?.pairing);
+	const open = $derived(pairing?.active ?? false);
 
 	const g = new Gesture();
 
-	function act(which: 'start' | 'stop' | 'touchlink') {
-		if (which === 'touchlink') return g.run(() => zigbeeLampsApi.touchlinkScan(), () => ui.toast(m.zigbee_lamps_touchlink_started()), which);
+	function toggle() {
 		return g.run(
-			() => (which === 'start' ? zigbeeLampsApi.startPairing() : zigbeeLampsApi.stopPairing()),
+			() => (open ? zigbeeLampsApi.stopPairing() : zigbeeLampsApi.startPairing()),
 			(r) => {
+				// the countdown starts at once (Live.set plans the next read)
 				status.set(r);
-				// the countdown is on screen; a reader hears the outcome once (live regions via ui only)
+				// the countdown is on screen; a reader hears the outcome once
 				ui.say(r.pairing.active ? m.zigbee_lamps_pairing_active({ count: r.pairing.remainingSeconds }) : m.zigbee_lamps_pairing_inactive());
 				void refresh(zigbee.key);
 			},
-			which
+			'window'
 		);
 	}
+
+	const touchlink = () => g.run(() => zigbeeLampsApi.touchlinkScan(), () => ui.toast(m.zigbee_lamps_touchlink_started()), 'touchlink');
 </script>
 
 <div class="inset measure">
 	<p class="state">
-		{pairing?.active ? m.zigbee_lamps_pairing_active({ count: pairing.remainingSeconds }) : m.zigbee_lamps_pairing_inactive()}
+		{open ? m.zigbee_lamps_pairing_active({ count: pairing!.remainingSeconds }) : m.zigbee_lamps_pairing_inactive()}
 	</p>
 	{#if pairing?.message}<p class="hint">{pairing.message}</p>{/if}
 	<div class="actions">
-		{#if pairing?.active}
-			<button class="btn primary" disabled={g.is('stop')} onclick={() => act('stop')}>
-				{#if g.is('stop')}<Icon name="loader-circle" class="spin" />{/if}{m.zigbee_lamps_stop_pairing()}
-			</button>
-		{:else}
-			<button class="btn primary" disabled={g.is('start')} onclick={() => act('start')}>
-				{#if g.is('start')}<Icon name="loader-circle" class="spin" />{/if}{m.zigbee_lamps_start_pairing()}
-			</button>
-		{/if}
-		<button class="btn" disabled={g.is('touchlink')} onclick={() => act('touchlink')}>
-			{#if g.is('touchlink')}<Icon name="loader-circle" class="spin" />{/if}{m.zigbee_lamps_touchlink_scan()}
+		<button class="btn primary" {...pending(g.is('window'))} onclick={toggle}>
+			<Icon name={open ? 'square' : 'radio'} busy={g.is('window')} />{open ? m.zigbee_lamps_stop_pairing() : m.zigbee_lamps_start_pairing()}
+		</button>
+		<button class="btn" {...pending(g.is('touchlink'))} onclick={touchlink}>
+			<Icon name="search" busy={g.is('touchlink')} />{m.zigbee_lamps_touchlink_scan()}
 		</button>
 	</div>
 </div>

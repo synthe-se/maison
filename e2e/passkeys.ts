@@ -45,9 +45,16 @@ await p.getByRole('button', { name: 'Ajouter une clé d’accès' }).click();
 await toast(p, 'Clé ajoutée.');
 await p.waitForFunction(() => document.querySelectorAll('[aria-labelledby="keys-title"] li').length === 2);
 check('a second passkey', (await keyRows(p).count()) === 2);
-await p.getByRole('button', { name: /Retirer la clé/ }).first().click();
+// removing asks first; once removed, the focus is on the list's title, not lost
+const removeKey = async () => {
+	await p.getByRole('button', { name: /Retirer la clé/ }).first().click();
+	await p.getByRole('alertdialog').getByRole('button', { name: 'Retirer la clé' }).click();
+};
+await removeKey();
 await toast(p, 'Clé retirée.');
-await p.getByRole('button', { name: /Retirer la clé/ }).first().click();
+await p.waitForFunction(() => document.activeElement?.id === 'keys-title');
+check('after removing a passkey, the focus is on its list’s title', await p.evaluate(() => document.activeElement?.id === 'keys-title'));
+await removeKey();
 await toast(p, /C’est ta dernière clé/);
 check('the last passkey cannot be removed', (await keyRows(p).count()) === 1);
 
@@ -82,6 +89,23 @@ check('Alex is in, not an admin', (await q.evaluate(async () => (await fetch('/a
 await q.goto(`${BASE}/account`);
 await title(q, 'Mon compte');
 check('Alex sees no invitations', (await q.getByRole('heading', { name: 'Inviter quelqu’un' }).count()) === 0);
+check('Alex sees nobody to remove', (await q.getByRole('heading', { name: 'Qui peut entrer' }).count()) === 0);
+
+// a member made by the CLI (as on the Pi): the dashboard without its admin settings
+const r = await open(browser);
+await authenticator(r);
+await r.goto(invitation('sam', 'Sam', false));
+await r.getByRole('button', { name: 'Créer ma clé d’accès' }).click();
+await r.getByRole('button', { name: 'Entrer dans Maison' }).click();
+await title(r, 'Accueil');
+await r.getByRole('heading', { name: 'Volets', level: 2 }).waitFor();
+await r.waitForTimeout(800);
+check('a member is offered no shutter to add', (await r.getByRole('button', { name: 'Ajouter', exact: true }).count()) === 0);
+check('a member sees no TV settings', (await r.getByRole('button', { name: /^Réglages de (TV|Box|LEAP)/ }).count()) === 0);
+check('a member cannot pair lamps', (await r.getByRole('button', { name: 'Appairer', exact: true }).count()) === 0);
+await r.goto(`${BASE}/remote`);
+await title(r, 'Télécommande');
+check('a member configures no remote key', (await r.getByRole('button', { name: 'Ajouter une touche' }).count()) === 0 && (await r.getByText('Réservé aux administrateurs de Maison.').count()) > 0);
 
 checkNoErrors();
 await done(browser);

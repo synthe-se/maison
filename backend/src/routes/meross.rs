@@ -1,12 +1,11 @@
 use axum::{
-    extract::{Path, State},
     Json, Router,
+    extract::{Path, State},
     routing::{get, post},
 };
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{auth::AuthenticatedUser, error::AppError, meross, AppState};
+use crate::{AppState, error::AppError, meross, tuya::DeviceRef};
 
 #[derive(Debug, Serialize)]
 struct MerossListResponse {
@@ -19,7 +18,7 @@ struct MerossListResponse {
 #[derive(Debug, Serialize)]
 struct MerossStatusResponse {
     success: bool,
-    device: meross::MerossDeviceRef,
+    device: DeviceRef,
     status: meross::MerossStatus,
     message: &'static str,
 }
@@ -27,7 +26,7 @@ struct MerossStatusResponse {
 #[derive(Debug, Serialize)]
 struct MerossElectricityResponse {
     success: bool,
-    device: meross::MerossDeviceRef,
+    device: DeviceRef,
     electricity: meross::MerossElectricityFormatted,
     message: &'static str,
 }
@@ -35,24 +34,24 @@ struct MerossElectricityResponse {
 #[derive(Debug, Serialize)]
 struct MerossConsumptionResponse {
     success: bool,
-    device: meross::MerossDeviceRef,
+    device: DeviceRef,
     consumption: Vec<meross::MerossConsumptionEntry>,
     summary: meross::MerossConsumptionSummary,
     message: &'static str,
 }
 
 #[derive(Debug, Serialize)]
-struct MerossToggleRouteResponse {
+struct MerossToggleResponse {
     success: bool,
-    device: meross::MerossDeviceRef,
+    device: DeviceRef,
     on: bool,
     message: String,
 }
 
 #[derive(Debug, Serialize)]
-struct MerossDndRouteResponse {
+struct MerossDndResponse {
     success: bool,
-    device: meross::MerossDeviceRef,
+    device: DeviceRef,
     #[serde(rename = "dndMode")]
     dnd_mode: bool,
     message: String,
@@ -76,40 +75,27 @@ pub fn router() -> Router<AppState> {
         .route("/{device_id}/electricity", get(electricity))
         .route("/{device_id}/consumption", get(consumption))
         .route("/{device_id}/toggle", post(toggle))
-        .route("/{device_id}/on", post(turn_on))
-        .route("/{device_id}/off", post(turn_off))
         .route("/{device_id}/dnd", post(set_dnd))
 }
 
-async fn list_devices(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<MerossListResponse>, AppError> {
-    let _ = user.0;
+async fn list_devices(State(state): State<AppState>) -> Json<MerossListResponse> {
     let devices = state.meross.list_devices().await;
-    Ok(Json(MerossListResponse {
+    Json(MerossListResponse {
         success: true,
         total: devices.len(),
         devices,
         message: "Meross devices list retrieved",
-    }))
+    })
 }
 
-async fn stats(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let _ = user.0;
-    let stats = state.meross.get_stats().await;
-    Ok(Json(serde_json::to_value(stats).map_err(AppError::from)?))
+async fn stats(State(state): State<AppState>) -> Json<meross::MerossStats> {
+    Json(state.meross.get_stats().await)
 }
 
 async fn status(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-    user: AuthenticatedUser,
 ) -> Result<Json<MerossStatusResponse>, AppError> {
-    let _ = user.0;
     let (device, status) = state.meross.get_status(&device_id).await?;
     Ok(Json(MerossStatusResponse {
         success: true,
@@ -122,9 +108,7 @@ async fn status(
 async fn electricity(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-    user: AuthenticatedUser,
 ) -> Result<Json<MerossElectricityResponse>, AppError> {
-    let _ = user.0;
     let (device, electricity) = state.meross.get_electricity(&device_id).await?;
     Ok(Json(MerossElectricityResponse {
         success: true,
@@ -137,9 +121,7 @@ async fn electricity(
 async fn consumption(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-    user: AuthenticatedUser,
 ) -> Result<Json<MerossConsumptionResponse>, AppError> {
-    let _ = user.0;
     let (device, consumption, summary) = state.meross.get_consumption(&device_id).await?;
     Ok(Json(MerossConsumptionResponse {
         success: true,
@@ -153,61 +135,28 @@ async fn consumption(
 async fn toggle(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-    user: AuthenticatedUser,
     Json(body): Json<ToggleBody>,
-) -> Result<Json<MerossToggleRouteResponse>, AppError> {
-    let _ = user.0;
-    let response = state.meross.toggle(&device_id, body.on).await?;
-    Ok(Json(MerossToggleRouteResponse {
+) -> Result<Json<MerossToggleResponse>, AppError> {
+    let device = state.meross.toggle(&device_id, body.on).await?;
+    Ok(Json(MerossToggleResponse {
         success: true,
-        device: response.device,
-        on: response.on,
-        message: response.message,
-    }))
-}
-
-async fn turn_on(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<MerossToggleRouteResponse>, AppError> {
-    let _ = user.0;
-    let response = state.meross.toggle(&device_id, true).await?;
-    Ok(Json(MerossToggleRouteResponse {
-        success: true,
-        device: response.device,
-        on: response.on,
-        message: response.message,
-    }))
-}
-
-async fn turn_off(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<MerossToggleRouteResponse>, AppError> {
-    let _ = user.0;
-    let response = state.meross.toggle(&device_id, false).await?;
-    Ok(Json(MerossToggleRouteResponse {
-        success: true,
-        device: response.device,
-        on: response.on,
-        message: response.message,
+        message: format!("{} turned {}", device.name, if body.on { "on" } else { "off" }),
+        device,
+        on: body.on,
     }))
 }
 
 async fn set_dnd(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-    user: AuthenticatedUser,
     Json(body): Json<DndBody>,
-) -> Result<Json<MerossDndRouteResponse>, AppError> {
-    let _ = user.0;
-    let response = state.meross.set_dnd(&device_id, body.enabled).await?;
-    Ok(Json(MerossDndRouteResponse {
+) -> Result<Json<MerossDndResponse>, AppError> {
+    let device = state.meross.set_dnd(&device_id, body.enabled).await?;
+    let (dnd, led) = if body.enabled { ("enabled", "off") } else { ("disabled", "on") };
+    Ok(Json(MerossDndResponse {
         success: true,
-        device: response.device,
-        dnd_mode: response.dnd_mode,
-        message: response.message,
+        device,
+        dnd_mode: body.enabled,
+        message: format!("DND mode {dnd} (LED {led})"),
     }))
 }

@@ -100,6 +100,19 @@ describe('Key', () => {
 		expect(fire).toHaveBeenCalledOnce();
 	});
 
+	it('a held Enter sends once: the repeated presses never reach the TV unpaced', async () => {
+		const fire = vi.fn();
+		await render(Key, { k: 'up', fire });
+		const key = page.getByRole('button', { name: m.remote_keys_up() }).element() as HTMLElement;
+		key.focus();
+		const repeat = new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true });
+		key.dispatchEvent(repeat);
+		expect(repeat.defaultPrevented).toBe(true);
+		const first = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+		key.dispatchEvent(first);
+		expect(first.defaultPrevented).toBe(false);
+	});
+
 	it('a disabled key sends nothing', async () => {
 		const fire = vi.fn();
 		await render(Key, { k: 'up', fire, disabled: true });

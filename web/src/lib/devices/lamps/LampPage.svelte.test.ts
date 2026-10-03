@@ -39,7 +39,7 @@ describe('LampPage', () => {
 		expect(details()).toEqual([
 			[m.device_model(), 'LCA001'],
 			[m.lamps_manufacturer(), 'Signify'],
-			[m.lamps_firmware(), '1.104.2'],
+			[m.device_firmware(), '1.104.2'],
 			['Adresse', 'AA:BB'],
 			[m.lamps_last_seen(), when('2026-10-02T10:00:00Z')]
 		]);
@@ -52,7 +52,6 @@ describe('LampPage', () => {
 		expect(details()).toEqual([
 			[m.device_model(), m.lamps_unknown_model()],
 			[m.lamps_manufacturer(), 'Signify'],
-			[m.lamps_firmware(), m.common_unknown()],
 			[m.lamps_last_seen(), m.common_unknown()]
 		]);
 		// no white tuning: no temperature slider

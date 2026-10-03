@@ -41,7 +41,7 @@ export const REMOTE_ROWS: RemoteKey[][] = [
 	[
 		{ code: 14, name: m.remote_keys_erase, icon: 'delete' },
 		{ code: 103, name: m.remote_keys_up, icon: 'chevron-up' },
-		{ code: 102, name: m.remote_keys_home, icon: 'house' }
+		{ code: 102, name: m.nav_home, icon: 'house' }
 	],
 	[
 		{ code: 105, name: m.remote_keys_left, icon: 'chevron-left' },
@@ -66,7 +66,7 @@ export const REMOTE_ROWS: RemoteKey[][] = [
 	],
 	[
 		{ code: 114, name: m.remote_keys_volume_down, icon: 'minus' },
-		{ code: 128, name: m.remote_keys_stop, icon: 'square' },
+		{ code: 128, name: m.common_stop, icon: 'square' },
 		{ code: 403, name: m.remote_keys_channel_down, glyph: 'P−' }
 	],
 	[

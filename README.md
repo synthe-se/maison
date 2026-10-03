@@ -7,7 +7,7 @@
 - Track energy and status data for Meross plugs.
 - Control Philips Hue lamps over Bluetooth and Zigbee.
 - Handle Hue dimmer switch (v1 at least), global handling, On/off change power state for every connected zigbee device, dim up/down same.
-- Query Tempo data, predictions, history, and calibration helpers.
+- Tempo: today's and tomorrow's colours (RTE), the days left (EDF), the prices (data.gouv) and a 7-day forecast measured on past seasons.
 - Mirror the daily Tempo colors on a Nabaztag running the garenne firmware (belly LED = today, ears = tomorrow).
 - Turn a set-top-box remote control into a house remote: an AirTies AIR 7310T (custom firmware) decodes its Ruwido IR remote and forwards every key press to maison, which maps buttons to actions. See "IR remote" below.
 - Drive the living-room Philips TV (55PUS6753, Saphi) over its JointSPACE API: volume, Ambilight and remote keys, with power going over infrared — the one channel that reaches the set in deep standby. See "Television" below.
@@ -15,7 +15,7 @@
 - Drive roller shutters (Sonoff Orb-RBS) over Matter, fully local: open, stop, close and percentage positions. Maison is its own Matter commissioner. See "Roller shutters (Matter)" below.
 - Keep access private with local authentication and secure session cookies.
 
-![Maison](/screenshots/maison.jpg?v=1787694963)
+![Maison](/screenshots/maison.jpg?v=1790987331)
 
 Two app components, plus their shared texts and tests:
 
@@ -87,9 +87,9 @@ The Rust backend reads these files directly from the repo root:
 - `matter-trust/` (Matter attestation roots, tracked in git)
 - `mosquitto/`
 
-Tempo cache and calibration files now live in `cache/tempo/`.
-
-Tempo recalibration workflow is documented in `docs/tempo-calibration.md`.
+Tempo's seasons, model and past year of consumption live in `cache/tempo/`; how the
+forecast works, its sources and the yearly refit (`cargo run --release --bin fit_tempo` on
+the Mac, then deploy) are in `docs/tempo.md`.
 
 ## Television
 
@@ -344,19 +344,21 @@ Main settings:
 - `MATTER_TEST_ROOTS`: `true` to accept CSA test devices (simulators) instead of production ones; development only
 - `AUTH_COOKIE_NAME`: session cookie name
 - `AUTH_COOKIE_SECURE`: keep `true` when the app is exposed through HTTPS/Cloudflare
-- `PUBLIC_URL`: where Maison is reached, the passkeys' origin (its host is their RP ID); defaults to `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`. Locally: `http://localhost:5173`
+- `PUBLIC_URL`: where Maison is reached, the passkeys' origin (its host is their RP ID); defaults to `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`. Locally, in the shell and never in `.env` (deploy pushes `.env` to the Pi): `PUBLIC_URL=http://localhost:5173 make backend`
 - `CLOUDFLARE_TUNNEL_TOKEN`: optional token for the Cloudflare tunnel profile
 - `CLOUDFLARED_PROTOCOL`: Cloudflare transport protocol, default `http2` for better compatibility behind NAT
 - `CLOUDFLARE_PUBLIC_HOSTNAME`: optional stable public hostname, for example `home.example.com`
 
 ## Security notes
 
-- `JWT_SECRET` must be set to a strong unique value; the backend now refuses to start with the default secret.
+- `JWT_SECRET`: at least 32 random bytes (`openssl rand -hex 32`); the backend refuses to
+  start with a shorter one or a placeholder (`change-me`…): it signs every session.
 - No passwords: signing in is by passkey only (WebAuthn, Ariane's implementation; notes in
   `docs/dependances/passkeys.md`). One button, no name to type: the device offers its passkey
   (Face ID, Touch ID, a PIN) and the server checks the signature.
 - Passkeys need HTTPS and a domain: open Maison at `https://home.kahn.studio` (the tunnel),
-  also at home. `http://192.168.1.103:3033` cannot sign in.
+  also at home. From the LAN (`http://192.168.1.103:3033`) the backend answers only
+  `/health` and the IR bridge's `/api/ir/key`: everything else goes through the tunnel.
 - Entry is by invitation: a one-time link, valid 7 days, only its hash kept. An admin makes
   one from « Mon compte → Inviter quelqu’un »; the very first one (or a way back in) comes
   from the Pi:
@@ -365,14 +367,23 @@ Main settings:
   ssh root@192.168.1.103 'cd /opt/maison && ./backend/target/release/maison-backend invite leonard --name Léonard --admin'
   ```
 
-  An invitation for someone who exists already adds a passkey (lost phone): same person,
-  same role. Admins invite; members do everything else.
+  An invitation by name for a name someone already has is refused; giving someone their
+  access back (lost phone) is said explicitly (`person`), and adds a passkey to the same
+  person.
+- Roles: admins invite, see and remove people, and configure (device addresses and pairing,
+  APK installs, Matter commissioning, the house's place, the remote's keymap, Tempo
+  recalibration); members do everything else. The role is read on every request.
 - « Mon compte » lists my passkeys (rename, remove all but the last, add one from this
-  device) and signs me out everywhere.
-- Sessions: an `HttpOnly` access cookie (15 min) and a rotating refresh cookie (7 days); a
-  refresh reads the person again.
+  device after a recent passkey sign-in) and signs me out everywhere, at once.
+- Sessions: `__Host-` cookies (HttpOnly, Secure, SameSite=Lax, path `/`): an access token
+  (15 min) and a rotating refresh token (7 days) kept hashed; a refresh token used twice
+  ends its sign-in. A request that changes something must come from this site
+  (`Sec-Fetch-Site` / `Origin`).
 - Failed passkey attempts are limited per address (10 a minute), ceremonies started signed
   out too (30 a minute); behind cloudflared, the address is `CF-Connecting-IP`.
+- On the Pi: `.env`, `devices.json` and `meross-devices.json` (keys) are `root:maison 0640`;
+  `auth/`, `matter/` are the service's, 0700; the tunnel token never reaches a command line;
+  Mosquitto's plaintext listener is bound to 127.0.0.1; root logs in over SSH by key only.
 
 ## Development (this machine)
 
@@ -380,6 +391,8 @@ Main settings:
 make backend         # cargo run, backend on :3033
 make web             # SvelteKit dev server, proxies /api to :3033
 make test            # backend tests + web check + Vitest
+scripts/icons.sh     # every icon and favicon.ico from web/static/brand.svg
+scripts/screenshot.sh  # the README picture, from an invented house (e2e/readme.ts)
 ```
 
 ## Deployment (Raspberry Pi 1)

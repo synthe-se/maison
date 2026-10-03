@@ -1,5 +1,3 @@
-These fixtures capture the legacy Tuya HTTP contract without requiring the legacy backend during normal regression runs.
-
-- `cargo test --test tuya_regression` reads these files only.
-- `cargo test --test tuya_regression refresh_legacy_tuya_fixtures -- --ignored --nocapture` refreshes them sequentially from the live legacy backend.
-- The litter-box fixture now validates the Rust `3.5` path without requiring a live legacy comparison in the normal test run.
+Answers of the legacy Tuya server, captured from the real devices: the parsers in
+`src/tuya.rs` must still turn the same data points into the same status
+(`parsers_match_the_captured_legacy_answers`).

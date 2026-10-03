@@ -8,11 +8,12 @@
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import LampPage from './LampPage.svelte';
 	import { DETAIL_EVERY, fromHue, hue, type Lamp } from './lamp.ts';
 
 	let { id }: { id: string } = $props();
-	const status = live(untrack(() => `${hue.key}:${id}`), () => hueLampsApi.status(id), DETAIL_EVERY);
+	const status = live(untrack(() => hue.keys.detail(id)), () => hueLampsApi.status(id), DETAIL_EVERY);
 	const raw = $derived(status.data?.lamp);
 	const lamp = $derived(raw ? fromHue(raw) : undefined);
 
@@ -36,6 +37,7 @@
 	{/snippet}
 
 	{#snippet children(l: Lamp)}
+		<AdminOnly reason={false}>
 		<section aria-labelledby="hue-hide">
 			<h2 id="hue-hide" class="group-title">{m.hue_lamps_blacklist()}</h2>
 			<p class="hint">{m.hue_lamps_blacklist_section_description()}</p>
@@ -50,6 +52,7 @@
 				onconfirm={() => hide(l)}
 			/>
 		</section>
+		</AdminOnly>
 	{/snippet}
 </LampPage>
 

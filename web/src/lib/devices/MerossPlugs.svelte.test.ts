@@ -4,12 +4,12 @@ import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { json, stubFetch } from '#lib/test/fetch.ts';
-import { merossElectricity } from '#lib/test/meross.ts';
+import { merossElectricity, merossPlug } from '#lib/test/meross.ts';
 import MerossPlugs from './MerossPlugs.svelte';
 
 afterEach(() => forgetAll());
 
-const plug = (id: string, isOnline: boolean, isOn = false) => ({ id, name: `Prise ${id}`, ip: '', isOnline, isOn, lastPing: 0 });
+const plug = (id: string, isOnline: boolean, isOn = false, lastPing = 0) => merossPlug({ id, name: `Prise ${id}`, isOnline, isOn, lastPing });
 
 describe('MerossPlugs', () => {
 	it('says it is loading, then one tile per plug, the counts in the head', async () => {
@@ -25,7 +25,21 @@ describe('MerossPlugs', () => {
 		await expect.element(page.getByText(`${m.meross_plug_count({ count: 2 })} · ${m.meross_online_count({ count: 1 })}`)).toBeVisible();
 		// only the plug that answers is asked for its power
 		await expect.poll(() => calls.map((c) => c.url).sort()).toEqual(['/api/meross', '/api/meross/a/electricity']);
-		await expect.element(page.getByText(m.state_unreachable())).toBeVisible();
+		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
+	});
+
+	it('an unreachable plug keeps its gesture, unavailable, and says since when', async () => {
+		stubFetch(() => json({ success: true, devices: [plug('b', false, false, Date.now() - 4 * 60_000)], total: 1 }));
+		await render(MerossPlugs);
+		await expect.element(page.getByRole('button', { name: 'Prise b' })).toHaveAttribute('aria-disabled', 'true');
+		await expect.element(page.getByText(m.state_unreachable_for({ duration: m.duration_minutes({ m: 4 }) }))).toBeVisible();
+	});
+
+	it('a list that cannot be read says so, never « no plug »', async () => {
+		stubFetch(() => json({ success: false, error: 'down' }, 500));
+		await render(MerossPlugs);
+		await expect.element(page.getByText(m.load_failed())).toBeVisible();
+		await expect.element(page.getByText(m.meross_none())).not.toBeInTheDocument();
 	});
 
 	it('no plug: says so and how they appear', async () => {

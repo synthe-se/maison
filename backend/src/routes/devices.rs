@@ -1,14 +1,21 @@
+use std::collections::BTreeMap;
+
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde::Deserialize;
-use serde::Serialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
-use crate::{AppState, auth::AuthenticatedUser, error::AppError, tuya};
+use crate::{
+    AppState,
+    auth::AdminUser,
+    error::AppError,
+    routes::SimpleResponse,
+    tuya::{self, DeviceRef, TuyaDeviceType, dps},
+};
 
 const FEEDER_MAX_PORTIONS: u64 = 10;
 const FEEDER_WARN_PORTIONS: u64 = 12;
@@ -21,12 +28,6 @@ struct DevicesListResponse {
     devices: Vec<tuya::TuyaDeviceListEntry>,
     total: usize,
     message: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct ConnectionResponse {
-    success: bool,
-    message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,11 +56,11 @@ struct DeviceConnectionStatsEntry {
 struct DpsScanResponse {
     success: bool,
     scan_range: String,
-    scanned_count: usize,
+    scanned_count: u64,
     found_count: usize,
-    available_dps: std::collections::BTreeMap<String, DpsValueSummary>,
+    available_dps: BTreeMap<String, DpsValueSummary>,
     errors_count: usize,
-    errors: Option<std::collections::BTreeMap<String, String>>,
+    errors: Option<BTreeMap<String, String>>,
     message: String,
 }
 
@@ -67,25 +68,25 @@ struct DpsScanResponse {
 struct DpsValueSummary {
     value: Value,
     #[serde(rename = "type")]
-    value_type: String,
+    value_type: &'static str,
     length: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
 struct DeviceStatusResponse {
     success: bool,
-    device: tuya::TuyaDeviceRef,
-    parsed_status: serde_json::Value,
-    raw_status: serde_json::Map<String, serde_json::Value>,
+    device: DeviceRef,
+    parsed_status: Value,
+    raw_status: Map<String, Value>,
     message: &'static str,
 }
 
 #[derive(Debug, Serialize)]
 struct TypedStatusResponse {
     success: bool,
-    device: tuya::TuyaDeviceRef,
-    parsed_status: serde_json::Value,
-    raw_dps: serde_json::Map<String, serde_json::Value>,
+    device: DeviceRef,
+    parsed_status: Value,
+    raw_dps: Map<String, Value>,
     message: &'static str,
 }
 
@@ -93,13 +94,13 @@ struct TypedStatusResponse {
 struct ActionResponse {
     success: bool,
     message: String,
-    device: tuya::TuyaDeviceRef,
+    device: DeviceRef,
 }
 
 #[derive(Debug, Serialize)]
 struct MealPlanResponse {
     success: bool,
-    device: tuya::TuyaDeviceRef,
+    device: DeviceRef,
     decoded: Option<Vec<MealPlanEntry>>,
     meal_plan: Option<String>,
     message: String,
@@ -109,7 +110,7 @@ struct MealPlanResponse {
 struct MealPlanUpdateResponse {
     success: bool,
     message: String,
-    device: tuya::TuyaDeviceRef,
+    device: DeviceRef,
     encoded_base64: String,
     formatted_meal_plan: String,
 }
@@ -118,7 +119,7 @@ struct MealPlanUpdateResponse {
 struct LitterBoxSettingsResponse {
     success: bool,
     message: String,
-    device: tuya::TuyaDeviceRef,
+    device: DeviceRef,
     updated_settings: usize,
 }
 
@@ -126,7 +127,7 @@ struct LitterBoxSettingsResponse {
 struct FountainUvResponse {
     success: bool,
     message: String,
-    device: tuya::TuyaDeviceRef,
+    device: DeviceRef,
     applied_settings: FountainUvAppliedSettings,
 }
 
@@ -140,7 +141,7 @@ struct FountainUvAppliedSettings {
 struct FountainEcoModeResponse {
     success: bool,
     message: String,
-    device: tuya::TuyaDeviceRef,
+    device: DeviceRef,
     eco_mode: u64,
 }
 
@@ -148,7 +149,7 @@ struct FountainEcoModeResponse {
 struct FountainPowerResponse {
     success: bool,
     message: String,
-    device: tuya::TuyaDeviceRef,
+    device: DeviceRef,
     power: bool,
 }
 
@@ -221,10 +222,12 @@ struct FountainPowerRequest {
 struct ScanDpsQuery {
     start: Option<String>,
     end: Option<String>,
-    timeout: Option<String>,
 }
 
+type DeviceId = Path<String>;
+
 pub fn router() -> Router<AppState> {
+    use TuyaDeviceType::{Feeder, Fountain, LitterBox};
     Router::new()
         .route("/", get(list_devices))
         .route("/stats", get(stats))
@@ -236,40 +239,64 @@ pub fn router() -> Router<AppState> {
         .route("/{device_id}/status", get(status))
         .route("/{device_id}/scan-dps", get(scan_dps))
         .route("/{device_id}/feeder/feed", post(feeder_feed))
-        .route("/{device_id}/feeder/status", get(feeder_status))
+        .route(
+            "/{device_id}/feeder/status",
+            get(|s: State<AppState>, id: DeviceId| typed_status(s, id, Feeder, "Feeder status retrieved successfully")),
+        )
         .route("/{device_id}/feeder/meal-plan", get(feeder_meal_plan).post(update_feeder_meal_plan))
-        .route("/{device_id}/litter-box/clean", post(litter_box_clean))
+        .route(
+            "/{device_id}/litter-box/clean",
+            post(|s: State<AppState>, id: DeviceId| {
+                action(s, id, LitterBox, dps::litter::CLEAN, json!(true), "Manual cleaning cycle initiated")
+            }),
+        )
         .route("/{device_id}/litter-box/settings", post(update_litter_box_settings))
-        .route("/{device_id}/litter-box/status", get(litter_box_status))
-        .route("/{device_id}/fountain/reset/water", post(fountain_reset_water))
-        .route("/{device_id}/fountain/reset/filter", post(fountain_reset_filter))
-        .route("/{device_id}/fountain/reset/pump", post(fountain_reset_pump))
+        .route(
+            "/{device_id}/litter-box/status",
+            get(|s: State<AppState>, id: DeviceId| {
+                typed_status(s, id, LitterBox, "Litter box status retrieved successfully")
+            }),
+        )
+        .route(
+            "/{device_id}/fountain/reset/water",
+            post(|s: State<AppState>, id: DeviceId| {
+                action(s, id, Fountain, dps::fountain::WATER_RESET, json!(0), "Water time counter reset")
+            }),
+        )
+        .route(
+            "/{device_id}/fountain/reset/filter",
+            post(|s: State<AppState>, id: DeviceId| {
+                action(s, id, Fountain, dps::fountain::FILTER_RESET, json!(true), "Filter life counter reset")
+            }),
+        )
+        .route(
+            "/{device_id}/fountain/reset/pump",
+            post(|s: State<AppState>, id: DeviceId| {
+                action(s, id, Fountain, dps::fountain::PUMP_RESET, json!(true), "Pump time counter reset")
+            }),
+        )
         .route("/{device_id}/fountain/uv", post(update_fountain_uv))
         .route("/{device_id}/fountain/eco-mode", post(update_fountain_eco_mode))
         .route("/{device_id}/fountain/power", post(update_fountain_power))
-        .route("/{device_id}/fountain/status", get(fountain_status))
+        .route(
+            "/{device_id}/fountain/status",
+            get(|s: State<AppState>, id: DeviceId| {
+                typed_status(s, id, Fountain, "Fountain status retrieved successfully")
+            }),
+        )
 }
 
-async fn list_devices(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<DevicesListResponse>, AppError> {
-    let _ = user.0;
+async fn list_devices(State(state): State<AppState>) -> Json<DevicesListResponse> {
     let devices = state.tuya.list_devices().await;
-    Ok(Json(DevicesListResponse {
+    Json(DevicesListResponse {
         success: true,
         total: devices.len(),
         devices,
         message: "Devices list retrieved successfully",
-    }))
+    })
 }
 
-async fn status(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<DeviceStatusResponse>, AppError> {
-    let _ = user.0;
+async fn status(State(state): State<AppState>, Path(device_id): DeviceId) -> Result<Json<DeviceStatusResponse>, AppError> {
     let (device, raw_status, parsed_status) = state.tuya.get_status(&device_id).await?;
     Ok(Json(DeviceStatusResponse {
         success: true,
@@ -280,14 +307,9 @@ async fn status(
     }))
 }
 
-async fn stats(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<StatsResponse>, AppError> {
-    let _ = user.0;
+async fn stats(State(state): State<AppState>) -> Json<StatsResponse> {
     let stats = state.tuya.connection_stats().await;
-
-    Ok(Json(StatsResponse {
+    Json(StatsResponse {
         success: true,
         total: stats.total,
         connected: stats.connected,
@@ -304,130 +326,54 @@ async fn stats(
                 reconnect_attempts: device.reconnect_attempts,
             })
             .collect(),
-    }))
+    })
 }
 
-async fn reconnect(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<ConnectionResponse>, AppError> {
-    let _ = user.0;
+async fn reconnect(State(state): State<AppState>) -> Json<SimpleResponse> {
     state.tuya.reconnect_disconnected().await;
-    Ok(Json(ConnectionResponse {
-        success: true,
-        message: "Reconnection initiated for disconnected devices".to_string(),
-    }))
+    SimpleResponse::ok("Reconnection initiated for disconnected devices")
 }
 
-async fn connect_all(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<ConnectionResponse>, AppError> {
-    let _ = user.0;
-    let device_ids = state.tuya.list_devices().await.into_iter().map(|device| device.id).collect::<Vec<_>>();
-    for device_id in device_ids {
-        let _ = state.tuya.connect_device(&device_id).await;
-    }
-    Ok(Json(ConnectionResponse {
-        success: true,
-        message: "All devices connection initiated".to_string(),
-    }))
+async fn connect_all(State(state): State<AppState>) -> Json<SimpleResponse> {
+    state.tuya.connect_all_devices().await;
+    SimpleResponse::ok("All devices connection initiated")
 }
 
-async fn disconnect_all(
-    State(state): State<AppState>,
-    user: AuthenticatedUser,
-) -> Result<Json<ConnectionResponse>, AppError> {
-    let _ = user.0;
+async fn disconnect_all(State(state): State<AppState>) -> Json<SimpleResponse> {
     state.tuya.disconnect_all_devices().await;
-    Ok(Json(ConnectionResponse {
-        success: true,
-        message: "All devices disconnected".to_string(),
-    }))
+    SimpleResponse::ok("All devices disconnected")
 }
 
 async fn connect_device(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<ConnectionResponse>, AppError> {
-    let _ = user.0;
+    Path(device_id): DeviceId,
+) -> Result<Json<SimpleResponse>, AppError> {
     let device = state.tuya.get_device_ref(&device_id)?;
-    let _ = state.tuya.connect_device(&device_id).await?;
-    Ok(Json(ConnectionResponse {
-        success: true,
-        message: format!("Device {} connection initiated", device.id),
-    }))
+    state.tuya.connect_device(&device_id).await?;
+    Ok(SimpleResponse::ok(format!("Device {} connection initiated", device.id)))
 }
 
 async fn disconnect_device(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<ConnectionResponse>, AppError> {
-    let _ = user.0;
+    Path(device_id): DeviceId,
+) -> Result<Json<SimpleResponse>, AppError> {
     let device = state.tuya.get_device_ref(&device_id)?;
     state.tuya.disconnect_device(&device_id).await?;
-    Ok(Json(ConnectionResponse {
-        success: true,
-        message: format!("Device {} disconnected", device.id),
-    }))
+    Ok(SimpleResponse::ok(format!("Device {} disconnected", device.id)))
 }
 
+/// The data points a device reports within `start..=end` (a debugging aid: admin only).
 async fn scan_dps(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<ScanDpsQuery>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
+    Query(query): Query<ScanDpsQuery>,
+    _admin: AdminUser,
 ) -> Result<Json<DpsScanResponse>, AppError> {
-    let _ = user.0;
-    let _device = state.tuya.get_device_ref(&device_id)?;
-
-    let start = query
-        .start
-        .as_deref()
-        .unwrap_or("1")
-        .parse::<u32>()
-        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid start DPS"))?;
-    let end = query
-        .end
-        .as_deref()
-        .unwrap_or("255")
-        .parse::<u32>()
-        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid end DPS"))?;
-    let _timeout = query
-        .timeout
-        .as_deref()
-        .unwrap_or("3000")
-        .parse::<u32>()
-        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid timeout"))?;
-
-    if start == 0 || end < start {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Invalid DPS scan range",
-        ));
-    }
-
+    state.tuya.get_device_ref(&device_id)?;
+    let (start, end) = scan_range(query.start.as_deref(), query.end.as_deref())?;
     let (_, raw_status, _) = state.tuya.get_status(&device_id).await?;
-    let mut available_dps = std::collections::BTreeMap::new();
-
-    for dps in start..=end {
-        let key = dps.to_string();
-        if let Some(value) = raw_status.get(&key) {
-            available_dps.insert(
-                key,
-                DpsValueSummary {
-                    value: value.clone(),
-                    value_type: dps_value_type(value),
-                    length: value.as_str().map(str::len),
-                },
-            );
-        }
-    }
-
-    let scanned_count = usize::try_from(end - start + 1)
-        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid DPS scan range"))?;
+    let available_dps = dps_in_range(&raw_status, start, end);
+    let scanned_count = u64::from(end) - u64::from(start) + 1;
     let found_count = available_dps.len();
 
     Ok(Json(DpsScanResponse {
@@ -438,72 +384,104 @@ async fn scan_dps(
         available_dps,
         errors_count: 0,
         errors: None,
-        message: format!(
-            "DPS scan completed: {found_count} active DPS found out of {scanned_count} scanned"
-        ),
+        message: format!("DPS scan completed: {found_count} active DPS found out of {scanned_count} scanned"),
     }))
 }
 
-async fn feeder_status(
+fn scan_range(start: Option<&str>, end: Option<&str>) -> Result<(u32, u32), AppError> {
+    let start = start
+        .unwrap_or("1")
+        .parse::<u32>()
+        .map_err(|_| AppError::bad_request("Invalid start DPS"))?;
+    let end = end
+        .unwrap_or("255")
+        .parse::<u32>()
+        .map_err(|_| AppError::bad_request("Invalid end DPS"))?;
+    if start == 0 || end < start {
+        return Err(AppError::bad_request("Invalid DPS scan range"));
+    }
+    Ok((start, end))
+}
+
+/// The reported points whose number falls in `start..=end`: the device's own keys are
+/// walked, never the range (a range up to 4 294 967 295 would stall the Pi).
+fn dps_in_range(raw_status: &Map<String, Value>, start: u32, end: u32) -> BTreeMap<String, DpsValueSummary> {
+    raw_status
+        .iter()
+        .filter(|(key, _)| key.parse::<u32>().is_ok_and(|id| (start..=end).contains(&id)))
+        .map(|(key, value)| {
+            let summary = DpsValueSummary {
+                value: value.clone(),
+                value_type: dps_value_type(value),
+                length: value.as_str().map(str::len),
+            };
+            (key.clone(), summary)
+        })
+        .collect()
+}
+
+/// One device type's status, parsed: the feeder, litter box and fountain routes.
+async fn typed_status(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
+    kind: TuyaDeviceType,
+    message: &'static str,
 ) -> Result<Json<TypedStatusResponse>, AppError> {
-    let _ = user.0;
-    let (device, raw_dps, parsed_status) = state
-        .tuya
-        .get_typed_status(&device_id, tuya::TuyaDeviceType::Feeder)
-        .await?;
+    let (device, raw_dps, parsed_status) = state.tuya.get_typed_status(&device_id, kind).await?;
     Ok(Json(TypedStatusResponse {
         success: true,
         device,
         parsed_status,
         raw_dps,
-        message: "Feeder status retrieved successfully",
+        message,
+    }))
+}
+
+/// One fixed command to one data point (a cleaning cycle, a counter reset): `done` says
+/// what happened, the device's name follows.
+async fn action(
+    State(state): State<AppState>,
+    Path(device_id): DeviceId,
+    kind: TuyaDeviceType,
+    dps: &'static str,
+    value: Value,
+    done: &'static str,
+) -> Result<Json<ActionResponse>, AppError> {
+    let device = state.tuya.send_typed_command(&device_id, kind, dps, value).await?;
+    Ok(Json(ActionResponse {
+        success: true,
+        message: format!("{done} for {}", device.name),
+        device,
     }))
 }
 
 async fn feeder_feed(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
     Json(body): Json<FeedRequest>,
 ) -> Result<Json<ActionResponse>, AppError> {
-    let _ = user.0;
     if !(1..=FEEDER_WARN_PORTIONS).contains(&body.portion) {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("portion must be between 1 and {FEEDER_WARN_PORTIONS}"),
-        ));
+        return Err(AppError::bad_request(format!("portion must be between 1 and {FEEDER_WARN_PORTIONS}")));
     }
 
     let device = state
         .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::Feeder, "3", json!(body.portion))
+        .send_typed_command(&device_id, TuyaDeviceType::Feeder, dps::feeder::MANUAL_FEED, json!(body.portion))
         .await?;
 
     Ok(Json(ActionResponse {
         success: true,
-        message: format!(
-            "Manual feed command sent to {} with portions: {}",
-            device.name, body.portion
-        ),
+        message: format!("Manual feed command sent to {} with portions: {}", device.name, body.portion),
         device,
     }))
 }
 
 async fn feeder_meal_plan(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
 ) -> Result<Json<MealPlanResponse>, AppError> {
-    let _ = user.0;
     let (device, meal_plan) = state.tuya.feeder_meal_plan(&device_id).await?;
-    let decoded = meal_plan
-        .as_deref()
-        .map(decode_meal_plan)
-        .transpose()?;
-
+    let decoded = meal_plan.as_deref().map(decode_meal_plan).transpose()?;
     let message = if meal_plan.is_some() {
         "Current meal plan retrieved"
     } else {
@@ -521,26 +499,15 @@ async fn feeder_meal_plan(
 
 async fn update_feeder_meal_plan(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
     Json(body): Json<MealPlanRequest>,
 ) -> Result<Json<MealPlanUpdateResponse>, AppError> {
-    let _ = user.0;
-
     if body.meal_plan.is_empty() {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "meal_plan array is required",
-        ));
+        return Err(AppError::bad_request("meal_plan array is required"));
     }
-
     if body.meal_plan.len() > 10 {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "meal_plan supports at most 10 entries",
-        ));
+        return Err(AppError::bad_request("meal_plan supports at most 10 entries"));
     }
-
     for (index, entry) in body.meal_plan.iter().enumerate() {
         validate_meal_plan_entry(entry, index)?;
     }
@@ -548,7 +515,7 @@ async fn update_feeder_meal_plan(
     let encoded = encode_meal_plan(&body.meal_plan)?;
     let device = state
         .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::Feeder, "1", json!(encoded))
+        .send_typed_command(&device_id, TuyaDeviceType::Feeder, dps::feeder::MEAL_PLAN, json!(encoded))
         .await?;
 
     Ok(Json(MealPlanUpdateResponse {
@@ -560,102 +527,16 @@ async fn update_feeder_meal_plan(
     }))
 }
 
-async fn litter_box_status(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<TypedStatusResponse>, AppError> {
-    let _ = user.0;
-    let (device, raw_dps, parsed_status) = state
-        .tuya
-        .get_typed_status(&device_id, tuya::TuyaDeviceType::LitterBox)
-        .await?;
-    Ok(Json(TypedStatusResponse {
-        success: true,
-        device,
-        parsed_status,
-        raw_dps,
-        message: "Litter box status retrieved successfully",
-    }))
-}
-
-async fn litter_box_clean(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<ActionResponse>, AppError> {
-    let _ = user.0;
-    let device = state
-        .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::LitterBox, "107", Value::Bool(true))
-        .await?;
-
-    Ok(Json(ActionResponse {
-        success: true,
-        message: format!("Manual cleaning cycle initiated for {}", device.name),
-        device,
-    }))
-}
-
 async fn update_litter_box_settings(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
     Json(body): Json<LitterBoxSettingsRequest>,
 ) -> Result<Json<LitterBoxSettingsResponse>, AppError> {
-    let _ = user.0;
-    let mut updates = Vec::new();
-
-    if let Some(clean_delay) = body.clean_delay {
-        if clean_delay > LITTER_MAX_CLEAN_DELAY_SECONDS {
-            return Err(AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                "clean_delay must be between 0 and 1800 seconds",
-            ));
-        }
-        updates.push(("101".to_string(), json!(clean_delay)));
-    }
-
-    if let Some(sleep_mode) = body.sleep_mode {
-        if let Some(enabled) = sleep_mode.enabled {
-            updates.push(("102".to_string(), Value::Bool(enabled)));
-        }
-        if let Some(start_time) = sleep_mode.start_time {
-            updates.push(("103".to_string(), json!(parse_hhmm_to_minutes(&start_time)?)));
-        }
-        if let Some(end_time) = sleep_mode.end_time {
-            updates.push(("104".to_string(), json!(parse_hhmm_to_minutes(&end_time)?)));
-        }
-    }
-
-    if let Some(preferences) = body.preferences {
-        push_optional_bool(&mut updates, "110", preferences.child_lock);
-        push_optional_bool(&mut updates, "111", preferences.kitten_mode);
-        push_optional_bool(&mut updates, "116", preferences.lighting);
-        push_optional_bool(&mut updates, "117", preferences.prompt_sound);
-        push_optional_bool(&mut updates, "119", preferences.automatic_homing);
-    }
-
-    if let Some(actions) = body.actions {
-        if actions.reset_sand_level == Some(true) {
-            updates.push(("113".to_string(), Value::Bool(true)));
-        }
-        if actions.reset_factory_settings == Some(true) {
-            updates.push(("115".to_string(), Value::Bool(true)));
-        }
-    }
-
-    if updates.is_empty() {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "No valid settings provided",
-        ));
-    }
-
+    let updates = litter_box_updates(body)?;
     let updated_settings = updates.len();
     let device = state
         .tuya
-        .send_typed_commands(&device_id, tuya::TuyaDeviceType::LitterBox, updates)
+        .send_typed_commands(&device_id, TuyaDeviceType::LitterBox, updates)
         .await?;
 
     Ok(Json(LitterBoxSettingsResponse {
@@ -666,106 +547,67 @@ async fn update_litter_box_settings(
     }))
 }
 
-async fn fountain_status(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<TypedStatusResponse>, AppError> {
-    let _ = user.0;
-    let (device, raw_dps, parsed_status) = state
-        .tuya
-        .get_typed_status(&device_id, tuya::TuyaDeviceType::Fountain)
-        .await?;
-    Ok(Json(TypedStatusResponse {
-        success: true,
-        device,
-        parsed_status,
-        raw_dps,
-        message: "Fountain status retrieved successfully",
-    }))
-}
+/// The data points a litter box settings request writes, validated.
+fn litter_box_updates(body: LitterBoxSettingsRequest) -> Result<Vec<(String, Value)>, AppError> {
+    use dps::litter::*;
+    let mut updates = Vec::new();
+    let mut push = |dps: &str, value: Option<Value>| {
+        if let Some(value) = value {
+            updates.push((dps.to_string(), value));
+        }
+    };
 
-async fn fountain_reset_water(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<ActionResponse>, AppError> {
-    let _ = user.0;
-    let device = state
-        .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::Fountain, "6", json!(0))
-        .await?;
+    if let Some(clean_delay) = body.clean_delay {
+        if clean_delay > LITTER_MAX_CLEAN_DELAY_SECONDS {
+            return Err(AppError::bad_request("clean_delay must be between 0 and 1800 seconds"));
+        }
+        push(CLEAN_DELAY, Some(json!(clean_delay)));
+    }
 
-    Ok(Json(ActionResponse {
-        success: true,
-        message: format!("Water time counter reset for {}", device.name),
-        device,
-    }))
-}
+    if let Some(sleep_mode) = body.sleep_mode {
+        push(SLEEP_ENABLED, sleep_mode.enabled.map(Value::Bool));
+        let start = sleep_mode.start_time.as_deref().map(parse_hhmm_to_minutes).transpose()?;
+        push(SLEEP_START, start.map(|minutes| json!(minutes)));
+        let end = sleep_mode.end_time.as_deref().map(parse_hhmm_to_minutes).transpose()?;
+        push(SLEEP_END, end.map(|minutes| json!(minutes)));
+    }
 
-async fn fountain_reset_filter(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<ActionResponse>, AppError> {
-    let _ = user.0;
-    let device = state
-        .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::Fountain, "7", Value::Bool(true))
-        .await?;
+    if let Some(preferences) = body.preferences {
+        push(CHILD_LOCK, preferences.child_lock.map(Value::Bool));
+        push(KITTEN_MODE, preferences.kitten_mode.map(Value::Bool));
+        push(LIGHTING, preferences.lighting.map(Value::Bool));
+        push(PROMPT_SOUND, preferences.prompt_sound.map(Value::Bool));
+        push(AUTOMATIC_HOMING, preferences.automatic_homing.map(Value::Bool));
+    }
 
-    Ok(Json(ActionResponse {
-        success: true,
-        message: format!("Filter life counter reset for {}", device.name),
-        device,
-    }))
-}
+    if let Some(actions) = body.actions {
+        push(RESET_SAND_LEVEL, (actions.reset_sand_level == Some(true)).then_some(json!(true)));
+        push(FACTORY_RESET, (actions.reset_factory_settings == Some(true)).then_some(json!(true)));
+    }
 
-async fn fountain_reset_pump(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
-) -> Result<Json<ActionResponse>, AppError> {
-    let _ = user.0;
-    let device = state
-        .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::Fountain, "8", Value::Bool(true))
-        .await?;
-
-    Ok(Json(ActionResponse {
-        success: true,
-        message: format!("Pump time counter reset for {}", device.name),
-        device,
-    }))
+    if updates.is_empty() {
+        return Err(AppError::bad_request("No valid settings provided"));
+    }
+    Ok(updates)
 }
 
 async fn update_fountain_uv(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
     Json(body): Json<FountainUvSettingsRequest>,
 ) -> Result<Json<FountainUvResponse>, AppError> {
-    let _ = user.0;
     let mut updates = Vec::new();
-
     if let Some(enabled) = body.enabled {
-        updates.push(("10".to_string(), Value::Bool(enabled)));
+        updates.push((dps::fountain::UV.to_string(), Value::Bool(enabled)));
     }
     if let Some(runtime) = body.runtime {
         if runtime > FOUNTAIN_MAX_UV_RUNTIME_HOURS {
-            return Err(AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                "UV runtime must be between 0 and 24 hours",
-            ));
+            return Err(AppError::bad_request("UV runtime must be between 0 and 24 hours"));
         }
-        updates.push(("11".to_string(), json!(runtime)));
+        updates.push((dps::fountain::UV_RUNTIME.to_string(), json!(runtime)));
     }
-
     if updates.is_empty() {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "No valid settings provided",
-        ));
+        return Err(AppError::bad_request("No valid settings provided"));
     }
 
     let applied_settings = FountainUvAppliedSettings {
@@ -775,7 +617,7 @@ async fn update_fountain_uv(
     let summary = describe_fountain_uv_updates(&applied_settings);
     let device = state
         .tuya
-        .send_typed_commands(&device_id, tuya::TuyaDeviceType::Fountain, updates)
+        .send_typed_commands(&device_id, TuyaDeviceType::Fountain, updates)
         .await?;
 
     Ok(Json(FountainUvResponse {
@@ -788,21 +630,16 @@ async fn update_fountain_uv(
 
 async fn update_fountain_eco_mode(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
     Json(body): Json<FountainEcoModeRequest>,
 ) -> Result<Json<FountainEcoModeResponse>, AppError> {
-    let _ = user.0;
     if !(1..=2).contains(&body.mode) {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Eco mode must be 1 or 2",
-        ));
+        return Err(AppError::bad_request("Eco mode must be 1 or 2"));
     }
 
     let device = state
         .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::Fountain, "102", json!(body.mode))
+        .send_typed_command(&device_id, TuyaDeviceType::Fountain, dps::fountain::ECO_MODE, json!(body.mode))
         .await?;
 
     Ok(Json(FountainEcoModeResponse {
@@ -815,14 +652,12 @@ async fn update_fountain_eco_mode(
 
 async fn update_fountain_power(
     State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    user: AuthenticatedUser,
+    Path(device_id): DeviceId,
     Json(body): Json<FountainPowerRequest>,
 ) -> Result<Json<FountainPowerResponse>, AppError> {
-    let _ = user.0;
     let device = state
         .tuya
-        .send_typed_command(&device_id, tuya::TuyaDeviceType::Fountain, "1", Value::Bool(body.enabled))
+        .send_typed_command(&device_id, TuyaDeviceType::Fountain, dps::fountain::POWER, Value::Bool(body.enabled))
         .await?;
 
     Ok(Json(FountainPowerResponse {
@@ -841,97 +676,44 @@ fn default_feeder_portion() -> u64 {
     1
 }
 
-fn push_optional_bool(updates: &mut Vec<(String, Value)>, dps: &str, value: Option<bool>) {
-    if let Some(value) = value {
-        updates.push((dps.to_string(), Value::Bool(value)));
-    }
-}
-
 fn parse_hhmm_to_minutes(value: &str) -> Result<u64, AppError> {
-    let mut parts = value.split(':');
-    let hours = parts
-        .next()
-        .ok_or_else(|| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid time format. Use HH:MM"))?
-        .parse::<u64>()
-        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid time format. Use HH:MM"))?;
-    let minutes = parts
-        .next()
-        .ok_or_else(|| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid time format. Use HH:MM"))?
-        .parse::<u64>()
-        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid time format. Use HH:MM"))?;
-
-    if parts.next().is_some() || hours > 23 || minutes > 59 {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Invalid time format. Use HH:MM",
-        ));
+    let invalid = || AppError::bad_request("Invalid time format. Use HH:MM");
+    let (hours, minutes) = value.split_once(':').ok_or_else(invalid)?;
+    let hours = hours.parse::<u64>().map_err(|_| invalid())?;
+    let minutes = minutes.parse::<u64>().map_err(|_| invalid())?;
+    if hours > 23 || minutes > 59 {
+        return Err(invalid());
     }
-
     Ok((hours * 60) + minutes)
 }
 
 fn validate_meal_plan_entry(entry: &MealPlanEntry, index: usize) -> Result<(), AppError> {
-    if entry.days_of_week.is_empty() {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("Invalid meal plan entry at index {index}"),
-        ));
+    let valid = !entry.days_of_week.is_empty()
+        && entry.days_of_week.iter().all(|day| day_index(day).is_some())
+        && parse_hhmm_to_minutes(&entry.time).is_ok()
+        && (1..=FEEDER_MAX_PORTIONS).contains(&u64::from(entry.portion))
+        && (entry.status == "Enabled" || entry.status == "Disabled");
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(format!("Invalid meal plan entry at index {index}")))
     }
-
-    for day in &entry.days_of_week {
-        if day_index(day).is_none() {
-            return Err(AppError::http(
-                axum::http::StatusCode::BAD_REQUEST,
-                format!("Invalid meal plan entry at index {index}"),
-            ));
-        }
-    }
-
-    let _ = parse_hhmm_to_minutes(&entry.time).map_err(|_| {
-        AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("Invalid meal plan entry at index {index}"),
-        )
-    })?;
-
-    if !(1..=FEEDER_MAX_PORTIONS as u8).contains(&entry.portion) {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("Invalid meal plan entry at index {index}"),
-        ));
-    }
-
-    if entry.status != "Enabled" && entry.status != "Disabled" {
-        return Err(AppError::http(
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("Invalid meal plan entry at index {index}"),
-        ));
-    }
-
-    Ok(())
 }
 
 fn encode_meal_plan(entries: &[MealPlanEntry]) -> Result<String, AppError> {
     let mut encoded = Vec::with_capacity(entries.len() * 5);
     for entry in entries {
-        let days_bits = entry
-            .days_of_week
-            .iter()
-            .try_fold(0_u8, |acc, day| {
-                day_index(day)
-                    .map(|index| acc | (1 << index))
-                    .ok_or_else(|| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid day of week"))
-            })?;
+        let days_bits = entry.days_of_week.iter().try_fold(0_u8, |acc, day| {
+            day_index(day)
+                .map(|index| acc | (1 << index))
+                .ok_or_else(|| AppError::bad_request("Invalid day of week"))
+        })?;
+        // at most 23:59, so both fit a byte
         let total_minutes = parse_hhmm_to_minutes(&entry.time)?;
-        let hours = u8::try_from(total_minutes / 60)
-            .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid time format. Use HH:MM"))?;
-        let minutes = u8::try_from(total_minutes % 60)
-            .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid time format. Use HH:MM"))?;
-        let status = if entry.status == "Enabled" { 1 } else { 0 };
-
+        let status = u8::from(entry.status == "Enabled");
+        let (hours, minutes) = ((total_minutes / 60) as u8, (total_minutes % 60) as u8);
         encoded.extend_from_slice(&[days_bits, hours, minutes, entry.portion, status]);
     }
-
     Ok(STANDARD.encode(encoded))
 }
 
@@ -1024,7 +806,7 @@ fn describe_fountain_uv_updates(settings: &FountainUvAppliedSettings) -> String 
     parts.join(", ")
 }
 
-fn dps_value_type(value: &Value) -> String {
+fn dps_value_type(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
@@ -1033,7 +815,6 @@ fn dps_value_type(value: &Value) -> String {
         Value::Array(_) => "array",
         Value::Object(_) => "object",
     }
-    .to_string()
 }
 
 #[cfg(test)]
@@ -1153,5 +934,69 @@ mod tests {
     fn decode_meal_plan_rejects_invalid_base64() {
         let error = decode_meal_plan("***").unwrap_err();
         assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn scan_range_defaults_and_rejects_bad_bounds() {
+        assert_eq!(scan_range(None, None).unwrap(), (1, 255));
+        assert_eq!(scan_range(Some("100"), Some("4294967295")).unwrap(), (100, u32::MAX));
+        assert_eq!(scan_range(Some("0"), None).unwrap_err().to_string(), "Invalid DPS scan range");
+        assert_eq!(scan_range(Some("9"), Some("3")).unwrap_err().to_string(), "Invalid DPS scan range");
+        assert_eq!(scan_range(Some("x"), None).unwrap_err().to_string(), "Invalid start DPS");
+        assert_eq!(scan_range(None, Some("-1")).unwrap_err().to_string(), "Invalid end DPS");
+    }
+
+    #[test]
+    fn dps_in_range_walks_the_reported_points_only() {
+        let raw = json!({ "1": true, "101": "abc", "300": 4, "x": 1 }).as_object().cloned().unwrap();
+        let found = dps_in_range(&raw, 1, u32::MAX);
+        assert_eq!(found.keys().collect::<Vec<_>>(), vec!["1", "101", "300"]);
+        assert_eq!(found["101"].value_type, "string");
+        assert_eq!(found["101"].length, Some(3));
+        assert_eq!(found["1"].value_type, "boolean");
+        assert_eq!(dps_in_range(&raw, 2, 200).len(), 1);
+    }
+
+    fn litter(body: Value) -> Result<Vec<(String, Value)>, AppError> {
+        litter_box_updates(serde_json::from_value(body).unwrap())
+    }
+
+    #[test]
+    fn litter_settings_become_their_data_points() {
+        let updates = litter(json!({
+            "clean_delay": 120,
+            "sleep_mode": { "enabled": true, "start_time": "21:30", "end_time": "07:00" },
+            "preferences": { "child_lock": true, "lighting": false },
+            "actions": { "reset_sand_level": true, "reset_factory_settings": false },
+        }))
+        .unwrap();
+        let expected = [
+            (dps::litter::CLEAN_DELAY, json!(120)),
+            (dps::litter::SLEEP_ENABLED, json!(true)),
+            (dps::litter::SLEEP_START, json!(1290)),
+            (dps::litter::SLEEP_END, json!(420)),
+            (dps::litter::CHILD_LOCK, json!(true)),
+            (dps::litter::LIGHTING, json!(false)),
+            (dps::litter::RESET_SAND_LEVEL, json!(true)),
+        ]
+        .map(|(id, value)| (id.to_string(), value));
+        assert_eq!(updates, expected);
+    }
+
+    #[test]
+    fn litter_settings_reject_bad_or_empty_requests() {
+        assert_eq!(litter(json!({})).unwrap_err().to_string(), "No valid settings provided");
+        assert_eq!(
+            litter(json!({ "actions": { "reset_factory_settings": false } })).unwrap_err().to_string(),
+            "No valid settings provided"
+        );
+        assert!(litter(json!({ "clean_delay": 1801 })).is_err());
+        assert!(litter(json!({ "sleep_mode": { "start_time": "25:00" } })).is_err());
+    }
+
+    #[test]
+    fn parse_hhmm_rejects_extra_parts() {
+        assert!(parse_hhmm_to_minutes("08:30:00").is_err());
+        assert!(parse_hhmm_to_minutes("08").is_err());
     }
 }

@@ -4,13 +4,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs,
-    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::RwLock,
@@ -22,26 +19,9 @@ use tracing::warn;
 use crate::{
     config::Config,
     error::AppError,
-    zigbee_native::{NativeKnownDevice, NativeZigbeeCommand, NativeZigbeeRuntime, ZigbeeDeviceType},
+    lamps::{LampColour, LampRecord, LampState, LampStats, LampStore},
+    zigbee_native::{MIRED_COOL, MIRED_WARM, NativeKnownDevice, NativeZigbeeCommand, NativeZigbeeRuntime, ZigbeeDeviceType},
 };
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ZigbeeLampState {
-    #[serde(rename = "isOn")]
-    pub is_on: bool,
-    pub brightness: u8,
-    pub temperature: Option<u8>,
-    #[serde(rename = "temperatureMin")]
-    pub temperature_min: Option<u8>,
-    #[serde(rename = "temperatureMax")]
-    pub temperature_max: Option<u8>,
-    #[serde(rename = "colorX")]
-    pub color_x: Option<f32>,
-    #[serde(rename = "colorY")]
-    pub color_y: Option<f32>,
-    #[serde(rename = "colorMode")]
-    pub color_mode: Option<u8>,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ZigbeeLampView {
@@ -50,13 +30,10 @@ pub struct ZigbeeLampView {
     pub address: String,
     #[serde(rename = "friendlyName")]
     pub friendly_name: String,
-    #[serde(rename = "linkQuality")]
-    pub link_quality: Option<u16>,
     #[serde(rename = "interviewCompleted")]
     pub interview_completed: bool,
     pub model: Option<String>,
     pub manufacturer: String,
-    pub firmware: Option<String>,
     pub connected: bool,
     pub reachable: bool,
     #[serde(rename = "supportsBrightness")]
@@ -65,18 +42,9 @@ pub struct ZigbeeLampView {
     pub supports_temperature: bool,
     #[serde(rename = "supportsColor")]
     pub supports_color: bool,
-    pub state: ZigbeeLampState,
+    pub state: LampState,
     #[serde(rename = "lastSeen")]
     pub last_seen: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ZigbeeStats {
-    pub total: usize,
-    pub connected: usize,
-    pub reachable: usize,
-    pub disabled: bool,
-    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,7 +57,9 @@ pub struct ZigbeePairingStatus {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// What is kept of a lamp: everything but its live state, so a brightness change or a
+/// lamp going out of reach does not rewrite the file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredZigbeeLampConfig {
     id: String,
@@ -104,7 +74,6 @@ struct StoredZigbeeLampConfig {
     output_clusters: Vec<u16>,
     model: Option<String>,
     manufacturer: Option<String>,
-    firmware: Option<String>,
     supports_brightness: bool,
     supports_temperature: bool,
     #[serde(default)]
@@ -115,27 +84,27 @@ struct StoredZigbeeLampConfig {
     is_remote: bool,
 }
 
+impl LampRecord for StoredZigbeeLampConfig {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 #[derive(Clone)]
 struct ZigbeeLampRuntime {
     config: StoredZigbeeLampConfig,
-    state: RuntimeLampState,
+    state: LampState,
     connected: bool,
     reachable: bool,
-    link_quality: Option<u16>,
     last_seen: Option<String>,
     interview_completed: bool,
 }
 
-#[derive(Clone)]
-struct RuntimeLampState {
-    is_on: bool,
-    brightness: u8,
-    temperature: Option<u8>,
-    temperature_min: Option<u8>,
-    temperature_max: Option<u8>,
-    color_x: Option<f32>,
-    color_y: Option<f32>,
-    color_mode: Option<u8>,
+impl ZigbeeLampRuntime {
+    /// Shown and counted: a lamp (not a remote) whose interview is done.
+    fn is_visible(&self) -> bool {
+        !self.config.is_remote && self.interview_completed
+    }
 }
 
 #[derive(Default)]
@@ -146,18 +115,12 @@ struct PairingRuntime {
 }
 
 #[derive(Clone)]
-struct ZigbeeStore {
-    lamps_path: PathBuf,
-    blacklist_path: PathBuf,
-}
-
-#[derive(Clone)]
 pub struct ZigbeeManager {
     inner: Arc<ZigbeeManagerInner>,
 }
 
 struct ZigbeeManagerInner {
-    store: ZigbeeStore,
+    store: LampStore<StoredZigbeeLampConfig>,
     lamps: RwLock<HashMap<String, ZigbeeLampRuntime>>,
     /// IEEE addresses that must never appear as lamps, enforced both at load
     /// time and on every runtime discovery sync (a blacklisted device that is
@@ -171,25 +134,35 @@ struct ZigbeeManagerInner {
 
 impl ZigbeeManager {
     pub fn new(config: &Config) -> Result<Self, AppError> {
-        let store = ZigbeeStore {
-            lamps_path: config.zigbee_lamps_path.clone(),
-            blacklist_path: config.zigbee_lamps_blacklist_path.clone(),
-        };
-        let blacklisted_addresses = store.load_blacklist();
+        let adapter = crate::config::env_text("ZIGBEE_ADAPTER").unwrap_or_else(|| "ember".to_string());
+        let serial_port = crate::config::env_text("ZIGBEE_SERIAL_PORT");
+        let manager = Self::with_runtime(config, |known_devices| {
+            NativeZigbeeRuntime::spawn(adapter, serial_port, known_devices)
+        })?;
+        manager.spawn_persist_task();
+        Ok(manager)
+    }
+
+    /// The manager over the kept lamps, its driver made by `runtime` from them; no save
+    /// loop yet (tests drive the syncs themselves).
+    fn with_runtime(
+        config: &Config,
+        runtime: impl FnOnce(Vec<NativeKnownDevice>) -> NativeZigbeeRuntime,
+    ) -> Result<Self, AppError> {
+        let store: LampStore<StoredZigbeeLampConfig> = LampStore::new(&config.zigbee_lamps_path, &config.zigbee_lamps_blacklist_path);
+        let blacklisted_addresses = store.load_blacklist()?;
         let lamps: HashMap<String, ZigbeeLampRuntime> = store
             .load_lamps()?
             .into_iter()
             .filter(|lamp| !blacklisted_addresses.contains(&lamp.ieee_address))
             .map(|lamp| {
-                let state = RuntimeLampState {
+                let state = LampState {
                     is_on: false,
                     brightness: 0,
                     temperature: None,
                     temperature_min: lamp.color_temp_min.map(|_| 0),
                     temperature_max: lamp.color_temp_max.map(|_| 100),
-                    color_x: None,
-                    color_y: None,
-                    color_mode: None,
+                    colour: Some(LampColour::default()),
                 };
 
                 (
@@ -199,16 +172,12 @@ impl ZigbeeManager {
                         state,
                         connected: false,
                         reachable: false,
-                        link_quality: None,
                         last_seen: None,
                         interview_completed: false,
                     },
                 )
             })
             .collect();
-
-        let adapter = crate::config::env_text("ZIGBEE_ADAPTER").unwrap_or_else(|| "ember".to_string());
-        let serial_port = crate::config::env_text("ZIGBEE_SERIAL_PORT");
 
         // Records without a node_id cannot be seeded into the native driver
         // (typically leftovers from the removed zigbee2mqtt era). Surface
@@ -247,7 +216,7 @@ impl ZigbeeManager {
             })
             .collect();
 
-        let runtime = NativeZigbeeRuntime::spawn(adapter, serial_port, known_devices);
+        let runtime = runtime(known_devices);
 
         let manager = Self {
             inner: Arc::new(ZigbeeManagerInner {
@@ -261,7 +230,6 @@ impl ZigbeeManager {
             }),
         };
 
-        manager.spawn_persist_task();
         Ok(manager)
     }
 
@@ -272,7 +240,7 @@ impl ZigbeeManager {
         let lamps = self.inner.lamps.read().await;
         let mut values = lamps
             .values()
-            .filter(|lamp| !lamp.config.is_remote && lamp.interview_completed)
+            .filter(|lamp| lamp.is_visible())
             .map(to_view)
             .collect::<Vec<_>>();
         values.sort_by(|left, right| left.name.cmp(&right.name));
@@ -287,15 +255,16 @@ impl ZigbeeManager {
         lamps.get(lamp_id).map(to_view)
     }
 
-    pub async fn stats(&self) -> ZigbeeStats {
+    pub async fn stats(&self) -> LampStats {
         if let Err(error) = self.sync_from_runtime().await {
             warn!(error = %error, "failed to sync native zigbee stats");
         }
         let lamps = self.inner.lamps.read().await;
-        ZigbeeStats {
-            total: lamps.values().filter(|lamp| !lamp.config.is_remote && lamp.interview_completed).count(),
-            connected: lamps.values().filter(|lamp| !lamp.config.is_remote && lamp.interview_completed && lamp.connected).count(),
-            reachable: lamps.values().filter(|lamp| !lamp.config.is_remote && lamp.interview_completed && lamp.reachable).count(),
+        let visible = || lamps.values().filter(|lamp| lamp.is_visible());
+        LampStats {
+            total: visible().count(),
+            connected: visible().filter(|lamp| lamp.connected).count(),
+            reachable: visible().filter(|lamp| lamp.reachable).count(),
             disabled: false,
             message: self.inner.runtime.message().await,
         }
@@ -366,7 +335,7 @@ impl ZigbeeManager {
             .await
     }
 
-    pub async fn set_power(&self, lamp_id: &str, enabled: bool) -> Result<ZigbeeLampState, AppError> {
+    pub async fn set_power(&self, lamp_id: &str, enabled: bool) -> Result<LampState, AppError> {
         self.apply_command(lamp_id, NativeZigbeeCommand::SetPower {
             lamp_id: lamp_id.to_string(),
             enabled,
@@ -374,7 +343,7 @@ impl ZigbeeManager {
         .await
     }
 
-    pub async fn set_brightness(&self, lamp_id: &str, brightness: u8) -> Result<ZigbeeLampState, AppError> {
+    pub async fn set_brightness(&self, lamp_id: &str, brightness: u8) -> Result<LampState, AppError> {
         self.apply_command(lamp_id, NativeZigbeeCommand::SetBrightness {
             lamp_id: lamp_id.to_string(),
             brightness,
@@ -382,7 +351,7 @@ impl ZigbeeManager {
         .await
     }
 
-    pub async fn set_temperature(&self, lamp_id: &str, temperature: u8) -> Result<ZigbeeLampState, AppError> {
+    pub async fn set_temperature(&self, lamp_id: &str, temperature: u8) -> Result<LampState, AppError> {
         self.apply_command(lamp_id, NativeZigbeeCommand::SetTemperature {
             lamp_id: lamp_id.to_string(),
             temperature,
@@ -390,7 +359,7 @@ impl ZigbeeManager {
         .await
     }
 
-    pub async fn set_color(&self, lamp_id: &str, x: f32, y: f32) -> Result<ZigbeeLampState, AppError> {
+    pub async fn set_color(&self, lamp_id: &str, x: f32, y: f32) -> Result<LampState, AppError> {
         self.apply_command(lamp_id, NativeZigbeeCommand::SetColor {
             lamp_id: lamp_id.to_string(),
             x,
@@ -399,7 +368,7 @@ impl ZigbeeManager {
         .await
     }
 
-    pub async fn set_effect(&self, lamp_id: &str, effect: &str) -> Result<ZigbeeLampState, AppError> {
+    pub async fn set_effect(&self, lamp_id: &str, effect: &str) -> Result<LampState, AppError> {
         self.apply_command(lamp_id, NativeZigbeeCommand::SetEffect {
             lamp_id: lamp_id.to_string(),
             effect: effect.to_string(),
@@ -414,7 +383,7 @@ impl ZigbeeManager {
         &self,
         lamp_id: &str,
         command: NativeZigbeeCommand,
-    ) -> Result<ZigbeeLampState, AppError> {
+    ) -> Result<LampState, AppError> {
         if let Err(error) = self.sync_from_runtime().await {
             warn!(lamp_id, error = %error, "failed to sync native zigbee state before command");
         }
@@ -432,24 +401,23 @@ impl ZigbeeManager {
         if let Err(error) = self.sync_from_runtime().await {
             warn!(lamp_id, error = %error, "failed to sync native zigbee lamp before rename");
         }
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(AppError::http(
-                StatusCode::BAD_REQUEST,
-                "Lamp name cannot be empty",
-            ));
-        }
-
-        let stored = {
+        let name = crate::people::clean_name(name)
+            .ok_or_else(|| AppError::bad_request("A lamp name is 1 to 60 characters, without control characters"))?;
+        {
             let mut lamps = self.inner.lamps.write().await;
-            let lamp = lamps
-                .get_mut(lamp_id)
-                .ok_or_else(|| not_found("Zigbee lamp not found"))?;
-            lamp.config.name = trimmed.to_string();
-            lamps.values().map(|lamp| lamp.config.clone()).collect::<Vec<_>>()
-        };
+            let lamp = lamps.get_mut(lamp_id).ok_or_else(lamp_not_found)?;
+            lamp.config.name = name.to_string();
+        }
+        self.persist().await
+    }
 
-        self.inner.store.save_lamps(&stored)
+    /// Saves the lamps when what is kept of them changed. The snapshot is taken under the
+    /// store's lock, so a slower save can never write an older copy over a rename.
+    async fn persist(&self) -> Result<(), AppError> {
+        let mut store = self.inner.store.lock().await;
+        let lamps = self.inner.lamps.read().await.values().map(|lamp| lamp.config.clone()).collect();
+        store.save_lamps(lamps).await?;
+        Ok(())
     }
 
     pub async fn shutdown(&self) {
@@ -465,7 +433,6 @@ impl ZigbeeManager {
 
         let mut lamps = self.inner.lamps.write().await;
         let mut seen = HashSet::new();
-        let mut changed = false;
 
         for device in discovered {
             if self.inner.blacklisted_addresses.contains(&device.eui64) {
@@ -483,7 +450,6 @@ impl ZigbeeManager {
             }
 
             let id = device.id.clone();
-            let previous = lamps.get(&id).cloned();
             let runtime = lamps.entry(id.clone()).or_insert_with(|| ZigbeeLampRuntime {
                 config: StoredZigbeeLampConfig {
                     id: id.clone(),
@@ -496,27 +462,18 @@ impl ZigbeeManager {
                     output_clusters: device.output_clusters.clone(),
                     model: device.model.clone(),
                     manufacturer: device.manufacturer.clone().or_else(|| Some("Native EZSP".to_string())),
-                    firmware: None,
-                    supports_brightness: device.supports_brightness,
-                    supports_temperature: device.supports_temperature,
-                    supports_color: device.supports_color,
-                    color_temp_min: if device.supports_temperature { Some(153) } else { None },
-                    color_temp_max: if device.supports_temperature { Some(500) } else { None },
-                    is_remote: device.device_type == ZigbeeDeviceType::Remote,
+                    ..Default::default()
                 },
-                state: RuntimeLampState {
+                state: LampState {
                     is_on: device.is_on,
                     brightness: device.brightness,
-                    temperature: device.temperature,
-                    temperature_min: if device.supports_temperature { Some(0) } else { None },
-                    temperature_max: if device.supports_temperature { Some(100) } else { None },
-                    color_x: device.color_x,
-                    color_y: device.color_y,
-                    color_mode: device.color_mode,
+                    temperature: None,
+                    temperature_min: None,
+                    temperature_max: None,
+                    colour: None,
                 },
                 connected: device.connected,
                 reachable: device.reachable,
-                link_quality: None,
                 last_seen: device.last_seen.clone(),
                 interview_completed: device.endpoint.is_some(),
             });
@@ -531,8 +488,8 @@ impl ZigbeeManager {
             runtime.config.supports_brightness = device.supports_brightness;
             runtime.config.supports_temperature = device.supports_temperature;
             runtime.config.supports_color = device.supports_color;
-            runtime.config.color_temp_min = if device.supports_temperature { Some(153) } else { None };
-            runtime.config.color_temp_max = if device.supports_temperature { Some(500) } else { None };
+            runtime.config.color_temp_min = device.supports_temperature.then_some(MIRED_COOL);
+            runtime.config.color_temp_max = device.supports_temperature.then_some(MIRED_WARM);
             runtime.config.is_remote = device.device_type == ZigbeeDeviceType::Remote;
             runtime.connected = device.connected;
             runtime.reachable = device.reachable;
@@ -545,20 +502,18 @@ impl ZigbeeManager {
                 runtime.state.brightness = device.brightness;
             }
             runtime.state.temperature = device.temperature;
-            runtime.state.temperature_min = if device.supports_temperature { Some(0) } else { None };
-            runtime.state.temperature_max = if device.supports_temperature { Some(100) } else { None };
-            runtime.state.color_x = device.color_x;
-            runtime.state.color_y = device.color_y;
-            runtime.state.color_mode = device.color_mode;
+            runtime.state.temperature_min = device.supports_temperature.then_some(0);
+            runtime.state.temperature_max = device.supports_temperature.then_some(100);
+            runtime.state.colour = Some(LampColour {
+                color_x: device.color_x,
+                color_y: device.color_y,
+                color_mode: device.color_mode,
+            });
             if runtime.config.name.trim().is_empty() {
                 runtime.config.name = device.eui64.clone();
             }
             if runtime.config.friendly_name.trim().is_empty() {
                 runtime.config.friendly_name = device.eui64.clone();
-            }
-
-            if !previous.map(|value| native_runtime_equals(&value, runtime)).unwrap_or(false) {
-                changed = true;
             }
 
             seen.insert(id);
@@ -571,21 +526,13 @@ impl ZigbeeManager {
                 if lamp.config.is_remote {
                     continue;
                 }
-                if lamp.connected || lamp.reachable {
-                    changed = true;
-                }
                 lamp.connected = false;
                 lamp.reachable = false;
             }
         }
 
-        if changed {
-            let stored = lamps.values().map(|lamp| lamp.config.clone()).collect::<Vec<_>>();
-            drop(lamps);
-            self.inner.store.save_lamps(&stored)?;
-        }
-
-        Ok(())
+        drop(lamps);
+        self.persist().await
     }
 
     fn spawn_persist_task(&self) {
@@ -609,48 +556,13 @@ impl ZigbeeManager {
         *self.inner.persist_task.lock().expect("native persist task mutex") = Some(handle);
     }
 
-    async fn current_state(&self, lamp_id: &str) -> Result<ZigbeeLampState, AppError> {
+    async fn current_state(&self, lamp_id: &str) -> Result<LampState, AppError> {
         let lamps = self.inner.lamps.read().await;
         let lamp = lamps
             .get(lamp_id)
-            .ok_or_else(|| not_found("Zigbee lamp not found"))?;
-        Ok(current_state(lamp))
+            .ok_or_else(lamp_not_found)?;
+        Ok(lamp.state.clone())
     }
-}
-
-impl ZigbeeStore {
-    fn load_lamps(&self) -> Result<Vec<StoredZigbeeLampConfig>, AppError> {
-        read_json_file(&self.lamps_path)
-    }
-
-    fn save_lamps(&self, lamps: &[StoredZigbeeLampConfig]) -> Result<(), AppError> {
-        write_json_file(&self.lamps_path, lamps)
-    }
-
-    fn load_blacklist(&self) -> HashSet<String> {
-        read_json_file::<Vec<String>>(&self.blacklist_path)
-            .unwrap_or_default()
-            .into_iter()
-            .collect()
-    }
-}
-
-fn native_runtime_equals(left: &ZigbeeLampRuntime, right: &ZigbeeLampRuntime) -> bool {
-    left.config.node_id == right.config.node_id
-        && left.config.endpoint == right.config.endpoint
-        && left.config.input_clusters == right.config.input_clusters
-        && left.config.output_clusters == right.config.output_clusters
-        && left.config.supports_brightness == right.config.supports_brightness
-        && left.config.supports_temperature == right.config.supports_temperature
-        && left.config.supports_color == right.config.supports_color
-        && left.connected == right.connected
-        && left.reachable == right.reachable
-        && left.state.is_on == right.state.is_on
-        && left.state.brightness == right.state.brightness
-        && left.state.temperature == right.state.temperature
-        && left.state.color_x == right.state.color_x
-        && left.state.color_y == right.state.color_y
-        && left.state.color_mode == right.state.color_mode
 }
 
 fn to_view(lamp: &ZigbeeLampRuntime) -> ZigbeeLampView {
@@ -659,7 +571,6 @@ fn to_view(lamp: &ZigbeeLampRuntime) -> ZigbeeLampView {
         name: lamp.config.name.clone(),
         address: lamp.config.ieee_address.clone(),
         friendly_name: lamp.config.friendly_name.clone(),
-        link_quality: lamp.link_quality,
         interview_completed: lamp.interview_completed,
         model: lamp.config.model.clone(),
         manufacturer: lamp
@@ -667,27 +578,13 @@ fn to_view(lamp: &ZigbeeLampRuntime) -> ZigbeeLampView {
             .manufacturer
             .clone()
             .unwrap_or_else(|| "Unknown".to_string()),
-        firmware: lamp.config.firmware.clone(),
         connected: lamp.connected,
         reachable: lamp.reachable,
         supports_brightness: lamp.config.supports_brightness,
         supports_temperature: lamp.config.supports_temperature,
         supports_color: lamp.config.supports_color,
-        state: current_state(lamp),
+        state: lamp.state.clone(),
         last_seen: lamp.last_seen.clone(),
-    }
-}
-
-fn current_state(lamp: &ZigbeeLampRuntime) -> ZigbeeLampState {
-    ZigbeeLampState {
-        is_on: lamp.state.is_on,
-        brightness: lamp.state.brightness,
-        temperature: lamp.state.temperature,
-        temperature_min: lamp.state.temperature_min,
-        temperature_max: lamp.state.temperature_max,
-        color_x: lamp.state.color_x,
-        color_y: lamp.state.color_y,
-        color_mode: lamp.state.color_mode,
     }
 }
 
@@ -712,64 +609,72 @@ fn remaining_seconds(pairing: &mut PairingRuntime) -> u16 {
     deadline.saturating_duration_since(now).as_secs().min(u16::MAX as u64) as u16
 }
 
-fn read_json_file<T>(path: &Path) -> Result<T, AppError>
-where
-    T: for<'de> Deserialize<'de> + Default,
-{
-    if !path.exists() {
-        return Ok(T::default());
-    }
-
-    let body = fs::read(path)?;
-    if body.is_empty() {
-        return Ok(T::default());
-    }
-
-    Ok(serde_json::from_slice(&body)?)
-}
-
-fn write_json_file<T>(path: &Path, value: &T) -> Result<(), AppError>
-where
-    T: Serialize + ?Sized,
-{
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let body = serde_json::to_vec_pretty(value)?;
-    fs::write(path, body)?;
-    Ok(())
-}
-
-fn not_found(message: impl Into<String>) -> AppError {
-    AppError::http(StatusCode::NOT_FOUND, message)
+fn lamp_not_found() -> AppError {
+    AppError::not_found("Zigbee lamp not found")
 }
 
 #[cfg(test)]
 mod tests {
     use super::{StoredZigbeeLampConfig, ZigbeeManager};
-    use crate::{config::Config, zigbee_native::{DriverLifecycle, NativeDiscoveredDevice, ZigbeeDeviceType}};
-    use tempfile::tempdir;
+    use crate::{
+        config::Config,
+        zigbee_native::{DriverLifecycle, NativeDiscoveredDevice, NativeZigbeeRuntime, ZigbeeDeviceType},
+    };
+    use std::path::Path;
+
+    const ID: &str = "4b8ec60801881700";
+
+    fn device() -> NativeDiscoveredDevice {
+        NativeDiscoveredDevice {
+            id: ID.to_string(),
+            node_id: 0x2e34,
+            eui64: "4b:8e:c6:08:01:88:17:00".to_string(),
+            endpoint: Some(11),
+            input_clusters: vec![0, 3, 4, 5, 6, 8],
+            output_clusters: vec![25],
+            supports_brightness: true,
+            supports_temperature: false,
+            supports_color: false,
+            device_type: ZigbeeDeviceType::Lamp,
+            connected: true,
+            reachable: true,
+            is_on: true,
+            brightness: 100,
+            temperature: None,
+            color_x: None,
+            color_y: None,
+            color_mode: None,
+            model: Some("LTG002".to_string()),
+            manufacturer: Some("Signify Netherlands B.V.".to_string()),
+            last_seen: None,
+        }
+    }
+
+    /// A manager on `root` whose driver never starts: no serial port, no save loop.
+    async fn manager(root: &Path) -> ZigbeeManager {
+        let config = Config::defaults(root.to_path_buf());
+        let manager = ZigbeeManager::with_runtime(&config, |known| {
+            NativeZigbeeRuntime::spawn("ember".to_string(), None, known)
+        })
+        .expect("native manager");
+        manager.inner.runtime.test_detach().await;
+        manager
+    }
+
+    fn kept(root: &Path) -> Vec<StoredZigbeeLampConfig> {
+        crate::store::read_json(&root.join("zigbee-lamps.json"), crate::store::Corrupt::Fail).unwrap()
+    }
 
     #[tokio::test]
     async fn native_set_power_reaches_runtime_send_path() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-
-        std::fs::write(root.join("users.json"), "[]").expect("users");
-        std::fs::write(root.join("devices.json"), "[]").expect("devices");
-        std::fs::write(root.join("device-cache.json"), "[]").expect("device-cache");
-        std::fs::write(root.join("broadlink-codes.json"), r#"{"codes":[]}"#).expect("broadlink");
-        std::fs::write(root.join("meross-devices.json"), "[]").expect("meross");
-        std::fs::write(root.join("hue-lamps.json"), "[]").expect("hue");
-        std::fs::write(root.join("hue-lamps-blacklist.json"), "[]").expect("hue blacklist");
-        std::fs::write(root.join("zigbee-lamps-blacklist.json"), "[]").expect("zigbee blacklist");
-        std::fs::write(
-            root.join("zigbee-lamps.json"),
-            serde_json::to_string(&vec![StoredZigbeeLampConfig {
-                id: "4b8ec60801881700".to_string(),
+        crate::store::write_json(
+            &root.join("zigbee-lamps.json"),
+            &vec![StoredZigbeeLampConfig {
+                id: ID.to_string(),
                 name: "Test Lamp".to_string(),
-                friendly_name: "4b8ec60801881700".to_string(),
+                friendly_name: ID.to_string(),
                 ieee_address: "4b:8e:c6:08:01:88:17:00".to_string(),
                 node_id: Some(0x2e34),
                 endpoint: Some(11),
@@ -777,53 +682,101 @@ mod tests {
                 output_clusters: vec![25],
                 model: Some("LTG002".to_string()),
                 manufacturer: Some("Signify Netherlands B.V.".to_string()),
-                firmware: None,
                 supports_brightness: true,
-                supports_temperature: false,
-                supports_color: false,
-                color_temp_min: None,
-                color_temp_max: None,
-                is_remote: false,
-            }])
-            .expect("serialize zigbee lamps"),
+                ..Default::default()
+            }],
+            crate::store::Access::Shared,
         )
         .expect("zigbee lamps");
 
-        let config = Config::defaults(root.to_path_buf());
-        std::env::set_var("ZIGBEE_SERIAL_PORT", "/dev/null");
-        let manager = ZigbeeManager::new(&config).expect("native manager");
-
-        manager.inner.runtime.test_seed_devices(vec![NativeDiscoveredDevice {
-                id: "4b8ec60801881700".to_string(),
-                node_id: 0x2e34,
-                eui64: "4b:8e:c6:08:01:88:17:00".to_string(),
-                endpoint: Some(11),
-                input_clusters: vec![0, 3, 4, 5, 6, 8],
-                output_clusters: vec![25],
-                supports_brightness: true,
-                supports_temperature: false,
-                supports_color: false,
-                device_type: ZigbeeDeviceType::Lamp,
-                connected: true,
-                reachable: true,
-                is_on: true,
-                brightness: 100,
-                temperature: None,
-                color_x: None,
-                color_y: None,
-                color_mode: None,
-                model: Some("LTG002".to_string()),
-                manufacturer: Some("Signify Netherlands B.V.".to_string()),
-                last_seen: None,
-        }]).await;
+        let manager = manager(root).await;
+        manager.inner.runtime.test_seed_devices(vec![device()]).await;
         manager.inner.runtime.test_set_lifecycle(DriverLifecycle::Failed("boom".to_string())).await;
         manager.inner.runtime.test_set_network_state("joined").await;
 
         let error = manager
-            .set_power("4b8ec60801881700", false)
+            .set_power(ID, false)
             .await
             .expect_err("power change should surface runtime failure");
 
         assert!(error.to_string().contains("boom"), "unexpected error: {error}");
+    }
+
+    #[tokio::test]
+    async fn the_save_loop_writes_only_what_is_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let file = root.join("zigbee-lamps.json");
+        let manager = manager(root).await;
+        manager.inner.runtime.test_seed_devices(vec![device()]).await;
+        manager.sync_from_runtime().await.unwrap();
+        assert_eq!(kept(root).len(), 1, "a new lamp is kept");
+
+        // light, reachability, last seen: live state, never written
+        std::fs::remove_file(&file).unwrap();
+        let mut live = device();
+        live.is_on = false;
+        live.brightness = 20;
+        live.reachable = false;
+        live.connected = false;
+        live.last_seen = Some("2026-10-03T08:00:00Z".to_string());
+        manager.inner.runtime.test_seed_devices(vec![live.clone()]).await;
+        manager.sync_from_runtime().await.unwrap();
+        assert!(!file.exists(), "a runtime-only change rewrote the file");
+
+        live.model = Some("LTG003".to_string());
+        manager.inner.runtime.test_seed_devices(vec![live]).await;
+        manager.sync_from_runtime().await.unwrap();
+        assert_eq!(kept(root)[0].model.as_deref(), Some("LTG003"), "a kept field is written");
+    }
+
+    #[tokio::test]
+    async fn a_rename_is_never_overwritten_by_the_save_loop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let manager = manager(root).await;
+        manager.inner.runtime.test_seed_devices(vec![device()]).await;
+        manager.sync_from_runtime().await.unwrap();
+
+        let syncs = (0..16)
+            .map(|_| {
+                let manager = manager.clone();
+                tokio::spawn(async move { manager.sync_from_runtime().await.unwrap() })
+            })
+            .collect::<Vec<_>>();
+        manager.rename_lamp(ID, "  Salon  ").await.unwrap();
+        for sync in syncs {
+            sync.await.unwrap();
+        }
+        manager.sync_from_runtime().await.unwrap();
+        assert_eq!(kept(root)[0].name, "Salon");
+        assert_eq!(manager.get_lamp(ID).await.unwrap().name, "Salon");
+    }
+
+    #[tokio::test]
+    async fn a_lamp_name_is_checked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = manager(dir.path()).await;
+        manager.inner.runtime.test_seed_devices(vec![device()]).await;
+        let long = "x".repeat(61);
+        for bad in ["   ", "a\u{7}b", long.as_str()] {
+            assert!(manager.rename_lamp(ID, bad).await.is_err(), "{bad:?} accepted");
+        }
+        assert!(manager.rename_lamp("unknown", "Salon").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn remotes_and_uninterviewed_devices_are_not_shown_nor_counted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = manager(dir.path()).await;
+        let mut remote = device();
+        remote.id = "remote".into();
+        remote.eui64 = "00:17:88:01:08:0c:00:0b".into();
+        remote.device_type = ZigbeeDeviceType::Remote;
+        manager.inner.runtime.test_seed_devices(vec![device(), remote]).await;
+        let lamps = manager.list_lamps().await;
+        assert_eq!(lamps.iter().map(|lamp| lamp.id.as_str()).collect::<Vec<_>>(), vec![ID]);
+        let stats = manager.stats().await;
+        assert_eq!((stats.total, stats.connected, stats.reachable), (1, 1, 1));
     }
 }

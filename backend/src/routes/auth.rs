@@ -1,11 +1,10 @@
 //! The session once someone is in (signing in is `routes::passkeys`): a short-lived access
-//! token and a rotating refresh token, both HttpOnly cookies. A refresh reads the person
-//! again, so a removed person or a changed role takes effect within one access token.
+//! token and a rotating refresh token, both HttpOnly cookies (`auth.rs` says what they hold).
 
 use axum::{
     Json, Router,
     extract::State,
-    http::{HeaderMap, StatusCode, header::SET_COOKIE},
+    http::{HeaderMap, header::SET_COOKIE},
     response::{AppendHeaders, IntoResponse},
     routing::post,
 };
@@ -17,15 +16,12 @@ use time::Duration as CookieDuration;
 
 use crate::{
     AppState,
-    auth::{AuthUser, AuthenticatedUser, Claims, RefreshEntry, cookie_value, decode_token, extract_auth_token},
+    auth::{AuthUser, AuthenticatedUser, Claims, RefreshEntry, Taken, cookie_names, cookie_value},
     error::AppError,
-    people::{Person, random_secret},
+    passkey::Refusal,
+    people::Person,
+    util::random_secret,
 };
-
-/// Cookie name for the refresh token.
-const REFRESH_COOKIE_NAME: &str = "maison_refresh";
-/// The refresh cookie only travels to these routes.
-const REFRESH_COOKIE_PATH: &str = "/api/auth";
 
 /// Access token lifetime in minutes.
 const ACCESS_TOKEN_MINUTES: i64 = 15;
@@ -40,8 +36,8 @@ pub(crate) struct SessionResponse {
 }
 
 impl SessionResponse {
-    pub(crate) fn of(person: &Person) -> Json<Self> {
-        Json(Self { success: true, user: AuthUser::of(person) })
+    pub(crate) fn of(user: AuthUser) -> Json<Self> {
+        Json(Self { success: true, user })
     }
 }
 
@@ -59,14 +55,25 @@ pub fn router() -> Router<AppState> {
         .route("/refresh", post(refresh_handler))
 }
 
-type SessionCookies = AppendHeaders<[(axum::http::HeaderName, String); 2]>;
+pub(crate) type SessionCookies = AppendHeaders<[(axum::http::HeaderName, String); 2]>;
 
-/// The two cookies of a fresh session for `person`: access token and refresh token.
-pub(crate) async fn open_session(state: &AppState, person: &Person) -> Result<SessionCookies, AppError> {
+pub(crate) fn now_ms() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+/// A fresh session for `person`: its two cookies, and who it is. `auth_ms`: when they last
+/// signed in with a passkey; `family`: the sign-in a refresh rotates from (a new one when
+/// none).
+pub(crate) async fn open_session(
+    state: &AppState,
+    person: &Person,
+    auth_ms: i64,
+    family: Option<String>,
+) -> Result<(SessionCookies, Json<SessionResponse>), AppError> {
     let claims = Claims {
         user_id: person.id.clone(),
-        name: person.name.clone(),
-        role: person.role.clone(),
+        issued_ms: now_ms(),
+        auth_ms,
         exp: (Utc::now() + Duration::minutes(ACCESS_TOKEN_MINUTES)).timestamp() as usize,
     };
     let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()))?;
@@ -74,78 +81,83 @@ pub(crate) async fn open_session(state: &AppState, person: &Person) -> Result<Se
     state
         .refresh_store
         .insert(
-            refresh_token.clone(),
+            &refresh_token,
             RefreshEntry {
                 user_id: person.id.clone(),
                 expires_at: (Utc::now() + Duration::days(REFRESH_TOKEN_DAYS)).timestamp(),
+                family: family.unwrap_or_else(random_secret),
+                auth_ms,
             },
         )
         .await;
-    Ok(AppendHeaders([
-        (SET_COOKIE, cookie(state, state.config.auth_cookie_name.clone(), token, "/", CookieDuration::minutes(ACCESS_TOKEN_MINUTES))),
-        (SET_COOKIE, cookie(state, REFRESH_COOKIE_NAME.into(), refresh_token, REFRESH_COOKIE_PATH, CookieDuration::days(REFRESH_TOKEN_DAYS))),
-    ]))
+    let (access, refresh) = cookie_names(&state.config);
+    let cookies = AppendHeaders([
+        (SET_COOKIE, cookie(state, access, token, CookieDuration::minutes(ACCESS_TOKEN_MINUTES))),
+        (SET_COOKIE, cookie(state, refresh, refresh_token, CookieDuration::days(REFRESH_TOKEN_DAYS))),
+    ]);
+    Ok((cookies, SessionResponse::of(AuthUser::of(person, auth_ms))))
 }
 
 /// Both cookies, emptied.
 fn closed_session(state: &AppState) -> SessionCookies {
+    let (access, refresh) = cookie_names(&state.config);
     AppendHeaders([
-        (SET_COOKIE, cookie(state, state.config.auth_cookie_name.clone(), String::new(), "/", CookieDuration::ZERO)),
-        (SET_COOKIE, cookie(state, REFRESH_COOKIE_NAME.into(), String::new(), REFRESH_COOKIE_PATH, CookieDuration::ZERO)),
+        (SET_COOKIE, cookie(state, access, String::new(), CookieDuration::ZERO)),
+        (SET_COOKIE, cookie(state, refresh, String::new(), CookieDuration::ZERO)),
     ])
 }
 
-fn cookie(state: &AppState, name: String, value: String, path: &'static str, max_age: CookieDuration) -> String {
+fn cookie(state: &AppState, name: String, value: String, max_age: CookieDuration) -> String {
     Cookie::build((name, value))
         .http_only(true)
         .secure(state.config.auth_cookie_secure)
         .same_site(SameSite::Lax)
-        .path(path)
+        .path("/")
         .max_age(max_age)
         .build()
         .to_string()
 }
 
-async fn verify_handler(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<SessionResponse>, AppError> {
-    let token = extract_auth_token(&headers, &state.config.auth_cookie_name)?;
-    let decoded = decode_token(token, state.config.jwt_secret.as_bytes())
-        .map_err(|_| AppError::http(StatusCode::UNAUTHORIZED, "Invalid token"))?;
-    Ok(Json(SessionResponse { success: true, user: decoded.claims.into() }))
+async fn verify_handler(user: AuthenticatedUser) -> Json<SessionResponse> {
+    SessionResponse::of(user.0)
 }
 
 async fn refresh_handler(State(state): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse, AppError> {
-    let refresh_token = refresh_cookie(&headers).ok_or_else(|| AppError::http(StatusCode::UNAUTHORIZED, "No refresh token"))?;
-    let entry = state
-        .refresh_store
-        .validate(refresh_token)
-        .await
-        .ok_or_else(|| AppError::http(StatusCode::UNAUTHORIZED, "Invalid or expired refresh token"))?;
-    // Rotate: the old token goes whatever happens next.
-    state.refresh_store.remove(refresh_token).await;
-    let person = state
-        .people
-        .person(&entry.user_id)
-        .await?
-        .ok_or_else(|| AppError::http(StatusCode::UNAUTHORIZED, "No such person any more"))?;
-    Ok((open_session(&state, &person).await?, SessionResponse::of(&person)))
+    let token = refresh_cookie(&state, &headers).ok_or(Refusal::NotSignedIn)?;
+    let entry = match state.refresh_store.take(token).await {
+        Taken::Valid(entry) => entry,
+        Taken::Replayed { user_id } => {
+            tracing::warn!(person = ?user_id, "a spent refresh token came back: its sign-in ended");
+            return Err(Refusal::NotSignedIn.into());
+        }
+        Taken::Unknown => return Err(Refusal::NotSignedIn.into()),
+    };
+    let person = state.people.person(&entry.user_id).await?.ok_or(Refusal::NotSignedIn)?;
+    open_session(&state, &person, entry.auth_ms, Some(entry.family)).await
 }
 
 async fn logout_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Some(refresh_token) = refresh_cookie(&headers) {
-        state.refresh_store.remove(refresh_token).await;
+    if let Some(token) = refresh_cookie(&state, &headers) {
+        state.refresh_store.remove(token).await;
     }
     (closed_session(&state), Json(LogoutResponse { success: true, message: "Logged out successfully" }))
 }
 
-/// A lost phone: every refresh token of this person goes, this browser's too (its access
-/// token lasts its few minutes at most).
-async fn logout_everywhere_handler(State(state): State<AppState>, user: AuthenticatedUser) -> impl IntoResponse {
-    let ended = state.refresh_store.remove_person(&user.0.id, None).await;
-    tracing::info!(person = %user.0.id, ended, "signed out everywhere");
-    (closed_session(&state), Json(LogoutResponse { success: true, message: "Logged out everywhere" }))
+/// A lost phone: every session of this person ends at once, access tokens included.
+async fn logout_everywhere_handler(State(state): State<AppState>, user: AuthenticatedUser) -> Result<impl IntoResponse, AppError> {
+    end_sessions(&state, &user.0.id).await?;
+    Ok((closed_session(&state), Json(LogoutResponse { success: true, message: "Logged out everywhere" })))
+}
+
+/// Every session of `person` over, now: their refresh tokens go, their access tokens are void.
+pub(crate) async fn end_sessions(state: &AppState, person: &str) -> Result<(), AppError> {
+    state.people.end_sessions(person, now_ms()).await?;
+    let ended = state.refresh_store.remove_person(person).await;
+    tracing::info!(%person, ended, "every session ended");
+    Ok(())
 }
 
 /// This browser's refresh token, if any.
-pub(crate) fn refresh_cookie(headers: &HeaderMap) -> Option<&str> {
-    cookie_value(headers, REFRESH_COOKIE_NAME)
+pub(crate) fn refresh_cookie<'a>(state: &AppState, headers: &'a HeaderMap) -> Option<&'a str> {
+    cookie_value(headers, &cookie_names(&state.config).1)
 }
