@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { forgetAll } from '#lib/live.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import DetailPage from './+page.svelte';
 
@@ -10,8 +9,6 @@ vi.mock('$app/state', () => ({ page: route }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(async () => {}) }));
 
 describe('Hue lamp page', () => {
-	afterEach(() => forgetAll());
-
 	it('shows the Hue lamp named in the address', async () => {
 		route.params = { lampId: 'hue-7' };
 		const api = stubApi({});

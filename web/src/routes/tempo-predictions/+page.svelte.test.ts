@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { date, dayLabel, percent } from '#lib/i18n.svelte.ts';
-import { forgetAll } from '#lib/live.svelte.ts';
+import { longDate, dayLabel, percent } from '#lib/i18n.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { tempoForecast } from '#lib/test/tempo.ts';
 import TempoPage from './+page.svelte';
@@ -22,7 +21,6 @@ describe('Tempo page', () => {
 	});
 	afterEach(() => {
 		vi.useRealTimers();
-		forgetAll();
 	});
 
 	it('says it is loading', async () => {
@@ -52,14 +50,18 @@ describe('Tempo page', () => {
 		const table = page.getByRole('table', { name: m.tempo_reliability_title() });
 		await expect.element(table.getByRole('row')).toHaveLength(8);
 		const horizon = tempoForecast().model!.backtest.horizons[1];
-		await expect.element(table.getByRole('row').filter({ hasText: m.tempo_horizon_day({ n: 2 }) })).toMatchTextContent(percent(horizon.accuracy));
+		await expect
+			.element(table.getByRole('row').filter({ hasText: m.tempo_horizon_day({ n: 2 }) }))
+			.toMatchTextContent(percent(horizon.accuracy));
 		await expect.element(page.getByText(m.tempo_reliability_hint({ seasons: '2024-2025, 2025-2026', blue: percent(0.818) }))).toBeVisible();
 	});
 
 	it('says when the weather forecast is old, and when the forecast stops short', async () => {
-		site({ '/tempo/forecast': tempoForecast({ stale: true, weather_issued: '2026-12-08', note: 'the weather forecast does not reach J+7' }) });
+		site({
+			'/tempo/forecast': tempoForecast({ stale: true, weatherIssued: '2026-12-08', note: 'the weather forecast does not reach J+7' })
+		});
 		await render(TempoPage);
-		await expect.element(page.getByText(m.tempo_stale({ date: date(new Date('2026-12-08T12:00:00'), { day: 'numeric', month: 'long' }) }))).toBeVisible();
+		await expect.element(page.getByText(m.tempo_stale({ date: longDate('2026-12-08') }))).toBeVisible();
 		await expect.element(page.getByText(m.tempo_short())).toBeVisible();
 	});
 

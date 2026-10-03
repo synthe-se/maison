@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { json, sentBody, stubFetch } from '#lib/test/fetch.ts';
 import { hueLamp, zigbeeLamp } from '#lib/test/lamps.ts';
@@ -11,7 +10,6 @@ import { fromHue, fromZigbee, hue, zigbee } from './lamp.ts';
 
 afterEach(() => {
 	vi.useRealTimers();
-	forgetAll();
 });
 
 describe('LampTile', () => {
@@ -73,7 +71,7 @@ describe('LampTile', () => {
 		await expect.poll(() => calls.map((c) => [c.url, sentBody(c)])).toEqual([['/api/zigbee/lamps/zb-1/brightness', { brightness: 70 }]]);
 	});
 
-	it('unreachable: the toggle kept but unavailable, the last brightness greyed, the state in the warning words', async () => {
+	it('unreachable: the toggle kept but unavailable, no slider, the state in the warning words', async () => {
 		const calls = stubFetch(() => json({ success: true }));
 		await render(LampTile, { lamp: fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })), driver: zigbee });
 		const toggle = page.getByRole('button', { name: 'Suspension' });
@@ -82,13 +80,14 @@ describe('LampTile', () => {
 		(toggle.element() as HTMLElement).click();
 		expect(calls).toEqual([]);
 		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
-		await expect.element(page.getByRole('slider', { name: m.lamps_last_brightness() })).toBeDisabled();
+		await expect.element(page.getByRole('slider')).not.toBeInTheDocument();
 	});
 
-	it('an off lamp cannot be dimmed', async () => {
+	it('an off lamp is one compact row: no slider that looks draggable', async () => {
 		stubFetch(() => json({ success: true }));
 		await render(LampTile, { lamp: fromHue(hueLamp({ state: { isOn: false } })), driver: hue });
-		await expect.element(page.getByRole('slider', { name: m.lamps_brightness() })).toBeDisabled();
+		await expect.element(page.getByText(m.state_off())).toBeVisible();
+		await expect.element(page.getByRole('slider')).not.toBeInTheDocument();
 	});
 
 	it('on its own page the name is not a link', async () => {

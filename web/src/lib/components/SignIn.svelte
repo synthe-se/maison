@@ -5,43 +5,44 @@
 	// « handshake » messaging).
 	import { m } from '#lib/paraglide/messages.js';
 	import { supported } from '#lib/passkeys.ts';
-	import { errorText } from '#lib/errors.ts';
+	import { pageTitle } from '#lib/i18n.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
-	import AuthCard from './AuthCard.svelte';
+	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import AuthShell from './AuthShell.svelte';
 	import Icon from './Icon.svelte';
-	import { pending } from '#lib/gesture.svelte.ts';
 
-	let busy = $state(false);
-	let error = $state('');
+	const g = new Gesture();
 	const secure = supported();
-
-	async function enter() {
-		busy = true;
-		error = '';
-		try {
-			await session.signIn();
-		} catch (e) {
-			error = errorText(e);
-		} finally {
-			busy = false;
-		}
-	}
+	// the refusal is said under the button, the focus stays on it
+	const enter = () => g.run(() => session.signIn(), undefined, 'signin', { inline: true });
 </script>
 
-<svelte:head><title>{m.pk_signin_title()} · {m.branding_name()}</title></svelte:head>
+<svelte:head><title>{pageTitle(m.pk_signin_title())}</title></svelte:head>
 
-<AuthCard>
-	<h1 tabindex="-1">{m.pk_signin_title()}</h1>
-	{#if !secure}
-		<p class="banner warn" role="alert">{m.pk_insecure()}</p>
-	{:else}
-		<p class="hint">{m.pk_signin_intro()}</p>
-		<!-- a stable button: its label says the wait, it keeps the focus -->
-		<button class="btn primary big" {...pending(busy)} onclick={() => !busy && enter()}>
-			<Icon name="key" />{busy ? m.pk_waiting() : m.pk_button()}
-		</button>
-		<p class="hint">{m.pk_handshake()}</p>
-		<p class="form-error" role="alert">{error}</p>
-		<p class="hint aside">{m.pk_no_key()}</p>
-	{/if}
-</AuthCard>
+<AuthShell>
+	<section class="signin" aria-labelledby="signin-title">
+		<h1 id="signin-title" tabindex="-1">{m.pk_signin_title()}</h1>
+		{#if !secure}
+			<p class="banner warn" role="alert">{m.pk_insecure()}</p>
+		{:else}
+			<p class="lead">{m.pk_signin_intro()}</p>
+			<!-- a stable button: its label says the wait, it keeps the focus -->
+			<button class="btn primary big" {...pending(g.is())} onclick={enter}>
+				<Icon name="key" />{g.is() ? m.pk_waiting() : m.pk_button()}
+			</button>
+			<p class="hint">{m.pk_handshake()}</p>
+			<p class="form-error" role="alert">{g.error}</p>
+			<p class="hint aside">{m.pk_no_key()}</p>
+		{/if}
+	</section>
+</AuthShell>
+
+<style>
+	.signin {
+		display: grid;
+		gap: var(--s-4);
+	}
+	.signin p {
+		margin: 0;
+	}
+</style>

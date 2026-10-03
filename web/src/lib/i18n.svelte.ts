@@ -51,10 +51,43 @@ export function clock(d: Date | number): string {
 	return date(d, { hour: 'numeric', minute: '2-digit' });
 }
 
+/** « 08:00 » as a device or the backend writes a time of day → the reader's format. */
+export function hhmm(text: string): string {
+	return clock(new Date(2000, 0, 1, Number(text.slice(0, 2)), Number(text.slice(3, 5))));
+}
+
+/** A date in full (« 12 novembre 2026 »): an ISO day (« 2026-11-12 », a local day) or a moment. */
+export function longDate(d: string | Date | number): string {
+	return date(typeof d === 'string' ? localDay(d) : d, { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+/** Words joined as the reader lists them (« lun., mer. et ven. »). */
+export function list(items: string[], style: Intl.ListFormatStyle = 'short'): string {
+	return new Intl.ListFormat(current.locale, { style }).format(items);
+}
+
+/** A word inside a sentence (« bleu », « eau basse »): lower case in the reader's rules. */
+export function lower(text: string): string {
+	return text.toLocaleLowerCase(current.locale);
+}
+
+/** A sentence's first word inside another sentence (« Fontaine : eau basse »). */
+export function inSentence(text: string): string {
+	return text.charAt(0).toLocaleLowerCase(current.locale) + text.slice(1);
+}
+
+/** The window's title: the page's, then Maison's (« Salon · Maison »); Maison's alone at home. */
+export function pageTitle(title?: string): string {
+	const brand = m.branding_name();
+	return !title || title === brand ? brand : `${title} · ${brand}`;
+}
+
 /** When something happened: the time if today, else the day and the time (« 3 oct. 21:04 »). */
 export function when(d: Date | number | string): string {
 	const at = new Date(d);
-	return new Date().toDateString() === at.toDateString() ? clock(at) : date(at, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+	return new Date().toDateString() === at.toDateString()
+		? clock(at)
+		: date(at, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
 // ── calendar days, as devices and RTE write them (« 2026-11-12 »): local days, never UTC ──

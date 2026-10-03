@@ -2,14 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { json, stubFetch } from '#lib/test/fetch.ts';
 import ZigbeePairing from './ZigbeePairing.svelte';
 
 afterEach(() => {
 	vi.useRealTimers();
-	forgetAll();
 	ui.toasts = [];
 });
 
@@ -84,6 +82,6 @@ describe('ZigbeePairing', () => {
 		await render(ZigbeePairing);
 		await page.getByRole('button', { name: m.zigbee_lamps_touchlink_scan() }).click();
 		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.zigbee_lamps_touchlink_started());
-		expect(calls.filter((c) => c.url.endsWith('/touchlink'))[0].init?.method).toBe('POST');
+		expect(calls.find((c) => c.url.endsWith('/touchlink'))?.init?.method).toBe('POST');
 	});
 });

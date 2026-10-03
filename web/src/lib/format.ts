@@ -33,7 +33,7 @@ export function formatMinutes(minutes: number): string {
 }
 
 /**
- * Since when a device is out of reach, for every tile alike (docs/ux/tableau-de-bord.md § 4):
+ * Since when a device is out of reach, for every tile alike (docs/ux.md § 4):
  * « Injoignable depuis 12 min » within the hour, then the time it was last heard
  * (« Injoignable depuis 14:20 », with the day when not today), « Injoignable, jamais vu »
  * when it never answered. `at`: ISO text or ms since the epoch; 0 or null is never.

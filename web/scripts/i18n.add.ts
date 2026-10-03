@@ -28,7 +28,7 @@ for (const [i, locale] of locales.entries()) {
 		if (text === undefined) throw new Error(`${key}: no ${locale} text`);
 		messages[key] = typeof text === 'string' ? text : plural(text);
 	}
-	const sorted = Object.fromEntries(Object.entries(messages).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+	const sorted = Object.fromEntries(Object.entries(messages).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 	await Bun.write(path, JSON.stringify({ $schema, ...sorted }, null, '\t') + '\n');
 }
 console.log(`i18n: ${Object.keys(add).length || remove.length} key(s) ${remove.length ? 'removed' : 'written'}`);

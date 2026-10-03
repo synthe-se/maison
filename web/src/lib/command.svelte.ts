@@ -1,5 +1,5 @@
 // A command travelling to a device whose state comes back by reading it
-// (docs/ux/tableau-de-bord.md § 2). The gesture is optimistic, the displayed state is not:
+// (docs/ux.md § 2). The gesture is optimistic, the displayed state is not:
 //   0 s      the button shows the target at once (`target`), the state line is unchanged
 //   > 1 s    `slow`: a ring around the icon and « Allumage… »
 //   answer   the device's state wins again (the caller refreshes or sets it)

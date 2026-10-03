@@ -31,8 +31,11 @@ async fn both_families_answer_with_the_same_shapes() {
     assert_eq!(body["disabled"], true);
 
     let (status, body) = send(&app, Method::GET, "/api/zigbee/lamps/nope", Some(&member), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({"success": false, "lamp": null, "message": "Zigbee lamp not found"}));
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body, json!({"success": false, "error": "Zigbee lamp not found"}));
+    let (status, body) = send(&app, Method::GET, "/api/hue-lamps/aabbccddeeff", Some(&member), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], "Hue lamp not found");
 
     let (status, _) = send(&app, Method::GET, "/api/zigbee/lamps/pairing/status", Some(&member), None).await;
     assert_eq!(status, StatusCode::OK, "a static route is not taken for a lamp id");
@@ -65,4 +68,31 @@ async fn pairing_scanning_and_blacklisting_are_for_admins() {
     }
     let (status, _) = send(&app, Method::POST, "/api/hue-lamps/scan", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// An unknown lamp is a 404 that never reaches the radio: a member posting to it again and
+/// again must not have the driver count failures (five of them used to rebuild the EZSP
+/// pipeline and take every lamp offline).
+#[tokio::test]
+async fn commands_to_an_unknown_zigbee_lamp_are_404() {
+    let app = app(isolated_config("maison-lamp-routes"));
+    let member = member_token();
+    let commands = [
+        ("power", json!({"enabled": true})),
+        ("brightness", json!({"brightness": 50})),
+        ("temperature", json!({"temperature": 50})),
+        ("color", json!({"x": 0.3, "y": 0.3})),
+        ("effect", json!({"effect": "candle"})),
+    ];
+    for _ in 0..3 {
+        for (command, body) in &commands {
+            let path = format!("/api/zigbee/lamps/nope/{command}");
+            let (status, answer) = send(&app, Method::POST, &path, Some(&member), Some(body.clone())).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {answer}");
+            assert_eq!(answer["error"], "Zigbee lamp not found");
+        }
+    }
+    let (status, answer) =
+        send(&app, Method::POST, "/api/zigbee/lamps/nope/effect", Some(&member), Some(json!({"effect": "disco"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown effect is refused first: {answer}");
 }

@@ -3,7 +3,10 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use axum::{
     Json, Router,
@@ -14,15 +17,22 @@ use axum::{
 use serde_json::{Value, json};
 
 /// A fake plug: records each packet and answers by namespace; `refuse_togglex` makes it
-/// answer `ToggleX` with an error, as older plugs do.
+/// answer `ToggleX` with an error, as older plugs do; `broken` answers HTTP 500 to all;
+/// `delay` holds every answer that long.
 #[derive(Clone, Default)]
 struct Plug {
     received: Arc<Mutex<Vec<Value>>>,
     refuse_togglex: bool,
+    broken: bool,
+    delay: Duration,
 }
 
-async fn answer(State(plug): State<Plug>, Json(packet): Json<Value>) -> Json<Value> {
+async fn answer(State(plug): State<Plug>, Json(packet): Json<Value>) -> Result<Json<Value>, StatusCode> {
     plug.received.lock().unwrap().push(packet.clone());
+    tokio::time::sleep(plug.delay).await;
+    if plug.broken {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     let namespace = packet["header"]["namespace"].as_str().unwrap_or_default();
     let method = if namespace == "Appliance.Control.ToggleX" && plug.refuse_togglex { "ERROR" } else { "GETACK" };
     let payload = match namespace {
@@ -41,7 +51,7 @@ async fn answer(State(plug): State<Plug>, Json(packet): Json<Value>) -> Json<Val
         ]}),
         _ => json!({}),
     };
-    Json(json!({ "header": { "method": method }, "payload": payload }))
+    Ok(Json(json!({ "header": { "method": method }, "payload": payload })))
 }
 
 /// Starts `plug` on the loopback: its address, which is also its device id.
@@ -132,8 +142,38 @@ async fn status_electricity_and_consumption_are_read_from_the_plug() {
 
     let (_, body) = member(&app, Method::GET, "/api/meross", None).await;
     assert_eq!((body["total"].as_u64(), body["devices"][0]["isOn"].as_bool()), (Some(1), Some(true)));
-    let (_, body) = member(&app, Method::GET, "/api/meross/stats", None).await;
-    assert_eq!((body["online"].as_u64(), body["offline"].as_u64()), (Some(1), Some(0)));
+    let (status, _) = member(&app, Method::GET, "/api/meross/stats", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "the unused stats route is gone");
+}
+
+/// A plug that fails (here a 500; a timeout alike) is not asked again with `Toggle`: only
+/// a protocol refusal means « try the older order ».
+#[tokio::test]
+async fn a_failing_plug_is_not_asked_twice() {
+    let plug = Plug { broken: true, ..Plug::default() };
+    let ip = serve(plug.clone()).await;
+    let app = app(&[&ip]);
+
+    let (status, body) = member(&app, Method::POST, &format!("/api/meross/{ip}/toggle"), Some(json!({ "on": true }))).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("Plug unreachable")));
+    assert_eq!(plug.received.lock().unwrap().len(), 1);
+}
+
+/// The list asks every plug at once: three slow plugs cost one delay, not three.
+#[tokio::test]
+async fn the_list_asks_every_plug_at_once() {
+    let delay = Duration::from_millis(400);
+    let mut ips = Vec::new();
+    for _ in 0..3 {
+        ips.push(serve(Plug { delay, ..Plug::default() }).await);
+    }
+    let app = app(&ips.iter().map(String::as_str).collect::<Vec<_>>());
+
+    let started = Instant::now();
+    let (status, body) = member(&app, Method::GET, "/api/meross", None).await;
+    assert_eq!((status, body["total"].as_u64()), (StatusCode::OK, Some(3)));
+    assert!(body["devices"].as_array().unwrap().iter().all(|plug| plug["isOnline"] == true));
+    assert!(started.elapsed() < delay * 2, "asked one by one: {:?}", started.elapsed());
 }
 
 #[tokio::test]

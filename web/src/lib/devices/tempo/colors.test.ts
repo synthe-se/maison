@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { TEMPO, TEMPO_COLORS, dayWords, probable } from './colors.ts';
 
-describe('Tempo colours', () => {
-	it('are listed cheapest first, each with a name and a shape (never the colour alone)', () => {
+describe('Tempo colors', () => {
+	it('are listed cheapest first, each with a name and a shape (never the color alone)', () => {
 		expect(TEMPO_COLORS).toEqual(['BLUE', 'WHITE', 'RED']);
 		expect(TEMPO_COLORS.map((c) => TEMPO[c].name())).toEqual(['Bleu', 'Blanc', 'Rouge']);
-		expect(TEMPO_COLORS.map((c) => TEMPO[c].shape)).toEqual(['bleu', 'blanc', 'rouge']);
+		expect(TEMPO_COLORS.map((c) => TEMPO[c].key)).toEqual(['blue', 'white', 'red']);
 	});
 
 	it('says a forecast with its probability (« Rouge probable · 62 % »)', () => {

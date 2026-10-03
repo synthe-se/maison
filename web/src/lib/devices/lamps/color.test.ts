@@ -1,10 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import { EFFECTS, PRESETS, STOP_EFFECT, css, hsvToRgb, paintWheel, rgbToXy, wheelColor, wheelPosition, xyToRgb, type Rgb } from './color.ts';
+import {
+	EFFECTS,
+	PRESETS,
+	STOP_EFFECT,
+	css,
+	hsvToRgb,
+	paintWheel,
+	rgbToXy,
+	wheelColor,
+	wheelPosition,
+	xyToRgb,
+	type Rgb
+} from './color.ts';
 
 const close = (a: number, b: number, d = 0.01) => Math.abs(a - b) <= d;
 
-describe('colour maths', () => {
+describe('color maths', () => {
 	it('white and black in xy', () => {
 		const white = rgbToXy([255, 255, 255]);
 		expect(close(white.x, 0.3227) && close(white.y, 0.329)).toBe(true);
@@ -12,7 +24,7 @@ describe('colour maths', () => {
 		expect(rgbToXy([0, 0, 0])).toEqual({ x: 0.3127, y: 0.329 });
 	});
 
-	it('xy → rgb → xy comes back to the same colour', () => {
+	it('xy → rgb → xy comes back to the same color', () => {
 		for (const rgb of [
 			[255, 0, 0],
 			[0, 255, 0],
@@ -40,20 +52,20 @@ describe('colour maths', () => {
 		expect(hsvToRgb(0, 0, 1)).toEqual([255, 255, 255]);
 	});
 
-	it('writes CSS colours', () => {
+	it('writes CSS colors', () => {
 		expect(css([1, 2, 3])).toBe('rgb(1 2 3)');
 	});
 });
 
 describe('the wheel', () => {
-	it('its centre is white, its edge saturated; outside it there is no colour', () => {
+	it('its centre is white, its edge saturated; outside it there is no color', () => {
 		const centre = wheelColor(0.5, 0.5)!;
 		expect(close(centre.x, 0.3227) && close(centre.y, 0.329)).toBe(true);
 		expect(wheelColor(1, 0.5)).toEqual(rgbToXy([255, 0, 0]));
 		expect(wheelColor(0, 0)).toBeNull();
 	});
 
-	it('places a colour where picking it there would give it back', () => {
+	it('places a color where picking it there would give it back', () => {
 		for (const [left, top] of [
 			[1, 0.5],
 			[0.5, 1],
@@ -89,14 +101,25 @@ describe('the wheel', () => {
 	});
 });
 
-describe('named colours and effects', () => {
+describe('named colors and effects', () => {
 	it('each preset has a name a reader hears', () => {
 		expect(PRESETS.map((p) => p.name())).toContain(m.color_red());
 		expect(new Set(PRESETS.map((p) => p.name())).size).toBe(PRESETS.length);
 	});
 
 	it('effects carry the ids the server expects, and a way to stop', () => {
-		expect(EFFECTS.map((e) => e.id)).toEqual(['candle', 'fireplace', 'colorloop', 'sunrise', 'sparkle', 'opal', 'glisten', 'blink', 'breathe', 'okay']);
+		expect(EFFECTS.map((e) => e.id)).toEqual([
+			'candle',
+			'fireplace',
+			'colorloop',
+			'sunrise',
+			'sparkle',
+			'opal',
+			'glisten',
+			'blink',
+			'breathe',
+			'okay'
+		]);
 		expect(EFFECTS.every((e) => e.name() !== '')).toBe(true);
 		expect(STOP_EFFECT).toBe('stop_hue_effect');
 	});

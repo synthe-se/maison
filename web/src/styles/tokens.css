@@ -1,9 +1,9 @@
 /*
  * Maison design tokens: the synthe.se tokens (phase 1, locked 2026-08-17) and Ariane's layout,
- * spacing and type (docs/ux/mise-en-page.md in Ariane), plus Maison's own
- * (docs/ux/tableau-de-bord.md). One token set, light and dark.
+ * spacing and type (docs/ux.md « Layout »), plus Maison's own
+ * (docs/ux.md). One token set, light and dark.
  *
- * Each colour is declared ONCE, its light and dark values side by side in `light-dark()`;
+ * Each color is declared ONCE, its light and dark values side by side in `light-dark()`;
  * `color-scheme` picks the side: the system's, unless the person chose (data-theme, set
  * before first paint by app.html). Palette: ground + ink + ONE hue, petrol, in two contrast
  * steps and a wash; brick and amber for states, always labelled in text.
@@ -22,137 +22,201 @@
  *     accent       on accent-wash 5.72:1 / 6.96:1
  *     on-accent    #F2F0EA on accent 6.54:1;  #151A21 on accent 8.27:1 AAA
  *   Maison (2026-10-02), on ground
- *     tempo-bleu   #2B5BA8 5.82:1         #7FA7E8 7.15:1
- *     tempo-rouge  #B3261E 5.74:1         #F08A7E 7.19:1
- *     tempo-blanc  ring #525A66 6.12:1    ring #EAE7E0 14.15:1 (no fill in dark)
+ *     tempo-blue   #2B5BA8 5.82:1         #7FA7E8 7.15:1
+ *     tempo-red    #B3261E 5.74:1         #F08A7E 7.19:1
+ *     tempo-white  ring #525A66 6.12:1    ring #EAE7E0 14.15:1 (no fill in dark)
  */
 
-:root { color-scheme: light dark; }
-:root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
+:root {
+	color-scheme: light dark;
+}
+:root[data-theme='light'] {
+	color-scheme: light;
+}
+:root[data-theme='dark'] {
+	color-scheme: dark;
+}
 
 :root {
-  /* raw palette */
-  --raw-cloud: #f2f0ea; /* Cloud-Dancer-adjacent warm off-white */
-  --raw-cloud-deep: #e7e4db;
-  --raw-ink: #1b222c;
-  --raw-ink-soft: #525a66;
-  --raw-night: #151a21;
-  --raw-night-raised: #1e2530;
-  --raw-paper-dark: #eae7e0;
-  --raw-muted-dark: #a8aeb8;
-  --raw-petrol: #0e5e68;
-  --raw-petrol-soft: #4e8a92;
-  --raw-petrol-wash: #d8e4e2;
-  --raw-petrol-bright: #63c0cb;
-  --raw-petrol-dim: #3e7a84;
-  --raw-petrol-wash-dark: #1d2a31;
-  --raw-warn: #b4633f;
-  --raw-warn-dark: #d89372;
-  --raw-down: #a5372a;
-  --raw-down-dark: #e07a63;
+	/* raw palette */
+	--raw-cloud: #f2f0ea; /* Cloud-Dancer-adjacent warm off-white */
+	--raw-cloud-deep: #e7e4db;
+	--raw-ink: #1b222c;
+	--raw-ink-soft: #525a66;
+	--raw-night: #151a21;
+	--raw-night-raised: #1e2530;
+	--raw-paper-dark: #eae7e0;
+	--raw-muted-dark: #a8aeb8;
+	--raw-petrol: #0e5e68;
+	--raw-petrol-soft: #4e8a92;
+	--raw-petrol-wash: #d8e4e2;
+	--raw-petrol-bright: #63c0cb;
+	--raw-petrol-dim: #3e7a84;
+	--raw-petrol-wash-dark: #1d2a31;
+	--raw-warn: #b4633f;
+	--raw-warn-dark: #d89372;
+	--raw-down: #a5372a;
+	--raw-down-dark: #e07a63;
 
-  /* semantic: light, dark */
-  --ground: light-dark(var(--raw-cloud), var(--raw-night));
-  --ground-raised: light-dark(var(--raw-cloud-deep), var(--raw-night-raised));
-  --surface: light-dark(#faf9f5, #1a2029);
-  --line: light-dark(#d6d2c6, #2e3744);
-  --ink: light-dark(var(--raw-ink), var(--raw-paper-dark));
-  --ink-muted: light-dark(var(--raw-ink-soft), var(--raw-muted-dark));
-  --accent: light-dark(var(--raw-petrol), var(--raw-petrol-bright));
-  --accent-soft: light-dark(var(--raw-petrol-soft), var(--raw-petrol-dim));
-  --accent-wash: light-dark(var(--raw-petrol-wash), var(--raw-petrol-wash-dark));
-  --on-accent: light-dark(var(--raw-cloud), var(--raw-night));
-  /* states: shape and words first, colour as support */
-  --status-degraded: light-dark(var(--raw-warn), var(--raw-warn-dark));
-  --status-down: light-dark(var(--raw-down), var(--raw-down-dark));
-  --status-down-text: var(--status-down);
-  --warn-text: light-dark(#8f4b22, var(--raw-warn-dark));
-  --blocked: var(--status-down);
-  --blocked-wash: light-dark(#f3e2dc, #33211f);
-  /* Tempo days: colour + shape + name, never colour alone (bleu filled, blanc ring, rouge hatched) */
-  --tempo-bleu: light-dark(#2b5ba8, #7fa7e8);
-  /* blanc is an empty ring: white inside it on the light ground, nothing inside it on the dark
+	/* semantic: light, dark */
+	--ground: light-dark(var(--raw-cloud), var(--raw-night));
+	--ground-raised: light-dark(var(--raw-cloud-deep), var(--raw-night-raised));
+	--surface: light-dark(#faf9f5, #1a2029);
+	--line: light-dark(#d6d2c6, #2e3744);
+	--ink: light-dark(var(--raw-ink), var(--raw-paper-dark));
+	--ink-muted: light-dark(var(--raw-ink-soft), var(--raw-muted-dark));
+	--accent: light-dark(var(--raw-petrol), var(--raw-petrol-bright));
+	--accent-soft: light-dark(var(--raw-petrol-soft), var(--raw-petrol-dim));
+	--accent-wash: light-dark(var(--raw-petrol-wash), var(--raw-petrol-wash-dark));
+	--on-accent: light-dark(var(--raw-cloud), var(--raw-night));
+	/* states: shape and words first, color as support */
+	--status-degraded: light-dark(var(--raw-warn), var(--raw-warn-dark));
+	--status-down: light-dark(var(--raw-down), var(--raw-down-dark));
+	--status-down-text: var(--status-down);
+	--warn-text: light-dark(#8f4b22, var(--raw-warn-dark));
+	--blocked: var(--status-down);
+	--blocked-wash: light-dark(#f3e2dc, #33211f);
+	/* Tempo days: color + shape + name, never color alone (blue filled, white ring, red hatched) */
+	--tempo-blue: light-dark(#2b5ba8, #7fa7e8);
+	/* white is an empty ring: white inside it on the light ground, nothing inside it on the dark
      one (a light fill there would match its ring and read as a filled disc) */
-  --tempo-blanc: light-dark(#ffffff, transparent);
-  --tempo-blanc-ring: light-dark(var(--raw-ink-soft), var(--raw-paper-dark));
-  --tempo-rouge: light-dark(#b3261e, #f08a7e);
-  --on-tempo: var(--on-accent);
+	--tempo-white: light-dark(#ffffff, transparent);
+	--tempo-white-ring: light-dark(var(--raw-ink-soft), var(--raw-paper-dark));
+	--tempo-red: light-dark(#b3261e, #f08a7e);
+	/* red filled and hatched at 45°, the hatching mixing towards --ink (only ever more contrast) */
+	--tempo-red-hatch: repeating-linear-gradient(45deg, var(--tempo-red) 0 3px, color-mix(in srgb, var(--tempo-red) 70%, var(--ink)) 3px 6px);
+	--on-tempo: var(--on-accent);
 
-  /* shadows: their colours follow the theme, their geometry does not */
-  --shadow-near: light-dark(rgb(27 34 44 / 6%), rgb(0 0 0 / 30%));
-  --shadow-far: light-dark(rgb(27 34 44 / 6%), rgb(0 0 0 / 25%));
-  --shadow: 0 1px 2px var(--shadow-near), 0 4px 14px var(--shadow-far);
-  --shadow-pop: 0 10px 30px rgb(27 34 44 / 18%);   /* menus and popovers */
-  --line-on-ink: rgb(255 255 255 / 35%);             /* a frame on the toast's ink */
+	/* shadows: their colors follow the theme, their geometry does not */
+	--shadow-near: light-dark(rgb(27 34 44 / 6%), rgb(0 0 0 / 30%));
+	--shadow-far: light-dark(rgb(27 34 44 / 6%), rgb(0 0 0 / 25%));
+	--shadow: 0 1px 2px var(--shadow-near), 0 4px 14px var(--shadow-far);
+	--shadow-pop: 0 10px 30px rgb(27 34 44 / 18%); /* menus and popovers */
+	--shadow-dialog: 0 20px 60px rgb(0 0 0 / 30%); /* sheets and dialogs */
+	--shadow-toast: 0 10px 30px rgb(0 0 0 / 25%);
+	--overlay: rgb(21 26 33 / 45%); /* behind a dialog */
+	--line-on-ink: rgb(255 255 255 / 35%); /* a frame on the toast's ink */
+	--hover-on-ink: rgb(255 255 255 / 12%); /* a button hovered on the toast's ink */
 
-  /* type: locked pairing, Fraunces display + Cal Sans 2 text, self-hosted; Borel for the name only */
-  --font-display: "Fraunces Variable", "Fraunces Fallback", Georgia, serif;
-  --font-text: "Cal Sans", "Cal Sans Fallback", system-ui, sans-serif;
-  --font-brand: "Borel Display", var(--font-display);
+	/* focus: one ring for every control (WCAG 2.4.7, 2.4.13: 3 px, offset, the accent) */
+	--focus-ring: 3px solid var(--accent);
+	--focus-offset: 2px;
+	/* today in the calendar: a thinner ring in the accent */
+	--mark-ring: 2px solid var(--accent);
+	/* what cannot act now (busy, or out of reach: the reason is said beside it) */
+	--disabled-opacity: 0.55;
 
-  /* type: size / line-height (Material 3 scale, Apple sizes) */
-  --t-page: 500 1.75rem/2.125rem var(--font-display);
-  --t-group: 500 1.1875rem/1.625rem var(--font-display);
-  --t-body: 400 1rem/1.5rem var(--font-text);
-  --t-secondary: 400 0.875rem/1.25rem var(--font-text);
-  --t-label: 500 0.875rem/1.25rem var(--font-text);
-  --t-meta: 500 0.8125rem/1rem var(--font-text);
+	/* type: locked pairing, Fraunces display + Cal Sans 2 text, self-hosted; Borel for the name only */
+	--font-display: 'Fraunces Variable', 'Fraunces Fallback', Georgia, serif;
+	--font-text: 'Cal Sans', 'Cal Sans Fallback', system-ui, sans-serif;
+	--font-brand: 'Borel Display', var(--font-display);
+	--font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /*
-   * Layout (docs/ux/mise-en-page.md, Ariane, 2026-09-30): one page container for every page
+	/* type: size / line-height (Material 3 scale, Apple sizes) */
+	--t-page: 500 1.75rem/2.125rem var(--font-display);
+	--t-group: 500 1.1875rem/1.625rem var(--font-display);
+	--t-body: 400 1rem/1.5rem var(--font-text);
+	--t-secondary: 400 0.875rem/1.25rem var(--font-text);
+	--t-label: 500 0.875rem/1.25rem var(--font-text);
+	--t-meta: 500 0.8125rem/1rem var(--font-text);
+	/* a field's label: the label's size, bold */
+	--t-field-label: 600 0.875rem/1.25rem var(--font-text);
+	/* the smallest text, never below 12 px: a chip, a key cap, a forecast's percentage */
+	--t-tiny: 500 0.75rem/1rem var(--font-text);
+	/* the name, in Borel: the header, then the door (wider from 840 px) */
+	--t-brand: 400 1.35rem/1 var(--font-brand);
+	--t-brand-door: 400 2.6rem/1.3 var(--font-brand);
+	--t-brand-door-wide: 400 3.6rem/1.3 var(--font-brand);
+
+	/*
+   * Layout (docs/ux.md « Layout », after Ariane): one page container for every page
    * and for the header's inner row; content picks a measure inside it, left-aligned.
    * Breakpoints: compact < 600, medium < 840, expanded < 1200, large < 1600, xl.
    */
-  --page-max: 2400px;            /* a 32-inch screen used whole; text keeps its measure */
-  --page-margin: 16px;           /* compact; 24px from 600 (Material, Primer); 32px from 1600 */
-  --measure: 42rem;              /* ~75 characters at 16px */
-  --measure-wide: 64rem;         /* tables whose rows are short facts */
-  --pane: 20rem;                 /* supporting pane (Material) */
+	--page-max: 2400px; /* a 32-inch screen used whole; text keeps its measure */
+	--page-margin: 16px; /* compact; 24px from 600 (Material, Primer); 32px from 1600 */
+	--measure: 42rem; /* ~75 characters at 16px */
+	--measure-wide: 64rem; /* tables whose rows are short facts */
+	--pane: 20rem; /* supporting pane (Material) */
 
-  /* spacing: a scale of 4 */
-  --s-1: 4px;
-  --s-2: 8px;
-  --s-3: 12px;
-  --s-4: 16px;
-  --s-5: 24px;
-  --s-6: 32px;
-  --s-7: 48px;
+	/* spacing: a scale of 4 (and a half step, between two calendar days) */
+	--s-half: 2px;
+	--s-1: 4px;
+	--s-2: 8px;
+	--s-3: 12px;
+	--s-4: 16px;
+	--s-5: 24px;
+	--s-6: 32px;
+	--s-7: 48px;
 
-  /* controls: one height scale for fields, selects and buttons (WCAG 2.5.8, Apple 44pt) */
-  --control-h: 44px;             /* the touch target: text fields, selects, main actions */
-  --control-h-s: 36px;           /* compact: buttons, menu items, a select in a row of options */
-  --control-h-xs: 32px;          /* icon buttons, handles, chips */
+	/* controls: one height scale for fields, selects and buttons (WCAG 2.5.8, Apple 44pt) */
+	--control-h: 44px; /* the touch target: text fields, selects, main actions */
+	--control-h-s: 36px; /* compact: buttons, menu items, a select in a row of options */
+	--control-h-xs: 32px; /* icon buttons, handles, chips */
+	--control-h-l: 52px; /* the door's one big action (sign in, create a passkey) */
 
-  /* corners: one scale (scripts/css.check.ts refuses literal radii elsewhere) */
-  --radius-xs: 2px;              /* a knot, a bead */
-  --radius-s: 4px;               /* focus ring, keys */
-  --radius: 6px;                 /* controls */
-  --radius-m: 8px;               /* rows, cards */
-  --radius-l: 10px;              /* menus, panels, tiles, callouts */
-  --radius-xl: 12px;             /* dialogs, framed groups */
-  --radius-2xl: 16px;            /* sheets */
-  --radius-pill: 999px;          /* pills, and the round ends of a line */
+	/* corners: one scale (scripts/css.check.ts refuses literal radii elsewhere) */
+	--radius-xs: 2px; /* a knot, a bead */
+	--radius-s: 4px; /* focus ring, keys */
+	--radius: 6px; /* controls */
+	--radius-m: 8px; /* rows, cards */
+	--radius-l: 10px; /* menus, panels, tiles, callouts */
+	--radius-xl: 12px; /* dialogs, framed groups */
+	--radius-2xl: 16px; /* sheets */
+	--radius-pill: 999px; /* pills, and the round ends of a line */
 
-  --row-min: 48px;               /* 56 on touch (Material list, Apple 44pt, WCAG 2.5.8) */
-  --header-h: 56px;
-  --bottom-h: 0px;               /* the bottom navigation's height, on compact */
+	--row-min: 48px; /* 56 on touch (Material list, Apple 44pt, WCAG 2.5.8) */
+	--header-h: 56px;
+	--bottom-h: 0px; /* the bottom navigation's height, on compact */
 
-  /* Maison (docs/ux/tableau-de-bord.md) */
-  --tile-icon: 48px;             /* the tile's gesture: its icon is its main action */
-  --remote-key: 56px;            /* a remote's keys, OK larger */
-  --remote-ok: 64px;
+	/* floating content and dialogs: their widths, never past the screen (a 16 px gutter) */
+	--menu-min: 13.75rem;
+	--panel-w: 22.5rem;
+	--dialog-w: 35rem;
+	--confirm-w: 26.25rem;
+	--toast-w: 30rem;
+	--sheet-w: 36rem;
+
+	/* Maison (docs/ux.md) */
+	--tile-icon: 48px; /* the tile's gesture: its icon is its main action */
+	--remote-key: 56px; /* a remote's keys, OK larger */
+	--remote-ok: 64px;
+	--lead: 20px; /* a row's leading icon column */
+	--check-box: 18px; /* a menu's tick box, a select's mark */
+	--avatar: 26px; /* the person's initial in the header */
+	--dot: 14px; /* a Tempo swatch beside a word */
+	--track-h: 6px; /* a slider's and a progress bar's track */
+	--thumb: 24px; /* a slider's thumb */
+	--bar-h: 12px; /* a forecast's probabilities, one bar */
+	--bar-thin: 8px; /* a share beside its figure */
+	--switch-w: 48px; /* a switch: its track, and the thumb that travels in it */
+	--switch-h: 28px;
+	--switch-thumb: 20px;
+	--handle-w: 36px; /* a sheet's handle */
+	--handle-h: 4px;
+	--wheel: 192px; /* the color wheel, and the marker on it */
+	--marker: 16px;
 }
 @media (min-width: 600px) {
-  :root { --page-margin: 24px; }
+	:root {
+		--page-margin: 24px;
+	}
 }
 @media (min-width: 1600px) {
-  :root { --page-margin: 32px; }
+	:root {
+		--page-margin: 32px;
+	}
 }
 @media (max-width: 599px) {
-  :root { --row-min: 56px; --bottom-h: calc(64px + env(safe-area-inset-bottom, 0px)); }
+	:root {
+		--row-min: 56px;
+		--bottom-h: calc(64px + env(safe-area-inset-bottom, 0px));
+	}
 }
 /* a finger, not a mouse: every compact control grows to the 44 px target (WCAG 2.5.5, Apple 44pt) */
 @media (pointer: coarse) {
-  :root { --control-h-s: 44px; --control-h-xs: 44px; }
+	:root {
+		--control-h-s: 44px;
+		--control-h-xs: 44px;
+	}
 }

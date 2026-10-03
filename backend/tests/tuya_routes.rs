@@ -59,13 +59,25 @@ async fn the_list_shows_every_device_with_its_cached_values() {
     let devices = body["devices"].as_array().unwrap();
     let feeder = devices.iter().find(|device| device["id"] == FEEDER).unwrap();
     assert_eq!(feeder["type"], "feeder");
-    assert_eq!(feeder["last_data"]["dps"]["1"], "BQgeAgE=");
+    assert_eq!(feeder["lastData"]["dps"]["1"], "BQgeAgE=");
     let types = devices.iter().map(|device| device["type"].as_str().unwrap()).collect::<Vec<_>>();
     assert!(types.contains(&"litter-box") && types.contains(&"fountain"));
 
-    let (status, stats) = member(&app, Method::GET, "/api/devices/stats", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!((stats["total"].as_u64(), stats["connected"].as_u64()), (Some(3), Some(0)));
+    assert!(devices.iter().all(|device| device["connected"] == false));
+}
+
+/// Routes the web never called are gone.
+#[tokio::test]
+async fn the_unused_routes_are_gone() {
+    let app = app();
+    for (method, path) in [
+        (Method::GET, "/api/devices/stats".to_string()),
+        (Method::POST, "/api/devices/reconnect".to_string()),
+        (Method::GET, format!("/api/devices/{FEEDER}/status")),
+    ] {
+        let (status, _) = member(&app, method, &path, None).await;
+        assert!(status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED, "{path}: {status}");
+    }
 }
 
 #[tokio::test]
@@ -93,17 +105,17 @@ async fn bad_requests_are_refused_before_reaching_the_device() {
     let app = app();
     let cases = [
         (format!("/api/devices/{FEEDER}/feeder/feed"), json!({ "portion": 0 }), "portion must be between 1 and 12"),
-        (format!("/api/devices/{FEEDER}/feeder/meal-plan"), json!({ "meal_plan": [] }), "meal_plan array is required"),
+        (format!("/api/devices/{FEEDER}/feeder/meal-plan"), json!({ "mealPlan": [] }), "mealPlan array is required"),
         (
             format!("/api/devices/{FEEDER}/feeder/meal-plan"),
-            json!({ "meal_plan": [{ "days_of_week": ["Funday"], "time": "08:00", "portion": 1, "status": "Enabled" }] }),
+            json!({ "mealPlan": [{ "daysOfWeek": ["Monday"], "time": "25:00", "portion": 1, "status": "Enabled" }] }),
             "Invalid meal plan entry at index 0",
         ),
         (format!("/api/devices/{LITTER}/litter-box/settings"), json!({}), "No valid settings provided"),
         (
             format!("/api/devices/{LITTER}/litter-box/settings"),
-            json!({ "clean_delay": 5000 }),
-            "clean_delay must be between 0 and 1800 seconds",
+            json!({ "cleanDelay": 5000 }),
+            "cleanDelay must be between 0 and 1800 seconds",
         ),
         (format!("/api/devices/{FOUNTAIN}/fountain/eco-mode"), json!({ "mode": 3 }), "Eco mode must be 1 or 2"),
         (format!("/api/devices/{FOUNTAIN}/fountain/uv"), json!({ "runtime": 25 }), "UV runtime must be between 0 and 24 hours"),
@@ -114,6 +126,15 @@ async fn bad_requests_are_refused_before_reaching_the_device() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
         assert_eq!(answer["error"], error, "{path}");
         assert_eq!(answer["success"], false);
+    }
+    // a day or status the feeder has no word for does not even read as a meal plan
+    for meal in [
+        json!({ "daysOfWeek": ["Funday"], "time": "08:00", "portion": 1, "status": "Enabled" }),
+        json!({ "daysOfWeek": ["Monday"], "time": "08:00", "portion": 1, "status": "Maybe" }),
+    ] {
+        let path = format!("/api/devices/{FEEDER}/feeder/meal-plan");
+        let (status, _) = member(&app, Method::POST, &path, Some(json!({ "mealPlan": [meal] }))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
 

@@ -2,10 +2,11 @@
 	// A form that needs room (a meal, a remote binding): a Bits UI Dialog drawn as a sheet, from
 	// the bottom on a phone, from the right on a wide screen (Material 3; app.css `.sheet`).
 	// Its title names what is edited; Escape, the overlay or the cross close it. A form changed
-	// and not saved (`dirty`) is not lost to a stray Escape or tap: closing asks first.
+	// and not saved (its `draft` is dirty) is not lost to a stray Escape or tap: closing asks first.
 	import type { Snippet } from 'svelte';
 	import { Dialog } from 'bits-ui';
 	import { m } from '#lib/paraglide/messages.js';
+	import type { Draft } from '#lib/draft.svelte.ts';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
 
@@ -14,15 +15,15 @@
 		onclose: () => void;
 		title: string;
 		description?: string;
-		/** The form holds changes not yet saved. */
-		dirty?: boolean;
+		/** The form's draft: changed and not saved, closing asks first. */
+		draft?: Pick<Draft<unknown>, 'dirty'> | null;
 		children: Snippet;
 	}
-	let { open, onclose, title, description, dirty = false, children }: Props = $props();
+	let { open, onclose, title, description, draft, children }: Props = $props();
 	let asking = $state(false);
 
 	function close() {
-		if (dirty) asking = true;
+		if (draft?.dirty) asking = true;
 		else onclose();
 	}
 </script>

@@ -27,7 +27,6 @@ pub struct Config {
     pub zigbee_lamps_blacklist_path: PathBuf,
     pub nabaztag_config_path: PathBuf,
     pub nabaztag_host: Option<String>,
-    pub zigbee_permit_join_seconds: u16,
     pub ir_keymap_path: PathBuf,
     pub tv_config_path: PathBuf,
     pub androidtv_config_path: PathBuf,
@@ -51,6 +50,10 @@ pub struct Config {
     pub tempo_tarifs_url: String,
     pub tempo_odre_url: String,
     pub open_meteo_url: String,
+    /// The scenes (`scenes.rs`).
+    pub scenes_path: PathBuf,
+    /// The Zigbee radio (`ZIGBEE_*`, `zigbee/config.rs`).
+    pub zigbee: crate::zigbee::ZigbeeConfig,
 }
 
 /// The JWT secret a fresh checkout ships with; the backend refuses to start with it.
@@ -77,14 +80,18 @@ impl Config {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| source_root.join(default))
         };
-        let flag = |name: &str, default: bool| var(name).map(|v| is_truthy(&v)).unwrap_or(default);
+        let flag = |name: &str, default: bool| {
+            var(name).map_or(default, |v| {
+                if !is_truthy(&v) && !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off") {
+                    tracing::warn!(setting = name, value = %v, "not a yes or a no: read as no");
+                }
+                is_truthy(&v)
+            })
+        };
 
         Self {
             host: var("HOST").unwrap_or_else(|| "0.0.0.0".to_string()),
-            port: var("PORT")
-                .or_else(|| var("API_PORT"))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(3033),
+            port: parsed(&var, if var("PORT").is_some() { "PORT" } else { "API_PORT" }, 3033),
             jwt_secret: var("JWT_SECRET").unwrap_or_else(|| DEFAULT_JWT_SECRET.to_string()),
             frontend_dist_dir: path("FRONTEND_DIST_DIR", "web/build"),
             auth_cookie_name: var("AUTH_COOKIE_NAME").unwrap_or_else(|| "maison_session".to_string()),
@@ -110,7 +117,6 @@ impl Config {
             ),
             nabaztag_config_path: path("NABAZTAG_JSON_PATH", "nabaztag.json"),
             nabaztag_host: var("NABAZTAG_HOST"),
-            zigbee_permit_join_seconds: parsed(&var, "ZIGBEE_PERMIT_JOIN_SECONDS", 120),
             ir_keymap_path: path("IR_KEYMAP_JSON_PATH", "ir-keymap.json"),
             tv_config_path: path("TV_JSON_PATH", "tv.json"),
             androidtv_config_path: path("ANDROIDTV_JSON_PATH", "androidtv.json"),
@@ -146,6 +152,8 @@ impl Config {
             tempo_odre_url: var("TEMPO_ODRE_URL")
                 .unwrap_or_else(|| "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets".to_string()),
             open_meteo_url: var("OPEN_METEO_URL").unwrap_or_else(|| "https://api.open-meteo.com".to_string()),
+            scenes_path: path("SCENES_JSON_PATH", "scenes.json"),
+            zigbee: crate::zigbee::ZigbeeConfig::load(&var),
             source_root,
         }
     }
@@ -165,12 +173,18 @@ pub fn env_text(name: &str) -> Option<String> {
 }
 
 /// `1`, `true`, `yes`, `on` (any case) are true; anything else is false.
-pub fn is_truthy(value: &str) -> bool {
+fn is_truthy(value: &str) -> bool {
     matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
+/// The setting `name` parsed, else `default`; a value that does not parse is said in the
+/// log (a typo must not pass for the default without a word).
 fn parsed<T: std::str::FromStr>(var: &impl Fn(&str) -> Option<String>, name: &str, default: T) -> T {
-    var(name).and_then(|v| v.parse().ok()).unwrap_or(default)
+    let Some(value) = var(name) else { return default };
+    value.parse().unwrap_or_else(|_| {
+        tracing::warn!(setting = name, %value, "unparsable setting: using its default");
+        default
+    })
 }
 
 fn default_source_root() -> PathBuf {
@@ -196,4 +210,24 @@ fn default_source_root() -> PathBuf {
 
 fn looks_like_source_root(path: &std::path::Path) -> bool {
     path.join("devices.json").is_file() || path.join("web").is_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with(pairs: &'static [(&'static str, &'static str)]) -> Config {
+        Config::load(PathBuf::from("/x"), |name| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
+    }
+
+    #[test]
+    fn numbers_parse_or_fall_back_to_their_default() {
+        assert_eq!(with(&[]).port, 3033);
+        assert_eq!(with(&[("PORT", "8080")]).port, 8080);
+        assert_eq!(with(&[("API_PORT", "8081")]).port, 8081);
+        assert_eq!(with(&[("PORT", "8080"), ("API_PORT", "8081")]).port, 8080, "PORT first");
+        assert_eq!(with(&[("PORT", "eighty")]).port, 3033, "garbage: the default (and a warning)");
+        assert_eq!(with(&[("ZIGBEE_PERMIT_JOIN_SECONDS", "-1")]).zigbee.permit_join_seconds, 120, "out of range: the default");
+        assert_eq!(with(&[("ZIGBEE_PERMIT_JOIN_SECONDS", "60")]).zigbee.permit_join_seconds, 60);
+    }
 }

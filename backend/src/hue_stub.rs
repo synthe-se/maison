@@ -38,18 +38,6 @@ impl HueManager {
         Err(bluetooth_unavailable())
     }
 
-    pub async fn connect_all(&self) {}
-
-    pub async fn disconnect_all(&self) {}
-
-    pub async fn connect_lamp(&self, _lamp_id: &str) -> Result<bool, AppError> {
-        Ok(false)
-    }
-
-    pub async fn disconnect_lamp(&self, _lamp_id: &str) -> Result<(), AppError> {
-        Ok(())
-    }
-
     pub async fn set_power(&self, _lamp_id: &str, _enabled: bool) -> Result<LampState, AppError> {
         Err(bluetooth_unavailable())
     }
@@ -59,15 +47,6 @@ impl HueManager {
     }
 
     pub async fn set_temperature(&self, _lamp_id: &str, _temperature: u8) -> Result<LampState, AppError> {
-        Err(bluetooth_unavailable())
-    }
-
-    pub async fn set_lamp_state(
-        &self,
-        _lamp_id: &str,
-        _is_on: bool,
-        _brightness: Option<u8>,
-    ) -> Result<LampState, AppError> {
         Err(bluetooth_unavailable())
     }
 

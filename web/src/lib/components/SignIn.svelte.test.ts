@@ -25,6 +25,12 @@ describe('SignIn', () => {
 		await expect.element(page.getByRole('textbox')).not.toBeInTheDocument();
 	});
 
+	it('stands in the door: Maison’s name and promise beside it', async () => {
+		await render(SignIn);
+		await expect.element(page.getByRole('region', { name: m.pk_signin_title() })).toBeVisible();
+		await expect.element(page.getByText(m.branding_promise())).toBeVisible();
+	});
+
 	it('signs in with the passkey the device offers', async () => {
 		authenticator();
 		const api = stubApi(passkeyRoutes());

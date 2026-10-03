@@ -6,7 +6,7 @@ import Tabs from './Tabs.svelte';
 
 const tabs = [
 	{ value: 'white', label: 'Blanc', icon: 'lightbulb' as const },
-	{ value: 'colour', label: 'Couleur' }
+	{ value: 'color', label: 'Couleur' }
 ];
 const panel = htmlOf<string>((v) => `<p>Réglages ${v}</p>`);
 
@@ -16,7 +16,7 @@ describe('Tabs', () => {
 		await expect.element(page.getByRole('tab', { name: 'Blanc' })).toHaveAttribute('aria-selected', 'true');
 		await expect.element(page.getByRole('tabpanel', { name: 'Blanc' })).toHaveTextContent('Réglages white');
 		// the other view is `hidden` (app.css enforces it over the panels' own display)
-		const other = [...document.querySelectorAll('[role=tabpanel]')].find((p) => p.textContent === 'Réglages colour');
+		const other = [...document.querySelectorAll('[role=tabpanel]')].find((p) => p.textContent === 'Réglages color');
 		expect(other?.hasAttribute('hidden')).toBe(true);
 	});
 
@@ -24,9 +24,9 @@ describe('Tabs', () => {
 		const onchange = vi.fn();
 		await render(Tabs, { tabs, value: 'white', panel, onchange });
 		await page.getByRole('tab', { name: 'Couleur' }).click();
-		expect(onchange).toHaveBeenCalledWith('colour');
+		expect(onchange).toHaveBeenCalledWith('color');
 		await expect.element(page.getByRole('tab', { name: 'Couleur' })).toHaveAttribute('aria-selected', 'true');
-		await expect.element(page.getByRole('tabpanel', { name: 'Couleur' })).toHaveTextContent('Réglages colour');
+		await expect.element(page.getByRole('tabpanel', { name: 'Couleur' })).toHaveTextContent('Réglages color');
 	});
 
 	it('moves between tabs with the arrow keys', async () => {

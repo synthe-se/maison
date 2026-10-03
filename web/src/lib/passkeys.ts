@@ -1,8 +1,43 @@
-// Passkeys (WebAuthn Level 3), as in Ariane. The server holds the ceremony; the browser only
-// asks the authenticator. Discoverable credentials: signing in needs no name.
-// docs/dependances/passkeys.md
+// Who comes in, said once: the session, the people, their passkeys (WebAuthn Level 3, as in
+// Ariane: the server holds the ceremony, the browser only asks the authenticator; discoverable
+// credentials, so signing in needs no name) and the invitations. docs/passkeys.md
 
-import { ApiError, del, get, patch, path, post, type SessionResponse, type User } from '#lib/api.ts';
+import { ApiError, del, get, patch, path, post } from '#lib/api.ts';
+import { source } from '#lib/live.svelte.ts';
+
+/** Who is signed in. `role`: "admin" (may invite and configure) or "member". */
+export interface User {
+	id: string;
+	name: string;
+	role: string;
+}
+
+export interface SessionResponse {
+	success: boolean;
+	user?: User;
+	error?: string;
+}
+
+export const authApi = {
+	verify: () => post<SessionResponse>('/auth/verify'),
+	logout: () => post('/auth/logout'),
+	/** Every session of mine ends, this one too. */
+	logoutEverywhere: () => post('/auth/logout-everywhere')
+};
+
+/** Someone who may come in (admin only): their passkeys counted. */
+export interface Person {
+	id: string;
+	name: string;
+	role: string;
+	passkeys: number;
+}
+
+export const peopleApi = {
+	list: () => get<Person[]>('/people'),
+	/** The person, their passkeys and sessions go (never oneself). */
+	remove: (id: string) => del<void>(path`/people/${id}`)
+};
 
 export interface PasskeyInfo {
 	id: string;
@@ -42,11 +77,19 @@ export const supported = () => typeof window !== 'undefined' && window.isSecureC
 // base64url, for browsers without the Level 3 JSON helpers
 const b64 = {
 	decode(s: string): ArrayBuffer {
-		const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '='));
+		const bin = atob(
+			s
+				.replace(/-/g, '+')
+				.replace(/_/g, '/')
+				.padEnd(Math.ceil(s.length / 4) * 4, '=')
+		);
 		return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
 	},
 	encode(b: ArrayBuffer): string {
-		return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+		return btoa(String.fromCharCode(...new Uint8Array(b)))
+			.replace(/\+/g, '-')
+			.replace(/\//g, '_')
+			.replace(/=+$/, '');
 	}
 };
 
@@ -81,7 +124,11 @@ export function requestOptions(o: Json): PublicKeyCredentialRequestOptions {
 	const parse = PKC().parseRequestOptionsFromJSON;
 	if (parse) return parse(o);
 	const x = o as RequestJson;
-	return { ...x, challenge: b64.decode(x.challenge), allowCredentials: (x.allowCredentials ?? []).map(withBytes) } as unknown as PublicKeyCredentialRequestOptions;
+	return {
+		...x,
+		challenge: b64.decode(x.challenge),
+		allowCredentials: (x.allowCredentials ?? []).map(withBytes)
+	} as unknown as PublicKeyCredentialRequestOptions;
 }
 
 export function toJSON(c: PublicKeyCredential): Json {
@@ -97,7 +144,14 @@ export function toJSON(c: PublicKeyCredential): Json {
 		response.signature = b64.encode(r.signature);
 		response.userHandle = r.userHandle ? b64.encode(r.userHandle) : null;
 	}
-	return { id: c.id, rawId: b64.encode(c.rawId), type: c.type, response, clientExtensionResults: c.getClientExtensionResults(), authenticatorAttachment: c.authenticatorAttachment };
+	return {
+		id: c.id,
+		rawId: b64.encode(c.rawId),
+		type: c.type,
+		response,
+		clientExtensionResults: c.getClientExtensionResults(),
+		authenticatorAttachment: c.authenticatorAttachment
+	};
 }
 
 /** A ceremony begun by the server: its id and the browser's options. */
@@ -114,7 +168,9 @@ export async function signIn(): Promise<SessionResponse> {
 	} catch (e) {
 		// the passkey was removed here: tell the password manager to forget it
 		if (e instanceof ApiError && e.code === 'unknown_passkey' && publicKey.rpId)
-			await PKC().signalUnknownCredential?.({ rpId: publicKey.rpId, credentialId: credential.id }).catch(() => {});
+			await PKC()
+				.signalUnknownCredential?.({ rpId: publicKey.rpId, credentialId: credential.id })
+				.catch(() => {});
 		throw e;
 	}
 }
@@ -135,7 +191,9 @@ export async function register(opts: { invite?: string; name?: string; onReauth?
 		await signIn();
 		start = await begin();
 	}
-	const credential = (await navigator.credentials.create({ publicKey: creationOptions(start.options.publicKey) })) as PublicKeyCredential | null;
+	const credential = (await navigator.credentials.create({
+		publicKey: creationOptions(start.options.publicKey)
+	})) as PublicKeyCredential | null;
 	if (!credential) throw cancelled();
 	return post<Registered>('/passkeys/register/finish', { ceremony: start.ceremony, credential: toJSON(credential), name: opts.name });
 }
@@ -151,3 +209,9 @@ export const listInvites = () => get<Invite[]>('/invites');
 export const createInvite = (name: string, admin: boolean, person?: string) =>
 	post<CreatedInvite>('/invites', person ? { name, admin, person } : { name, admin });
 export const revokeInvite = (invite: string) => del<void>(path`/invites/${invite}`);
+
+// what the account page reads, each under one key; they change only from that page, which
+// reads them again
+export const passkeysData = source('account:passkeys', listPasskeys);
+export const peopleData = source('account:people', peopleApi.list);
+export const invitesData = source('account:invites', listInvites);

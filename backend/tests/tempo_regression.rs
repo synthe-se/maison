@@ -21,7 +21,8 @@ use serde_json::{json, Value};
 
 use maison_backend::{
     config::Config,
-    tempo::{current_season, paris_today, Color, TempoService},
+    tempo::{current_season, Color, TempoService},
+    util::house_today,
 };
 
 /// What the stub was asked, and which upstreams are down.
@@ -77,14 +78,14 @@ fn season_days(season: &str, last: NaiveDate) -> Vec<NaiveDate> {
 async fn rte_season(State(stub): State<Stub>, Query(q): Query<HashMap<String, String>>) -> Answer {
     let season = q.get("season").cloned().unwrap_or_default();
     stub.ask("rte", format!("rte/tempo?season={season}"))?;
-    let mut values: BTreeMap<String, &str> = season_days(&season, paris_today()).into_iter().map(|d| (key(d), color(d))).collect();
-    values.insert(format!("{}-fallback", key(paris_today())), "false");
+    let mut values: BTreeMap<String, &str> = season_days(&season, house_today()).into_iter().map(|d| (key(d), color(d))).collect();
+    values.insert(format!("{}-fallback", key(house_today())), "false");
     Ok(Json(json!({ "values": values })))
 }
 
 async fn rte_light(State(stub): State<Stub>) -> Answer {
     stub.ask("rte", "rte/tempoLight")?;
-    let today = paris_today();
+    let today = house_today();
     Ok(Json(json!({ "values": { key(today): color(today), key(today + Duration::days(1)): "WHITE" } })))
 }
 
@@ -97,12 +98,12 @@ async fn rte_calendars(State(stub): State<Stub>, Query(q): Query<HashMap<String,
     stub.ask("rteapi", format!("rteapi/calendars?start_date={}", q["start_date"]))?;
     let first: NaiveDate = q["start_date"][..10].parse().unwrap();
     let end: NaiveDate = q["end_date"][..10].parse().unwrap();
-    let last = (end - Duration::days(1)).min(paris_today() + Duration::days(1));
+    let last = (end - Duration::days(1)).min(house_today() + Duration::days(1));
     // RTE's API answers newest first
     let mut values: Vec<Value> = first
         .iter_days()
         .take_while(|d| *d <= last)
-        .map(|d| json!({ "start_date": format!("{}T00:00:00+01:00", key(d)), "value": if d > paris_today() { "RED" } else { color(d) } }))
+        .map(|d| json!({ "start_date": format!("{}T00:00:00+01:00", key(d)), "value": if d > house_today() { "RED" } else { color(d) } }))
         .collect();
     values.reverse();
     Ok(Json(json!({ "tempo_like_calendars": [{ "start_date": q["start_date"], "values": values }] })))
@@ -120,13 +121,13 @@ async fn fallback_season(State(stub): State<Stub>, Query(q): Query<HashMap<Strin
     let season = q["periode"].clone();
     stub.ask("fallback", format!("fallback/joursTempo?periode={season}"))?;
     let days: Vec<Value> =
-        season_days(&season, paris_today()).into_iter().map(|d| json!({ "dateJour": key(d), "codeJour": code(color(d)) })).collect();
+        season_days(&season, house_today()).into_iter().map(|d| json!({ "dateJour": key(d), "codeJour": code(color(d)) })).collect();
     Ok(Json(json!(days)))
 }
 
 async fn fallback_tomorrow(State(stub): State<Stub>) -> Answer {
     stub.ask("fallback", "fallback/tomorrow")?;
-    Ok(Json(json!({ "dateJour": key(paris_today() + Duration::days(1)), "codeJour": 0, "libCouleur": "Inconnu" })))
+    Ok(Json(json!({ "dateJour": key(house_today() + Duration::days(1)), "codeJour": 0, "libCouleur": "Inconnu" })))
 }
 
 async fn edf(State(stub): State<Stub>) -> Answer {
@@ -167,7 +168,7 @@ async fn odre(State(stub): State<Stub>, Path(dataset): Path<String>, Query(q): Q
 async fn meteo(State(stub): State<Stub>, Query(q): Query<HashMap<String, String>>) -> Answer {
     let variable = q["hourly"].clone();
     stub.ask("meteo", format!("meteo/{variable}"))?;
-    let first = paris_today() - Duration::days(3);
+    let first = house_today() - Duration::days(3);
     let times: Vec<String> = (0..12 * 24)
         .map(|h| (first.and_hms_opt(0, 0, 0).unwrap() + Duration::hours(h)).format("%Y-%m-%dT%H:%M").to_string())
         .collect();
@@ -230,7 +231,7 @@ fn service(config: &Config) -> TempoService {
 }
 
 fn tomorrow() -> NaiveDate {
-    paris_today() + Duration::days(1)
+    house_today() + Duration::days(1)
 }
 
 #[tokio::test]
@@ -239,22 +240,22 @@ async fn today_and_tomorrow_come_from_rte_then_from_memory() {
     let tempo = service(&config);
     let today = tempo.today(false).await.unwrap();
     assert!(!today.cached);
-    assert_eq!(today.today.date, paris_today());
-    assert_eq!(today.today.color, Color::parse(color(paris_today())));
+    assert_eq!(today.today.date, house_today());
+    assert_eq!(today.today.color, Color::parse(color(house_today())));
     assert_eq!(today.tomorrow.color, Some(Color::White));
-    let yesterday = paris_today() - Duration::days(1);
+    let yesterday = house_today() - Duration::days(1);
     assert_eq!((today.yesterday.date, today.yesterday.color), (yesterday, Color::parse(color(yesterday))));
-    let tarifs = today.tarifs.unwrap();
-    assert_eq!(tarifs.red.hp, 0.7295);
-    assert_eq!(tarifs.date_debut.to_string(), "2026-08-01", "data.gouv's year-day-month");
+    let tariffs = today.tariffs.unwrap();
+    assert_eq!(tariffs.red.peak, 0.7295);
+    assert_eq!(tariffs.starts_on.to_string(), "2026-08-01", "data.gouv's year-day-month");
     // EDF's quotas
     assert_eq!((today.stock.red.total, today.stock.white.total), (20, 45));
-    assert_eq!(today.stock.red.used + today.stock.white.used + today.stock.blue.used, season_days(&current_season(paris_today()), tomorrow()).len() as u32);
+    assert_eq!(today.stock.red.used + today.stock.white.used + today.stock.blue.used, season_days(&current_season(house_today()), tomorrow()).len() as u32);
     tempo.today(false).await.unwrap();
     assert_eq!(stub.count("rte/tempoLight"), 1, "both colours known: the second read is from memory");
     assert_eq!(stub.count("tarifs"), 1);
     // the season's file, without RTE's extra keys
-    let file = tempo_dir(&config).join(format!("tempo_history_{}.json", current_season(paris_today())));
+    let file = tempo_dir(&config).join(format!("tempo_history_{}.json", current_season(house_today())));
     let text = std::fs::read_to_string(file).unwrap();
     assert!(!text.contains("fallback") && text.contains(&key(tomorrow())));
 }
@@ -265,7 +266,7 @@ async fn rte_down_falls_back_to_api_couleur_tempo() {
     stub.down("rte");
     let today = service(&config).today(false).await.unwrap();
     assert!(stub.count("fallback/joursTempo") == 1 && stub.count("fallback/tomorrow") == 1);
-    assert_eq!(today.today.color, Color::parse(color(paris_today())));
+    assert_eq!(today.today.color, Color::parse(color(house_today())));
     assert_eq!(today.tomorrow.color, None, "api-couleur-tempo does not know it yet");
     assert!(!today.cached);
 }
@@ -293,12 +294,12 @@ async fn everything_down_is_the_season_s_file_said_cached() {
     for upstream in ["rte", "fallback", "edf", "tarifs", "odre", "meteo"] {
         stub.down(upstream);
     }
-    let file = tempo_dir(&config).join(format!("tempo_history_{}.json", current_season(paris_today())));
-    std::fs::write(&file, format!(r#"{{"values":{{"{}":"RED"}}}}"#, key(paris_today()))).unwrap();
+    let file = tempo_dir(&config).join(format!("tempo_history_{}.json", current_season(house_today())));
+    std::fs::write(&file, format!(r#"{{"values":{{"{}":"RED"}}}}"#, key(house_today()))).unwrap();
     let today = service(&config).today(false).await.unwrap();
     assert!(today.cached);
     assert_eq!(today.today.color, Some(Color::Red));
-    assert_eq!(today.tarifs, None);
+    assert_eq!(today.tariffs, None);
     assert_eq!((today.stock.red.total, today.stock.white.total), (22, 43), "the CRE's quotas");
 
     // and nothing on file: a plain error
@@ -316,7 +317,7 @@ async fn the_forecast_covers_the_week() {
     assert_eq!(forecast.days.len(), 7);
     assert!(forecast.days[0].official && forecast.days[0].color == Color::White);
     for (i, day) in forecast.days.iter().enumerate() {
-        assert_eq!(day.date, paris_today() + Duration::days(i as i64 + 1));
+        assert_eq!(day.date, house_today() + Duration::days(i as i64 + 1));
         let p = day.probabilities;
         assert!((p.blue + p.white + p.red - 1.0).abs() < 1e-9);
         assert_eq!(day.official, i == 0);
@@ -336,7 +337,7 @@ async fn the_forecast_covers_the_week() {
 async fn open_meteo_down_uses_the_last_forecast() {
     let (config, stub) = stubbed("maison-tempo-old-weather").await;
     // a forecast from two days ago, the cold it said then
-    let issued = paris_today() - Duration::days(2);
+    let issued = house_today() - Duration::days(2);
     let temperature: BTreeMap<String, f64> = (-3..8).map(|i| (key(issued + Duration::days(i)), 2.0)).collect();
     let wind: BTreeMap<String, f64> = (0..8).map(|i| (key(issued + Duration::days(i)), 0.1)).collect();
     std::fs::write(tempo_dir(&config).join("weather.json"), json!({ "issued": key(issued), "temperature": temperature, "wind_power": wind }).to_string()).unwrap();
@@ -353,7 +354,7 @@ async fn open_meteo_down_uses_the_last_forecast() {
 async fn the_rabbit_gets_official_or_sure_colours() {
     let (config, _) = stubbed("maison-tempo-rabbit").await;
     let (today, tomorrow) = service(&config).rabbit_colors(false).await.unwrap();
-    assert_eq!(Some(today), Color::parse(color(paris_today())));
+    assert_eq!(Some(today), Color::parse(color(house_today())));
     assert_eq!(tomorrow, Some((Color::White, false)));
 }
 
@@ -387,9 +388,11 @@ async fn the_routes_answer_members_and_check_seasons() {
     let (status, body) = common::send(&app, Method::GET, "/api/tempo", Some(&member), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["tomorrow"]["color"], "WHITE");
-    assert_eq!(body["tarifs"]["dateDebut"], "2026-08-01");
+    assert_eq!(body["tariffs"]["startsOn"], "2026-08-01");
+    assert_eq!(body["tariffs"]["red"]["peak"], 0.7295);
+    assert_eq!(body["tariffs"]["red"]["offPeak"], 0.1615);
     assert_eq!(body["stock"]["red"]["total"], 20);
-    assert_eq!((body["hours"]["peak_start"].as_str(), body["hours"]["peak_end"].as_str()), (Some("06:00"), Some("22:00")));
+    assert_eq!((body["hours"]["peakStart"].as_str(), body["hours"]["peakEnd"].as_str()), (Some("06:00"), Some("22:00")));
     assert!(body["yesterday"]["date"].is_string());
 
     let (status, body) = common::send(&app, Method::GET, "/api/tempo/forecast", Some(&member), None).await;

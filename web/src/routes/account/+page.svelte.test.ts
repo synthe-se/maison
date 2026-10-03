@@ -7,7 +7,6 @@ import { ui } from '#lib/ui.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { json } from '#lib/test/fetch.ts';
 import { alex, authenticator, leonard, passkey, passkeyRoutes } from '#lib/test/passkeys.ts';
-import { forgetAll } from '#lib/live.svelte.ts';
 import AccountPage from './+page.svelte';
 
 const iphone = passkey();
@@ -27,7 +26,6 @@ const rows = () => page.getByRole('region', { name: m.keys_title() }).getByRole(
 describe('account page', () => {
 	beforeEach(() => session.adopt(leonard));
 	afterEach(() => {
-		forgetAll();
 		session.status = 'loading';
 		session.user = null;
 		ui.toasts = [];
@@ -51,7 +49,10 @@ describe('account page', () => {
 		const api = site({ 'PATCH /passkeys/k1': passkey({ name: 'Mon iPhone' }) });
 		const say = vi.spyOn(ui, 'say');
 		await render(AccountPage);
-		await rows().nth(0).getByRole('button', { name: m.keys_rename_of({ name: 'iPhone' }) }).click();
+		await rows()
+			.nth(0)
+			.getByRole('button', { name: m.keys_rename_of({ name: 'iPhone' }) })
+			.click();
 		const field = page.getByLabelText(m.keys_rename_label());
 		await expect.element(field).toHaveFocus();
 		await field.fill('Mon iPhone');
@@ -65,7 +66,10 @@ describe('account page', () => {
 	it('Escape gives up a rename, and the focus goes back to its button', async () => {
 		const api = site();
 		await render(AccountPage);
-		await rows().nth(0).getByRole('button', { name: m.keys_rename_of({ name: 'iPhone' }) }).click();
+		await rows()
+			.nth(0)
+			.getByRole('button', { name: m.keys_rename_of({ name: 'iPhone' }) })
+			.click();
 		await page.getByLabelText(m.keys_rename_label()).fill('X');
 		await userEvent.keyboard('{Escape}');
 		await expect.element(page.getByLabelText(m.keys_rename_label())).not.toBeInTheDocument();
@@ -74,7 +78,10 @@ describe('account page', () => {
 	});
 
 	it('removes a passkey; the last one is refused, said in words', async () => {
-		const api = site({ 'DELETE /passkeys/k2': json({ error: 'x', code: 'last_passkey' }, 409), 'DELETE /passkeys/k1': new Response(null, { status: 204 }) });
+		const api = site({
+			'DELETE /passkeys/k2': json({ error: 'x', code: 'last_passkey' }, 409),
+			'DELETE /passkeys/k1': new Response(null, { status: 204 })
+		});
 		await render(AccountPage);
 		// asked first, with the precise verb and « Garder »
 		await page.getByRole('button', { name: m.keys_remove_label({ name: 'iPhone' }) }).click();
@@ -129,7 +136,10 @@ describe('account page', () => {
 
 	it('an admin invites someone: a link to copy, and the pending ones to cancel', async () => {
 		const url = 'https://maison.example.com/invite/abc';
-		const api = site({ 'POST /invites': { id: 'i2', url, expiresMs: Date.UTC(2026, 9, 10) }, 'DELETE /invites/i1': new Response(null, { status: 204 }) });
+		const api = site({
+			'POST /invites': { id: 'i2', url, expiresMs: Date.UTC(2026, 9, 10) },
+			'DELETE /invites/i1': new Response(null, { status: 204 })
+		});
 		const write = vi.fn(async () => {});
 		vi.spyOn(navigator.clipboard, 'writeText').mockImplementation(write);
 		await render(AccountPage);
@@ -148,7 +158,10 @@ describe('account page', () => {
 		await page.getByRole('button', { name: m.invites_copy() }).click();
 		expect(write).toHaveBeenCalledWith(url);
 		await page.getByRole('button', { name: m.invites_revoke_label({ name: 'Alex' }) }).click();
-		await page.getByRole('alertdialog', { name: m.invites_revoke_title({ name: 'Alex' }) }).getByRole('button', { name: m.invites_revoke() }).click();
+		await page
+			.getByRole('alertdialog', { name: m.invites_revoke_title({ name: 'Alex' }) })
+			.getByRole('button', { name: m.invites_revoke() })
+			.click();
 		await expect.poll(() => api.sent('DELETE', '/invites/i1')).toHaveLength(1);
 		await expect.element(page.getByRole('heading', { name: m.invites_title(), level: 2 })).toHaveFocus();
 	});
@@ -180,10 +193,12 @@ describe('account page', () => {
 		await sheet.getByRole('button', { name: m.invites_create() }).click();
 		await expect.element(sheet.getByLabelText(m.invites_name())).toHaveAccessibleDescription(m.invites_person_exists({ name: 'Francia' }));
 		await sheet.getByRole('button', { name: m.invites_access_back({ name: 'Francia' }) }).click();
-		await expect.poll(() => api.sent('POST', '/invites').map((c) => c.body)).toEqual([
-			{ name: 'Francia', admin: false },
-			{ name: 'Francia', admin: false, person: 'francia-b' }
-		]);
+		await expect
+			.poll(() => api.sent('POST', '/invites').map((c) => c.body))
+			.toEqual([
+				{ name: 'Francia', admin: false },
+				{ name: 'Francia', admin: false, person: 'francia-b' }
+			]);
 		await expect.element(page.getByLabelText(m.invites_link({ name: 'Francia' }))).toHaveValue(url);
 	});
 
@@ -195,7 +210,10 @@ describe('account page', () => {
 		await expect.element(region.getByRole('button', { name: m.common_remove_named({ name: 'Léonard' }) })).not.toBeInTheDocument();
 		await expect.element(region.getByText(m.people_you())).toBeVisible();
 		await region.getByRole('button', { name: m.common_remove_named({ name: 'Francia' }) }).click();
-		await page.getByRole('alertdialog', { name: m.common_remove_from_maison({ name: 'Francia' }) }).getByRole('button', { name: m.people_remove_action() }).click();
+		await page
+			.getByRole('alertdialog', { name: m.common_remove_from_maison({ name: 'Francia' }) })
+			.getByRole('button', { name: m.people_remove_action() })
+			.click();
 		await expect.poll(() => api.sent('DELETE', '/people/francia')).toHaveLength(1);
 		await expect.element(page.getByRole('heading', { name: m.people_title() })).toHaveFocus();
 	});

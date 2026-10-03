@@ -137,10 +137,16 @@ impl Browser {
     }
 }
 
+/// The test config with nobody in it yet: the people come from invitations here.
+fn nobody(name: &str) -> Config {
+    let config = common::isolated_config(name);
+    std::fs::remove_file(&config.auth_path).expect("the seeded people go");
+    config
+}
+
 /// The app on a fresh root, reached at `ORIGIN`, and the first invitation (as the CLI makes it).
 async fn house() -> (Router, Config, String) {
-    let root = common::temp_root("maison-passkeys");
-    let config = Config { public_url: Some(ORIGIN.into()), auth_path: root.join("auth.json"), ..common::test_config() };
+    let config = Config { public_url: Some(ORIGIN.into()), ..nobody("maison-passkeys") };
     let app = common::app(config.clone());
     let link = invite(&config, "leonard", "Léonard", true).await;
     (app, config, link)
@@ -274,22 +280,14 @@ async fn admins_invite_and_a_member_cannot() {
 
 #[tokio::test]
 async fn passkeys_are_off_without_a_public_address() {
-    let root = common::temp_root("maison-passkeys-off");
-    let app = common::app(Config { public_url: None, auth_path: root.join("auth.json"), ..common::test_config() });
+    let app = common::app(Config { public_url: None, ..nobody("maison-passkeys-off") });
     let (s, v) = Browser::new(&app).post("/api/passkeys/login/start", json!({})).await;
     assert_eq!((s, v["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("passkey_off")));
 }
 
 #[tokio::test]
 async fn secure_cookies_are_host_bound_and_a_replayed_refresh_token_ends_its_sign_in() {
-    let root = common::temp_root("maison-passkeys-secure");
-    let config = Config {
-        public_url: Some(ORIGIN.into()),
-        auth_path: root.join("auth.json"),
-        refresh_tokens_path: root.join("refresh-tokens.json"),
-        auth_cookie_secure: true,
-        ..common::test_config()
-    };
+    let config = Config { public_url: Some(ORIGIN.into()), auth_cookie_secure: true, ..nobody("maison-passkeys-secure") };
     let app = common::app(config.clone());
     let token = invite(&config, "leonard", "Léonard", true).await;
     let mut b = Browser::new(&app);

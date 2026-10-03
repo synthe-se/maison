@@ -7,7 +7,13 @@ import { ui } from '#lib/ui.svelte.ts';
 import { deferred } from '#lib/test/api.ts';
 import RenameField from './RenameField.svelte';
 
-const props = (over = {}) => ({ label: 'Nom', value: 'Salon', save: vi.fn(async () => {}), said: (n: string) => `Renommé en ${n}`, ...over });
+const props = (over = {}) => ({
+	label: 'Nom',
+	value: 'Salon',
+	save: vi.fn(async () => {}),
+	said: (n: string) => `Renommé en ${n}`,
+	...over
+});
 const field = () => page.getByLabelText('Nom');
 
 describe('RenameField', () => {

@@ -3,24 +3,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
     error::AppError,
+    routes::Answer,
     tempo::{Calendar, Forecast, Today},
     AppState,
 };
-
-#[derive(Serialize)]
-struct Answer<T: Serialize> {
-    success: bool,
-    #[serde(flatten)]
-    body: T,
-}
-
-fn ok<T: Serialize>(body: T) -> Json<Answer<T>> {
-    Json(Answer { success: true, body })
-}
 
 #[derive(Deserialize)]
 struct SeasonQuery {
@@ -43,18 +33,18 @@ fn unavailable(error: AppError) -> AppError {
 }
 
 async fn get_today(State(state): State<AppState>) -> Result<Json<Answer<Today>>, AppError> {
-    Ok(ok(state.tempo.today(false).await.map_err(unavailable)?))
+    Ok(Answer::ok(state.tempo.today(false).await.map_err(unavailable)?))
 }
 
 /// Asks every source again (harmless: members may).
 async fn refresh(State(state): State<AppState>) -> Result<Json<Answer<Today>>, AppError> {
     let today = state.tempo.today(true).await.map_err(unavailable)?;
     state.tempo.forecast(true).await.map_err(unavailable)?;
-    Ok(ok(today))
+    Ok(Answer::ok(today))
 }
 
 async fn get_forecast(State(state): State<AppState>) -> Result<Json<Answer<Forecast>>, AppError> {
-    Ok(ok(state.tempo.forecast(false).await.map_err(unavailable)?))
+    Ok(Answer::ok(state.tempo.forecast(false).await.map_err(unavailable)?))
 }
 
 async fn get_calendar(
@@ -62,5 +52,5 @@ async fn get_calendar(
     Query(query): Query<SeasonQuery>,
 ) -> Result<Json<Answer<Calendar>>, AppError> {
     // a bad season is the asker's error, not the sources'
-    Ok(ok(state.tempo.calendar(query.season.as_deref()).await?))
+    Ok(Answer::ok(state.tempo.calendar(query.season.as_deref()).await?))
 }

@@ -14,10 +14,10 @@ describe('refocus', () => {
 
 	it('takes a selector or a getter (an element the change itself brings)', async () => {
 		document.body.innerHTML = '<input id="link" />';
-		let later: HTMLElement | undefined;
-		const done = refocus(() => later);
-		later = document.getElementById('link')!;
-		expect(await done).toBe(later);
+		const brought: { el?: HTMLElement } = {};
+		const done = refocus(() => brought.el);
+		brought.el = document.getElementById('link')!;
+		expect(await done).toBe(brought.el);
 		document.body.innerHTML = '<input id="url" />';
 		expect(await refocus('#url')).toBe(document.getElementById('url'));
 	});

@@ -10,7 +10,7 @@ describe('meal days', () => {
 
 	it('says every day, weekdays and the weekend in one word, whatever the order', () => {
 		expect(describeDays([...DAYS])).toBe(m.meal_plan_everyday());
-		expect(describeDays([...DAYS].reverse())).toBe('Tous les jours');
+		expect(describeDays([...DAYS].toReversed())).toBe('Tous les jours');
 		expect(describeDays([...WEEKDAYS])).toBe(m.meal_plan_weekdays());
 		expect(describeDays(['Sunday', 'Saturday'])).toBe('Week-end');
 		expect(describeDays([...WEEKEND])).toBe(m.meal_plan_weekend());

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import { ApiError } from '#lib/api.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { json } from '#lib/test/fetch.ts';
 import { creationJson, credentialJson, leonard, passkeyRoutes, requestJson } from '#lib/test/passkeys.ts';
@@ -26,7 +25,9 @@ const text = (s: string) => [...new TextEncoder().encode(s)];
 /** A browser without the WebAuthn Level 3 JSON helpers, and an authenticator that answers. */
 function browser(answer: unknown = { toJSON: () => credentialJson, id: credentialJson.id }) {
 	const signal = vi.fn(async () => {});
-	vi.stubGlobal('PublicKeyCredential', class { static signalUnknownCredential = signal; });
+	vi.stubGlobal('PublicKeyCredential', { signalUnknownCredential: signal });
+	// `instanceof` needs a class: an attestation never comes here
+	// oxlint-disable-next-line typescript/no-extraneous-class
 	vi.stubGlobal('AuthenticatorAttestationResponse', class {});
 	const credentials = { get: vi.fn(async () => answer), create: vi.fn(async () => answer) };
 	vi.stubGlobal('navigator', { credentials });

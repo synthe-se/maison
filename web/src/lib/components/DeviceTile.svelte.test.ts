@@ -53,9 +53,10 @@ describe('DeviceTile', () => {
 	it('follows a command: the target at once, « Allumage… » after 1 s, the state again on answer', async () => {
 		vi.useFakeTimers();
 		const command = new Command(() => base.name, 3000);
-		const { container } = await render(DeviceTile, { ...base, state: 'Éteinte', on: false, command, ontoggle: () => {} });
-		const button = () => container.querySelector('button.gesture')!;
-		const line = () => container.querySelector('.tile-state')!.textContent!.trim();
+		await render(DeviceTile, { ...base, state: 'Éteinte', on: false, command, ontoggle: () => {} });
+		const button = () => page.getByRole('button', { name: base.name }).element();
+		// line 2: what the link to the device's page, or its gesture, is described by
+		const line = () => page.getByRole('article', { name: base.name }).getByRole('paragraph').element().textContent!.trim();
 		const send = deferred();
 		const run = command.run(true, () => send.promise);
 		flushSync();
@@ -74,28 +75,30 @@ describe('DeviceTile', () => {
 	it('says « Extinction… » when turning off', async () => {
 		vi.useFakeTimers();
 		const command = new Command(() => base.name, 3000);
-		const { container } = await render(DeviceTile, { ...base, on: true, command, ontoggle: () => {} });
+		await render(DeviceTile, { ...base, on: true, command, ontoggle: () => {} });
 		void command.run(false, () => deferred().promise);
 		await vi.advanceTimersByTimeAsync(1000);
 		flushSync();
-		expect(container.querySelector('.tile-state')!.textContent!.trim()).toBe(m.command_turning_off());
+		expect(page.getByRole('article', { name: base.name }).getByRole('paragraph').element().textContent!.trim()).toBe(
+			m.command_turning_off()
+		);
 	});
 
 	it('with no answer: « Pas de réponse » and a retry asking the same again', async () => {
 		vi.useFakeTimers();
 		const ontoggle = vi.fn();
 		const command = new Command(() => base.name, 3000);
-		const { container } = await render(DeviceTile, { ...base, on: false, command, ontoggle });
+		await render(DeviceTile, { ...base, on: false, command, ontoggle });
 		const run = command.run(true, () => deferred().promise);
 		await vi.advanceTimersByTimeAsync(3000);
 		await run;
 		flushSync();
-		const state = container.querySelector('.tile-state')!;
-		expect(state.textContent).toContain(m.command_no_answer_short());
-		expect(state.classList.contains('warn')).toBe(true);
-		expect(container.querySelector('button.gesture')!.getAttribute('aria-pressed')).toBe('false');
-		const retry = [...state.querySelectorAll('button')].find((b) => b.textContent === m.common_retry())!;
-		retry.click();
+		const state = page.getByRole('article', { name: base.name }).getByRole('paragraph');
+		expect(state.element().textContent).toContain(m.command_no_answer_short());
+		// the warning style only repeats what the words say
+		expect(state.element().classList.contains('warn')).toBe(true);
+		expect(page.getByRole('button', { name: base.name }).element().getAttribute('aria-pressed')).toBe('false');
+		(state.getByRole('button', { name: m.common_retry() }).element() as HTMLElement).click();
 		expect(ontoggle).toHaveBeenCalledExactlyOnceWith(true);
 	});
 

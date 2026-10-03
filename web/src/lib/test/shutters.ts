@@ -1,6 +1,6 @@
 // Shutter fixtures as the backend sends them (Matter covers), for the unit tests and the e2e house.
 
-import type { Shutter } from '#lib/api.ts';
+import type { Shutter } from '#lib/devices/shutters/api.ts';
 
 export const shutter = (over: Partial<Shutter> = {}): Shutter => ({
 	id: 's1',
@@ -15,5 +15,7 @@ export const shutter = (over: Partial<Shutter> = {}): Shutter => ({
 	schedule: { openAtSunrise: false, closeAtSunset: false, sunriseOffsetMin: 0, sunsetOffsetMin: 0 },
 	nextOpen: null,
 	nextClose: null,
+	skipNextOpen: false,
+	skipNextClose: false,
 	...over
 });

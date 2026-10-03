@@ -10,12 +10,11 @@
 		value: T;
 		options: readonly { value: T; label: string }[];
 		onchange: (v: T) => void;
-		disabled?: boolean;
 		placeholder?: string;
 		/** Hide the visible label when the context already says it; it stays for readers. */
 		hideLabel?: boolean;
 	}
-	let { label, value, options, onchange, disabled = false, placeholder, hideLabel = false }: Props = $props();
+	let { label, value, options, onchange, placeholder, hideLabel = false }: Props = $props();
 	const id = $props.id();
 	const listed = $derived(!value || options.some((o) => o.value === value) ? options : [...options, { value, label: value }]);
 	const shown = $derived(listed.find((o) => o.value === value)?.label ?? placeholder ?? '');
@@ -23,7 +22,7 @@
 
 <div class="field">
 	<span class="label" class:sr-only={hideLabel} id="{id}-label">{label}</span>
-	<Select.Root type="single" {value} {disabled} items={listed.map((o) => ({ ...o }))} onValueChange={(v) => onchange(v as T)}>
+	<Select.Root type="single" {value} items={listed.map((o) => ({ ...o }))} onValueChange={(v) => onchange(v as T)}>
 		<Select.Trigger class="choice-trigger" aria-labelledby="{id}-label {id}-value">
 			<span id="{id}-value" class:muted={!value}>{shown}</span>
 			<Icon name="chevron-down" />
@@ -33,7 +32,9 @@
 				{#each listed as o (o.value)}
 					<Select.Item class="select-item" value={o.value} label={o.label}>
 						{#snippet children({ selected })}
-							<span class="mark">{#if selected}<Icon name="check" />{/if}</span>{o.label}
+							<span class="mark"
+								>{#if selected}<Icon name="check" />{/if}</span
+							>{o.label}
 						{/snippet}
 					</Select.Item>
 				{/each}
@@ -44,11 +45,29 @@
 
 <style>
 	:global(.choice-trigger) {
-		display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); width: 100%;
-		min-height: var(--control-h); padding: 0 var(--s-3); border: 1px solid var(--line); border-radius: var(--radius);
-		background: var(--ground); color: var(--ink); font: var(--t-body); cursor: pointer; text-align: left;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--s-2);
+		width: 100%;
+		min-height: var(--control-h);
+		padding: 0 var(--s-3);
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--ground);
+		color: var(--ink);
+		font: var(--t-body);
+		cursor: pointer;
+		text-align: left;
 	}
-	:global(.choice-trigger[data-disabled]) { opacity: 0.55; cursor: not-allowed; }
-	:global(.choice-content) { min-width: var(--bits-floating-anchor-width); max-height: var(--bits-floating-available-height); overflow-y: auto; }
-	.mark { display: inline-grid; width: 18px; color: var(--accent); }
+	:global(.choice-content) {
+		min-width: var(--bits-floating-anchor-width);
+		max-height: var(--bits-floating-available-height);
+		overflow-y: auto;
+	}
+	.mark {
+		display: inline-grid;
+		width: var(--check-box);
+		color: var(--accent);
+	}
 </style>

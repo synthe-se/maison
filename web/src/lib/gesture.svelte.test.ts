@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Gesture, pending } from './gesture.svelte.ts';
+import { ApiError } from './api.ts';
+import { Gesture, pending, unavailable } from './gesture.svelte.ts';
 import { ui } from './ui.svelte.ts';
 
 describe('Gesture', () => {
@@ -42,11 +43,6 @@ describe('Gesture', () => {
 		field.remove();
 	});
 
-	it('`pending` marks a busy control without disabling it', () => {
-		expect(pending(true)).toEqual({ 'aria-disabled': 'true', 'aria-busy': 'true' });
-		expect(pending(false)).toEqual({ 'aria-disabled': undefined, 'aria-busy': undefined });
-	});
-
 	it('tells a failure once and answers undefined', async () => {
 		const fail = vi.spyOn(ui, 'fail').mockImplementation(() => {});
 		const g = new Gesture();
@@ -76,5 +72,42 @@ describe('Gesture', () => {
 		await one;
 		expect(g.is('b')).toBe(true);
 		void two;
+	});
+
+	it('an inline failure: said where the gesture is (`error`), no toast, the focus left where it is', async () => {
+		const fail = vi.spyOn(ui, 'fail');
+		const g = new Gesture();
+		const button = document.createElement('button');
+		document.body.append(button);
+		button.focus();
+		await g.run(() => Promise.reject(new Error('Clé refusée')), undefined, 'signin', { inline: true });
+		expect(g.error).toBe('Clé refusée');
+		expect(fail).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(button);
+		button.remove();
+	});
+
+	it('a refusal the caller answers itself says nothing else; one it does not answer is said', async () => {
+		const fail = vi.spyOn(ui, 'fail').mockImplementation(() => {});
+		const g = new Gesture();
+		const refused = (e: unknown) => e instanceof ApiError && e.code === 'person_exists';
+		await g.run(() => Promise.reject(new ApiError('', 409, 'person_exists')), undefined, 'invite', { refused });
+		expect(fail).not.toHaveBeenCalled();
+		expect(g.error).toBe('');
+		await g.run(() => Promise.reject(new ApiError('Panne', 500)), undefined, 'invite', { refused });
+		expect(fail).toHaveBeenCalledOnce();
+	});
+});
+
+describe('the attributes of a control', () => {
+	it('pending: busy and not operable, or nothing (never undoing another spread)', () => {
+		expect(pending(true)).toEqual({ 'aria-disabled': 'true', 'aria-busy': 'true' });
+		expect(pending(false)).toEqual({});
+	});
+
+	it('unavailable: not operable and described by why, or nothing', () => {
+		expect(unavailable('tile-state')).toEqual({ 'aria-disabled': 'true', 'aria-describedby': 'tile-state' });
+		expect(unavailable(false)).toEqual({});
+		expect(unavailable(undefined)).toEqual({});
 	});
 });

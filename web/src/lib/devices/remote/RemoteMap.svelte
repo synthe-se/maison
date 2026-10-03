@@ -1,8 +1,8 @@
 <script lang="ts">
 	// The remote as it is in the hand: every key opens its binding. A configured key is filled,
-	// a free one is an empty outline, and its name says which (not the colour alone).
+	// a free one is an empty outline, and its name says which (not the color alone).
 	import { m } from '#lib/paraglide/messages.js';
-	import type { IrBinding } from '#lib/api.ts';
+	import type { IrBinding } from '#lib/devices/remote/api.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import { REMOTE_ROWS } from './keys.ts';
 
@@ -41,21 +41,69 @@
 
 <style>
 	.remote {
-		display: grid; gap: var(--s-2); justify-items: center; width: fit-content; margin-inline: auto;
-		padding: var(--s-4); border: 1px solid var(--line); border-radius: var(--radius-2xl); background: var(--surface);
+		display: grid;
+		gap: var(--s-2);
+		justify-items: center;
+		width: fit-content;
+		margin-inline: auto;
+		padding: var(--s-4);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-2xl);
+		background: var(--surface);
 	}
-	.row { display: flex; gap: var(--s-2); justify-content: center; width: 100%; }
-	.row.end { justify-content: flex-end; }
+	.row {
+		display: flex;
+		gap: var(--s-2);
+		justify-content: center;
+		width: 100%;
+	}
+	.row.end {
+		justify-content: flex-end;
+	}
 	.key {
-		display: grid; place-items: center; min-width: var(--control-h); height: var(--control-h); padding: 0 var(--s-2);
-		border-radius: var(--radius-pill); border: 1px solid var(--line); background: var(--ground); color: var(--ink-muted);
-		font: var(--t-label); cursor: pointer; font-variant-numeric: tabular-nums;
+		display: grid;
+		place-items: center;
+		min-width: var(--control-h);
+		height: var(--control-h);
+		padding: 0 var(--s-2);
+		border-radius: var(--radius-pill);
+		border: 1px solid var(--line);
+		background: var(--ground);
+		color: var(--ink-muted);
+		font: var(--t-label);
+		cursor: pointer;
+		font-variant-numeric: tabular-nums;
 	}
-	.key:hover { border-color: var(--accent-soft); color: var(--ink); }
-	.key.mapped { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-	.legend { display: flex; gap: var(--s-4); justify-content: center; }
-	.legend > span { display: inline-flex; align-items: center; gap: var(--s-1); }
-	.dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--ink-muted); }
-	.dot.mapped { background: var(--accent); border-color: var(--accent); }
-	.hint { text-align: center; }
+	.key:hover {
+		border-color: var(--accent-soft);
+		color: var(--ink);
+	}
+	.key.mapped {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: var(--on-accent);
+	}
+	.legend {
+		display: flex;
+		gap: var(--s-4);
+		justify-content: center;
+	}
+	.legend > span {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--s-1);
+	}
+	.dot {
+		width: var(--s-3);
+		height: var(--s-3);
+		border-radius: 50%;
+		border: 1px solid var(--ink-muted);
+	}
+	.dot.mapped {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+	.hint {
+		text-align: center;
+	}
 </style>

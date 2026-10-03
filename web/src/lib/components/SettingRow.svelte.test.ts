@@ -15,8 +15,8 @@ describe('SettingRow', () => {
 		expect(onchange).toHaveBeenCalledWith(false);
 	});
 
-	it('passes pending and disabled to its switch, and draws no hint without one', async () => {
-		await render(SettingRow, { icon: 'bell-off', label: 'Silence', checked: false, onchange: () => {}, pending: true });
+	it('passes busy to its switch, and draws no hint without one', async () => {
+		await render(SettingRow, { icon: 'bell-off', label: 'Silence', checked: false, onchange: () => {}, busy: true });
 		await expect.element(page.getByRole('switch', { name: 'Silence' })).toHaveAttribute('aria-busy', 'true');
 		expect(document.querySelector('.hint')).toBeNull();
 	});

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import { api } from '#lib/api.ts';
-import { forgetAll, live } from '#lib/live.svelte.ts';
+import { live, source } from '#lib/live.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { json, scriptFetch } from '#lib/test/fetch.ts';
 import { alex, authenticator, leonard, passkeyRoutes } from '#lib/test/passkeys.ts';
@@ -13,7 +13,7 @@ const user = leonard;
 function liveEntry(key: string) {
 	let entry!: ReturnType<typeof live<number>>;
 	const destroy = $effect.root(() => {
-		entry = live(key, async () => 1);
+		entry = live(source(key, async () => 1));
 	});
 	flushSync();
 	destroy();
@@ -24,7 +24,6 @@ describe('session', () => {
 	afterEach(() => {
 		session.user = null;
 		session.status = 'loading';
-		forgetAll();
 	});
 
 	it('is signed in when the cookie is still good', async () => {
@@ -61,9 +60,9 @@ describe('session', () => {
 
 	it('signs in with a passkey: no name, no password', async () => {
 		authenticator();
-		const api = stubApi(passkeyRoutes());
+		const backend = stubApi(passkeyRoutes());
 		await session.signIn();
-		expect(api.sent('POST', '/passkeys/login/finish')).toHaveLength(1);
+		expect(backend.sent('POST', '/passkeys/login/finish')).toHaveLength(1);
 		expect(session.status).toBe('signed_in');
 		expect(session.user?.name).toBe('Léonard');
 		expect(session.admin).toBe(true);

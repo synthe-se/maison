@@ -53,11 +53,15 @@ describe('layout', () => {
 		await show();
 		await expect.element(page.getByRole('heading', { level: 1, name: m.unreachable_title() })).toBeVisible();
 		await expect.element(page.getByText(m.unreachable_body())).toBeVisible();
+		await expect.element(page.getByText(m.branding_promise())).toBeVisible();
 		await expect.element(page.getByRole('button', { name: m.reload() })).toBeVisible();
 	});
 
 	it('asks to sign in when the session is over', async () => {
-		stubApi({ 'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }), 'POST /auth/refresh': new Response('{}', { status: 401 }) });
+		stubApi({
+			'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }),
+			'POST /auth/refresh': new Response('{}', { status: 401 })
+		});
 		await show();
 		await expect.element(page.getByRole('heading', { level: 1, name: m.pk_signin_title() })).toBeVisible();
 		await expect.element(page.getByText('Salon')).not.toBeInTheDocument();
@@ -65,7 +69,10 @@ describe('layout', () => {
 	});
 
 	it('signed in from the door: the focus goes to the page’s title, not to the void', async () => {
-		stubApi({ 'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }), 'POST /auth/refresh': new Response('{}', { status: 401 }) });
+		stubApi({
+			'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }),
+			'POST /auth/refresh': new Response('{}', { status: 401 })
+		});
 		await show();
 		await expect.element(page.getByRole('heading', { level: 1, name: m.pk_signin_title() })).toBeVisible();
 		session.adopt({ id: 'leonard', name: 'Léonard', role: 'admin' });
@@ -81,7 +88,10 @@ describe('layout', () => {
 
 	it('opens an invitation signed out: it is how one gets a first passkey', async () => {
 		kit.page.url = new URL('http://maison.test/invite/tok');
-		stubApi({ 'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }), 'POST /auth/refresh': new Response('{}', { status: 401 }) });
+		stubApi({
+			'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }),
+			'POST /auth/refresh': new Response('{}', { status: 401 })
+		});
 		await show();
 		await expect.element(page.getByRole('heading', { name: 'Salon' })).toBeVisible();
 		await expect.element(page.getByRole('heading', { name: m.pk_signin_title() })).not.toBeInTheDocument();
@@ -119,7 +129,7 @@ describe('layout', () => {
 		await show();
 		ui.say('Volet ouvert');
 		await expect.element(page.getByText('Volet ouvert')).toBeInTheDocument();
-		ui.toast('Panne', true);
+		ui.toast('Panne', { warn: true });
 		await expect.element(page.getByRole('alert').filter({ hasText: 'Panne' }).first()).toBeInTheDocument();
 		ui.toasts = [];
 	});

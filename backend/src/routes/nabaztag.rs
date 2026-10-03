@@ -10,13 +10,12 @@ use crate::{
     auth::AdminUser,
     error::AppError,
     nabaztag::{NabaztagConfig, TempoPushResult},
-    routes::SimpleResponse,
+    routes::{Answer, SimpleResponse},
 };
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct NabaztagStatusResponse {
-    success: bool,
+struct NabaztagStatus {
     config: NabaztagConfig,
     reachable: bool,
 }
@@ -36,8 +35,7 @@ struct TempoPushRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TempoPushResponse {
-    success: bool,
+struct TempoPushed {
     message: String,
     result: TempoPushResult,
 }
@@ -50,9 +48,8 @@ pub fn router() -> Router<AppState> {
         .route("/tempo/push", post(push_tempo))
 }
 
-async fn status(State(state): State<AppState>) -> Json<NabaztagStatusResponse> {
-    Json(NabaztagStatusResponse {
-        success: true,
+async fn status(State(state): State<AppState>) -> Json<Answer<NabaztagStatus>> {
+    Answer::ok(NabaztagStatus {
         config: state.nabaztag.config().await,
         reachable: state.nabaztag.reachable().await,
     })
@@ -78,11 +75,10 @@ async fn send_command(
 async fn push_tempo(
     State(state): State<AppState>,
     body: Option<Json<TempoPushRequest>>,
-) -> Result<Json<TempoPushResponse>, AppError> {
+) -> Result<Json<Answer<TempoPushed>>, AppError> {
     let force_refresh = body.map(|b| b.force_refresh).unwrap_or(false);
     let result = state.nabaztag.push_tempo_from(&state.tempo, force_refresh).await?;
-    Ok(Json(TempoPushResponse {
-        success: true,
+    Ok(Answer::ok(TempoPushed {
         message: format!(
             "Tempo pushed: today={}, tomorrow={}",
             result.today_color,

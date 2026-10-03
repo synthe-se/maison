@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The directional pad both remotes share (docs/ux/tableau-de-bord.md § 7): four 56 px arrows
+	// The directional pad both remotes share (docs/ux.md § 7): four 56 px arrows
 	// around a 64 px OK, 8 px apart, the keys under it at 48 px; 192 px wide, inside one hand's
 	// 216. Keyboard shortcuts only while the pad itself has focus (WCAG 2.1.4): arrows, Enter = OK,
 	// Backspace = Back, + / − volume, M mute; listed in <kbd> from 840 px.
@@ -16,11 +16,12 @@
 		under: PadKey[];
 		/** Route + / − / M to the volume keys. */
 		volume?: boolean;
-		disabled?: boolean;
+		/** The id of what says why the keys cannot act now; none: they can. */
+		reason?: string;
 		/** More 48 px keys at the end of the row under the pad (the TV's Source…). */
 		extra?: Snippet;
 	}
-	let { label, keys, under, volume = false, disabled = false, extra }: Props = $props();
+	let { label, keys, under, volume = false, reason, extra }: Props = $props();
 	const id = $props.id();
 
 	const SHORTCUT: Record<string, PadKey> = {
@@ -38,7 +39,7 @@
 
 	function onkeydown(e: KeyboardEvent) {
 		// only the pad itself: on a focused key, Enter and Space keep activating that key
-		if (disabled || e.target !== e.currentTarget || e.altKey || e.ctrlKey || e.metaKey) return;
+		if (reason || e.target !== e.currentTarget || e.altKey || e.ctrlKey || e.metaKey) return;
 		const k = SHORTCUT[e.key] ?? (volume ? VOLUME_SHORTCUT[e.key] : undefined);
 		if (!k) return;
 		e.preventDefault();
@@ -52,46 +53,98 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions: the pad takes focus to receive its shortcuts (2.1.4) -->
 <div class="pad-wrap" role="group" aria-label={label} aria-describedby="{id}-kbd" tabindex="0" {onkeydown}>
 	<div class="pad">
-		<span class="up"><Key k="up" fire={keys.up} {disabled} /></span>
-		<span class="left"><Key k="left" fire={keys.left} {disabled} /></span>
-		<span class="ok"><Key k="ok" fire={keys.ok} size="ok" {disabled} /></span>
-		<span class="right"><Key k="right" fire={keys.right} {disabled} /></span>
-		<span class="down"><Key k="down" fire={keys.down} {disabled} /></span>
+		<span class="up"><Key k="up" fire={keys.up} {reason} /></span>
+		<span class="left"><Key k="left" fire={keys.left} {reason} /></span>
+		<span class="ok"><Key k="ok" fire={keys.ok} size="ok" {reason} /></span>
+		<span class="right"><Key k="right" fire={keys.right} {reason} /></span>
+		<span class="down"><Key k="down" fire={keys.down} {reason} /></span>
 	</div>
 	<div class="under">
-		{#each under as k (k)}<Key {k} fire={keys[k]} size="small" {disabled} />{/each}
+		{#each under as k (k)}<Key {k} fire={keys[k]} size="small" {reason} />{/each}
 		{@render extra?.()}
 	</div>
 	<dl class="kbd" id="{id}-kbd">
-		<div><dt><kbd>{m.tv_kbd_arrows()}</kbd></dt><dd>{m.tv_kbd_move()}</dd></div>
-		<div><dt><kbd>{m.tv_kbd_enter()}</kbd></dt><dd>{m.tv_key_ok()}</dd></div>
-		<div><dt><kbd>{m.tv_kbd_backspace()}</kbd></dt><dd>{m.tv_key_back()}</dd></div>
+		<div>
+			<dt><kbd>{m.tv_kbd_arrows()}</kbd></dt>
+			<dd>{m.tv_kbd_move()}</dd>
+		</div>
+		<div>
+			<dt><kbd>{m.tv_kbd_enter()}</kbd></dt>
+			<dd>{m.key_ok()}</dd>
+		</div>
+		<div>
+			<dt><kbd>{m.tv_kbd_backspace()}</kbd></dt>
+			<dd>{m.key_back()}</dd>
+		</div>
 		{#if volume}
-			<div><dt><kbd>{m.tv_kbd_plus_minus()}</kbd></dt><dd>{m.tv_volume()}</dd></div>
-			<div><dt><kbd>{m.tv_kbd_m()}</kbd></dt><dd>{m.tv_mute()}</dd></div>
+			<div>
+				<dt><kbd>{m.tv_kbd_plus_minus()}</kbd></dt>
+				<dd>{m.tv_volume()}</dd>
+			</div>
+			<div>
+				<dt><kbd>{m.tv_kbd_m()}</kbd></dt>
+				<dd>{m.key_mute()}</dd>
+			</div>
 		{/if}
 	</dl>
 </div>
 
 <style>
-	.pad-wrap { display: grid; justify-items: center; gap: var(--s-3); padding: var(--s-2); border-radius: var(--radius-l); }
-	.pad-wrap:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+	.pad-wrap {
+		display: grid;
+		justify-items: center;
+		gap: var(--s-3);
+		padding: var(--s-2);
+		border-radius: var(--radius-l);
+	}
 	.pad {
-		display: grid; gap: var(--s-2); place-items: center;
+		display: grid;
+		gap: var(--s-2);
+		place-items: center;
 		grid-template-columns: var(--remote-key) var(--remote-ok) var(--remote-key);
 		grid-template-areas: '. up .' 'left ok right' '. down .';
 	}
-	.up { grid-area: up; }
-	.left { grid-area: left; }
-	.ok { grid-area: ok; }
-	.right { grid-area: right; }
-	.down { grid-area: down; }
-	.under { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s-2); }
+	.up {
+		grid-area: up;
+	}
+	.left {
+		grid-area: left;
+	}
+	.ok {
+		grid-area: ok;
+	}
+	.right {
+		grid-area: right;
+	}
+	.down {
+		grid-area: down;
+	}
+	.under {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: var(--s-2);
+	}
 	/* the shortcuts are for a keyboard: shown from 840 px, always read with the pad (describedby) */
-	.kbd { display: none; margin: 0; font: var(--t-secondary); color: var(--ink-muted); }
-	.kbd div { display: inline-flex; gap: var(--s-1); margin-inline: var(--s-2); }
-	.kbd dd { margin: 0; }
+	.kbd {
+		display: none;
+		margin: 0;
+		font: var(--t-secondary);
+		color: var(--ink-muted);
+	}
+	.kbd div {
+		display: inline-flex;
+		gap: var(--s-1);
+		margin-inline: var(--s-2);
+	}
+	.kbd dd {
+		margin: 0;
+	}
 	@media (min-width: 840px) {
-		.kbd { display: flex; flex-wrap: wrap; justify-content: center; }
+		.kbd {
+			display: flex;
+			flex-wrap: wrap;
+			justify-content: center;
+		}
 	}
 </style>

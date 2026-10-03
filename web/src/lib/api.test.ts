@@ -1,28 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { json as jsonBody, scriptFetch as script, sentBody, stubFetch } from '#lib/test/fetch.ts';
-import {
-	androidTvApi,
-	ApiError,
-	UNREACHABLE,
-	api,
-	authApi,
-	broadlinkApi,
-	devicesApi,
-	feederApi,
-	fountainApi,
-	hueLampsApi,
-	irApi,
-	litterBoxApi,
-	merossApi,
-	nabaztagApi,
-	onUnauthorized,
-	path,
-	peopleApi,
-	shuttersApi,
-	tempoApi,
-	tvApi,
-	zigbeeLampsApi
-} from './api.ts';
+import { ApiError, UNREACHABLE, api, onUnauthorized, path, toApiError } from './api.ts';
+import { authApi, peopleApi } from './passkeys.ts';
+import { devicesApi, feederApi, fountainApi, litterBoxApi } from './devices/cats/api.ts';
+import { hueLampsApi, zigbeeLampsApi } from './devices/lamps/api.ts';
+import { merossApi } from './devices/meross/api.ts';
+import { broadlinkApi } from './devices/climate/api.ts';
+import { tempoApi } from './devices/tempo/api.ts';
+import { irApi } from './devices/remote/api.ts';
+import { nabaztagApi } from './devices/nabaztag/api.ts';
+import { androidTvApi, tvApi } from './devices/tv/api.ts';
+import { shuttersApi } from './devices/shutters/api.ts';
 
 const json = (status: number, body: unknown) => jsonBody(body, status);
 
@@ -132,7 +120,7 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['feeder.status', () => feederApi.status('d1'), 'GET /devices/d1/feeder/status'],
 	['feeder.feed (one portion by default)', () => feederApi.feed('d1'), 'POST /devices/d1/feeder/feed', { portion: 1 }],
 	['feeder.getMealPlan', () => feederApi.getMealPlan('d1'), 'GET /devices/d1/feeder/meal-plan'],
-	['feeder.setMealPlan', () => feederApi.setMealPlan('d1', []), 'POST /devices/d1/feeder/meal-plan', { meal_plan: [] }],
+	['feeder.setMealPlan', () => feederApi.setMealPlan('d1', []), 'POST /devices/d1/feeder/meal-plan', { mealPlan: [] }],
 	['fountain.status', () => fountainApi.status('d1'), 'GET /devices/d1/fountain/status'],
 	['fountain.power', () => fountainApi.power('d1', true), 'POST /devices/d1/fountain/power', { enabled: true }],
 	['fountain.resetWater', () => fountainApi.resetWater('d1'), 'POST /devices/d1/fountain/reset/water'],
@@ -142,7 +130,7 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['fountain.setEcoMode', () => fountainApi.setEcoMode('d1', 2), 'POST /devices/d1/fountain/eco-mode', { mode: 2 }],
 	['litterBox.status', () => litterBoxApi.status('d1'), 'GET /devices/d1/litter-box/status'],
 	['litterBox.clean', () => litterBoxApi.clean('d1'), 'POST /devices/d1/litter-box/clean'],
-	['litterBox.settings', () => litterBoxApi.settings('d1', { clean_delay: 5 }), 'POST /devices/d1/litter-box/settings', { clean_delay: 5 }],
+	['litterBox.settings', () => litterBoxApi.settings('d1', { cleanDelay: 5 }), 'POST /devices/d1/litter-box/settings', { cleanDelay: 5 }],
 	['hue.list', () => hueLampsApi.list(), 'GET /hue-lamps'],
 	['hue.scan', () => hueLampsApi.scan(), 'POST /hue-lamps/scan'],
 	['hue.stats', () => hueLampsApi.stats(), 'GET /hue-lamps/stats'],
@@ -171,10 +159,15 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['meross.consumption', () => merossApi.consumption('p1'), 'GET /meross/p1/consumption'],
 	['meross.dnd', () => merossApi.dnd('p1', true), 'POST /meross/p1/dnd', { enabled: true }],
 	['broadlink.discover', () => broadlinkApi.discover(), 'GET /broadlink/discover'],
-	['broadlink.discover (from an address, fresh)', () => broadlinkApi.discover('192.168.1.10', true), 'GET /broadlink/discover?localIp=192.168.1.10&forceRefresh=true'],
+	['broadlink.discover (a new scan)', () => broadlinkApi.discover(true), 'GET /broadlink/discover?forceRefresh=true'],
 	['broadlink.listCodes', () => broadlinkApi.listCodes(), 'GET /broadlink/codes'],
 	['broadlink.getMitsubishiState', () => broadlinkApi.getMitsubishiState(), 'GET /broadlink/mitsubishi/state'],
-	['broadlink.sendMitsubishiCommand', () => broadlinkApi.sendMitsubishiCommand('h', 'heat_21'), 'POST /broadlink/mitsubishi/send', { host: 'h', command: 'heat_21' }],
+	[
+		'broadlink.sendMitsubishiCommand',
+		() => broadlinkApi.sendMitsubishiCommand('h', 'heat_21'),
+		'POST /broadlink/mitsubishi/send',
+		{ host: 'h', command: 'heat_21' }
+	],
 	['tempo.get', () => tempoApi.get(), 'GET /tempo'],
 	['tempo.forecast', () => tempoApi.forecast(), 'GET /tempo/forecast'],
 	['tempo.calendar', () => tempoApi.calendar(), 'GET /tempo/calendar'],
@@ -193,7 +186,12 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['tv.ambilight', () => tvApi.ambilight('toggle'), 'POST /tv/ambilight', { state: 'toggle' }],
 	['tv.switchToBox', () => tvApi.switchToBox(), 'POST /tv/source/box'],
 	['shutters.list', () => shuttersApi.list(), 'GET /matter/covers'],
-	['shutters.commission', () => shuttersApi.commission('3497-011-2332', 'Salon'), 'POST /matter/commission', { code: '3497-011-2332', name: 'Salon' }],
+	[
+		'shutters.commission',
+		() => shuttersApi.commission('3497-011-2332', 'Salon'),
+		'POST /matter/commission',
+		{ code: '3497-011-2332', name: 'Salon' }
+	],
 	['shutters.open', () => shuttersApi.open('c1'), 'POST /matter/covers/c1/open'],
 	['shutters.close', () => shuttersApi.close('c1'), 'POST /matter/covers/c1/close'],
 	['shutters.stop', () => shuttersApi.stop('c1'), 'POST /matter/covers/c1/stop'],
@@ -203,13 +201,33 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['androidTv.status', () => androidTvApi.status(), 'GET /androidtv'],
 	['androidTv.setConfig', () => androidTvApi.setConfig({ host: 'box' }), 'PUT /androidtv/config', { host: 'box' }],
 	['androidTv.sendKey', () => androidTvApi.sendKey('ok'), 'POST /androidtv/key', { key: 'ok' }],
-	['androidTv.launch (waking the TV by default)', () => androidTvApi.launch('com.netflix'), 'POST /androidtv/launch', { package: 'com.netflix', ensureTvOn: true }],
+	[
+		'androidTv.launch (waking the TV by default)',
+		() => androidTvApi.launch('com.netflix'),
+		'POST /androidtv/launch',
+		{ package: 'com.netflix', ensureTvOn: true }
+	],
 	['androidTv.apps', () => androidTvApi.apps(), 'GET /androidtv/apps'],
 	['androidTv.wake', () => androidTvApi.wake(), 'POST /androidtv/wake'],
 	['androidTv.sleep', () => androidTvApi.sleep(), 'POST /androidtv/sleep'],
 	['androidTv.pairStart', () => androidTvApi.pairStart(), 'POST /androidtv/pair/start'],
 	['androidTv.pairFinish', () => androidTvApi.pairFinish('A1B2C3'), 'POST /androidtv/pair/finish', { code: 'A1B2C3' }]
 ];
+
+describe('toApiError', () => {
+	it('keeps the server’s words, its refusal’s name and what goes with it', () => {
+		const e = toApiError(409, { success: false, error: 'Taken', code: 'person_exists', detail: { person: { id: 'leonard' } } });
+		expect(e).toBeInstanceOf(ApiError);
+		expect([e.message, e.status, e.code, e.detail]).toEqual(['Taken', 409, 'person_exists', { person: { id: 'leonard' } }]);
+	});
+
+	it('nothing to read (a proxy’s page, an empty body): the status alone', () => {
+		for (const body of [undefined, null, 'oops', { error: 42, code: {} }]) {
+			const e = toApiError(502, body);
+			expect([e.message, e.status, e.code, e.detail]).toEqual(['', 502, undefined, undefined]);
+		}
+	});
+});
 
 describe('path', () => {
 	it('encodes every interpolated value, so an id never breaks out of its segment', () => {
@@ -231,10 +249,10 @@ describe('endpoints', () => {
 		const calls = stubFetch(() => jsonBody({ success: true }));
 		await expect(call()).resolves.toEqual({ success: true });
 		expect(calls).toHaveLength(1);
-		const [method, path] = route.split(' ');
-		expect(`${calls[0].init?.method} ${calls[0].url}`).toBe(`${method} /api${path}`);
-		if (body === undefined) expect(calls[0].init?.body).toBeUndefined();
-		else expect(sentBody(calls[0])).toEqual(body);
+		const [method, at] = route.split(' ');
+		expect(`${calls[0].init?.method} ${calls[0].url}`).toBe(`${method} /api${at}`);
+		// no body for a command without one
+		expect(calls[0].init?.body === undefined ? undefined : sentBody(calls[0])).toEqual(body);
 	});
 
 	it('sends an IR binding as the body itself', async () => {
@@ -308,11 +326,14 @@ describe('androidTvApi.installApk', () => {
 		await expect(done).resolves.toEqual({ success: true, message: 'installed' });
 	});
 
-	it('fails with the server’s words, or its status', async () => {
+	it('fails with the server’s words and its refusal’s name, or its status', async () => {
 		vi.stubGlobal('XMLHttpRequest', FakeXhr);
 		const refused = androidTvApi.installApk(apk());
 		FakeXhr.last.answer(500, { error: 'INSTALL_FAILED_VERSION_DOWNGRADE' });
 		await expect(refused).rejects.toThrow('INSTALL_FAILED_VERSION_DOWNGRADE');
+		const forbidden = androidTvApi.installApk(apk());
+		FakeXhr.last.answer(403, { success: false, error: 'Admins only', code: 'forbidden' });
+		await expect(forbidden).rejects.toMatchObject({ status: 403, code: 'forbidden' });
 		const silent = androidTvApi.installApk(apk());
 		FakeXhr.last.answer(413, null);
 		await expect(silent).rejects.toMatchObject({ status: 413 });

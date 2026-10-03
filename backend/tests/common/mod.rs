@@ -1,9 +1,12 @@
 //! What every integration test binary shares: the test configuration, the
 //! token, the in-process app and the request round trip. Each binary uses a
 //! subset, hence the `dead_code` allowance.
+//!
+//! A test never touches the repository: its configuration lives in a temp root of its
+//! own (`isolated_config`), removed when the test ends.
 #![allow(dead_code)]
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, sync::OnceLock};
+use std::{cell::RefCell, net::SocketAddr, path::PathBuf, sync::Arc, sync::OnceLock};
 
 use axum::{
     Router,
@@ -14,7 +17,7 @@ use axum::{
 use jsonwebtoken::{EncodingKey, Header, encode};
 use maison_backend::{
     auth::Claims,
-    build_app_from_config,
+    build_app_parts_from_config,
     config::{self, Config},
 };
 use serde_json::{Value, json};
@@ -23,7 +26,8 @@ use tower::ServiceExt;
 /// The machine token the test config accepts on `/api/ir`.
 pub const TEST_IR_TOKEN: &str = "test-ir-token";
 
-/// The repository root: the parent of the backend crate.
+/// The repository root: the parent of the backend crate. Read only (the live tests'
+/// device files, the vendored Tempo data): a test writes under `temp_root`.
 pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -31,16 +35,24 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// A fresh, created directory `<tmp>/<name>/<uuid>`.
-pub fn temp_root(name: &str) -> PathBuf {
-    let root = std::env::temp_dir()
-        .join(name)
-        .join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&root).expect("temp test dir should be created");
-    root
+thread_local! {
+    /// This test's temp roots: each test runs on a thread of its own, and they go with it.
+    static ROOTS: RefCell<Vec<tempfile::TempDir>> = const { RefCell::new(Vec::new()) };
 }
 
-/// `name` from the environment, else `default` under the repository root.
+/// A fresh, created directory `<tmp>/<name>-<random>`, removed when the test ends.
+pub fn temp_root(name: &str) -> PathBuf {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("{name}-"))
+        .tempdir()
+        .expect("temp test dir should be created");
+    let path = dir.path().to_path_buf();
+    ROOTS.with(|roots| roots.borrow_mut().push(dir));
+    path
+}
+
+/// `name` from the environment, else `default` under the repository root (the live tests,
+/// on the real devices).
 pub fn env_path(name: &str, default: &str) -> PathBuf {
     config::env_text(name)
         .map(PathBuf::from)
@@ -52,17 +64,14 @@ pub fn jwt_secret() -> String {
     config::env_text("JWT_SECRET").unwrap_or_else(|| config::DEFAULT_JWT_SECRET.to_string())
 }
 
-/// Defaults under the repository root, local-only and with Bluetooth off.
-pub fn test_config() -> Config {
-    Config {
-        matter_state_dir: std::env::temp_dir().join("maison-matter-tests-unused"),
-        ..for_tests(Config::defaults(workspace_root()))
-    }
-}
-
-/// What every test config changes: local-only, Bluetooth off, the test secrets, no public
-/// address (passkeys off unless a test sets one).
-fn for_tests(defaults: Config) -> Config {
+/// The one test config: every default on a fresh root of its own (`temp_root`), where every
+/// state file starts missing but the people (`TEST_PEOPLE`); local-only, Bluetooth off, the
+/// test secrets, no public address (passkeys off unless a test sets one). Nothing in the
+/// repository is read or rewritten.
+pub fn isolated_config(name: &str) -> Config {
+    let defaults = Config::defaults(temp_root(name));
+    std::fs::create_dir_all(defaults.auth_path.parent().expect("auth/")).expect("auth dir should be created");
+    std::fs::write(&defaults.auth_path, TEST_PEOPLE).expect("people file should be written");
     Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -71,23 +80,8 @@ fn for_tests(defaults: Config) -> Config {
         disable_bluetooth: true,
         ir_api_token: Some(TEST_IR_TOKEN.into()),
         public_url: None,
-        auth_path: test_people(),
         ..defaults
     }
-}
-
-/// A fresh people file holding `TEST_PEOPLE`.
-fn test_people() -> PathBuf {
-    let path = temp_root("maison-test-people").join("auth.json");
-    std::fs::write(&path, TEST_PEOPLE).expect("people file should be written");
-    path
-}
-
-/// The test config on a fresh, empty root of its own (`<tmp>/<name>/<uuid>`): every state
-/// file starts missing, nothing in the repository is read or rewritten.
-pub fn isolated_config(name: &str) -> Config {
-    let root = temp_root(name);
-    Config { matter_state_dir: root.join("matter"), ..for_tests(Config::defaults(root)) }
 }
 
 /// A never-expiring token for `person` (one of `TEST_PEOPLE`), as if they had just signed in.
@@ -121,8 +115,9 @@ const TEST_PEOPLE: &str = r#"{"people": [
 
 /// The full app built from `config`, reachable as if from localhost.
 pub fn app(config: Config) -> Router {
-    build_app_from_config(Arc::new(config))
+    build_app_parts_from_config(Arc::new(config))
         .expect("failed to build test app")
+        .0
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))))
 }
 
@@ -144,12 +139,20 @@ pub fn request(method: Method, path: &str, token: Option<&str>, body: Option<Val
 }
 
 /// Runs `request` through `app`: status, headers and the JSON body (`null` when empty).
+/// Every API answer is held to the API's casing (`util::casing_offences`): camelCase
+/// English keys, whatever the test is about.
 pub async fn respond(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, Value) {
+    let path = request.uri().path().to_string();
     let response = app.clone().oneshot(request).await.expect("request should succeed");
     let status = response.status();
     let headers = response.headers().clone();
     let body = to_bytes(response.into_body(), usize::MAX).await.expect("body should be readable");
-    (status, headers, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    let json = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    if path.starts_with("/api") {
+        let offences = maison_backend::util::casing_offences(&json);
+        assert!(offences.is_empty(), "{path} answers keys that are not camelCase: {offences:?}");
+    }
+    (status, headers, json)
 }
 
 /// One round trip: status and JSON body.

@@ -14,8 +14,8 @@ describe('Progress', () => {
 		await expect.element(page.getByText('12 s sur 30')).toBeVisible();
 	});
 
-	it('never draws past full', async () => {
-		const { container } = await render(Progress, { label: 'Envoi', value: 45, max: 30, valueText: 'fini' });
-		expect((container.querySelector('.fill') as HTMLElement).style.width).toBe('100%');
+	it('never goes past full', async () => {
+		await render(Progress, { label: 'Envoi', value: 45, max: 30, valueText: 'fini' });
+		await expect.element(page.getByRole('progressbar', { name: 'Envoi' })).toHaveAttribute('aria-valuenow', '30');
 	});
 });

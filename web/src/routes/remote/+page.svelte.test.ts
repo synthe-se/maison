@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import type { IrBinding } from '#lib/api.ts';
-import { forgetAll } from '#lib/live.svelte.ts';
+import type { IrBinding } from '#lib/devices/remote/api.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { session } from '#lib/session.svelte.ts';
 import { alex, leonard } from '#lib/test/passkeys.ts';
@@ -14,7 +13,14 @@ import { keyName } from '#lib/devices/remote/keys.ts';
 import RemotePage from './+page.svelte';
 
 const keymap: Record<string, IrBinding> = {
-	'353': { label: 'Taichi', repeat: true, actions: [{ action: 'nabaztag', command: 'chor taichi' }, { action: 'zigbee_power', lamp: 'zb-1', state: 'toggle' }] },
+	'353': {
+		label: 'Taichi',
+		repeat: true,
+		actions: [
+			{ action: 'nabaztag', command: 'chor taichi' },
+			{ action: 'zigbee_power', lamp: 'zb-1', state: 'toggle' }
+		]
+	},
 	'115': { actions: [{ action: 'meross_power', device: 'p1', state: 'on' }] }
 };
 const site = (map: Record<string, IrBinding> = keymap, more: Record<string, unknown> = {}) =>
@@ -24,7 +30,6 @@ const bindings = () => page.getByRole('region', { name: m.remote_bindings_title(
 describe('remote page', () => {
 	beforeEach(() => session.adopt(leonard));
 	afterEach(() => {
-		forgetAll();
 		ui.toasts = [];
 	});
 
@@ -133,7 +138,10 @@ describe('remote page', () => {
 		await render(RemotePage);
 		await page.getByRole('button', { name: m.remote_delete_key({ key: keyName(115) }) }).click();
 		api.routes['/ir/keymap'] = { success: true, keymap: { '353': keymap['353'] } };
-		await page.getByRole('alertdialog').getByRole('button', { name: m.remote_delete_key({ key: keyName(115) }) }).click();
+		await page
+			.getByRole('alertdialog')
+			.getByRole('button', { name: m.remote_delete_key({ key: keyName(115) }) })
+			.click();
 		await expect.element(bindings()).toHaveLength(1);
 		await expect.element(page.getByRole('heading', { name: m.remote_bindings_title() })).toHaveFocus();
 	});

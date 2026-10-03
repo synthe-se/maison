@@ -21,7 +21,7 @@
 //! prompt on the television. Accepting it persists the key on the device, so
 //! this only happens once.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use rsa::{
     pkcs1v15::SigningKey,
@@ -40,7 +40,7 @@ use tokio::{
 use axum::body::Bytes;
 use futures::{Stream, StreamExt};
 
-use crate::{broadlink::unreachable, error::AppError};
+use crate::{error::AppError, net::unreachable};
 
 const A_CNXN: u32 = 0x4e58_4e43;
 const A_AUTH: u32 = 0x4854_5541;
@@ -56,9 +56,12 @@ const AUTH_TOKEN: u32 = 1;
 const AUTH_SIGNATURE: u32 = 2;
 const AUTH_RSAPUBLICKEY: u32 = 3;
 
-const RSA_BITS: usize = 2048;
+const RSA_BITS: u32 = 2048;
 /// The device's public-key blob counts 32-bit words, not bytes.
-const KEY_WORDS: usize = RSA_BITS / 32;
+const KEY_WORDS: u32 = RSA_BITS / 32;
+/// Most a shell command may print: its output is held whole, and the box is a peer
+/// whose stream nothing else bounds.
+const MAX_SHELL_OUTPUT: usize = 1024 * 1024;
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const IO_TIMEOUT: Duration = Duration::from_secs(15);
@@ -85,7 +88,8 @@ impl Message {
         }
     }
 
-    fn encode(&self) -> Vec<u8> {
+    fn encode(&self) -> Result<Vec<u8>, AppError> {
+        let length = wire_length(self.payload.len())?;
         let checksum = self
             .payload
             .iter()
@@ -94,12 +98,21 @@ impl Message {
         out.extend_from_slice(&self.command.to_le_bytes());
         out.extend_from_slice(&self.arg0.to_le_bytes());
         out.extend_from_slice(&self.arg1.to_le_bytes());
-        out.extend_from_slice(&(self.payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&length.to_le_bytes());
         out.extend_from_slice(&checksum.to_le_bytes());
         out.extend_from_slice(&(self.command ^ 0xffff_ffff).to_le_bytes());
         out.extend_from_slice(&self.payload);
-        out
+        Ok(out)
     }
+}
+
+/// A length as the wire carries it: 32 bits, and never past the payload size both ends
+/// agreed on. Refused, not truncated.
+fn wire_length(length: usize) -> Result<u32, AppError> {
+    u32::try_from(length)
+        .ok()
+        .filter(|length| *length <= MAX_PAYLOAD)
+        .ok_or_else(|| protocol_error("ADB payload larger than the negotiated max"))
 }
 
 fn protocol_error(message: impl Into<String>) -> AppError {
@@ -107,7 +120,7 @@ fn protocol_error(message: impl Into<String>) -> AppError {
 }
 
 async fn write_message(stream: &mut TcpStream, message: Message) -> Result<(), AppError> {
-    timeout(IO_TIMEOUT, stream.write_all(&message.encode()))
+    timeout(IO_TIMEOUT, stream.write_all(&message.encode()?))
         .await
         .map_err(|_| protocol_error("timed out writing to the ADB device"))??;
     Ok(())
@@ -135,14 +148,13 @@ async fn read_message_within(
         ])
     };
     let command = word(0);
-    let length = word(12) as usize;
-
     if command ^ 0xffff_ffff != word(20) {
         return Err(protocol_error("ADB header failed its magic check"));
     }
-    if length > MAX_PAYLOAD as usize {
-        return Err(protocol_error("ADB payload larger than the negotiated max"));
-    }
+    let length = Some(word(12))
+        .filter(|length| *length <= MAX_PAYLOAD)
+        .and_then(|length| usize::try_from(length).ok())
+        .ok_or_else(|| protocol_error("ADB payload larger than the negotiated max"))?;
 
     let mut payload = vec![0u8; length];
     if length > 0 {
@@ -157,7 +169,7 @@ async fn read_message_within(
 /// Generates a fresh 2048-bit key. Slow on an ARMv6 Pi (tens of seconds), so
 /// callers must run this off the async runtime and persist the result.
 pub fn generate_key() -> Result<RsaPrivateKey, AppError> {
-    RsaPrivateKey::new(&mut rand::rng(), RSA_BITS)
+    RsaPrivateKey::new(&mut rand::rng(), RSA_BITS as usize)
         .map_err(|error| protocol_error(format!("could not generate an ADB key: {error}")))
 }
 
@@ -186,14 +198,15 @@ pub fn android_public_key(key: &RsaPrivateKey, comment: &str) -> String {
     // rr = R^2 mod n, with R = 2^RSA_BITS — one of the two values the device's
     // Montgomery reduction wants precomputed. The precision has to hold
     // 2^(2*RSA_BITS) before the reduction brings it back down.
-    let rr = BoxedUint::one_with_precision(RSA_BITS as u32 * 2 + 1)
-        .shl(RSA_BITS as u32 * 2)
+    let rr = BoxedUint::one_with_precision(RSA_BITS * 2 + 1)
+        .shl(RSA_BITS * 2)
         .rem_vartime(modulus);
 
     // The blob is little-endian 32-bit words, which is what these repack into.
+    const WORDS: usize = KEY_WORDS as usize;
     let to_words = |bytes: &[u8]| {
-        let mut words = vec![0u32; KEY_WORDS];
-        for (index, chunk) in bytes.chunks(4).take(KEY_WORDS).enumerate() {
+        let mut words = vec![0u32; WORDS];
+        for (index, chunk) in bytes.chunks(4).take(WORDS).enumerate() {
             let mut word = [0u8; 4];
             word[..chunk.len()].copy_from_slice(chunk);
             words[index] = u32::from_le_bytes(word);
@@ -216,8 +229,8 @@ pub fn android_public_key(key: &RsaPrivateKey, comment: &str) -> String {
     }
     let n0inv = inverse.wrapping_neg();
 
-    let mut blob = Vec::with_capacity(4 + 4 + KEY_WORDS * 8 + 4);
-    blob.extend_from_slice(&(KEY_WORDS as u32).to_le_bytes());
+    let mut blob = Vec::with_capacity(4 + 4 + WORDS * 8 + 4);
+    blob.extend_from_slice(&KEY_WORDS.to_le_bytes());
     blob.extend_from_slice(&n0inv.to_le_bytes());
     for word in modulus_words {
         blob.extend_from_slice(&word.to_le_bytes());
@@ -234,6 +247,40 @@ pub fn android_public_key(key: &RsaPrivateKey, comment: &str) -> String {
     )
 }
 
+/// The key this host signs the box's tokens with: built once, shared by every connection
+/// (a reconnect must not copy the private key).
+#[derive(Clone)]
+pub struct AdbKey(Arc<SigningKey<Sha1>>);
+
+impl AdbKey {
+    pub fn new(key: RsaPrivateKey) -> Self {
+        Self(Arc::new(SigningKey::new(key)))
+    }
+
+    pub fn private_key(&self) -> &RsaPrivateKey {
+        (*self.0).as_ref()
+    }
+
+    /// Signs the box's token off the async runtime: RSA-2048 takes the Pi 1's single core
+    /// for a noticeable while, and every (re)connect pays it.
+    ///
+    /// The 20-byte token *is* the SHA-1 digest, so it must be signed pre-hashed. Hashing
+    /// it again (the plain `Signer` path) produces a signature the device silently
+    /// rejects, falling back to re-sending the public key on every single connection.
+    async fn sign(&self, token: Vec<u8>) -> Result<Vec<u8>, AppError> {
+        let signer = self.0.clone();
+        tokio::task::spawn_blocking(move || signer.sign_prehash(&token).map(|signature| signature.to_vec()))
+            .await?
+            .map_err(|error| protocol_error(format!("could not sign the ADB token: {error}")))
+    }
+
+    /// The public key as `adbd` stores it, computed off the runtime too (once per box).
+    async fn android_public_key(&self) -> Result<String, AppError> {
+        let key = self.0.clone();
+        Ok(tokio::task::spawn_blocking(move || android_public_key((*key).as_ref(), "maison@maison")).await?)
+    }
+}
+
 /// One authenticated connection to `adbd`. Streams are opened one at a time,
 /// which is all this module needs and keeps the multiplexing trivial.
 pub struct AdbDevice {
@@ -244,7 +291,7 @@ pub struct AdbDevice {
 }
 
 impl AdbDevice {
-    pub async fn connect(address: &str, key: &RsaPrivateKey) -> Result<Self, AppError> {
+    pub async fn connect(address: &str, key: &AdbKey) -> Result<Self, AppError> {
         let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
             .await
             .map_err(|_| unreachable("Android TV box", format!("ADB connect to {address} timed out")))?
@@ -258,7 +305,7 @@ impl AdbDevice {
         Ok(device)
     }
 
-    async fn handshake(&mut self, key: &RsaPrivateKey) -> Result<(), AppError> {
+    async fn handshake(&mut self, key: &AdbKey) -> Result<(), AppError> {
         write_message(
             &mut self.stream,
             Message::new(
@@ -280,32 +327,18 @@ impl AdbDevice {
                 IO_TIMEOUT
             };
             let message = read_message_within(&mut self.stream, budget).await?;
-            if std::env::var("MAISON_ADB_DEBUG").is_ok() {
-                eprintln!(
-                    "  <- cmd={:08x} ({}) arg0={} arg1={} len={}",
-                    message.command,
-                    String::from_utf8_lossy(&message.command.to_le_bytes()),
-                    message.arg0,
-                    message.arg1,
-                    message.payload.len()
-                );
-            }
+            tracing::trace!(
+                command = %String::from_utf8_lossy(&message.command.to_le_bytes()),
+                arg0 = message.arg0,
+                arg1 = message.arg1,
+                length = message.payload.len(),
+                "ADB handshake message"
+            );
             match message.command {
                 A_CNXN => return Ok(()),
                 A_AUTH if message.arg0 == AUTH_TOKEN => {
                     if !signed {
-                        // The 20-byte token *is* the SHA-1 digest, so it must
-                        // be signed pre-hashed. Hashing it again (the plain
-                        // `Signer` path) produces a signature the device
-                        // silently rejects, falling back to re-sending the
-                        // public key on every single connection.
-                        let signing_key = SigningKey::<Sha1>::new(key.clone());
-                        let signature = signing_key
-                            .sign_prehash(&message.payload)
-                            .map_err(|error| {
-                                protocol_error(format!("could not sign the ADB token: {error}"))
-                            })?
-                            .to_vec();
+                        let signature = key.sign(message.payload).await?;
                         write_message(
                             &mut self.stream,
                             Message::new(A_AUTH, AUTH_SIGNATURE, 0, signature),
@@ -315,7 +348,7 @@ impl AdbDevice {
                     } else if !offered_key {
                         // The device does not know this key: offer it, which
                         // is what raises the prompt on the television.
-                        let mut blob = android_public_key(key, "maison@maison").into_bytes();
+                        let mut blob = key.android_public_key().await?.into_bytes();
                         blob.push(0);
                         write_message(
                             &mut self.stream,
@@ -381,8 +414,13 @@ impl AdbDevice {
         }
     }
 
-    /// Runs one shell command and returns everything it wrote.
+    /// Runs one shell command and returns everything it wrote (refused past
+    /// `MAX_SHELL_OUTPUT`: the connection is then mid-stream, the caller drops it).
     pub async fn shell(&mut self, command: &str) -> Result<String, AppError> {
+        self.shell_capped(command, MAX_SHELL_OUTPUT).await
+    }
+
+    async fn shell_capped(&mut self, command: &str, max: usize) -> Result<String, AppError> {
         let remote_id = self.open(&format!("shell:{command}")).await?;
         let local_id = self.local_id;
         let mut output = Vec::new();
@@ -391,6 +429,9 @@ impl AdbDevice {
             let message = read_message(&mut self.stream).await?;
             match message.command {
                 A_WRTE if message.arg1 == local_id => {
+                    if output.len() + message.payload.len() > max {
+                        return Err(protocol_error("the box printed too much"));
+                    }
                     output.extend_from_slice(&message.payload);
                     // Every WRTE must be acknowledged or the device stalls.
                     write_message(
@@ -414,12 +455,6 @@ impl AdbDevice {
         Ok(String::from_utf8_lossy(&output).into_owned())
     }
 
-    /// Pushes a file held in memory (see `push_stream`).
-    pub async fn push(&mut self, remote_path: &str, data: &[u8], mode: u32) -> Result<(), AppError> {
-        let whole = futures::stream::iter([Ok(Bytes::copy_from_slice(data))]);
-        self.push_stream(remote_path, whole, mode).await
-    }
-
     /// Pushes a file with the `sync:` service — the transport `adb push` uses —
     /// as its bytes arrive: an upload is passed on chunk by chunk, never held
     /// whole (the Pi has 512 MB).
@@ -439,7 +474,7 @@ impl AdbDevice {
 
         let target = format!("{remote_path},{mode}");
         let mut header = Vec::from(*b"SEND");
-        header.extend_from_slice(&(target.len() as u32).to_le_bytes());
+        header.extend_from_slice(&wire_length(target.len())?.to_le_bytes());
         header.extend_from_slice(target.as_bytes());
         self.write_stream(remote_id, &header).await?;
 
@@ -454,7 +489,7 @@ impl AdbDevice {
             for chunk in pending[..take].chunks(SYNC_CHUNK) {
                 let mut frame = Vec::with_capacity(8 + chunk.len());
                 frame.extend_from_slice(b"DATA");
-                frame.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+                frame.extend_from_slice(&wire_length(chunk.len())?.to_le_bytes());
                 frame.extend_from_slice(chunk);
                 self.write_stream(remote_id, &frame).await?;
             }
@@ -507,13 +542,100 @@ impl AdbDevice {
     }
 }
 
+/// A stand-in `adbd` on loopback, for the tests here and in `androidtv`: it accepts the
+/// connection without asking for a key, runs `shells` commands per connection (answering
+/// each with `output(command)`, one WRTE per chunk), then hangs up.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+
+    pub(crate) async fn serve(shells: usize, output: fn(&str) -> Vec<Vec<u8>>) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address").to_string();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counted = connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let _ = session(&mut stream, shells, output).await;
+                });
+            }
+        });
+        (address, connections)
+    }
+
+    async fn session(stream: &mut TcpStream, shells: usize, output: fn(&str) -> Vec<Vec<u8>>) -> Result<(), AppError> {
+        read_message(stream).await?;
+        write_message(stream, Message::new(A_CNXN, A_VERSION, MAX_PAYLOAD, b"device::\0".to_vec())).await?;
+        for remote in 100..100 + shells as u32 {
+            let open = read_message(stream).await?;
+            let local = open.arg0;
+            let command = String::from_utf8_lossy(&open.payload);
+            let command = command.trim_end_matches('\0').trim_start_matches("shell:").to_string();
+            write_message(stream, Message::new(A_OKAY, remote, local, Vec::new())).await?;
+            for chunk in output(&command) {
+                write_message(stream, Message::new(A_WRTE, remote, local, chunk)).await?;
+                read_message(stream).await?;
+            }
+            write_message(stream, Message::new(A_CLSE, remote, local, Vec::new())).await?;
+            read_message(stream).await?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn test_key() -> AdbKey {
+        AdbKey::new(generate_key().expect("key"))
+    }
+
+    /// A length is never truncated onto the wire, nor taken from it past the agreed max.
+    #[tokio::test]
+    async fn lengths_past_the_max_are_refused_both_ways() {
+        assert_eq!(wire_length(MAX_PAYLOAD as usize).expect("at the max"), MAX_PAYLOAD);
+        assert!(wire_length(MAX_PAYLOAD as usize + 1).is_err());
+        #[cfg(target_pointer_width = "64")]
+        assert!(wire_length(u32::MAX as usize + 1).is_err(), "not wrapped to 0");
+        assert!(Message::new(A_WRTE, 1, 1, vec![0; MAX_PAYLOAD as usize + 1]).encode().is_err());
+
+        // a header announcing more than the max is refused before its payload is sized
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut header = Vec::new();
+            for word in [A_CNXN, 0, 0, MAX_PAYLOAD + 1, 0, A_CNXN ^ 0xffff_ffff] {
+                header.extend_from_slice(&word.to_le_bytes());
+            }
+            let _ = stream.write_all(&header).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let mut stream = TcpStream::connect(address).await.expect("connect");
+        let error = read_message(&mut stream).await.unwrap_err();
+        assert!(error.to_string().contains("larger than"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn shell_output_is_gathered_and_capped() {
+        let (address, _) = fake::serve(2, |_| vec![b"abc".to_vec(), b"def".to_vec()]).await;
+        let mut device = AdbDevice::connect(&address, &test_key()).await.expect("connect");
+        assert_eq!(device.shell("x").await.expect("shell"), "abcdef");
+        let error = device.shell_capped("x", 4).await.unwrap_err();
+        assert!(error.to_string().contains("too much"), "{error}");
+    }
+
     #[test]
     fn message_header_is_little_endian_with_summed_payload() {
-        let encoded = Message::new(A_OPEN, 7, 0, b"abc".to_vec()).encode();
+        let encoded = Message::new(A_OPEN, 7, 0, b"abc".to_vec()).encode().expect("small");
         assert_eq!(&encoded[0..4], &A_OPEN.to_le_bytes());
         assert_eq!(&encoded[4..8], &7u32.to_le_bytes());
         assert_eq!(&encoded[12..16], &3u32.to_le_bytes());
@@ -526,7 +648,7 @@ mod tests {
     #[test]
     fn magic_word_is_the_complement_of_the_command() {
         for command in [A_CNXN, A_AUTH, A_OPEN, A_OKAY, A_CLSE, A_WRTE] {
-            let encoded = Message::new(command, 0, 0, Vec::new()).encode();
+            let encoded = Message::new(command, 0, 0, Vec::new()).encode().expect("empty");
             let magic = u32::from_le_bytes([encoded[20], encoded[21], encoded[22], encoded[23]]);
             assert_eq!(command ^ 0xffff_ffff, magic);
         }
@@ -539,7 +661,7 @@ mod tests {
     fn android_public_key_blob_has_the_expected_shape() {
         use base64::Engine as _;
 
-        let key = RsaPrivateKey::new(&mut rand::rng(), RSA_BITS).expect("key");
+        let key = generate_key().expect("key");
         let encoded = android_public_key(&key, "maison@test");
         let (blob, comment) = encoded.split_once(' ').expect("comment is space-separated");
         assert_eq!(comment, "maison@test");
@@ -547,8 +669,8 @@ mod tests {
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(blob)
             .expect("valid base64");
-        assert_eq!(decoded.len(), 4 + 4 + KEY_WORDS * 4 * 2 + 4);
-        assert_eq!(&decoded[0..4], &(KEY_WORDS as u32).to_le_bytes());
+        assert_eq!(decoded.len(), 4 + 4 + KEY_WORDS as usize * 4 * 2 + 4);
+        assert_eq!(&decoded[0..4], &KEY_WORDS.to_le_bytes());
         assert_eq!(&decoded[decoded.len() - 4..], &65537u32.to_le_bytes());
     }
 
@@ -558,7 +680,7 @@ mod tests {
     fn n0inv_satisfies_its_montgomery_identity() {
         use base64::Engine as _;
 
-        let key = RsaPrivateKey::new(&mut rand::rng(), RSA_BITS).expect("key");
+        let key = generate_key().expect("key");
         let encoded = android_public_key(&key, "c");
         let blob = base64::engine::general_purpose::STANDARD
             .decode(encoded.split_once(' ').expect("comment").0)
@@ -580,14 +702,14 @@ mod tests {
             .unwrap_or_else(|_| "192.168.1.153:5555".to_string());
         let key_path = std::path::PathBuf::from("/tmp/maison-adb-test.key");
 
-        let key = match std::fs::read(&key_path) {
+        let key = AdbKey::new(match std::fs::read(&key_path) {
             Ok(der) => decode_key(&der).expect("stored key"),
             Err(_) => {
                 let key = generate_key().expect("generate");
                 std::fs::write(&key_path, encode_key(&key).expect("encode")).expect("persist");
                 key
             }
-        };
+        });
 
         let mut device = AdbDevice::connect(&address, &key)
             .await
@@ -604,13 +726,19 @@ mod tests {
     async fn live_push_round_trip() {
         let address = std::env::var("ADB_TEST_ADDRESS")
             .unwrap_or_else(|_| "192.168.1.153:5555".to_string());
-        let key = decode_key(&std::fs::read("/tmp/maison-adb-test.key").expect("key file"))
-            .expect("key");
+        let key = AdbKey::new(
+            decode_key(&std::fs::read("/tmp/maison-adb-test.key").expect("key file")).expect("key"),
+        );
 
         let mut device = AdbDevice::connect(&address, &key).await.expect("connect");
         let payload = b"maison sync check";
+        // cut in two, as an upload arrives: the APK install's path
+        let chunks = futures::stream::iter([
+            Ok(Bytes::from_static(&payload[..5])),
+            Ok(Bytes::from_static(&payload[5..])),
+        ]);
         device
-            .push("/data/local/tmp/maison-sync-check", payload, 0o644)
+            .push_stream("/data/local/tmp/maison-sync-check", chunks, 0o644)
             .await
             .expect("push should be accepted");
 
@@ -626,7 +754,7 @@ mod tests {
 
     #[test]
     fn keys_round_trip_through_pkcs8() {
-        let key = RsaPrivateKey::new(&mut rand::rng(), RSA_BITS).expect("key");
+        let key = generate_key().expect("key");
         let der = encode_key(&key).expect("encode");
         assert_eq!(decode_key(&der).expect("decode"), key);
     }

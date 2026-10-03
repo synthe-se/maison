@@ -1,0 +1,41 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "unicorn", "oxc", "import", "vitest", "promise"],
+	"categories": {
+		"correctness": "error",
+		"suspicious": "error",
+		"perf": "error"
+	},
+	"rules": {
+		"eslint/no-unused-vars": [
+			"error",
+			{
+				"argsIgnorePattern": "^_",
+				"varsIgnorePattern": "^_"
+			}
+		],
+		"import/no-duplicates": "error",
+		"import/no-self-import": "error",
+		"import/first": "error",
+		"typescript/no-explicit-any": "error",
+		"typescript/consistent-type-imports": "error",
+		"typescript/no-non-null-asserted-optional-chain": "error",
+		"unicorn/prefer-node-protocol": "error",
+		"eslint/eqeqeq": "error",
+		"eslint/no-var": "error",
+		"eslint/prefer-const": "error",
+		"vitest/require-mock-type-parameters": "off",
+		"eslint/no-await-in-loop": "off",
+		"import/no-unassigned-import": "off",
+		"unicorn/prefer-add-event-listener": "off",
+		"unicorn/consistent-function-scoping": "off",
+		"eslint/no-underscore-dangle": "off",
+		"vitest/valid-expect": [
+			"error",
+			{
+				"maxArgs": 2
+			}
+		]
+	},
+	"ignorePatterns": ["src/lib/paraglide/**", "build/**", ".svelte-kit/**", ".vitest/**", "coverage/**", "static/**"]
+}

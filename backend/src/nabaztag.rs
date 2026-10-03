@@ -15,9 +15,11 @@ use tracing::{debug, info};
 
 use crate::{
     TempoService,
-    broadlink::{device_host, device_http_client, unreachable},
     error::AppError,
-    json_config::JsonConfig,
+    json_config::{Checked, JsonConfig},
+    net::{device_client, device_host, unreachable},
+    tempo::Color,
+    util::non_blank,
 };
 
 /// Garenne control port on the rabbit.
@@ -38,12 +40,16 @@ pub struct NabaztagConfig {
     /// Rabbit address on the LAN (private IPv4 or `.local` name).
     pub host: Option<String>,
     /// Whether the daily Tempo colors are mirrored on the rabbit.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::util::default_true")]
     pub tempo_enabled: bool,
 }
 
-fn default_true() -> bool {
-    true
+/// The host must be a LAN device address (see `net::device_host`).
+impl Checked for NabaztagConfig {
+    fn checked(mut self) -> Result<Self, AppError> {
+        self.host = non_blank(self.host).map(|host| device_host(&host)).transpose()?;
+        Ok(self)
+    }
 }
 
 impl Default for NabaztagConfig {
@@ -84,8 +90,9 @@ impl NabaztagManager {
         Ok(Self {
             inner: Arc::new(Inner {
                 config: JsonConfig::load(config_path)?,
-                env_host: crate::util::non_blank(env_host.map(str::to_string)),
-                http: device_http_client(STATUS_TIMEOUT)?,
+                // checked like the file: a bad address refuses to start, it is not tried
+                env_host: non_blank(env_host.map(str::to_string)).map(|host| device_host(&host)).transpose()?,
+                http: device_client(STATUS_TIMEOUT)?,
             }),
         })
     }
@@ -98,19 +105,15 @@ impl NabaztagManager {
         config
     }
 
-    /// The host must be a LAN device address (see `broadlink::device_host`).
-    pub async fn set_config(&self, mut config: NabaztagConfig) -> Result<NabaztagConfig, AppError> {
-        config.host = crate::util::non_blank(config.host).map(|host| device_host(&host)).transpose()?;
+    pub async fn set_config(&self, config: NabaztagConfig) -> Result<NabaztagConfig, AppError> {
         self.inner.config.set(config).await
     }
 
-    /// Checked again on use: the environment or a hand-edited file never went through
-    /// `set_config`.
+    /// Checked where it came in (the file by `Checked`, the environment by `new`).
     async fn host(&self) -> Result<String, AppError> {
-        let host = self.config().await.host.ok_or_else(|| {
+        self.config().await.host.ok_or_else(|| {
             AppError::service_unavailable("No Nabaztag host configured (set NABAZTAG_HOST or the nabaztag config)")
-        })?;
-        device_host(&host)
+        })
     }
 
     /// Sends one garenne control command to the rabbit. Fire-and-forget by
@@ -157,7 +160,7 @@ impl NabaztagManager {
         if let Some((color, true)) = tomorrow {
             debug!(?color, "forecast colour for tomorrow");
         }
-        self.push_tempo(today.as_str(), tomorrow.map(|(c, forecast)| (c.as_str(), forecast))).await
+        self.push_tempo(today, tomorrow).await
     }
 
     /// Mirrors the Tempo colors: today as a static color on the belly LED,
@@ -165,15 +168,13 @@ impl NabaztagManager {
     /// colour: a forecast.
     pub async fn push_tempo(
         &self,
-        today: &str,
-        tomorrow: Option<(&str, bool)>,
+        today: Color,
+        tomorrow: Option<(Color, bool)>,
     ) -> Result<TempoPushResult, AppError> {
-        let led_hex = tempo_color_hex(today)
-            .ok_or_else(|| AppError::bad_request(format!("Unknown Tempo color: {today}")))?;
-
+        let led_hex = today.led_hex();
         self.send_command(&format!("led {BELLY_LED} {led_hex}")).await?;
 
-        let ears = tomorrow.and_then(|(color, forecast)| tempo_ears(color, forecast));
+        let ears = tomorrow.map(|(color, forecast)| tempo_ears(color, forecast));
         if let Some((left, right)) = ears {
             tokio::time::sleep(PUSH_STEP_DELAY).await;
             self.send_command(&format!("ears {left} {right}"))
@@ -181,10 +182,10 @@ impl NabaztagManager {
         }
         let ear_position = ears.map(|(left, _)| left);
         let tomorrow_forecast = tomorrow.is_some_and(|(_, forecast)| forecast);
-        let tomorrow = tomorrow.map(|(color, _)| color);
+        let tomorrow = tomorrow.map(|(color, _)| color.as_str());
 
         info!(
-            today,
+            today = today.as_str(),
             tomorrow = tomorrow.unwrap_or("unknown"),
             led = led_hex,
             ears = ?ear_position,
@@ -192,7 +193,7 @@ impl NabaztagManager {
         );
 
         Ok(TempoPushResult {
-            today_color: today.to_string(),
+            today_color: today.as_str().to_string(),
             tomorrow_color: tomorrow.map(str::to_string),
             led_hex: led_hex.to_string(),
             ear_position,
@@ -221,34 +222,16 @@ fn command_is_allowed(command: &str) -> bool {
     )
 }
 
-pub fn tempo_color_hex(color: &str) -> Option<&'static str> {
-    match color.to_ascii_uppercase().as_str() {
-        "BLUE" | "BLEU" => Some("0000ff"),
-        "WHITE" | "BLANC" => Some("ffffff"),
-        "RED" | "ROUGE" => Some("ff0000"),
-        _ => None,
-    }
-}
-
 /// The ears for tomorrow's colour: both at its position when RTE has published it; for a
 /// forecast only the left one, the right one tilted to 4, a position no colour uses: the
 /// rabbit is « not sure yet ».
-fn tempo_ears(color: &str, forecast: bool) -> Option<(u8, u8)> {
-    let position = tempo_ear_position(color)?;
-    Some((position, if forecast { FORECAST_EAR } else { position }))
+fn tempo_ears(color: Color, forecast: bool) -> (u8, u8) {
+    let position = color.ear_position();
+    (position, if forecast { FORECAST_EAR } else { position })
 }
 
 /// The right ear's position while tomorrow is only forecast.
 const FORECAST_EAR: u8 = 4;
-
-fn tempo_ear_position(color: &str) -> Option<u8> {
-    match color.to_ascii_uppercase().as_str() {
-        "BLUE" | "BLEU" => Some(0),
-        "WHITE" | "BLANC" => Some(8),
-        "RED" | "ROUGE" => Some(16),
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -265,15 +248,13 @@ mod tests {
     }
 
     #[test]
-    fn tempo_colors_map_in_both_languages() {
-        assert_eq!(tempo_color_hex("BLUE"), Some("0000ff"));
-        assert_eq!(tempo_color_hex("bleu"), Some("0000ff"));
-        assert_eq!(tempo_color_hex("ROUGE"), Some("ff0000"));
-        assert_eq!(tempo_color_hex("mauve"), None);
-        assert_eq!(tempo_ear_position("WHITE"), Some(8));
-        assert_eq!(tempo_ears("RED", false), Some((16, 16)));
-        assert_eq!(tempo_ears("BLUE", true), Some((0, FORECAST_EAR)));
-        assert_eq!(tempo_ears("mauve", true), None);
+    fn tempo_colors_on_the_rabbit() {
+        assert_eq!(Color::Blue.led_hex(), "0000ff");
+        assert_eq!(Color::Red.led_hex(), "ff0000");
+        assert_eq!(Color::White.ear_position(), 8);
+        assert_eq!(tempo_ears(Color::Red, false), (16, 16));
+        assert_eq!(tempo_ears(Color::Blue, true), (0, FORECAST_EAR));
+        assert!(Color::ALL.iter().all(|c| c.ear_position() != FORECAST_EAR), "« not sure » is no colour");
     }
 
     #[tokio::test]
@@ -291,10 +272,13 @@ mod tests {
         assert_eq!(blank.config().await.host.as_deref(), Some("192.168.1.40"));
         assert!(!blank.config().await.tempo_enabled);
 
-        // the environment wins, and is checked on use like the rest
-        let from_env = NabaztagManager::new(&path, Some("127.0.0.1")).expect("env");
-        assert_eq!(from_env.config().await.host.as_deref(), Some("127.0.0.1"));
-        assert!(from_env.send_command("ping").await.is_err());
-        assert!(!from_env.reachable().await);
+        // the environment wins, and is checked like the file
+        assert!(NabaztagManager::new(&path, Some("127.0.0.1")).is_err());
+        let from_env = NabaztagManager::new(&path, Some("rabbit.local")).expect("env");
+        assert_eq!(from_env.config().await.host.as_deref(), Some("rabbit.local"));
+
+        // a hand-edited file is checked on load
+        std::fs::write(&path, r#"{"host": "8.8.8.8"}"#).expect("written");
+        assert!(NabaztagManager::new(&path, None).is_err());
     }
 }

@@ -86,9 +86,10 @@ impl AppError {
     fn status(&self) -> StatusCode {
         match self {
             Self::Http { status, .. } | Self::Coded { status, .. } => *status,
-            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Reqwest(_) | Self::Join(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            // a service we asked did not answer (503), or answered nonsense (502): not our bug
+            Self::Reqwest(e) if e.is_connect() || e.is_timeout() => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Reqwest(_) => StatusCode::BAD_GATEWAY,
+            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Join(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -107,10 +108,13 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let status = self.status();
-        if status == StatusCode::SERVICE_UNAVAILABLE {
-            warn!(error = %self, "upstream device unavailable");
-        } else if status.is_server_error() {
-            error!(error = %self, "request failed");
+        match status {
+            // a device or a service out there: their trouble, said as a warning
+            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT => {
+                warn!(error = %self, "upstream unavailable");
+            }
+            s if s.is_server_error() => error!(error = %self, "request failed"),
+            _ => {}
         }
         let (code, retry_after_s, detail) = match &self {
             Self::Coded { code, retry_after_s, detail, .. } => (Some(*code), *retry_after_s, detail.clone()),
@@ -127,5 +131,33 @@ impl IntoResponse for AppError {
             response.headers_mut().insert(axum::http::header::RETRY_AFTER, seconds.into());
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reqwest error of each kind, from a real (local) request.
+    async fn reqwest_error(url: &str) -> reqwest::Error {
+        reqwest::Client::new().get(url).send().await.and_then(|r| r.error_for_status()).expect_err("fails")
+    }
+
+    #[tokio::test]
+    async fn an_upstream_failure_is_a_gateway_error_not_ours() {
+        // nothing listens there: the service is unavailable
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let down = AppError::from(reqwest_error(&closed).await);
+        assert_eq!(down.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(down.client_message(), "Upstream service unavailable");
+        // an answer we cannot use (a 500 of theirs): a bad gateway
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let broken = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let bad = AppError::from(reqwest_error(&broken).await);
+        assert_eq!(bad.status(), StatusCode::BAD_GATEWAY);
     }
 }

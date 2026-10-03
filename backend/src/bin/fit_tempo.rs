@@ -27,10 +27,10 @@ use maison_backend::{
     tempo::{
         forecast::{
             consumption_features, dot, expected, solar_features, wind_features, Backtest, HorizonScore, Model,
-            Place, CONSUMPTION_FEATURES,
+            WeatherPoint, CONSUMPTION_FEATURES,
         },
         inputs::{coordinates, daily_temperature, daily_wind_power, parse_hourly, tempo_days, NetLoad, OdreRow, Series, Weather, WEATHER_MODEL},
-        outlook, paris_today,
+        outlook,
         rules::{is_winter, season_bounds, season_name, season_start_year, Color, History, Quotas, FIRST_SEASON},
         source::{Sources, Values},
         HORIZON,
@@ -47,7 +47,7 @@ const RHO: f64 = 0.7;
 const RUNS: u32 = 400;
 
 /// The twelve largest cities, weighted by their area's population (millions).
-fn cities() -> Vec<Place> {
+fn cities() -> Vec<WeatherPoint> {
     [
         ("Paris", 48.85, 2.35, 13.0),
         ("Lyon", 45.76, 4.84, 2.3),
@@ -62,13 +62,13 @@ fn cities() -> Vec<Place> {
         ("Clermont-Ferrand", 45.78, 3.08, 0.5),
         ("Dijon", 47.32, 5.04, 0.4),
     ]
-    .map(|(name, latitude, longitude, weight)| Place { name: name.into(), latitude, longitude, weight })
+    .map(|(name, latitude, longitude, weight)| WeatherPoint::new(name, latitude, longitude, weight))
     .into()
 }
 
 /// Where France's wind farms are (the north and east plains, the Channel, the Atlantic
 /// coast, the Aude).
-fn wind_sites() -> Vec<Place> {
+fn wind_sites() -> Vec<WeatherPoint> {
     [
         ("Somme", 49.90, 2.30),
         ("Aisne", 49.85, 3.29),
@@ -83,7 +83,7 @@ fn wind_sites() -> Vec<Place> {
         ("Beauce", 48.30, 1.70),
         ("Aveyron", 44.30, 2.60),
     ]
-    .map(|(name, latitude, longitude)| Place { name: name.into(), latitude, longitude, weight: 1.0 })
+    .map(|(name, latitude, longitude)| WeatherPoint::new(name, latitude, longitude, 1.0))
     .into()
 }
 
@@ -96,7 +96,7 @@ type Season = (i32, Model, Vec<(NaiveDate, Weather)>);
 struct Hourly<'a> {
     name: &'a str,
     url: &'a str,
-    places: &'a [Place],
+    places: &'a [WeatherPoint],
     keys: &'a [String],
     model: Option<&'a str>,
 }
@@ -353,12 +353,9 @@ async fn main() -> Result<(), Failure> {
         let _ = std::fs::remove_dir_all(&dir);
     }
     std::fs::create_dir_all(&dir)?;
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("Maison-fit/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(600))
-        .build()?;
+    let client = maison_backend::net::web_client(concat!("Maison-fit/", env!("CARGO_PKG_VERSION")), std::time::Duration::from_secs(600))?;
     let downloads = Downloads { client: client.clone(), dir };
-    let today = paris_today();
+    let today = maison_backend::util::house_today();
     let yesterday = today - Duration::days(1);
     let (cities, wind_sites) = (cities(), wind_sites());
 

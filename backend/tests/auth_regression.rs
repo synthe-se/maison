@@ -41,7 +41,7 @@ async fn request_rust(
     body: Option<Value>,
     token: Option<String>,
 ) -> (StatusCode, Value) {
-    common::send(&common::app(common::test_config()), method, path, token.as_deref(), body).await
+    common::send(&common::app(common::isolated_config("maison-auth")), method, path, token.as_deref(), body).await
 }
 
 #[tokio::test]
@@ -93,7 +93,7 @@ use std::net::SocketAddr;
 
 /// The app with passkeys on (invitations need a public address), as the test people.
 fn house() -> axum::Router {
-    common::app(Config { public_url: Some("https://maison.example.com".into()), ..common::test_config() })
+    common::app(Config { public_url: Some("https://maison.example.com".into()), ..common::isolated_config("maison-auth") })
 }
 
 #[tokio::test]
@@ -133,6 +133,18 @@ async fn an_invitation_by_name_never_hands_over_an_existing_account() {
     assert_eq!(s, StatusCode::OK, "{v}");
     let (s, v) = common::send_authed(&app, Method::POST, "/api/invites", Some(json!({ "name": "Eve" }))).await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    // a person's id is a slug, said with a code
+    let (s, v) = common::send_authed(&app, Method::POST, "/api/invites", Some(json!({ "name": "Eve", "person": "Not An Id" }))).await;
+    assert_eq!((s, v["code"].as_str()), (StatusCode::BAD_REQUEST, Some("bad_person")));
+}
+
+#[tokio::test]
+async fn health_and_logout_answer_in_the_usual_envelope() {
+    let app = house();
+    let (s, v) = common::send(&app, Method::GET, "/health", None, None).await;
+    assert_eq!((s, v), (StatusCode::OK, json!({ "success": true, "status": "healthy", "service": "maison-backend" })));
+    let (_, v) = common::send(&app, Method::POST, "/api/auth/logout", None, None).await;
+    assert_eq!(v, json!({ "success": true, "message": "Logged out successfully" }));
 }
 
 #[tokio::test]
@@ -197,8 +209,9 @@ async fn a_change_from_another_site_is_refused() {
 
 #[tokio::test]
 async fn the_lan_reaches_only_the_ir_bridge() {
-    let app = maison_backend::build_app_from_config(std::sync::Arc::new(common::test_config()))
+    let app = maison_backend::build_app_parts_from_config(std::sync::Arc::new(common::isolated_config("maison-auth")))
         .unwrap()
+        .0
         .layer(MockConnectInfo(SocketAddr::from(([192, 168, 1, 20], 4000))));
     let (s, _, _) = common::respond(&app, raw(Method::GET, "/api/meross", &[])).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "even signed in: the tunnel only");

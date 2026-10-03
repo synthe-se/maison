@@ -51,7 +51,7 @@ use tokio_rustls::{
     TlsConnector,
 };
 
-use crate::{broadlink::unreachable, error::AppError, store};
+use crate::{error::AppError, net::unreachable, store};
 
 pub const PAIRING_PORT: u16 = 6467;
 pub const REMOTE_PORT: u16 = 6466;
@@ -145,18 +145,12 @@ impl<'a> ProtoReader<'a> {
     }
 
     fn varint(&mut self) -> Option<u64> {
-        let mut value = 0u64;
-        let mut shift = 0;
+        let mut decoder = Varint::default();
         loop {
             let byte = *self.bytes.get(self.pos)?;
             self.pos += 1;
-            value |= u64::from(byte & 0x7f) << shift;
-            if byte & 0x80 == 0 {
+            if let Some(value) = decoder.push(byte).ok()? {
                 return Some(value);
-            }
-            shift += 7;
-            if shift > 63 {
-                return None;
             }
         }
     }
@@ -168,11 +162,11 @@ impl<'a> ProtoReader<'a> {
             return None;
         }
         let key = self.varint()?;
-        let field = (key >> 3) as u32;
+        let field = u32::try_from(key >> 3).ok()?;
         match key & 0x7 {
             0 => Some((field, Field::Varint(self.varint()?))),
             2 => {
-                let len = self.varint()? as usize;
+                let len = usize::try_from(self.varint()?).ok()?;
                 let end = self.pos.checked_add(len)?;
                 let slice = self.bytes.get(self.pos..end)?;
                 self.pos = end;
@@ -189,6 +183,34 @@ impl<'a> ProtoReader<'a> {
             }
             _ => None,
         }
+    }
+}
+
+/// A varint read a byte at a time, the one decoder for both the messages and their
+/// length prefix. More than 64 bits is malformed, not wrapped.
+#[derive(Default)]
+struct Varint {
+    value: u64,
+    shift: u32,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VarintOverflow;
+
+impl Varint {
+    /// The value once its last byte is in, `None` while more are to come.
+    fn push(&mut self, byte: u8) -> Result<Option<u64>, VarintOverflow> {
+        let bits = u64::from(byte & 0x7f);
+        // the tenth byte holds the 64th bit and nothing more
+        if self.shift > 63 || (self.shift == 63 && bits > 1) {
+            return Err(VarintOverflow);
+        }
+        self.value |= bits << self.shift;
+        if byte & 0x80 == 0 {
+            return Ok(Some(self.value));
+        }
+        self.shift += 7;
+        Ok(None)
     }
 }
 
@@ -259,9 +281,14 @@ impl Identity {
 
         let cert_der = certificate.der().to_vec();
         let mut stored = Vec::with_capacity(8 + key_der.len() + cert_der.len());
-        stored.extend_from_slice(&(key_der.len() as u32).to_le_bytes());
+        let length = |bytes: &[u8]| {
+            u32::try_from(bytes.len())
+                .map(u32::to_le_bytes)
+                .map_err(|_| AppError::service_unavailable("Android TV identity too large"))
+        };
+        stored.extend_from_slice(&length(&key_der)?);
         stored.extend_from_slice(&key_der);
-        stored.extend_from_slice(&(cert_der.len() as u32).to_le_bytes());
+        stored.extend_from_slice(&length(&cert_der)?);
         stored.extend_from_slice(&cert_der);
         Ok(stored)
     }
@@ -269,7 +296,7 @@ impl Identity {
     fn from_stored(stored: &[u8]) -> Result<Self, AppError> {
         let read_chunk = |offset: usize| -> Option<(Vec<u8>, usize)> {
             let len_bytes: [u8; 4] = stored.get(offset..offset + 4)?.try_into().ok()?;
-            let len = u32::from_le_bytes(len_bytes) as usize;
+            let len = usize::try_from(u32::from_le_bytes(len_bytes)).ok()?;
             let start = offset + 4;
             let end = start.checked_add(len)?;
             Some((stored.get(start..end)?.to_vec(), end))
@@ -422,22 +449,18 @@ async fn read_framed<R>(reader: &mut R, budget: Duration) -> Result<Vec<u8>, App
 where
     R: AsyncReadExt + Unpin,
 {
-    let mut length = 0u64;
-    let mut shift = 0;
-    loop {
+    let mut decoder = Varint::default();
+    let length = loop {
         let mut byte = [0u8; 1];
         timeout(budget, reader.read_exact(&mut byte))
             .await
             .map_err(|_| AppError::service_unavailable("timed out reading from the TV"))??;
-        length |= u64::from(byte[0] & 0x7f) << shift;
-        if byte[0] & 0x80 == 0 {
-            break;
+        match decoder.push(byte[0]) {
+            Ok(Some(length)) => break length,
+            Ok(None) => {}
+            Err(VarintOverflow) => return Err(AppError::service_unavailable("malformed message length")),
         }
-        shift += 7;
-        if shift > 63 {
-            return Err(AppError::service_unavailable("malformed message length"));
-        }
-    }
+    };
 
     let length = usize::try_from(length)
         .ok()
@@ -840,6 +863,31 @@ mod tests {
         let mut m = ProtoBuf::default();
         m.varint(value);
         m.bytes
+    }
+
+    /// One decoder for the messages and their length prefix: every u64 round-trips, and
+    /// more than 64 bits is refused, never wrapped.
+    #[tokio::test]
+    async fn the_varint_decoder_round_trips_and_refuses_overflow() {
+        for value in [0, 1, 127, 128, 300, u64::from(u32::MAX), u64::MAX - 1, u64::MAX] {
+            let bytes = varint(value);
+            assert_eq!(ProtoReader::new(&bytes).varint(), Some(value), "{value}");
+        }
+        // eleven bytes, or a tenth byte past the 64th bit
+        let mut too_long = vec![0xff; 10];
+        too_long.push(0x01);
+        assert_eq!(ProtoReader::new(&too_long).varint(), None);
+        let mut past_64 = vec![0xff; 9];
+        past_64.push(0x02);
+        assert_eq!(ProtoReader::new(&past_64).varint(), None);
+        assert!(read_framed(&mut past_64.as_slice(), Duration::from_secs(1)).await.is_err());
+        // a field number past u32 is malformed, not truncated
+        let key = varint((u64::from(u32::MAX) + 1) << 3);
+        assert!(ProtoReader::new(&key).next_field().is_none());
+        // a length past the buffer is refused
+        let mut field = varint(2 << 3 | 2);
+        field.extend(varint(u64::MAX));
+        assert!(ProtoReader::new(&field).next_field().is_none());
     }
 
     #[tokio::test]

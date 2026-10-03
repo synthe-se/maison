@@ -4,20 +4,14 @@
 	// Stop are one button whose words change (a plain button, not a pressed toggle): the focus
 	// stays on it from one to the other.
 	import { m } from '#lib/paraglide/messages.js';
-	import { zigbeeLampsApi } from '#lib/api.ts';
+	import { zigbeeLampsApi } from './api.ts';
 	import { live, refresh } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
-	import { zigbee } from './lamp.ts';
+	import { zigbee, zigbeePairing } from './lamp.ts';
 
-	/** While open: every second, for the countdown (as React did); closed: slower. */
-	const OPEN_EVERY = 1_000;
-	const CLOSED_EVERY = 10_000;
-
-	// outside the lamps' prefix: refreshing the lamps after a pairing gesture must not read the
-	// window again before the coordinator has opened it
-	const status = live('zigbee-pairing', zigbeeLampsApi.pairingStatus, (d) => (d?.pairing.active ? OPEN_EVERY : CLOSED_EVERY));
+	const status = live(zigbeePairing);
 	const pairing = $derived(status.data?.pairing);
 	const open = $derived(pairing?.active ?? false);
 
@@ -37,7 +31,12 @@
 		);
 	}
 
-	const touchlink = () => g.run(() => zigbeeLampsApi.touchlinkScan(), () => ui.toast(m.zigbee_lamps_touchlink_started()), 'touchlink');
+	const touchlink = () =>
+		g.run(
+			() => zigbeeLampsApi.touchlinkScan(),
+			() => ui.toast(m.zigbee_lamps_touchlink_started()),
+			'touchlink'
+		);
 </script>
 
 <div class="inset measure">
@@ -56,5 +55,9 @@
 </div>
 
 <style>
-	.state { margin: 0; font: var(--t-label); font-variant-numeric: tabular-nums; }
+	.state {
+		margin: 0;
+		font: var(--t-label);
+		font-variant-numeric: tabular-nums;
+	}
 </style>

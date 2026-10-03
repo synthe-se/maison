@@ -32,7 +32,7 @@ for (const k of keys) if (!used.has(k)) problems.push(`${k}: unused`);
 
 type Allowed = { keys: string[]; reason: string };
 const allowed: Allowed[] = await Bun.file(new URL('i18n.allow.json', import.meta.url)).json();
-const allowedSet = new Set(allowed.map((a) => [...a.keys].sort().join(' ')));
+const allowedSet = new Set(allowed.map((a) => [...a.keys].toSorted().join(' ')));
 for (const a of allowed) {
 	if (!a.reason?.trim()) problems.push(`i18n.allow.json: ${a.keys.join(', ')} needs a reason`);
 	for (const k of a.keys) if (!keys.has(k)) problems.push(`i18n.allow.json: ${k} is not a key`);
@@ -45,7 +45,7 @@ for (const k of keys) {
 const seen = new Set<string>();
 for (const same of byText.values()) {
 	if (same.length < 2) continue;
-	const id = [...same].sort().join(' ');
+	const id = [...same].toSorted().join(' ');
 	seen.add(id);
 	if (!allowedSet.has(id)) problems.push(`${same.join(', ')}: same text in every locale (merge them, or allow in i18n.allow.json)`);
 }

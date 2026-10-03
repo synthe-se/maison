@@ -11,10 +11,12 @@
 		"i18n": "paraglide-js compile --project ../i18n/project.inlang --outdir ./src/lib/paraglide --strategy localStorage preferredLanguage baseLocale --emit-ts-declarations",
 		"test": "vitest run",
 		"coverage": "vitest run --coverage",
-		"check": "bun run i18n && bun scripts/i18n.check.ts && bun scripts/css.check.ts && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+		"lint": "cd .. && web/node_modules/.bin/oxlint -c web/.oxlintrc.json --deny-warnings web e2e",
+		"format": "cd .. && web/node_modules/.bin/oxfmt -c web/.oxfmtrc.json web e2e",
+		"format:check": "cd .. && web/node_modules/.bin/oxfmt -c web/.oxfmtrc.json --check web e2e",
+		"check": "bun run i18n && bun scripts/i18n.check.ts && bun scripts/css.check.ts && bun run format:check && bun run lint && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc -p ../e2e --noEmit"
 	},
 	"imports": {
-		"#lib": "./src/lib/index.ts",
 		"#lib/*": "./src/lib/*"
 	},
 	"devDependencies": {
@@ -27,6 +29,8 @@
 		"@vitest/browser-playwright": "5.0.3",
 		"@vitest/coverage-v8": "5.0.3",
 		"bits-ui": "2.19.4",
+		"oxfmt": "0.71.0",
+		"oxlint": "1.86.0",
 		"playwright": "1.63.0",
 		"svelte": "5.57.1",
 		"svelte-check": "4.7.6",

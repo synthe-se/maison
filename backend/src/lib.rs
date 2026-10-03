@@ -18,10 +18,12 @@ pub mod matter;
 pub mod meross;
 pub mod mitsubishi_ir;
 pub mod nabaztag;
+pub mod net;
 pub mod passkey;
 pub mod people;
 pub mod philips_ir;
 pub mod routes;
+pub mod scenes;
 pub mod store;
 pub mod sun;
 pub mod tempo;
@@ -29,7 +31,6 @@ pub mod tuya;
 pub mod tv;
 pub mod util;
 pub mod zigbee;
-pub mod zigbee_native;
 
 pub use tempo::TempoService;
 
@@ -51,6 +52,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use passkey::PasskeyState;
+use scenes::ScenesManager;
 use people::People;
 use meross::MerossManager;
 use tuya::TuyaManager;
@@ -69,6 +71,7 @@ pub struct AppState {
     pub(crate) broadlink: BroadlinkManager,
     pub(crate) hue: HueManager,
     pub(crate) ir: IrManager,
+    pub(crate) scenes: ScenesManager,
     pub(crate) matter: MatterManager,
     pub(crate) meross: MerossManager,
     pub(crate) nabaztag: NabaztagManager,
@@ -79,21 +82,12 @@ pub struct AppState {
     pub(crate) zigbee: ZigbeeManager,
 }
 
-pub fn app_from_env() -> Result<Router, AppError> {
-    let config = Arc::new(Config::from_env());
-    build_app_from_config(config)
-}
-
+/// The app from the environment (`.env` included): the server's.
 pub fn app_parts_from_env() -> Result<(Router, AppState), AppError> {
-    let config = Arc::new(Config::from_env());
-    build_app_parts_from_config(config)
+    build_app_parts_from_config(Arc::new(Config::from_env()))
 }
 
-pub fn build_app_from_config(config: Arc<Config>) -> Result<Router, AppError> {
-    let (app, _) = build_app_parts_from_config(config)?;
-    Ok(app)
-}
-
+/// The app and its state from `config`: the routes, and the background jobs started.
 pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppState), AppError> {
     let people = Arc::new(People::new(&config.auth_path));
     let passkeys = PasskeyState::new(&config).map(Arc::new);
@@ -102,6 +96,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         BroadlinkManager::new(&config.broadlink_codes_path, &config.climate_state_path)?;
     let hue = HueManager::new(config.as_ref())?;
     let ir = IrManager::new(&config.ir_keymap_path)?;
+    let scenes = ScenesManager::new(&config.scenes_path)?;
     let matter = MatterManager::new(config.as_ref())?;
     let meross = MerossManager::new(&config.meross_devices_path)?;
     let nabaztag = NabaztagManager::new(
@@ -127,6 +122,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         broadlink,
         hue,
         ir,
+        scenes,
         matter,
         meross,
         nabaztag,
@@ -168,23 +164,38 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
     Ok((app, state))
 }
 
-/// A background job run every `period`, for the life of the process: a panic in one run is
-/// logged and the next run happens anyway (a bare loop would die silently).
-fn every<F, Fut>(name: &'static str, period: std::time::Duration, job: F)
+/// A background task that logs a panic instead of dying silently; aborting the handle
+/// stops it.
+// only the Bluetooth (Hue) loops use it today
+#[cfg_attr(not(feature = "bluetooth"), allow(dead_code))]
+pub(crate) fn supervised(name: &'static str, task: impl std::future::Future<Output = ()> + Send + 'static) -> tokio::task::JoinHandle<()> {
+    use futures::FutureExt;
+    tokio::spawn(async move {
+        if std::panic::AssertUnwindSafe(task).catch_unwind().await.is_err() {
+            tracing::error!(task = name, "background task panicked");
+        }
+    })
+}
+
+/// A background job run every `period` until its handle is aborted (or for the life of the
+/// process): a panic in one run is logged and the next run happens anyway (a bare loop would
+/// die silently). Aborting the handle also stops a run in flight.
+pub(crate) fn every<F, Fut>(name: &'static str, period: std::time::Duration, job: F) -> tokio::task::JoinHandle<()>
 where
     F: Fn() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    use futures::FutureExt;
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(period);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            if let Err(error) = tokio::spawn(job()).await {
-                tracing::error!(job = name, %error, "background job panicked; it runs again next time");
+            if std::panic::AssertUnwindSafe(job()).catch_unwind().await.is_err() {
+                tracing::error!(job = name, "background job panicked; it runs again next time");
             }
         }
-    });
+    })
 }
 
 pub fn build_app(state: AppState) -> Router {
@@ -199,6 +210,7 @@ pub fn build_app(state: AppState) -> Router {
         .nest("/matter", routes::matter::router())
         .nest("/meross", routes::meross::router())
         .nest("/nabaztag", routes::nabaztag::router())
+        .nest("/scenes", routes::scenes::router())
         .nest("/tempo", routes::tempo::router())
         .nest("/tv", routes::tv::router())
         .nest("/androidtv", routes::androidtv::router())
@@ -339,22 +351,14 @@ async fn security_headers(
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static(cache));
-    headers.insert("cross-origin-opener-policy", "same-origin".parse().unwrap());
-    headers.insert(
-        "permissions-policy",
-        "camera=(), microphone=(), geolocation=(), payment=(), usb=()".parse().unwrap(),
-    );
-    headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
-    headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-    headers.insert(
-        header::STRICT_TRANSPORT_SECURITY,
-        "max-age=63072000; includeSubDomains".parse().unwrap(),
-    );
+    let fixed = header::HeaderValue::from_static;
+    headers.insert("cross-origin-opener-policy", fixed("same-origin"));
+    headers.insert("permissions-policy", fixed("camera=(), microphone=(), geolocation=(), payment=(), usb=()"));
+    headers.insert(header::X_FRAME_OPTIONS, fixed("DENY"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, fixed("nosniff"));
+    headers.insert(header::STRICT_TRANSPORT_SECURITY, fixed("max-age=63072000; includeSubDomains"));
     headers.insert(header::CONTENT_SECURITY_POLICY, csp);
-    headers.insert(
-        header::REFERRER_POLICY,
-        "strict-origin-when-cross-origin".parse().unwrap(),
-    );
+    headers.insert(header::REFERRER_POLICY, fixed("strict-origin-when-cross-origin"));
     response
 }
 
@@ -395,9 +399,11 @@ impl AppState {
         })
     }
 
+    /// Before the process ends: the radios and the device sessions are closed cleanly.
     pub async fn shutdown(&self) {
         self.hue.shutdown().await;
         self.zigbee.shutdown().await;
+        self.tuya.disconnect_all_devices().await;
     }
 }
 
@@ -478,6 +484,32 @@ mod guard_tests {
 }
 
 #[cfg(test)]
+mod every_tests {
+    use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_panicking_run_is_followed_by_the_next_and_abort_stops_it() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let counted = runs.clone();
+        let handle = super::every("test", std::time::Duration::from_secs(1), move || {
+            let n = counted.fetch_add(1, Ordering::SeqCst);
+            async move { assert!(n != 1, "the second run panics") }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
+        assert_eq!(runs.load(Ordering::SeqCst), 4, "runs at 0, 1 (panics), 2 and 3 s");
+        handle.abort();
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        assert_eq!(runs.load(Ordering::SeqCst), 4, "nothing after the abort");
+    }
+
+    #[tokio::test]
+    async fn a_supervised_panic_is_caught() {
+        let task = super::supervised("test", async { panic!("boom") });
+        assert!(task.await.is_ok(), "the panic is caught and logged");
+    }
+}
+
+#[cfg(test)]
 mod csp_tests {
     use super::*;
 
@@ -492,16 +524,14 @@ b()
 
     #[test]
     fn the_policy_allows_exactly_the_inline_scripts() {
-        let dir = std::env::temp_dir().join(format!("maison-csp-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::util::test_dir();
         // echo -n "a()" | openssl dgst -sha256 -binary | base64
-        std::fs::write(dir.join("index.html"), "<script>a()</script>").unwrap();
-        let csp = content_security_policy(&dir);
+        std::fs::write(dir.path().join("index.html"), "<script>a()</script>").unwrap();
+        let csp = content_security_policy(dir.path());
         let csp = csp.to_str().unwrap();
         assert!(csp.contains("script-src 'self' 'sha256-qVpDBgj7bpq5hMAcGp3AOc79J3Y1Z4HvySTwKrWDoy4='"), "{csp}");
         let scripts = csp.split(';').find(|d| d.trim_start().starts_with("script-src")).unwrap();
         assert!(!scripts.contains("unsafe-inline"), "{scripts}");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

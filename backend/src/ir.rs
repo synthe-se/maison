@@ -38,10 +38,22 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::{
     error::AppError,
+    lamps::HueLampView,
+    matter::CoverCommand,
+    mitsubishi_ir::{self, ClimateSettings},
+    routes::lamps::LampBackend,
     store::{self, Access, Corrupt},
+    tv,
+    zigbee::ZigbeeLampView,
+    AppState,
 };
 
 const RECENT_EVENTS_CAP: usize = 50;
+
+/// Presses waiting behind a key's running one, at most: a held autorepeat key sends a frame
+/// every ~100 ms and a binding may take 20 s or more (a TV waking up), so past this the
+/// presses are dropped rather than replayed for minutes.
+const KEY_QUEUE: usize = 4;
 
 /// Presses of the same key closer than this are phantoms: when IR reception
 /// drops a repeat frame mid-hold, the STB driver's release timer expires and
@@ -52,8 +64,24 @@ const PRESS_DEBOUNCE: Duration = Duration::from_millis(1200);
 
 /// Navigation keys are pressed in quick, deliberate succession, so the
 /// phantom filter has to be short enough not to eat real presses. Bindings
-/// opt into it with `debounce_ms`.
+/// opt into it with `debounceMs`.
 const MIN_PRESS_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// How long a climate action waits before sending: the remote keeps emitting repeat frames
+/// while its button is held, and from parts of the room those reach the AC's receiver too,
+/// colliding with the blaster's frame and corrupting it.
+const CLIMATE_KEY_RELEASE: Duration = Duration::from_millis(1200);
+
+/// What a `cover` action asks of a shutter (Matter's own commands, said as the API says them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverOrder {
+    Open,
+    Close,
+    Stop,
+    /// To the action's `position`, an open percentage (0 closed, 100 open).
+    Position,
+}
 
 /// What a switch-like action does to the device: force a state, or flip
 /// whatever the current state is — the remote-control default.
@@ -81,8 +109,11 @@ impl SwitchState {
     }
 }
 
+/// The `action` values are snake_case, the fields camelCase like the rest of the API. The
+/// keymap and scenes written before kept snake_case fields: each renamed one reads its old
+/// name too.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
+#[serde(tag = "action", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum IrAction {
     Nabaztag {
         command: String,
@@ -96,8 +127,28 @@ pub enum IrAction {
         lamp: String,
         brightness: u8,
     },
+    /// A Hue Bluetooth lamp, as `zigbee_power` drives a Zigbee one.
+    HuePower {
+        lamp: String,
+        #[serde(default)]
+        state: SwitchState,
+    },
+    /// A Hue Bluetooth lamp's brightness (1–100).
+    HueBrightness {
+        lamp: String,
+        brightness: u8,
+    },
+    /// A Matter shutter: opened, closed, stopped or sent to `position` (an open percentage,
+    /// 0 closed, 100 open; only with `position`).
+    Cover {
+        cover: String,
+        command: CoverOrder,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<u8>,
+    },
     BroadlinkCode {
         host: String,
+        #[serde(alias = "code_id")]
         code_id: String,
     },
     MerossPower {
@@ -105,15 +156,13 @@ pub enum IrAction {
         #[serde(default)]
         state: SwitchState,
     },
-    /// Powers the Philips TV through JointSPACE. `switch_to_box` also routes
+    /// Powers the Philips TV through JointSPACE. `switchToBox` also routes
     /// the set to the Android box's HDMI input on power-on, since the TV
     /// otherwise comes back on whatever source it was last left on.
     TvPower {
         #[serde(default)]
         state: SwitchState,
-        /// Aliased: `rename_all` on the enum renames variants, not fields, so
-        /// a camelCase key would otherwise be dropped without a word.
-        #[serde(default = "default_true", alias = "switchToBox")]
+        #[serde(default = "crate::util::default_true", alias = "switch_to_box")]
         switch_to_box: bool,
     },
     /// Sends one remote-control key to the TV.
@@ -134,7 +183,7 @@ pub enum IrAction {
     #[serde(rename = "androidtv_app")]
     AndroidTvApp {
         package: String,
-        #[serde(default = "default_true", alias = "ensureTvOn")]
+        #[serde(default = "crate::util::default_true", alias = "ensure_tv_on")]
         ensure_tv_on: bool,
     },
     /// Sends one key to the Android TV box (D-pad, media, volume).
@@ -144,20 +193,35 @@ pub enum IrAction {
     },
     /// Toggles the Mitsubishi AC through the Broadlink blaster: if the last
     /// commanded state left it on, sends `state-off`; otherwise sends
-    /// `on_command` (a structured `state-…` command, e.g.
+    /// `onCommand` (a structured `state-…` command, e.g.
     /// `state-cool-16-fan-4-vane-swing`).
     /// Same reversibility for the AC, driven by the last commanded state
     /// (IR is one-way, so that is the best approximation available).
     ClimateToggle {
         host: String,
+        #[serde(alias = "on_command")]
         on_command: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
-}
-
-fn default_true() -> bool {
-    true
+    /// Switches the Mitsubishi AC off (`state-off`), recorded as off like any order.
+    ClimateOff {
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    /// Switches the Mitsubishi AC back on with the last settings it was given (from its page,
+    /// a toggle or a binding), without their sleep timer: that was for then, not now.
+    ClimateOn {
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    /// Runs a saved scene's actions (`scenes.rs`). Only from a key or a test: a scene may
+    /// not hold another scene.
+    Scene {
+        scene: String,
+    },
 }
 
 /// Config-time validation so a typo'd binding fails at save, not at keypress.
@@ -173,16 +237,214 @@ pub fn validate_actions(actions: &[IrAction]) -> Result<(), String> {
         if let IrAction::ClimateToggle { on_command, .. } = action {
             if crate::mitsubishi_ir::parse_climate_settings(on_command).is_none() {
                 return Err(format!(
-                    "invalid climate on_command {on_command:?} (expected e.g. \
+                    "invalid climate onCommand {on_command:?} (expected e.g. \
                      state-cool-16-fan-4-vane-swing, and not state-off)"
                 ));
+            }
+        }
+        if let IrAction::Scene { scene } = action {
+            if !crate::scenes::valid_id(scene) {
+                return Err(format!("invalid scene id {scene:?}"));
+            }
+        }
+        if let IrAction::Cover { command, position, .. } = action {
+            cover_command(*command, *position)?;
+        }
+        if let IrAction::HueBrightness { brightness, .. } = action {
+            if !(1..=100).contains(brightness) {
+                return Err(format!("invalid Hue brightness {brightness} (expected 1 to 100)"));
             }
         }
     }
     Ok(())
 }
 
+/// Runs every action in order and says how each went (« ok: … » / « failed: … »); a
+/// failing action never stops the others. The one engine behind a remote key, the
+/// configurator's test and a scene: a `scene` action runs that scene's actions here, one
+/// level deep (a scene inside a scene is refused at save, and fails here if hand-written).
+pub async fn run_actions(state: &AppState, actions: &[IrAction]) -> Vec<String> {
+    let mut results = Vec::with_capacity(actions.len());
+    for action in actions {
+        match action {
+            IrAction::Scene { scene } => match state.scenes.get(scene).await {
+                Some(found) => {
+                    for inner in &found.actions {
+                        results.push(outcome(execute(state, inner).await));
+                    }
+                }
+                None => results.push(outcome(Err(AppError::not_found(format!("Unknown scene {scene}"))))),
+            },
+            action => results.push(outcome(execute(state, action).await)),
+        }
+    }
+    results
+}
+
+fn outcome(result: Result<String, AppError>) -> String {
+    match result {
+        Ok(message) => format!("ok: {message}"),
+        Err(error) => format!("failed: {error}"),
+    }
+}
+
+/// The Matter command a `cover` action stands for, or why it stands for none.
+fn cover_command(order: CoverOrder, position: Option<u8>) -> Result<CoverCommand, String> {
+    match (order, position) {
+        (CoverOrder::Position, Some(percent @ 0..=100)) => Ok(CoverCommand::OpenPercent(percent)),
+        (CoverOrder::Position, Some(percent)) => Err(format!("invalid cover position {percent} (expected 0 to 100)")),
+        (CoverOrder::Position, None) => Err("a cover position needs its position (0 to 100)".to_string()),
+        (_, Some(_)) => Err("only a cover position takes a position".to_string()),
+        (CoverOrder::Open, None) => Ok(CoverCommand::Open),
+        (CoverOrder::Close, None) => Ok(CoverCommand::Close),
+        (CoverOrder::Stop, None) => Ok(CoverCommand::Stop),
+    }
+}
+
+/// A lamp as the power action reads it: is it on now?
+trait LampView {
+    fn is_on(&self) -> bool;
+}
+
+impl LampView for ZigbeeLampView {
+    fn is_on(&self) -> bool {
+        self.state.is_on
+    }
+}
+
+impl LampView for HueLampView {
+    fn is_on(&self) -> bool {
+        self.state.is_on
+    }
+}
+
+/// `zigbee_power` and `hue_power`: one lamp of either family on, off or flipped.
+async fn lamp_power<B>(lamps: &B, lamp: &str, switch: SwitchState) -> Result<String, AppError>
+where
+    B: LampBackend,
+    B::View: LampView,
+{
+    let on = switch
+        .resolve(|| async {
+            let view = lamps.get(lamp).await;
+            Ok(view.ok_or_else(|| AppError::not_found(format!("Unknown {} {lamp}", B::NAME)))?.is_on())
+        })
+        .await?;
+    lamps.set_power(lamp, on).await?;
+    Ok(format!("{} {lamp}: power {}", B::NAME, if on { "on" } else { "off" }))
+}
+
+/// `zigbee_brightness` and `hue_brightness`.
+async fn lamp_brightness<B: LampBackend>(lamps: &B, lamp: &str, brightness: u8) -> Result<String, AppError> {
+    lamps.set_brightness(lamp, brightness).await?;
+    Ok(format!("{} {lamp}: brightness {brightness}", B::NAME))
+}
+
+/// The settings `climate_on` sends: the last ones given, without their sleep timer.
+fn resumed(last: Option<ClimateSettings>) -> Result<ClimateSettings, AppError> {
+    let last = last.ok_or_else(|| AppError::not_found("No climate settings yet: set the air conditioner once from its page"))?;
+    Ok(ClimateSettings { stop_in_minutes: None, ..last })
+}
+
+/// Sends one Mitsubishi command once the remote's own frames are over; the Broadlink
+/// manager records the AC's new state (on with these settings, or off).
+async fn climate(state: &AppState, host: &str, command: String, model: &Option<String>) -> Result<String, AppError> {
+    tokio::time::sleep(CLIMATE_KEY_RELEASE).await;
+    let sent = state.broadlink.send_mitsubishi_command(host.to_string(), None, command, model.clone()).await?;
+    Ok(format!("Climate {host}: {}", sent.command.unwrap_or_default()))
+}
+
+/// One device action.
+async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError> {
+    match action {
+        IrAction::Nabaztag { command } => {
+            state.nabaztag.send_command(command).await?;
+            Ok(format!("Nabaztag: {command}"))
+        }
+        IrAction::ZigbeePower { lamp, state: switch } => lamp_power(&state.zigbee, lamp, *switch).await,
+        IrAction::ZigbeeBrightness { lamp, brightness } => lamp_brightness(&state.zigbee, lamp, *brightness).await,
+        IrAction::HuePower { lamp, state: switch } => lamp_power(&state.hue, lamp, *switch).await,
+        IrAction::HueBrightness { lamp, brightness } => lamp_brightness(&state.hue, lamp, *brightness).await,
+        IrAction::Cover { cover, command, position } => {
+            let order = cover_command(*command, *position).map_err(AppError::bad_request)?;
+            state.matter.command(cover, order).await?;
+            let done = match order {
+                CoverCommand::Open => "open".to_string(),
+                CoverCommand::Close => "close".to_string(),
+                CoverCommand::Stop => "stop".to_string(),
+                CoverCommand::OpenPercent(percent) => format!("open {percent} %"),
+            };
+            Ok(format!("Cover {cover}: {done}"))
+        }
+        IrAction::BroadlinkCode { host, code_id } => {
+            state
+                .broadlink
+                .send_saved_code(host.clone(), None, code_id.clone())
+                .await?;
+            Ok(format!("Broadlink {host}: {code_id}"))
+        }
+        IrAction::MerossPower { device, state: switch } => {
+            let on = switch.resolve(|| state.meross.is_on(device)).await?;
+            state.meross.toggle(device, on).await?;
+            Ok(format!("Meross {device}: {}", if on { "on" } else { "off" }))
+        }
+        IrAction::TvPower {
+            state: switch,
+            switch_to_box,
+        } => {
+            let power = tv::tv_power(state, *switch, *switch_to_box).await?;
+            Ok(format!("TV: {power:?}"))
+        }
+        IrAction::TvKey { key } => {
+            state.tv.send_key(*key).await?;
+            Ok(format!("TV key: {key:?}"))
+        }
+        IrAction::TvVolume { level } => {
+            let volume = state.tv.set_volume(*level, None).await?;
+            Ok(format!("TV volume: {}", volume.current))
+        }
+        IrAction::TvAmbilight { state: switch } => {
+            let on = switch.resolve(|| async { Ok(state.tv.ambilight().await?.power) }).await?;
+            state.tv.set_ambilight_power(on).await?;
+            Ok(format!("TV Ambilight: {}", if on { "on" } else { "off" }))
+        }
+        IrAction::AndroidTvApp {
+            package,
+            ensure_tv_on,
+        } => {
+            crate::androidtv::launch_with_tv(state, package, *ensure_tv_on).await?;
+            Ok(format!("Android TV: launched {package}"))
+        }
+        IrAction::AndroidTvKey { key } => {
+            state.androidtv.send_key(*key).await?;
+            Ok(format!("Android TV key: {key:?}"))
+        }
+        IrAction::ClimateToggle {
+            host,
+            on_command,
+            model,
+        } => {
+            // IR is one-way: the stored state is the last commanded one.
+            let is_on = state
+                .broadlink
+                .climate_state()
+                .await
+                .map(|s| s.power)
+                .unwrap_or(false);
+            let command = if is_on { mitsubishi_ir::OFF_COMMAND } else { on_command.as_str() };
+            climate(state, host, command.to_string(), model).await
+        }
+        IrAction::ClimateOff { host, model } => climate(state, host, mitsubishi_ir::OFF_COMMAND.to_string(), model).await,
+        IrAction::ClimateOn { host, model } => {
+            let settings = resumed(state.broadlink.climate_state().await.and_then(|s| s.settings))?;
+            climate(state, host, settings.command().map_err(AppError::bad_request)?, model).await
+        }
+        IrAction::Scene { scene } => Err(AppError::bad_request(format!("Scene {scene} is inside a scene"))),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IrBinding {
     /// Fired in order; one failing action does not stop the others.
     pub actions: Vec<IrAction>,
@@ -196,7 +458,7 @@ pub struct IrBinding {
     /// Phantom-double window for this key, in milliseconds. Defaults to
     /// [`PRESS_DEBOUNCE`], which is right for toggles; navigation keys want
     /// something far shorter so quick repeated presses get through.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "debounceMs")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "debounce_ms")]
     pub debounce_ms: Option<u64>,
 }
 
@@ -234,8 +496,8 @@ pub struct IrManager {
     /// The last event's `seq`.
     seq: Arc<std::sync::atomic::AtomicU64>,
     last_press: Arc<Mutex<HashMap<u16, Instant>>>,
-    /// One queue per key, each drained by its own task, in order.
-    queues: Arc<std::sync::Mutex<HashMap<u16, mpsc::UnboundedSender<KeyJob>>>>,
+    /// One bounded queue per key, each drained by its own task, in order.
+    queues: Arc<std::sync::Mutex<HashMap<u16, mpsc::Sender<KeyJob>>>>,
 }
 
 impl IrManager {
@@ -262,25 +524,31 @@ impl IrManager {
 
     /// Runs `job` in the background, after every job queued earlier for the same key: a
     /// binding's actions finish even when the caller hangs up, and two presses of one
-    /// key never interleave. Other keys run alongside.
-    pub fn run_in_order(&self, code: u16, job: impl Future<Output = ()> + Send + 'static) {
+    /// key never interleave. Other keys run alongside. `false`: dropped, the key already
+    /// has [`KEY_QUEUE`] presses waiting.
+    pub fn run_in_order(&self, code: u16, job: impl Future<Output = ()> + Send + 'static) -> bool {
         let mut queues = self.queues.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut job: KeyJob = Box::pin(job);
         if let Some(queue) = queues.get(&code) {
-            match queue.send(job) {
-                Ok(()) => return,
+            match queue.try_send(job) {
+                Ok(()) => return true,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(code, "IR key busy: press dropped");
+                    return false;
+                }
                 // the key's task is gone (a job panicked): start a new one
-                Err(mpsc::error::SendError(back)) => job = back,
+                Err(mpsc::error::TrySendError::Closed(back)) => job = back,
             }
         }
-        let (queue, mut jobs) = mpsc::unbounded_channel::<KeyJob>();
-        let _ = queue.send(job);
+        let (queue, mut jobs) = mpsc::channel::<KeyJob>(KEY_QUEUE);
+        let _ = queue.try_send(job);
         queues.insert(code, queue);
         tokio::spawn(async move {
             while let Some(job) = jobs.recv().await {
                 job.await;
             }
         });
+        true
     }
 
     /// Returns `false` when this press is a phantom double (see
@@ -319,7 +587,7 @@ impl IrManager {
         let mut map = self.keymap.write().await;
         let mut next = map.clone();
         next.insert(code, binding);
-        self.persist(&next)?;
+        self.persist(&next).await?;
         *map = next;
         Ok(())
     }
@@ -332,7 +600,7 @@ impl IrManager {
         }
         let mut next = map.clone();
         next.remove(&code);
-        self.persist(&next)?;
+        self.persist(&next).await?;
         *map = next;
         Ok(true)
     }
@@ -356,14 +624,28 @@ impl IrManager {
         self.recent.lock().await.iter().rev().cloned().collect()
     }
 
-    fn persist(&self, map: &HashMap<u16, IrBinding>) -> Result<(), AppError> {
+    async fn persist(&self, map: &HashMap<u16, IrBinding>) -> Result<(), AppError> {
         // String keys so the file round-trips through parse_keymap.
         let as_strings: HashMap<String, &IrBinding> = map
             .iter()
             .map(|(code, binding)| (code.to_string(), binding))
             .collect();
-        store::write_json(&self.path, &as_strings, Access::Shared)
+        store::write_json_async(&self.path, &as_strings, Access::Shared).await
     }
+}
+
+/// A binding as the configurator reads it: as kept, plus each climate toggle's `settings`
+/// (its `onCommand` read back), so the web needs no parser of its own.
+pub fn described(binding: &IrBinding) -> serde_json::Value {
+    let mut value = serde_json::to_value(binding).unwrap_or_default();
+    let actions = value.get_mut("actions").and_then(serde_json::Value::as_array_mut);
+    for (json, action) in actions.into_iter().flatten().zip(&binding.actions) {
+        if let IrAction::ClimateToggle { on_command, .. } = action {
+            let settings = crate::mitsubishi_ir::parse_climate_settings(on_command);
+            json["settings"] = serde_json::to_value(settings).unwrap_or_default();
+        }
+    }
+    value
 }
 
 /// A keymap file's text (the `keymap_file_check` test checks a hand-written one).
@@ -388,7 +670,8 @@ mod tests {
 
     #[tokio::test]
     async fn events_are_numbered_in_order_whatever_the_clock_says() {
-        let manager = IrManager::new(&std::env::temp_dir().join(format!("{}.json", uuid::Uuid::new_v4()))).unwrap();
+        let dir = crate::util::test_dir();
+        let manager = IrManager::new(&dir.path().join("ir-keymap.json")).unwrap();
         for code in [10, 11, 12] {
             manager.record_event(code, 1, false).await;
         }
@@ -463,7 +746,7 @@ mod tests {
         // state-off as on_command makes the toggle a no-op: refused at save.
         let off = vec![IrAction::ClimateToggle {
             host: "h".to_string(),
-            on_command: "state-off".to_string(),
+            on_command: mitsubishi_ir::OFF_COMMAND.to_string(),
             model: None,
         }];
         assert!(validate_actions(&off).is_err());
@@ -477,8 +760,7 @@ mod tests {
     }
 
     /// The TV bindings are the ones a user hand-writes most often, so pin
-    /// their JSON shape — including the camelCase `switchToBox` and the
-    /// snake_case key names.
+    /// their JSON shape: camelCase fields, snake_case action and key values.
     #[test]
     fn parses_tv_actions() {
         let keymap = parse_keymap(
@@ -531,10 +813,9 @@ mod tests {
         );
     }
 
-    /// `rename_all = "snake_case"` on an enum renames *variants*, not the
-    /// fields inside them, so a camelCase key is dropped silently unless it is
-    /// aliased. Both spellings must reach the field — asserted with the
-    /// NON-default value, or the test would pass on the default alone.
+    /// The keymap (and scenes) written before the API went camelCase keep loading: every
+    /// renamed field reads its old snake_case name too — asserted with the NON-default
+    /// value, or the test would pass on the default alone.
     #[test]
     fn both_field_spellings_are_honoured() {
         for body in [
@@ -566,6 +847,65 @@ mod tests {
                 "spelling was ignored in {body}"
             );
         }
+    }
+
+    /// What « Je pars » holds: shutters, Hue lamps and the AC, pinned in their JSON shape.
+    #[test]
+    fn parses_cover_hue_and_climate_actions() {
+        let keymap = parse_keymap(
+            r#"{ "5": { "actions": [
+                { "action": "cover", "cover": "12", "command": "close" },
+                { "action": "cover", "cover": "12", "command": "position", "position": 40 },
+                { "action": "hue_power", "lamp": "aa", "state": "off" },
+                { "action": "hue_power", "lamp": "aa" },
+                { "action": "hue_brightness", "lamp": "aa", "brightness": 30 },
+                { "action": "climate_off", "host": "192.168.1.60" },
+                { "action": "climate_on", "host": "192.168.1.60", "model": "msz" }
+            ] } }"#,
+        )
+        .expect("parses");
+        let actions = &keymap[&5].actions;
+        assert_eq!(actions[0], IrAction::Cover { cover: "12".into(), command: CoverOrder::Close, position: None });
+        assert_eq!(actions[1], IrAction::Cover { cover: "12".into(), command: CoverOrder::Position, position: Some(40) });
+        assert_eq!(actions[2], IrAction::HuePower { lamp: "aa".into(), state: SwitchState::Off });
+        assert_eq!(actions[3], IrAction::HuePower { lamp: "aa".into(), state: SwitchState::Toggle }, "toggle by default");
+        assert_eq!(actions[4], IrAction::HueBrightness { lamp: "aa".into(), brightness: 30 });
+        assert_eq!(actions[5], IrAction::ClimateOff { host: "192.168.1.60".into(), model: None });
+        assert_eq!(actions[6], IrAction::ClimateOn { host: "192.168.1.60".into(), model: Some("msz".into()) });
+        assert!(validate_actions(actions).is_ok());
+        let json = serde_json::to_value(&actions[0]).unwrap();
+        assert_eq!(json, serde_json::json!({ "action": "cover", "cover": "12", "command": "close" }), "no null position");
+    }
+
+    #[test]
+    fn a_cover_position_goes_with_its_command_only() {
+        assert_eq!(cover_command(CoverOrder::Open, None), Ok(CoverCommand::Open));
+        assert_eq!(cover_command(CoverOrder::Close, None), Ok(CoverCommand::Close));
+        assert_eq!(cover_command(CoverOrder::Stop, None), Ok(CoverCommand::Stop));
+        assert_eq!(cover_command(CoverOrder::Position, Some(0)), Ok(CoverCommand::OpenPercent(0)));
+        assert_eq!(cover_command(CoverOrder::Position, Some(100)), Ok(CoverCommand::OpenPercent(100)));
+        assert!(cover_command(CoverOrder::Position, Some(101)).is_err());
+        assert!(cover_command(CoverOrder::Position, None).is_err());
+        assert!(cover_command(CoverOrder::Close, Some(30)).is_err());
+        let wrong = |position| vec![IrAction::Cover { cover: "1".into(), command: CoverOrder::Position, position }];
+        assert!(validate_actions(&wrong(Some(101))).is_err(), "refused at save");
+        assert!(validate_actions(&wrong(None)).is_err());
+        let hue = |brightness| vec![IrAction::HueBrightness { lamp: "aa".into(), brightness }];
+        assert!(validate_actions(&hue(0)).is_err() && validate_actions(&hue(101)).is_err());
+        assert!(validate_actions(&hue(1)).is_ok() && validate_actions(&hue(100)).is_ok());
+    }
+
+    /// The AC comes back as it was last set, but a sleep timer armed then is not armed again.
+    #[test]
+    fn climate_on_resumes_the_last_settings_without_their_timer() {
+        let last = mitsubishi_ir::parse_climate_settings("state-heat-21-fan-auto-vane-auto-stopin-60").unwrap();
+        let again = resumed(Some(last.clone())).expect("settings");
+        assert_eq!(again, ClimateSettings { stop_in_minutes: None, ..last });
+        assert_eq!(again.command().unwrap(), "state-heat-21-fan-auto-vane-auto-wide-center");
+        assert!(
+            matches!(resumed(None), Err(AppError::Http { status: axum::http::StatusCode::NOT_FOUND, .. })),
+            "nothing to resume: said so"
+        );
     }
 
     #[test]
@@ -607,10 +947,8 @@ mod tests {
 
     #[tokio::test]
     async fn debounces_phantom_double_press_per_key() {
-        let path = std::env::temp_dir()
-            .join("maison-ir-unit")
-            .join(format!("{}-debounce.json", uuid::Uuid::new_v4()));
-        let manager = IrManager::new(&path).expect("empty manager");
+        let dir = crate::util::test_dir();
+        let manager = IrManager::new(&dir.path().join("ir-keymap.json")).expect("empty manager");
         assert!(manager.accept_press(116).await, "first press fires");
         assert!(
             !manager.accept_press(116).await,
@@ -633,7 +971,7 @@ mod tests {
     /// the next restart).
     #[tokio::test]
     async fn a_failed_save_changes_nothing() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("ir-keymap.json");
         let manager = IrManager::new(&path).expect("empty manager");
         std::fs::create_dir(&path).expect("a directory where the file goes");
@@ -651,8 +989,8 @@ mod tests {
     /// keys do not wait for them.
     #[tokio::test]
     async fn jobs_run_in_order_per_key() {
-        let manager = IrManager::new(&std::env::temp_dir().join(format!("{}.json", uuid::Uuid::new_v4())))
-            .expect("manager");
+        let dir = crate::util::test_dir();
+        let manager = IrManager::new(&dir.path().join("ir-keymap.json")).expect("manager");
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (done, mut finished) = mpsc::unbounded_channel();
         for (code, label, wait_ms) in [(1, "1a", 80), (1, "1b", 0), (2, "2a", 0), (1, "1c", 10)] {
@@ -674,11 +1012,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_remove_persist_roundtrip() {
-        let dir = std::env::temp_dir()
-            .join("maison-ir-unit")
-            .join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("ir-keymap.json");
+        let dir = crate::util::test_dir();
+        let path = dir.path().join("ir-keymap.json");
 
         let manager = IrManager::new(&path).expect("empty manager");
         manager
@@ -704,5 +1039,76 @@ mod tests {
         assert!(!reloaded.remove_binding(207).await.expect("idempotent"));
         let reloaded_again = IrManager::new(&path).expect("reload again");
         assert!(reloaded_again.binding(207).await.is_none());
+    }
+
+    /// A held key cannot pile up work: past `KEY_QUEUE` waiting presses, the next are
+    /// dropped (and said so), and the key takes presses again once its queue drains.
+    #[tokio::test]
+    async fn a_busy_key_drops_presses_past_its_queue() {
+        let dir = crate::util::test_dir();
+        let manager = IrManager::new(&dir.path().join("ir-keymap.json")).expect("manager");
+        let (release, gate) = tokio::sync::watch::channel(false);
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let job = || {
+            let (mut gate, ran) = (gate.clone(), ran.clone());
+            async move {
+                let _ = gate.wait_for(|open| *open).await;
+                ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        };
+        assert!(manager.run_in_order(1, job()), "the first runs (and blocks)");
+        tokio::task::yield_now().await;
+        let queued = (0..KEY_QUEUE + 3).filter(|_| manager.run_in_order(1, job())).count();
+        assert_eq!(queued, KEY_QUEUE, "the rest dropped");
+        assert!(manager.run_in_order(2, job()), "another key is not held up");
+        release.send(true).unwrap();
+        while ran.load(std::sync::atomic::Ordering::SeqCst) < KEY_QUEUE + 2 {
+            tokio::task::yield_now().await;
+        }
+        assert!(manager.run_in_order(1, job()), "drained: presses go through again");
+    }
+
+    #[test]
+    fn a_climate_toggle_is_described_with_its_settings() {
+        let binding = IrBinding {
+            actions: vec![
+                IrAction::Nabaztag { command: "ping".into() },
+                IrAction::ClimateToggle { host: "h".into(), on_command: "state-cool-16-fan-4-vane-swing".into(), model: None },
+            ],
+            label: None,
+            repeat: false,
+            debounce_ms: None,
+        };
+        let json = described(&binding);
+        assert!(json["actions"][0].get("settings").is_none());
+        let settings = &json["actions"][1]["settings"];
+        let expected = crate::mitsubishi_ir::parse_climate_settings("state-cool-16-fan-4-vane-swing").unwrap();
+        assert_eq!(settings, &serde_json::to_value(expected).unwrap());
+        assert_eq!(json["actions"][1]["onCommand"], "state-cool-16-fan-4-vane-swing", "the rest as kept");
+    }
+
+    /// An old snake_case keymap reads whole and is written back camelCase.
+    #[test]
+    fn an_old_snake_case_keymap_is_written_back_camel_case() {
+        let old = parse_keymap(
+            r#"{ "2": { "debounce_ms": 150, "actions": [
+                { "action": "broadlink_code", "host": "h", "code_id": "tv-power" },
+                { "action": "climate_toggle", "host": "h", "on_command": "state-cool-16-fan-4-vane-swing" },
+                { "action": "tv_power", "switch_to_box": false },
+                { "action": "androidtv_app", "package": "a.b", "ensure_tv_on": false }
+            ] } }"#,
+        )
+        .expect("the old shape parses");
+        let binding = &old[&2];
+        assert_eq!(binding.debounce_ms, Some(150));
+        assert_eq!(binding.actions[0], IrAction::BroadlinkCode { host: "h".into(), code_id: "tv-power".into() });
+        let written = serde_json::to_value(binding).unwrap();
+        assert_eq!(written["debounceMs"], 150);
+        assert_eq!(written["actions"][0]["codeId"], "tv-power");
+        assert_eq!(written["actions"][1]["onCommand"], "state-cool-16-fan-4-vane-swing");
+        assert_eq!(written["actions"][2]["switchToBox"], false);
+        assert_eq!(written["actions"][3]["ensureTvOn"], false);
+        assert_eq!(written["actions"][3]["action"], "androidtv_app", "values stay snake_case");
+        assert_eq!(&serde_json::from_value::<IrBinding>(written).unwrap(), binding);
     }
 }

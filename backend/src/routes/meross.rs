@@ -4,58 +4,36 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
-use crate::{AppState, error::AppError, meross, tuya::DeviceRef};
+use crate::{
+    AppState,
+    error::AppError,
+    meross,
+    routes::{Answer, DeviceRef},
+};
 
 #[derive(Debug, Serialize)]
-struct MerossListResponse {
-    success: bool,
+struct PlugList {
     devices: Vec<meross::MerossDeviceListEntry>,
     total: usize,
     message: &'static str,
 }
 
+/// `{success, device, message, ..}`: what every plug answer says, its own fields after.
 #[derive(Debug, Serialize)]
-struct MerossStatusResponse {
-    success: bool,
+struct PlugAnswer {
     device: DeviceRef,
-    status: meross::MerossStatus,
-    message: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct MerossElectricityResponse {
-    success: bool,
-    device: DeviceRef,
-    electricity: meross::MerossElectricityFormatted,
-    message: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct MerossConsumptionResponse {
-    success: bool,
-    device: DeviceRef,
-    consumption: Vec<meross::MerossConsumptionEntry>,
-    summary: meross::MerossConsumptionSummary,
-    message: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct MerossToggleResponse {
-    success: bool,
-    device: DeviceRef,
-    on: bool,
     message: String,
+    #[serde(flatten)]
+    body: Value,
 }
 
-#[derive(Debug, Serialize)]
-struct MerossDndResponse {
-    success: bool,
-    device: DeviceRef,
-    #[serde(rename = "dndMode")]
-    dnd_mode: bool,
-    message: String,
+fn answer(device: DeviceRef, message: impl Into<String>, body: Value) -> Json<Answer<PlugAnswer>> {
+    Answer::ok(PlugAnswer { device, message: message.into(), body })
 }
+
+type Answered = Result<Json<Answer<PlugAnswer>>, AppError>;
 
 #[derive(Debug, Deserialize)]
 struct ToggleBody {
@@ -70,7 +48,6 @@ struct DndBody {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_devices))
-        .route("/stats", get(stats))
         .route("/{device_id}/status", get(status))
         .route("/{device_id}/electricity", get(electricity))
         .route("/{device_id}/consumption", get(consumption))
@@ -78,85 +55,34 @@ pub fn router() -> Router<AppState> {
         .route("/{device_id}/dnd", post(set_dnd))
 }
 
-async fn list_devices(State(state): State<AppState>) -> Json<MerossListResponse> {
+async fn list_devices(State(state): State<AppState>) -> Json<Answer<PlugList>> {
     let devices = state.meross.list_devices().await;
-    Json(MerossListResponse {
-        success: true,
-        total: devices.len(),
-        devices,
-        message: "Meross devices list retrieved",
-    })
+    Answer::ok(PlugList { total: devices.len(), devices, message: "Meross devices list retrieved" })
 }
 
-async fn stats(State(state): State<AppState>) -> Json<meross::MerossStats> {
-    Json(state.meross.get_stats().await)
-}
-
-async fn status(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-) -> Result<Json<MerossStatusResponse>, AppError> {
+async fn status(State(state): State<AppState>, Path(device_id): Path<String>) -> Answered {
     let (device, status) = state.meross.get_status(&device_id).await?;
-    Ok(Json(MerossStatusResponse {
-        success: true,
-        device,
-        status,
-        message: "Status retrieved",
-    }))
+    Ok(answer(device, "Status retrieved", json!({ "status": status })))
 }
 
-async fn electricity(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-) -> Result<Json<MerossElectricityResponse>, AppError> {
+async fn electricity(State(state): State<AppState>, Path(device_id): Path<String>) -> Answered {
     let (device, electricity) = state.meross.get_electricity(&device_id).await?;
-    Ok(Json(MerossElectricityResponse {
-        success: true,
-        device,
-        electricity,
-        message: "Electricity data retrieved",
-    }))
+    Ok(answer(device, "Electricity data retrieved", json!({ "electricity": electricity })))
 }
 
-async fn consumption(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-) -> Result<Json<MerossConsumptionResponse>, AppError> {
+async fn consumption(State(state): State<AppState>, Path(device_id): Path<String>) -> Answered {
     let (device, consumption, summary) = state.meross.get_consumption(&device_id).await?;
-    Ok(Json(MerossConsumptionResponse {
-        success: true,
-        device,
-        consumption,
-        summary,
-        message: "Consumption history retrieved",
-    }))
+    Ok(answer(device, "Consumption history retrieved", json!({ "consumption": consumption, "summary": summary })))
 }
 
-async fn toggle(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    Json(body): Json<ToggleBody>,
-) -> Result<Json<MerossToggleResponse>, AppError> {
+async fn toggle(State(state): State<AppState>, Path(device_id): Path<String>, Json(body): Json<ToggleBody>) -> Answered {
     let device = state.meross.toggle(&device_id, body.on).await?;
-    Ok(Json(MerossToggleResponse {
-        success: true,
-        message: format!("{} turned {}", device.name, if body.on { "on" } else { "off" }),
-        device,
-        on: body.on,
-    }))
+    let message = format!("{} turned {}", device.name, if body.on { "on" } else { "off" });
+    Ok(answer(device, message, json!({ "on": body.on })))
 }
 
-async fn set_dnd(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    Json(body): Json<DndBody>,
-) -> Result<Json<MerossDndResponse>, AppError> {
+async fn set_dnd(State(state): State<AppState>, Path(device_id): Path<String>, Json(body): Json<DndBody>) -> Answered {
     let device = state.meross.set_dnd(&device_id, body.enabled).await?;
     let (dnd, led) = if body.enabled { ("enabled", "off") } else { ("disabled", "on") };
-    Ok(Json(MerossDndResponse {
-        success: true,
-        device,
-        dnd_mode: body.enabled,
-        message: format!("DND mode {dnd} (LED {led})"),
-    }))
+    Ok(answer(device, format!("DND mode {dnd} (LED {led})"), json!({ "dndMode": body.enabled })))
 }

@@ -33,6 +33,9 @@ impl LampBackend for ZigbeeManager {
     async fn stats(&self) -> LampStats {
         ZigbeeManager::stats(self).await
     }
+    async fn listing(&self) -> (Vec<zigbee::ZigbeeLampView>, LampStats) {
+        ZigbeeManager::listing(self).await
+    }
     async fn set_power(&self, id: &str, on: bool) -> Result<LampState, AppError> {
         ZigbeeManager::set_power(self, id, on).await
     }
@@ -60,6 +63,7 @@ struct ColorBody {
     y: f32,
 }
 
+/// The effect by its name (`candle`, `blink`…); `ZigbeeEffect` says which exist.
 #[derive(Debug, Deserialize)]
 struct EffectBody {
     effect: String,

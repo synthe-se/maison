@@ -1,15 +1,18 @@
 <script lang="ts">
-	// « Télécommande »: the infrared buttons of the AirTies set-top box (README « IR remote »).
+	// « Télécommande »: the infrared buttons of the AirTies set-top box (AGENTS.md « IR remote »).
 	// The remote's picture and the list of configured buttons both open one editor, in a sheet.
 	// Configuring is an admin's: a member sees what each button does.
 	import { m } from '#lib/paraglide/messages.js';
-	import { irApi, type IrBinding } from '#lib/api.ts';
+	import { irApi, type IrBinding } from '#lib/devices/remote/api.ts';
+	import { keymap as keymapData } from '#lib/devices/remote/data.ts';
 	import { live } from '#lib/live.svelte.ts';
+	import { Draft } from '#lib/draft.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { session } from '#lib/session.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
+	import Group from '#lib/components/Group.svelte';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
@@ -17,22 +20,22 @@
 	import Sheet from '#lib/components/Sheet.svelte';
 	import RemoteMap from '#lib/devices/remote/RemoteMap.svelte';
 	import BindingEditor from '#lib/devices/remote/BindingEditor.svelte';
-	import { liveSources, summarize } from '#lib/devices/remote/actions.ts';
+	import { bindingForm, liveSources, summarize, type BindingForm } from '#lib/devices/remote/actions.ts';
 	import { keyName } from '#lib/devices/remote/keys.ts';
 
-	const keymap = live('ir-keymap', irApi.keymap);
+	const keymap = live(keymapData);
 	const sources = liveSources();
 	const map = $derived(keymap.data?.keymap ?? {});
 	const bindings = $derived(
 		Object.entries(map)
 			.map(([code, b]): [number, IrBinding] => [Number(code), b])
-			.sort((a, b) => a[0] - b[0])
+			.toSorted((a, b) => a[0] - b[0])
 	);
 
-	/** The editor: closed, a new button (capture), or a key's binding. */
-	let editing = $state<{ code?: number } | null>(null);
-	let listTitle = $state<HTMLElement | null>(null);
-	let editorDirty = $state(false);
+	/** The editor: closed, a new button (capture), or a key's binding, and its draft. */
+	let editing = $state<{ code?: number; draft: Draft<BindingForm> } | null>(null);
+	const edit = (code?: number) => (editing = { code, draft: new Draft(bindingForm(code === undefined ? undefined : map[String(code)])) });
+	let listTitle = $state<HTMLElement>();
 
 	const g = new Gesture();
 	const remove = (code: number) =>
@@ -52,7 +55,7 @@
 	{#snippet sub()}{m.remote_subtitle()}{/snippet}
 	{#snippet end()}
 		<AdminOnly>
-			<button class="btn primary" onclick={() => (editing = {})}><Icon name="plus" />{m.remote_add_binding()}</button>
+			<button class="btn primary" onclick={() => edit()}><Icon name="plus" />{m.remote_add_binding()}</button>
 		</AdminOnly>
 	{/snippet}
 </PageHead>
@@ -60,24 +63,24 @@
 <Loaded value={keymap}>
 	<div class="layout">
 		{#if session.admin}
-			<section class="group" aria-labelledby="remote-map-title">
-				<h2 id="remote-map-title" class="group-title">{m.remote_map_title()}</h2>
-				<RemoteMap keymap={map} onselect={(code) => (editing = { code })} />
-			</section>
+			<Group id="remote-map-title" title={m.remote_map_title()}>
+				<RemoteMap keymap={map} onselect={edit} />
+			</Group>
 		{/if}
 
-		<section class="group" aria-labelledby="remote-list-title">
-			<div class="group-head">
-				<h2 id="remote-list-title" class="group-title" tabindex="-1" bind:this={listTitle}>{m.remote_bindings_title()}</h2>
-				{#if bindings.length}<span class="fact">{m.remote_binding_count({ count: bindings.length })}</span>{/if}
-			</div>
+		<Group
+			id="remote-list-title"
+			title={m.remote_bindings_title()}
+			fact={bindings.length ? m.remote_binding_count({ count: bindings.length }) : undefined}
+			bind:heading={listTitle}
+		>
 			{#if bindings.length === 0}
 				<div class="empty">
 					<p>{m.remote_no_bindings()}</p>
 					<p class="hint">{m.remote_no_bindings_hint()}</p>
 				</div>
 			{:else}
-				<ul class="bindings">
+				<ul class="bindings plain-list">
 					{#each bindings as [code, b] (code)}
 						<li class="tile binding">
 							<div class="tile-head">
@@ -95,7 +98,7 @@
 							</ol>
 							<AdminOnly reason={false}>
 								<div class="actions end">
-									<button class="btn" aria-label={m.remote_edit_binding({ key: keyName(code) })} onclick={() => (editing = { code })}>
+									<button class="btn" aria-label={m.remote_edit_binding({ key: keyName(code) })} onclick={() => edit(code)}>
 										<Icon name="pen" />{m.common_edit()}
 									</button>
 									<ConfirmDialog
@@ -104,7 +107,7 @@
 										title={m.remote_delete_title({ key: keyName(code) })}
 										description={m.remote_delete_consequence()}
 										action={m.remote_delete_key({ key: keyName(code) })}
-										pending={g.is(String(code))}
+										busy={g.is(String(code))}
 										onconfirm={() => remove(code)}
 									/>
 								</div>
@@ -113,14 +116,14 @@
 					{/each}
 				</ul>
 			{/if}
-		</section>
+		</Group>
 	</div>
 </Loaded>
 
 <Sheet
 	open={editing !== null}
 	onclose={() => (editing = null)}
-	dirty={editorDirty}
+	draft={editing?.draft}
 	title={editing?.code === undefined ? m.remote_new_key() : m.remote_edit_binding({ key: keyName(editing.code) })}
 	description={m.remote_editor_description()}
 >
@@ -129,7 +132,7 @@
 			code={editing.code}
 			keymap={map}
 			sources={sources.current}
-			bind:dirty={editorDirty}
+			draft={editing.draft}
 			onsaved={() => {
 				editing = null;
 				void keymap.refresh();
@@ -140,18 +143,52 @@
 </Sheet>
 
 <style>
-	.layout { display: grid; gap: var(--s-6); align-items: start; }
+	.layout {
+		display: grid;
+		gap: var(--s-6);
+		align-items: start;
+	}
 	@media (min-width: 840px) {
-		.layout { grid-template-columns: auto minmax(0, 1fr); }
+		.layout {
+			grid-template-columns: auto minmax(0, 1fr);
+		}
 	}
-	.layout .group + .group { margin-top: 0; }
-	.bindings { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-3); }
+	.layout :global(.group + .group) {
+		margin-top: 0;
+	}
+	.bindings {
+		display: grid;
+		gap: var(--s-3);
+	}
 	.badge {
-		flex: none; display: grid; place-items: center; min-width: var(--tile-icon); height: var(--tile-icon); padding: 0 var(--s-2);
-		border-radius: var(--radius-m); background: var(--accent-wash); color: var(--accent); font: var(--t-label); font-weight: 600;
-		max-width: 8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+		flex: none;
+		display: grid;
+		place-items: center;
+		min-width: var(--tile-icon);
+		height: var(--tile-icon);
+		padding: 0 var(--s-2);
+		border-radius: var(--radius-m);
+		background: var(--accent-wash);
+		color: var(--accent);
+		font: var(--t-label);
+		font-weight: 600;
+		max-width: 8rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
-	.summary { margin: 0; padding-left: var(--s-5); font: var(--t-secondary); color: var(--ink-muted); display: grid; gap: var(--s-1); }
-	.summary li { overflow-wrap: anywhere; }
-	.binding :global(.btn) { min-height: var(--control-h); }
+	.summary {
+		margin: 0;
+		padding-left: var(--s-5);
+		font: var(--t-secondary);
+		color: var(--ink-muted);
+		display: grid;
+		gap: var(--s-1);
+	}
+	.summary li {
+		overflow-wrap: anywhere;
+	}
+	.binding :global(.btn) {
+		min-height: var(--control-h);
+	}
 </style>

@@ -10,7 +10,7 @@
 //!
 //! webauthn-rs checks challenge, origin, RP ID, user verification, signature and counter.
 //! Ceremony states stay here, in memory, single-use, five minutes at most: webauthn-rs
-//! insists they never reach the client. See docs/dependances/passkeys.md.
+//! insists they never reach the client. See docs/passkeys.md.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -45,6 +45,8 @@ pub enum Refusal {
     NotSignedIn,
     Forbidden,
     BadName,
+    /// A person's id that is not a slug (lowercase letters, digits, dashes).
+    BadPerson,
     PasskeyOff,
     InviteInvalid,
     CeremonyExpired,
@@ -67,6 +69,9 @@ impl From<Refusal> for AppError {
             Refusal::NotSignedIn => (StatusCode::UNAUTHORIZED, "not_signed_in", "Not signed in"),
             Refusal::Forbidden => (StatusCode::FORBIDDEN, "forbidden", "Admin privileges required"),
             Refusal::BadName => (StatusCode::BAD_REQUEST, "bad_name", "A name, 60 characters at most"),
+            Refusal::BadPerson => {
+                (StatusCode::BAD_REQUEST, "bad_person", "A person's id: lowercase letters, digits and dashes")
+            }
             Refusal::PasskeyOff => (StatusCode::SERVICE_UNAVAILABLE, "passkey_off", "Passkeys need PUBLIC_URL (https)"),
             Refusal::InviteInvalid => (StatusCode::NOT_FOUND, "invite_invalid", "This invitation is no longer valid"),
             Refusal::CeremonyExpired => (StatusCode::BAD_REQUEST, "ceremony_expired", "Too late: start again"),
@@ -138,12 +143,9 @@ impl<T> Ceremonies<T> {
         (t.elapsed() < self.ttl).then_some(v)
     }
 
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    fn len(&self) -> usize {
         self.map.lock().expect("ceremonies").len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 

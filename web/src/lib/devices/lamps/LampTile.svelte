@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { percent } from '#lib/i18n.svelte.ts';
-	// A lamp's tile, Hue or Zigbee alike (docs/ux/tableau-de-bord.md § 1–3): the icon turns it
-	// on or off, the name opens its page, line 2 says « Allumée, 80 % », and the brightness
-	// slider follows the finger. Unreachable: said in words with since when, the gesture kept
-	// in place but unavailable, the last value kept but greyed (§ 4).
+	// A lamp's tile, Hue or Zigbee alike (docs/ux.md § 1–3): one compact row, the icon turns
+	// it on or off, the name opens its page, line 2 says « Allumée, 80 % ». The brightness
+	// slider only under a lamp that is on and reachable: an off or unreachable lamp shows no
+	// slider that looks draggable. Unreachable: said in words with since when, the gesture kept
+	// in place but unavailable (§ 4).
 	import { m } from '#lib/paraglide/messages.js';
+	import { percent } from '#lib/i18n.svelte.ts';
 	import { Command, LIMIT } from '#lib/command.svelte.ts';
 	import { refresh } from '#lib/live.svelte.ts';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
@@ -42,15 +43,17 @@
 	{command}
 	ontoggle={toggle}
 >
-	<Range
-		live
-		near={2}
-		label={lamp.reachable ? m.lamps_brightness() : m.lamps_last_brightness()}
-		value={lamp.brightness}
-		min={1}
-		valueText={(v) => percent(v / 100)}
-		send={(v) => driver.brightness(lamp.id, v)}
-		{settle}
-		disabled={!lamp.reachable || !lamp.isOn}
-	/>
+	{#if lamp.reachable && lamp.isOn}
+		<Range
+			live
+			near={2}
+			label={m.lamps_brightness()}
+			hideLabel
+			value={lamp.brightness}
+			min={1}
+			valueText={(v) => percent(v / 100)}
+			send={(v) => driver.brightness(lamp.id, v)}
+			{settle}
+		/>
+	{/if}
 </DeviceTile>

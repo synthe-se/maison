@@ -2,10 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import type { TempoCalendar as Calendar } from '#lib/api.ts';
+import type { TempoCalendar as Calendar } from '#lib/devices/tempo/api.ts';
 import { tempoStock } from '#lib/test/tempo.ts';
 import { date, longDay, percent, weekday } from '#lib/i18n.svelte.ts';
-import { forgetAll } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { stubApi, type ApiCall } from '#lib/test/api.ts';
 import { dayWords } from './colors.ts';
@@ -16,25 +15,34 @@ const season: Calendar = {
 	success: true,
 	season: '2026-2027',
 	calendar: [
-		{ date: '2026-12-01', color: 'BLUE', is_actual: true, is_prediction: false },
-		{ date: '2026-12-02', color: 'RED', is_actual: true, is_prediction: false },
-		{ date: '2026-12-29', color: 'WHITE', is_actual: false, is_prediction: true, confidence: 0.47 }
+		{ date: '2026-12-01', color: 'BLUE', isActual: true, isPrediction: false },
+		{ date: '2026-12-02', color: 'RED', isActual: true, isPrediction: false },
+		{ date: '2026-12-29', color: 'WHITE', isActual: false, isPrediction: true, confidence: 0.47 }
 	],
-	stock: tempoStock({ blue: { used: 1, total: 300, remaining: 299 }, white: { used: 0, total: 43, remaining: 43 }, red: { used: 1, total: 22, remaining: 21 } })
+	stock: tempoStock({
+		blue: { used: 1, total: 300, remaining: 299 },
+		white: { used: 0, total: 43, remaining: 43 },
+		red: { used: 1, total: 22, remaining: 21 }
+	})
 };
 const table = () => page.getByRole('table');
-const caption = (y: number, mo: number) => expect.element(table()).toHaveAccessibleName(month(y, mo));
+/** The table is named after the month it shows. */
+async function caption(y: number, mo: number) {
+	await expect.element(table()).toHaveAccessibleName(month(y, mo));
+}
 
 describe('TempoCalendar', () => {
 	let api: ReturnType<typeof stubApi>;
 	beforeEach(() => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2026-12-28T12:00:00'));
-		api = stubApi({ '/tempo/calendar?season=2026-2027': season, '/tempo/calendar?season=2025-2026': { success: true, season: '2025-2026', calendar: [], stock: tempoStock({ season: '2025-2026' }) } });
+		api = stubApi({
+			'/tempo/calendar?season=2026-2027': season,
+			'/tempo/calendar?season=2025-2026': { success: true, season: '2025-2026', calendar: [], stock: tempoStock({ season: '2025-2026' }) }
+		});
 	});
 	afterEach(() => {
 		vi.useRealTimers();
-		forgetAll();
 	});
 
 	it('is a table named by its month, weekdays from Monday with their full names', async () => {
@@ -47,7 +55,7 @@ describe('TempoCalendar', () => {
 		await expect.element(headers.nth(6)).toHaveAttribute('abbr', weekday(6, 'long'));
 	});
 
-	it('marks today, and says each day’s colour in words', async () => {
+	it('marks today, and says each day’s color in words', async () => {
 		const { container } = await render(TempoCalendar);
 		await expect.element(page.getByText(m.tempo_day_label({ date: longDay('2026-12-02'), state: m.color_red() }))).toBeInTheDocument();
 		const current = container.querySelectorAll('[aria-current="date"]');
@@ -55,7 +63,9 @@ describe('TempoCalendar', () => {
 		expect(current[0].textContent).toContain(longDay('2026-12-28'));
 		// a forecast day: its probability, on the cell and in words; under 60 %, « not sure »
 		expect(container.querySelectorAll('.swatch.unsure')).toHaveLength(1);
-		await expect.element(page.getByText(m.tempo_day_label({ date: longDay('2026-12-29'), state: dayWords('WHITE', true, 0.47) }))).toBeInTheDocument();
+		await expect
+			.element(page.getByText(m.tempo_day_label({ date: longDay('2026-12-29'), state: dayWords('WHITE', true, 0.47) })))
+			.toBeInTheDocument();
 		await expect.element(page.getByText(percent(0.47), { exact: true })).toBeVisible();
 		// December 2026 starts on a Tuesday: one empty cell before the 1st
 		expect(container.querySelector('tbody tr')?.firstElementChild?.textContent).toBe('');
@@ -69,7 +79,7 @@ describe('TempoCalendar', () => {
 		await expect.element(page.getByText(m.tempo_legend_forecast({ count: 1 }))).toBeVisible();
 	});
 
-	it('names the colours alone while the counters are not known', async () => {
+	it('names the colors alone while the counters are not known', async () => {
 		api.routes['/tempo/calendar?season=2026-2027'] = () => new Promise(() => {});
 		await render(TempoCalendar);
 		await expect.element(page.getByText(m.common_loading())).toBeVisible();
@@ -124,7 +134,7 @@ describe('TempoCalendar', () => {
 		await render(TempoCalendar);
 		await page.getByRole('button', { name: new RegExp(`^${m.tempo_season_label()}`) }).click();
 		await page.getByRole('option', { name: m.tempo_season({ season: '2023-2024' }) }).click();
-		await caption(2023, 8);
+		await expect.element(table()).toHaveAccessibleName(month(2023, 8));
 		await page.getByRole('button', { name: new RegExp(`^${m.tempo_season_label()}`) }).click();
 		await page.getByRole('option', { name: m.tempo_season({ season: '2026-2027' }) }).click();
 		await caption(2026, 11);

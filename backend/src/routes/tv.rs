@@ -4,20 +4,20 @@ use axum::{
     routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::{
     AppState,
     auth::AdminUser,
     error::AppError,
     ir::SwitchState,
-    routes::SimpleResponse,
-    tv::{self, TvAmbilight, TvConfig, TvKey, TvPower, TvStatus, TvVolume},
+    routes::{Answer, SimpleResponse},
+    tv::{self, TvConfig, TvKey, TvStatus},
 };
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StatusResponse {
-    success: bool,
+struct Status {
     config: TvConfig,
     status: TvStatus,
 }
@@ -29,12 +29,8 @@ struct PowerRequest {
     state: SwitchState,
     /// Also route the set to the box's HDMI input, which is almost always what
     /// is wanted: the TV otherwise comes back on whatever source it was left on.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::util::default_true")]
     switch_to_box: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,27 +53,6 @@ struct AmbilightRequest {
     state: SwitchState,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PowerResponse {
-    success: bool,
-    power: TvPower,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VolumeResponse {
-    success: bool,
-    volume: TvVolume,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AmbilightResponse {
-    success: bool,
-    ambilight: TvAmbilight,
-}
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(status))
@@ -90,9 +65,8 @@ pub fn router() -> Router<AppState> {
         .route("/source/box", post(switch_to_box))
 }
 
-async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
-    Json(StatusResponse {
-        success: true,
+async fn status(State(state): State<AppState>) -> Json<Answer<Status>> {
+    Answer::ok(Status {
         config: state.tv.config().await,
         status: state.tv.status().await,
     })
@@ -110,9 +84,9 @@ async fn set_config(
 async fn power(
     State(state): State<AppState>,
     Json(body): Json<PowerRequest>,
-) -> Result<Json<PowerResponse>, AppError> {
+) -> Result<Json<Answer<Value>>, AppError> {
     let power = tv::tv_power(&state, body.state, body.switch_to_box).await?;
-    Ok(Json(PowerResponse { success: true, power }))
+    Ok(Answer::ok(json!({ "power": power })))
 }
 
 async fn send_key(
@@ -126,7 +100,7 @@ async fn send_key(
 async fn set_volume(
     State(state): State<AppState>,
     Json(body): Json<VolumeRequest>,
-) -> Result<Json<VolumeResponse>, AppError> {
+) -> Result<Json<Answer<Value>>, AppError> {
     let volume = match body.level {
         Some(level) => state.tv.set_volume(level, body.muted).await?,
         // A mute-only request still has to go through the absolute-volume
@@ -139,19 +113,16 @@ async fn set_volume(
             }
         }
     };
-    Ok(Json(VolumeResponse { success: true, volume }))
+    Ok(Answer::ok(json!({ "volume": volume })))
 }
 
 async fn set_ambilight(
     State(state): State<AppState>,
     Json(body): Json<AmbilightRequest>,
-) -> Result<Json<AmbilightResponse>, AppError> {
+) -> Result<Json<Answer<Value>>, AppError> {
     let on = body.state.resolve(|| async { Ok(state.tv.ambilight().await?.power) }).await?;
     state.tv.set_ambilight_power(on).await?;
-    Ok(Json(AmbilightResponse {
-        success: true,
-        ambilight: state.tv.ambilight().await?,
-    }))
+    Ok(Answer::ok(json!({ "ambilight": state.tv.ambilight().await? })))
 }
 
 async fn ambilight_styles(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {

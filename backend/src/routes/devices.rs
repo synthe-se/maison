@@ -5,7 +5,6 @@ use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -13,48 +12,41 @@ use crate::{
     AppState,
     auth::AdminUser,
     error::AppError,
-    routes::SimpleResponse,
-    tuya::{self, DeviceRef, TuyaDeviceType, dps},
+    routes::{Answer, DeviceRef, SimpleResponse},
+    tuya::{
+        self, TuyaDeviceType, dps,
+        feeder::{self, MealPlanEntry},
+        parse_hhmm,
+    },
 };
 
-const FEEDER_MAX_PORTIONS: u64 = 10;
 const FEEDER_WARN_PORTIONS: u64 = 12;
 const LITTER_MAX_CLEAN_DELAY_SECONDS: u64 = 1800;
 const FOUNTAIN_MAX_UV_RUNTIME_HOURS: u64 = 24;
 
+/// `{success, device, message, ..}`: what every device answer says, its own fields after.
 #[derive(Debug, Serialize)]
-struct DevicesListResponse {
-    success: bool,
+struct DeviceAnswer<T: Serialize> {
+    device: DeviceRef,
+    message: String,
+    #[serde(flatten)]
+    body: T,
+}
+
+fn answer<T: Serialize>(device: DeviceRef, message: impl Into<String>, body: T) -> Json<Answer<DeviceAnswer<T>>> {
+    Answer::ok(DeviceAnswer { device, message: message.into(), body })
+}
+
+#[derive(Debug, Serialize)]
+struct DevicesList {
     devices: Vec<tuya::TuyaDeviceListEntry>,
     total: usize,
     message: &'static str,
 }
 
 #[derive(Debug, Serialize)]
-struct StatsResponse {
-    success: bool,
-    total: usize,
-    connected: usize,
-    disconnected: usize,
-    devices: Vec<DeviceConnectionStatsEntry>,
-}
-
-#[derive(Debug, Serialize)]
-struct DeviceConnectionStatsEntry {
-    id: String,
-    name: String,
-    #[serde(rename = "type")]
-    device_type: String,
-    #[serde(rename = "isConnected")]
-    is_connected: bool,
-    connecting: bool,
-    #[serde(rename = "reconnectAttempts")]
-    reconnect_attempts: i32,
-}
-
-#[derive(Debug, Serialize)]
-struct DpsScanResponse {
-    success: bool,
+#[serde(rename_all = "camelCase")]
+struct DpsScan {
     scan_range: String,
     scanned_count: u64,
     found_count: usize,
@@ -73,84 +65,30 @@ struct DpsValueSummary {
 }
 
 #[derive(Debug, Serialize)]
-struct DeviceStatusResponse {
-    success: bool,
-    device: DeviceRef,
-    parsed_status: Value,
-    raw_status: Map<String, Value>,
-    message: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct TypedStatusResponse {
-    success: bool,
-    device: DeviceRef,
+#[serde(rename_all = "camelCase")]
+struct TypedStatus {
     parsed_status: Value,
     raw_dps: Map<String, Value>,
-    message: &'static str,
 }
 
 #[derive(Debug, Serialize)]
-struct ActionResponse {
-    success: bool,
-    message: String,
-    device: DeviceRef,
-}
-
-#[derive(Debug, Serialize)]
-struct MealPlanResponse {
-    success: bool,
-    device: DeviceRef,
+#[serde(rename_all = "camelCase")]
+struct MealPlan {
     decoded: Option<Vec<MealPlanEntry>>,
     meal_plan: Option<String>,
-    message: String,
 }
 
 #[derive(Debug, Serialize)]
-struct MealPlanUpdateResponse {
-    success: bool,
-    message: String,
-    device: DeviceRef,
+#[serde(rename_all = "camelCase")]
+struct MealPlanUpdate {
     encoded_base64: String,
     formatted_meal_plan: String,
-}
-
-#[derive(Debug, Serialize)]
-struct LitterBoxSettingsResponse {
-    success: bool,
-    message: String,
-    device: DeviceRef,
-    updated_settings: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct FountainUvResponse {
-    success: bool,
-    message: String,
-    device: DeviceRef,
-    applied_settings: FountainUvAppliedSettings,
 }
 
 #[derive(Debug, Serialize)]
 struct FountainUvAppliedSettings {
     enabled: Option<bool>,
     runtime: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct FountainEcoModeResponse {
-    success: bool,
-    message: String,
-    device: DeviceRef,
-    eco_mode: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct FountainPowerResponse {
-    success: bool,
-    message: String,
-    device: DeviceRef,
-    power: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,19 +98,13 @@ struct FeedRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MealPlanRequest {
     meal_plan: Vec<MealPlanEntry>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-struct MealPlanEntry {
-    days_of_week: Vec<String>,
-    time: String,
-    portion: u8,
-    status: String,
-}
-
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LitterBoxSettingsRequest {
     clean_delay: Option<u64>,
     sleep_mode: Option<LitterSleepModeSettings>,
@@ -181,6 +113,7 @@ struct LitterBoxSettingsRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LitterSleepModeSettings {
     enabled: Option<bool>,
     start_time: Option<String>,
@@ -188,6 +121,7 @@ struct LitterSleepModeSettings {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LitterPreferences {
     child_lock: Option<bool>,
     kitten_mode: Option<bool>,
@@ -197,6 +131,7 @@ struct LitterPreferences {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LitterActions {
     reset_sand_level: Option<bool>,
     reset_factory_settings: Option<bool>,
@@ -230,13 +165,10 @@ pub fn router() -> Router<AppState> {
     use TuyaDeviceType::{Feeder, Fountain, LitterBox};
     Router::new()
         .route("/", get(list_devices))
-        .route("/stats", get(stats))
-        .route("/reconnect", post(reconnect))
         .route("/connect", post(connect_all))
         .route("/disconnect", post(disconnect_all))
         .route("/{device_id}/connect", post(connect_device))
         .route("/{device_id}/disconnect", post(disconnect_device))
-        .route("/{device_id}/status", get(status))
         .route("/{device_id}/scan-dps", get(scan_dps))
         .route("/{device_id}/feeder/feed", post(feeder_feed))
         .route(
@@ -286,52 +218,9 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn list_devices(State(state): State<AppState>) -> Json<DevicesListResponse> {
+async fn list_devices(State(state): State<AppState>) -> Json<Answer<DevicesList>> {
     let devices = state.tuya.list_devices().await;
-    Json(DevicesListResponse {
-        success: true,
-        total: devices.len(),
-        devices,
-        message: "Devices list retrieved successfully",
-    })
-}
-
-async fn status(State(state): State<AppState>, Path(device_id): DeviceId) -> Result<Json<DeviceStatusResponse>, AppError> {
-    let (device, raw_status, parsed_status) = state.tuya.get_status(&device_id).await?;
-    Ok(Json(DeviceStatusResponse {
-        success: true,
-        device,
-        parsed_status,
-        raw_status,
-        message: "Device status retrieved successfully",
-    }))
-}
-
-async fn stats(State(state): State<AppState>) -> Json<StatsResponse> {
-    let stats = state.tuya.connection_stats().await;
-    Json(StatsResponse {
-        success: true,
-        total: stats.total,
-        connected: stats.connected,
-        disconnected: stats.disconnected,
-        devices: stats
-            .devices
-            .into_iter()
-            .map(|device| DeviceConnectionStatsEntry {
-                id: device.id,
-                name: device.name,
-                device_type: device.device_type,
-                is_connected: device.connected,
-                connecting: device.connecting,
-                reconnect_attempts: device.reconnect_attempts,
-            })
-            .collect(),
-    })
-}
-
-async fn reconnect(State(state): State<AppState>) -> Json<SimpleResponse> {
-    state.tuya.reconnect_disconnected().await;
-    SimpleResponse::ok("Reconnection initiated for disconnected devices")
+    Answer::ok(DevicesList { total: devices.len(), devices, message: "Devices list retrieved successfully" })
 }
 
 async fn connect_all(State(state): State<AppState>) -> Json<SimpleResponse> {
@@ -368,7 +257,7 @@ async fn scan_dps(
     Path(device_id): DeviceId,
     Query(query): Query<ScanDpsQuery>,
     _admin: AdminUser,
-) -> Result<Json<DpsScanResponse>, AppError> {
+) -> Result<Json<Answer<DpsScan>>, AppError> {
     state.tuya.get_device_ref(&device_id)?;
     let (start, end) = scan_range(query.start.as_deref(), query.end.as_deref())?;
     let (_, raw_status, _) = state.tuya.get_status(&device_id).await?;
@@ -376,8 +265,7 @@ async fn scan_dps(
     let scanned_count = u64::from(end) - u64::from(start) + 1;
     let found_count = available_dps.len();
 
-    Ok(Json(DpsScanResponse {
-        success: true,
+    Ok(Answer::ok(DpsScan {
         scan_range: format!("{start}-{end}"),
         scanned_count,
         found_count,
@@ -426,15 +314,16 @@ async fn typed_status(
     Path(device_id): DeviceId,
     kind: TuyaDeviceType,
     message: &'static str,
-) -> Result<Json<TypedStatusResponse>, AppError> {
+) -> Result<Json<Answer<DeviceAnswer<TypedStatus>>>, AppError> {
     let (device, raw_dps, parsed_status) = state.tuya.get_typed_status(&device_id, kind).await?;
-    Ok(Json(TypedStatusResponse {
-        success: true,
-        device,
-        parsed_status,
-        raw_dps,
-        message,
-    }))
+    Ok(answer(device, message, TypedStatus { parsed_status, raw_dps }))
+}
+
+/// The answer of a command with nothing more to say.
+type Done = Json<Answer<DeviceAnswer<serde_json::Map<String, Value>>>>;
+
+fn done(device: DeviceRef, message: String) -> Done {
+    answer(device, message, Map::new())
 }
 
 /// One fixed command to one data point (a cleaning cycle, a counter reset): `done` says
@@ -445,21 +334,18 @@ async fn action(
     kind: TuyaDeviceType,
     dps: &'static str,
     value: Value,
-    done: &'static str,
-) -> Result<Json<ActionResponse>, AppError> {
+    what: &'static str,
+) -> Result<Done, AppError> {
     let device = state.tuya.send_typed_command(&device_id, kind, dps, value).await?;
-    Ok(Json(ActionResponse {
-        success: true,
-        message: format!("{done} for {}", device.name),
-        device,
-    }))
+    let message = format!("{what} for {}", device.name);
+    Ok(done(device, message))
 }
 
 async fn feeder_feed(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
     Json(body): Json<FeedRequest>,
-) -> Result<Json<ActionResponse>, AppError> {
+) -> Result<Done, AppError> {
     if !(1..=FEEDER_WARN_PORTIONS).contains(&body.portion) {
         return Err(AppError::bad_request(format!("portion must be between 1 and {FEEDER_WARN_PORTIONS}")));
     }
@@ -469,69 +355,40 @@ async fn feeder_feed(
         .send_typed_command(&device_id, TuyaDeviceType::Feeder, dps::feeder::MANUAL_FEED, json!(body.portion))
         .await?;
 
-    Ok(Json(ActionResponse {
-        success: true,
-        message: format!("Manual feed command sent to {} with portions: {}", device.name, body.portion),
-        device,
-    }))
+    let message = format!("Manual feed command sent to {} with portions: {}", device.name, body.portion);
+    Ok(done(device, message))
 }
 
 async fn feeder_meal_plan(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
-) -> Result<Json<MealPlanResponse>, AppError> {
+) -> Result<Json<Answer<DeviceAnswer<MealPlan>>>, AppError> {
     let (device, meal_plan) = state.tuya.feeder_meal_plan(&device_id).await?;
-    let decoded = meal_plan.as_deref().map(decode_meal_plan).transpose()?;
-    let message = if meal_plan.is_some() {
-        "Current meal plan retrieved"
-    } else {
-        "Meal plan not available yet."
-    };
-
-    Ok(Json(MealPlanResponse {
-        success: true,
-        device,
-        decoded,
-        meal_plan,
-        message: message.to_string(),
-    }))
+    let decoded = meal_plan.as_deref().map(feeder::decode).transpose()?;
+    let message = if meal_plan.is_some() { "Current meal plan retrieved" } else { "Meal plan not available yet." };
+    Ok(answer(device, message, MealPlan { decoded, meal_plan }))
 }
 
 async fn update_feeder_meal_plan(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
     Json(body): Json<MealPlanRequest>,
-) -> Result<Json<MealPlanUpdateResponse>, AppError> {
-    if body.meal_plan.is_empty() {
-        return Err(AppError::bad_request("meal_plan array is required"));
-    }
-    if body.meal_plan.len() > 10 {
-        return Err(AppError::bad_request("meal_plan supports at most 10 entries"));
-    }
-    for (index, entry) in body.meal_plan.iter().enumerate() {
-        validate_meal_plan_entry(entry, index)?;
-    }
-
-    let encoded = encode_meal_plan(&body.meal_plan)?;
+) -> Result<Json<Answer<DeviceAnswer<MealPlanUpdate>>>, AppError> {
+    let encoded = feeder::encode(&body.meal_plan)?;
     let device = state
         .tuya
         .send_typed_command(&device_id, TuyaDeviceType::Feeder, dps::feeder::MEAL_PLAN, json!(encoded))
         .await?;
 
-    Ok(Json(MealPlanUpdateResponse {
-        success: true,
-        message: format!("Meal plan updated for {}", device.name),
-        device,
-        encoded_base64: encoded,
-        formatted_meal_plan: format_meal_plan(&body.meal_plan),
-    }))
+    let message = format!("Meal plan updated for {}", device.name);
+    Ok(answer(device, message, MealPlanUpdate { encoded_base64: encoded, formatted_meal_plan: feeder::describe(&body.meal_plan) }))
 }
 
 async fn update_litter_box_settings(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
     Json(body): Json<LitterBoxSettingsRequest>,
-) -> Result<Json<LitterBoxSettingsResponse>, AppError> {
+) -> Result<Json<Answer<DeviceAnswer<Value>>>, AppError> {
     let updates = litter_box_updates(body)?;
     let updated_settings = updates.len();
     let device = state
@@ -539,12 +396,8 @@ async fn update_litter_box_settings(
         .send_typed_commands(&device_id, TuyaDeviceType::LitterBox, updates)
         .await?;
 
-    Ok(Json(LitterBoxSettingsResponse {
-        success: true,
-        message: format!("Settings updated for {}", device.name),
-        device,
-        updated_settings,
-    }))
+    let message = format!("Settings updated for {}", device.name);
+    Ok(answer(device, message, json!({ "updatedSettings": updated_settings })))
 }
 
 /// The data points a litter box settings request writes, validated.
@@ -559,16 +412,16 @@ fn litter_box_updates(body: LitterBoxSettingsRequest) -> Result<Vec<(String, Val
 
     if let Some(clean_delay) = body.clean_delay {
         if clean_delay > LITTER_MAX_CLEAN_DELAY_SECONDS {
-            return Err(AppError::bad_request("clean_delay must be between 0 and 1800 seconds"));
+            return Err(AppError::bad_request("cleanDelay must be between 0 and 1800 seconds"));
         }
         push(CLEAN_DELAY, Some(json!(clean_delay)));
     }
 
     if let Some(sleep_mode) = body.sleep_mode {
         push(SLEEP_ENABLED, sleep_mode.enabled.map(Value::Bool));
-        let start = sleep_mode.start_time.as_deref().map(parse_hhmm_to_minutes).transpose()?;
+        let start = sleep_mode.start_time.as_deref().map(minutes_of_day).transpose()?;
         push(SLEEP_START, start.map(|minutes| json!(minutes)));
-        let end = sleep_mode.end_time.as_deref().map(parse_hhmm_to_minutes).transpose()?;
+        let end = sleep_mode.end_time.as_deref().map(minutes_of_day).transpose()?;
         push(SLEEP_END, end.map(|minutes| json!(minutes)));
     }
 
@@ -595,7 +448,7 @@ async fn update_fountain_uv(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
     Json(body): Json<FountainUvSettingsRequest>,
-) -> Result<Json<FountainUvResponse>, AppError> {
+) -> Result<Json<Answer<DeviceAnswer<Value>>>, AppError> {
     let mut updates = Vec::new();
     if let Some(enabled) = body.enabled {
         updates.push((dps::fountain::UV.to_string(), Value::Bool(enabled)));
@@ -620,19 +473,15 @@ async fn update_fountain_uv(
         .send_typed_commands(&device_id, TuyaDeviceType::Fountain, updates)
         .await?;
 
-    Ok(Json(FountainUvResponse {
-        success: true,
-        message: format!("UV settings updated for {}: {summary}", device.name),
-        device,
-        applied_settings,
-    }))
+    let message = format!("UV settings updated for {}: {summary}", device.name);
+    Ok(answer(device, message, json!({ "appliedSettings": applied_settings })))
 }
 
 async fn update_fountain_eco_mode(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
     Json(body): Json<FountainEcoModeRequest>,
-) -> Result<Json<FountainEcoModeResponse>, AppError> {
+) -> Result<Json<Answer<DeviceAnswer<Value>>>, AppError> {
     if !(1..=2).contains(&body.mode) {
         return Err(AppError::bad_request("Eco mode must be 1 or 2"));
     }
@@ -642,153 +491,32 @@ async fn update_fountain_eco_mode(
         .send_typed_command(&device_id, TuyaDeviceType::Fountain, dps::fountain::ECO_MODE, json!(body.mode))
         .await?;
 
-    Ok(Json(FountainEcoModeResponse {
-        success: true,
-        message: format!("Eco mode set to {} for {}", body.mode, device.name),
-        device,
-        eco_mode: body.mode,
-    }))
+    let message = format!("Eco mode set to {} for {}", body.mode, device.name);
+    Ok(answer(device, message, json!({ "ecoMode": body.mode })))
 }
 
 async fn update_fountain_power(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
     Json(body): Json<FountainPowerRequest>,
-) -> Result<Json<FountainPowerResponse>, AppError> {
+) -> Result<Json<Answer<DeviceAnswer<Value>>>, AppError> {
     let device = state
         .tuya
         .send_typed_command(&device_id, TuyaDeviceType::Fountain, dps::fountain::POWER, Value::Bool(body.enabled))
         .await?;
 
-    Ok(Json(FountainPowerResponse {
-        success: true,
-        message: format!(
-            "Light {} for {}",
-            if body.enabled { "turned on" } else { "turned off" },
-            device.name
-        ),
-        device,
-        power: body.enabled,
-    }))
+    let message = format!("Light {} for {}", if body.enabled { "turned on" } else { "turned off" }, device.name);
+    Ok(answer(device, message, json!({ "power": body.enabled })))
 }
 
 fn default_feeder_portion() -> u64 {
     1
 }
 
-fn parse_hhmm_to_minutes(value: &str) -> Result<u64, AppError> {
-    let invalid = || AppError::bad_request("Invalid time format. Use HH:MM");
-    let (hours, minutes) = value.split_once(':').ok_or_else(invalid)?;
-    let hours = hours.parse::<u64>().map_err(|_| invalid())?;
-    let minutes = minutes.parse::<u64>().map_err(|_| invalid())?;
-    if hours > 23 || minutes > 59 {
-        return Err(invalid());
-    }
-    Ok((hours * 60) + minutes)
-}
-
-fn validate_meal_plan_entry(entry: &MealPlanEntry, index: usize) -> Result<(), AppError> {
-    let valid = !entry.days_of_week.is_empty()
-        && entry.days_of_week.iter().all(|day| day_index(day).is_some())
-        && parse_hhmm_to_minutes(&entry.time).is_ok()
-        && (1..=FEEDER_MAX_PORTIONS).contains(&u64::from(entry.portion))
-        && (entry.status == "Enabled" || entry.status == "Disabled");
-    if valid {
-        Ok(())
-    } else {
-        Err(AppError::bad_request(format!("Invalid meal plan entry at index {index}")))
-    }
-}
-
-fn encode_meal_plan(entries: &[MealPlanEntry]) -> Result<String, AppError> {
-    let mut encoded = Vec::with_capacity(entries.len() * 5);
-    for entry in entries {
-        let days_bits = entry.days_of_week.iter().try_fold(0_u8, |acc, day| {
-            day_index(day)
-                .map(|index| acc | (1 << index))
-                .ok_or_else(|| AppError::bad_request("Invalid day of week"))
-        })?;
-        // at most 23:59, so both fit a byte
-        let total_minutes = parse_hhmm_to_minutes(&entry.time)?;
-        let status = u8::from(entry.status == "Enabled");
-        let (hours, minutes) = ((total_minutes / 60) as u8, (total_minutes % 60) as u8);
-        encoded.extend_from_slice(&[days_bits, hours, minutes, entry.portion, status]);
-    }
-    Ok(STANDARD.encode(encoded))
-}
-
-fn decode_meal_plan(encoded: &str) -> Result<Vec<MealPlanEntry>, AppError> {
-    let bytes = STANDARD
-        .decode(encoded)
-        .map_err(|error| AppError::service_unavailable(error.to_string()))?;
-    let mut entries = Vec::new();
-
-    for chunk in bytes.chunks(5) {
-        if chunk.len() < 5 {
-            break;
-        }
-
-        let days_of_week = (0..7)
-            .filter(|index| chunk[0] & (1 << index) != 0)
-            .map(day_name)
-            .collect::<Vec<_>>();
-        let time = format!("{:02}:{:02}", chunk[1], chunk[2]);
-        let status = if chunk[4] == 1 { "Enabled" } else { "Disabled" };
-
-        entries.push(MealPlanEntry {
-            days_of_week,
-            time,
-            portion: chunk[3],
-            status: status.to_string(),
-        });
-    }
-
-    Ok(entries)
-}
-
-fn format_meal_plan(entries: &[MealPlanEntry]) -> String {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            format!(
-                "{}. {} a {} - {} serving(s) - {}",
-                index + 1,
-                entry.days_of_week.join(", "),
-                entry.time,
-                entry.portion,
-                entry.status,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn day_index(day: &str) -> Option<u8> {
-    match day {
-        "Monday" => Some(0),
-        "Tuesday" => Some(1),
-        "Wednesday" => Some(2),
-        "Thursday" => Some(3),
-        "Friday" => Some(4),
-        "Saturday" => Some(5),
-        "Sunday" => Some(6),
-        _ => None,
-    }
-}
-
-fn day_name(index: u8) -> String {
-    match index {
-        0 => "Monday",
-        1 => "Tuesday",
-        2 => "Wednesday",
-        3 => "Thursday",
-        4 => "Friday",
-        5 => "Saturday",
-        6 => "Sunday",
-        _ => "Unknown",
-    }
-    .to_string()
+/// `"HH:MM"` as minutes since midnight (the litter box's sleep hours).
+fn minutes_of_day(value: &str) -> Result<u16, AppError> {
+    let (hours, minutes) = parse_hhmm(value)?;
+    Ok(u16::from(hours) * 60 + u16::from(minutes))
 }
 
 fn describe_fountain_uv_updates(settings: &FountainUvAppliedSettings) -> String {
@@ -822,118 +550,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_hhmm_to_minutes_accepts_valid_times() {
-        assert_eq!(parse_hhmm_to_minutes("00:00").unwrap(), 0);
-        assert_eq!(parse_hhmm_to_minutes("08:30").unwrap(), 510);
-        assert_eq!(parse_hhmm_to_minutes("23:59").unwrap(), 1_439);
-    }
-
-    #[test]
-    fn parse_hhmm_to_minutes_rejects_invalid_times() {
-        let error = parse_hhmm_to_minutes("24:00").unwrap_err();
-        assert_eq!(error.to_string(), "Invalid time format. Use HH:MM");
-
-        let error = parse_hhmm_to_minutes("bad").unwrap_err();
-        assert_eq!(error.to_string(), "Invalid time format. Use HH:MM");
-    }
-
-    #[test]
-    fn validate_meal_plan_entry_accepts_valid_entry() {
-        let entry = MealPlanEntry {
-            days_of_week: vec!["Monday".to_string(), "Wednesday".to_string()],
-            time: "08:30".to_string(),
-            portion: 2,
-            status: "Enabled".to_string(),
-        };
-
-        validate_meal_plan_entry(&entry, 0).unwrap();
-    }
-
-    #[test]
-    fn validate_meal_plan_entry_rejects_invalid_day() {
-        let entry = MealPlanEntry {
-            days_of_week: vec!["Funday".to_string()],
-            time: "08:30".to_string(),
-            portion: 2,
-            status: "Enabled".to_string(),
-        };
-
-        let error = validate_meal_plan_entry(&entry, 0).unwrap_err();
-        assert_eq!(error.to_string(), "Invalid meal plan entry at index 0");
-    }
-
-    #[test]
-    fn validate_meal_plan_entry_rejects_invalid_portion() {
-        let entry = MealPlanEntry {
-            days_of_week: vec!["Monday".to_string()],
-            time: "08:30".to_string(),
-            portion: 11,
-            status: "Enabled".to_string(),
-        };
-
-        let error = validate_meal_plan_entry(&entry, 3).unwrap_err();
-        assert_eq!(error.to_string(), "Invalid meal plan entry at index 3");
-    }
-
-    #[test]
-    fn encode_meal_plan_matches_legacy_format() {
-        let entries = vec![MealPlanEntry {
-            days_of_week: vec!["Monday".to_string(), "Wednesday".to_string()],
-            time: "08:30".to_string(),
-            portion: 2,
-            status: "Enabled".to_string(),
-        }];
-
-        let encoded = encode_meal_plan(&entries).unwrap();
-        assert_eq!(encoded, "BQgeAgE=");
-    }
-
-    #[test]
-    fn decode_meal_plan_matches_legacy_payload() {
-        let decoded = decode_meal_plan("BQgeAgE=").unwrap();
-
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].days_of_week, vec!["Monday", "Wednesday"]);
-        assert_eq!(decoded[0].time, "08:30");
-        assert_eq!(decoded[0].portion, 2);
-        assert_eq!(decoded[0].status, "Enabled");
-    }
-
-    #[test]
-    fn encode_then_decode_meal_plan_roundtrips() {
-        let entries = vec![
-            MealPlanEntry {
-                days_of_week: vec!["Monday".to_string(), "Friday".to_string()],
-                time: "07:15".to_string(),
-                portion: 1,
-                status: "Enabled".to_string(),
-            },
-            MealPlanEntry {
-                days_of_week: vec!["Sunday".to_string()],
-                time: "18:45".to_string(),
-                portion: 3,
-                status: "Disabled".to_string(),
-            },
-        ];
-
-        let encoded = encode_meal_plan(&entries).unwrap();
-        let decoded = decode_meal_plan(&encoded).unwrap();
-
-        assert_eq!(decoded.len(), 2);
-        assert_eq!(decoded[0].days_of_week, entries[0].days_of_week);
-        assert_eq!(decoded[0].time, entries[0].time);
-        assert_eq!(decoded[0].portion, entries[0].portion);
-        assert_eq!(decoded[0].status, entries[0].status);
-        assert_eq!(decoded[1].days_of_week, entries[1].days_of_week);
-        assert_eq!(decoded[1].time, entries[1].time);
-        assert_eq!(decoded[1].portion, entries[1].portion);
-        assert_eq!(decoded[1].status, entries[1].status);
-    }
-
-    #[test]
-    fn decode_meal_plan_rejects_invalid_base64() {
-        let error = decode_meal_plan("***").unwrap_err();
-        assert!(!error.to_string().is_empty());
+    fn sleep_hours_are_minutes_of_the_day() {
+        assert_eq!(minutes_of_day("00:00").unwrap(), 0);
+        assert_eq!(minutes_of_day("21:30").unwrap(), 1290);
+        assert_eq!(minutes_of_day("23:59").unwrap(), 1_439);
+        assert!(minutes_of_day("24:00").is_err());
     }
 
     #[test]
@@ -964,10 +585,10 @@ mod tests {
     #[test]
     fn litter_settings_become_their_data_points() {
         let updates = litter(json!({
-            "clean_delay": 120,
-            "sleep_mode": { "enabled": true, "start_time": "21:30", "end_time": "07:00" },
-            "preferences": { "child_lock": true, "lighting": false },
-            "actions": { "reset_sand_level": true, "reset_factory_settings": false },
+            "cleanDelay": 120,
+            "sleepMode": { "enabled": true, "startTime": "21:30", "endTime": "07:00" },
+            "preferences": { "childLock": true, "lighting": false },
+            "actions": { "resetSandLevel": true, "resetFactorySettings": false },
         }))
         .unwrap();
         let expected = [
@@ -987,16 +608,10 @@ mod tests {
     fn litter_settings_reject_bad_or_empty_requests() {
         assert_eq!(litter(json!({})).unwrap_err().to_string(), "No valid settings provided");
         assert_eq!(
-            litter(json!({ "actions": { "reset_factory_settings": false } })).unwrap_err().to_string(),
+            litter(json!({ "actions": { "resetFactorySettings": false } })).unwrap_err().to_string(),
             "No valid settings provided"
         );
-        assert!(litter(json!({ "clean_delay": 1801 })).is_err());
-        assert!(litter(json!({ "sleep_mode": { "start_time": "25:00" } })).is_err());
-    }
-
-    #[test]
-    fn parse_hhmm_rejects_extra_parts() {
-        assert!(parse_hhmm_to_minutes("08:30:00").is_err());
-        assert!(parse_hhmm_to_minutes("08").is_err());
+        assert!(litter(json!({ "cleanDelay": 1801 })).is_err());
+        assert!(litter(json!({ "sleepMode": { "startTime": "25:00" } })).is_err());
     }
 }

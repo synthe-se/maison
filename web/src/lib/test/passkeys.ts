@@ -3,8 +3,7 @@
 // webauthn-rs does. Options are real WebAuthn JSON, so Chromium's own parsers read them.
 
 import { vi } from 'vitest';
-import type { User } from '#lib/api.ts';
-import type { PasskeyInfo } from '#lib/passkeys.ts';
+import type { PasskeyInfo, User } from '#lib/passkeys.ts';
 
 export const leonard: User = { id: 'leonard', name: 'Léonard', role: 'admin' };
 export const alex: User = { id: 'alex', name: 'Alex', role: 'member' };

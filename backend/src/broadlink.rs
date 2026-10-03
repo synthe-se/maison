@@ -14,16 +14,19 @@ use uuid::Uuid;
 
 use crate::{
     error::AppError,
+    json_config::{Checked, JsonConfig},
     mitsubishi_ir,
+    net::{self, device_ipv4},
     store::{self, Access, Corrupt},
 };
 
 const DEFAULT_LEARN_TIMEOUT_SECS: u64 = 30;
+/// The device as error messages name it (the library's own errors stay in the log).
+const BLASTER: &str = "Broadlink";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BroadlinkManager {
-    codes_path: Arc<PathBuf>,
-    codes: Arc<RwLock<StoredCodes>>,
+    codes: Arc<JsonConfig<StoredCodes>>,
     climate_state_path: Arc<PathBuf>,
     climate_state: Arc<RwLock<Option<StoredClimateState>>>,
     discovered_devices: Arc<RwLock<Option<Vec<BroadlinkDiscoveredDevice>>>>,
@@ -94,6 +97,9 @@ pub struct SendResult {
     pub host: String,
     pub code_id: Option<String>,
     pub command: Option<String>,
+    /// The settings a structured Mitsubishi `command` carries: clients never re-parse it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<mitsubishi_ir::ClimateSettings>,
     pub packet_length: usize,
 }
 
@@ -130,38 +136,39 @@ pub enum BroadlinkSecurityMode {
     Wpa2,
 }
 
+/// The learnt codes file: `{ "codes": [...] }` (older files hold the bare list).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(from = "CodesFile")]
 struct StoredCodes {
     codes: Vec<BroadlinkCodeEntry>,
 }
 
-/// The codes file as found: `{ "codes": [...] }`, or the bare list older files hold.
+impl Checked for StoredCodes {}
+
+/// The codes file as found.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum CodesFile {
-    Stored(StoredCodes),
+    Stored { codes: Vec<BroadlinkCodeEntry> },
     Legacy(Vec<BroadlinkCodeEntry>),
 }
 
-impl Default for CodesFile {
-    fn default() -> Self {
-        Self::Stored(StoredCodes::default())
+impl From<CodesFile> for StoredCodes {
+    fn from(file: CodesFile) -> Self {
+        match file {
+            CodesFile::Stored { codes } | CodesFile::Legacy(codes) => Self { codes },
+        }
     }
 }
 
 /// The saved codes in `path` (missing is none; torn is an error: learnt codes cannot be
 /// rebuilt without the remote in hand).
 pub fn read_codes(path: &Path) -> Result<Vec<BroadlinkCodeEntry>, AppError> {
-    Ok(match store::read_json(path, Corrupt::Fail)? {
-        CodesFile::Stored(stored) => stored.codes,
-        CodesFile::Legacy(codes) => codes,
-    })
+    Ok(store::read_json::<StoredCodes>(path, Corrupt::Fail)?.codes)
 }
 
 impl BroadlinkManager {
     pub fn new(codes_path: &Path, climate_state_path: &Path) -> Result<Self, AppError> {
-        let codes = StoredCodes { codes: read_codes(codes_path)? };
         // the AC's last known settings: a cache of what was sent, never worth refusing to start
         let mut climate_state: Option<StoredClimateState> =
             store::read_json(climate_state_path, Corrupt::Reset)?;
@@ -177,8 +184,7 @@ impl BroadlinkManager {
         }
 
         Ok(Self {
-            codes_path: Arc::new(codes_path.to_path_buf()),
-            codes: Arc::new(RwLock::new(codes)),
+            codes: Arc::new(JsonConfig::load(codes_path)?),
             climate_state_path: Arc::new(climate_state_path.to_path_buf()),
             climate_state: Arc::new(RwLock::new(climate_state)),
             discovered_devices: Arc::new(RwLock::new(None)),
@@ -211,8 +217,8 @@ impl BroadlinkManager {
         let local_ip = parse_optional_ipv4(local_ip.as_deref())?;
         let discover_result = tokio::task::spawn_blocking(move || {
             Device::list(local_ip)
-                .map_err(AppError::service_unavailable)
                 .map(|devices| devices.into_iter().map(map_discovered_device).collect::<Vec<_>>())
+                .map_err(|error| error.to_string())
         })
         .await?;
 
@@ -224,7 +230,7 @@ impl BroadlinkManager {
                 }
                 return Ok(Vec::new());
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(net::unreachable(BLASTER, error)),
         };
 
         *self.discovered_devices.write().await = Some(devices.clone());
@@ -251,7 +257,7 @@ impl BroadlinkManager {
 
             Device::connect_to_network(&network)
                 .map(|_| ())
-                .map_err(AppError::service_unavailable)
+                .map_err(|error| net::unreachable(BLASTER, error))
         });
 
         task.await??;
@@ -329,13 +335,14 @@ impl BroadlinkManager {
         Ok(SendResult {
             host,
             code_id,
+            settings: command.as_deref().and_then(mitsubishi_ir::parse_climate_settings),
             command,
             packet_length,
         })
     }
 
     pub async fn list_codes(&self) -> Vec<BroadlinkCodeEntry> {
-        let mut codes = self.codes.read().await.codes.clone();
+        let mut codes = self.codes.read(|stored| stored.codes.clone()).await;
         codes.sort_by(|left, right| left.name.cmp(&right.name).then(left.command.cmp(&right.command)));
         codes
     }
@@ -344,18 +351,20 @@ impl BroadlinkManager {
         let requested_model = model.map(normalize_lookup_value);
         let mut codes = self
             .codes
-            .read()
-            .await
-            .codes
-            .iter()
-            .filter(|entry| is_mitsubishi_entry(entry))
-            .filter(|entry| {
-                requested_model.as_deref().is_none_or(|model| {
-                    entry.model.as_deref().map(normalize_lookup_value).as_deref() == Some(model)
-                })
+            .read(|stored| {
+                stored
+                    .codes
+                    .iter()
+                    .filter(|entry| is_mitsubishi_entry(entry))
+                    .filter(|entry| {
+                        requested_model.as_deref().is_none_or(|model| {
+                            entry.model.as_deref().map(normalize_lookup_value).as_deref() == Some(model)
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
             })
-            .cloned()
-            .collect::<Vec<_>>();
+            .await;
         codes.sort_by(|left, right| left.command.cmp(&right.command).then(left.name.cmp(&right.name)));
         codes
     }
@@ -376,20 +385,21 @@ impl BroadlinkManager {
             return Err(AppError::bad_request("command is required"));
         }
 
-        let entry = {
-            let mut codes = self.codes.write().await;
-            if let Some(existing) = codes.codes.iter_mut().find(|entry| {
-                entry.command == normalized_command
-                    && entry.brand.as_deref() == normalized_brand.as_deref()
-                    && entry.model.as_deref() == normalized_model.as_deref()
-                    && entry.name == normalized_name
-            }) {
-                existing.packet_base64 = request.packet_base64.clone();
-                existing.packet_length = packet.len();
-                existing.tags = normalize_tags(request.tags);
-                existing.updated_at = now;
-                existing.clone()
-            } else {
+        let tags = normalize_tags(request.tags);
+        self.codes
+            .update(|stored| {
+                if let Some(existing) = stored.codes.iter_mut().find(|entry| {
+                    entry.command == normalized_command
+                        && entry.brand.as_deref() == normalized_brand.as_deref()
+                        && entry.model.as_deref() == normalized_model.as_deref()
+                        && entry.name == normalized_name
+                }) {
+                    existing.packet_base64 = request.packet_base64;
+                    existing.packet_length = packet.len();
+                    existing.tags = tags;
+                    existing.updated_at = now;
+                    return Ok(existing.clone());
+                }
                 let entry = BroadlinkCodeEntry {
                     id: Uuid::new_v4().to_string(),
                     name: normalized_name.to_string(),
@@ -398,17 +408,14 @@ impl BroadlinkManager {
                     command: normalized_command,
                     packet_base64: request.packet_base64,
                     packet_length: packet.len(),
-                    tags: normalize_tags(request.tags),
+                    tags,
                     created_at: now,
                     updated_at: now,
                 };
-                codes.codes.push(entry.clone());
-                entry
-            }
-        };
-
-        self.persist_codes().await?;
-        Ok(entry)
+                stored.codes.push(entry.clone());
+                Ok(entry)
+            })
+            .await
     }
 
     pub async fn send_saved_code(
@@ -419,12 +426,8 @@ impl BroadlinkManager {
     ) -> Result<SendResult, AppError> {
         let code = self
             .codes
-            .read()
+            .read(|stored| stored.codes.iter().find(|entry| entry.id == code_id).cloned())
             .await
-            .codes
-            .iter()
-            .find(|entry| entry.id == code_id)
-            .cloned()
             .ok_or_else(|| AppError::not_found("Broadlink code not found"))?;
 
         self.send_packet(
@@ -435,6 +438,19 @@ impl BroadlinkManager {
             Some(code.command),
         )
         .await
+    }
+
+    /// Sends structured settings: the command is written here, from the same tables the
+    /// encoder reads (the client never builds the grammar).
+    pub async fn send_mitsubishi_settings(
+        &self,
+        host: String,
+        local_ip: Option<String>,
+        settings: &mitsubishi_ir::ClimateSettings,
+        model: Option<String>,
+    ) -> Result<SendResult, AppError> {
+        let command = settings.command().map_err(AppError::bad_request)?;
+        self.send_mitsubishi_command(host, local_ip, command, model).await
     }
 
     pub async fn send_mitsubishi_command(
@@ -461,32 +477,31 @@ impl BroadlinkManager {
 
         let normalized_model = model.as_deref().map(normalize_lookup_value);
 
-        let codes = self.codes.read().await;
-        let code = codes
+        // the code learnt for this model, else any Mitsubishi code for the command
+        let code = self
             .codes
-            .iter()
-            .find(|entry| {
-                is_mitsubishi_entry(entry)
-                    && entry.command == normalized_command
-                    && normalized_model.as_deref().is_some_and(|model| {
-                        entry.model.as_deref().map(normalize_lookup_value).as_deref() == Some(model)
+            .read(|stored| {
+                let candidates = || {
+                    stored
+                        .codes
+                        .iter()
+                        .filter(|entry| is_mitsubishi_entry(entry) && entry.command == normalized_command)
+                };
+                candidates()
+                    .find(|entry| {
+                        normalized_model.as_deref().is_some_and(|model| {
+                            entry.model.as_deref().map(normalize_lookup_value).as_deref() == Some(model)
+                        })
                     })
-            })
-            .cloned()
-            .or_else(|| {
-                codes
-                    .codes
-                    .iter()
-                    .find(|entry| is_mitsubishi_entry(entry) && entry.command == normalized_command)
+                    .or_else(|| candidates().next())
                     .cloned()
             })
+            .await
             .ok_or_else(|| {
                 AppError::not_found(format!(
                     "No saved Mitsubishi code found for command '{normalized_command}'"
                 ))
             })?;
-
-        drop(codes);
 
         let result = self
             .send_packet(
@@ -509,7 +524,7 @@ impl BroadlinkManager {
         // The file write happens under the lock so concurrent sends cannot
         // persist out of order (rare, and the write is a few kilobytes).
         let mut state = self.climate_state.write().await;
-        let power = command != "state-off";
+        let power = command != mitsubishi_ir::OFF_COMMAND;
         let (last_on_command, settings) = if power {
             (
                 Some(command.to_string()),
@@ -530,7 +545,7 @@ impl BroadlinkManager {
             model: model.map(str::to_string),
             updated_at: Utc::now(),
         });
-        persist_climate_state(self.climate_state_path.as_path(), state.as_ref());
+        persist_climate_state(self.climate_state_path.as_path(), state.as_ref()).await;
     }
 
     /// Records that a raw (learned, non-structured) command was sent. Its
@@ -547,118 +562,19 @@ impl BroadlinkManager {
             current.model = model.map(str::to_string);
         }
         current.updated_at = Utc::now();
-        persist_climate_state(self.climate_state_path.as_path(), state.as_ref());
-    }
-
-    async fn persist_codes(&self) -> Result<(), AppError> {
-        let codes = self.codes.read().await;
-        store::write_json(&self.codes_path, &*codes, Access::Shared)
+        persist_climate_state(self.climate_state_path.as_path(), state.as_ref()).await;
     }
 }
 
 /// Failures are logged, not returned: the IR command already went out.
-fn persist_climate_state(path: &Path, state: Option<&StoredClimateState>) {
-    if let Err(error) = store::write_json(path, &state, Access::Shared) {
+async fn persist_climate_state(path: &Path, state: Option<&StoredClimateState>) {
+    if let Err(error) = store::write_json_async(path, &state, Access::Shared).await {
         tracing::warn!(%error, "failed to persist climate state");
     }
 }
 
 fn parse_optional_ipv4(value: Option<&str>) -> Result<Option<Ipv4Addr>, AppError> {
     value.map(device_ipv4).transpose()
-}
-
-// ------------------------------------------------------------- LAN devices --
-//
-// Every address a client may store for a device goes through here, said once: only a
-// private (RFC 1918) IPv4 or a `.local` name, never loopback, a public host, a URL or
-// anything with `/ ? # @` in it. A member's setting must not turn the backend into a
-// way to read other machines (SSRF).
-
-const NOT_A_DEVICE: &str =
-    "not a local device address (a private IPv4 such as 192.168.1.20, or a name ending in .local)";
-
-/// A device host as kept in a setting, without a port.
-pub(crate) fn device_host(value: &str) -> Result<String, AppError> {
-    match device_address(value)? {
-        (host, None) => Ok(host),
-        (_, Some(_)) => Err(AppError::bad_request(format!("{value:?}: no port here"))),
-    }
-}
-
-/// A device host with an optional port, for the protocols whose port varies.
-pub(crate) fn device_address(value: &str) -> Result<(String, Option<u16>), AppError> {
-    let refuse = || AppError::bad_request(format!("{value:?} is {NOT_A_DEVICE}"));
-    let (host, port) = match value.rsplit_once(':') {
-        Some((host, port)) => {
-            let digits = !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit());
-            let port = port.parse::<u16>().ok().filter(|p| digits && *p != 0).ok_or_else(refuse)?;
-            (host, Some(port))
-        }
-        None => (value, None),
-    };
-    if host.parse::<Ipv4Addr>().is_ok() {
-        return device_ipv4(host).map(|ip| (ip.to_string(), port));
-    }
-    if is_local_name(host) {
-        Ok((host.to_ascii_lowercase(), port))
-    } else {
-        Err(refuse())
-    }
-}
-
-/// A private IPv4 (the Broadlink protocol speaks IPv4 only).
-pub(crate) fn device_ipv4(value: &str) -> Result<Ipv4Addr, AppError> {
-    value
-        .parse::<Ipv4Addr>()
-        .ok()
-        .filter(Ipv4Addr::is_private)
-        .ok_or_else(|| AppError::bad_request(format!("{value:?} is {NOT_A_DEVICE}")))
-}
-
-/// `name.local`, `living-room.tv.local`: DNS labels only.
-fn is_local_name(host: &str) -> bool {
-    let lower = host.to_ascii_lowercase();
-    let Some(name) = lower.strip_suffix(".local") else { return false };
-    host.len() <= 253
-        && name.split('.').all(|label| {
-            !label.is_empty()
-                && label.len() <= 63
-                && !label.starts_with('-')
-                && !label.ends_with('-')
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
-}
-
-/// The HTTP client for LAN devices: it never follows a redirect (a device must not send
-/// the backend elsewhere).
-pub(crate) fn device_http_client(timeout: Duration) -> Result<reqwest::Client, AppError> {
-    Ok(reqwest::Client::builder()
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?)
-}
-
-/// A device's answer, refused past `max` bytes.
-pub(crate) async fn read_capped(
-    mut response: reqwest::Response,
-    max: usize,
-    device: &'static str,
-) -> Result<Vec<u8>, AppError> {
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| unreachable(device, error))? {
-        if body.len() + chunk.len() > max {
-            return Err(AppError::service_unavailable(format!("{device} answered too much")));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
-}
-
-/// A device that did not answer. The client hears only that: the network error stays in
-/// the log, so the answers cannot map which hosts and ports exist.
-pub(crate) fn unreachable(device: &'static str, error: impl std::fmt::Display) -> AppError {
-    tracing::debug!(device, %error, "device unreachable");
-    AppError::service_unavailable(format!("{device} unreachable"))
 }
 
 fn map_discovered_device(device: Device) -> BroadlinkDiscoveredDevice {
@@ -683,17 +599,18 @@ fn map_discovered_device(device: Device) -> BroadlinkDiscoveredDevice {
     }
 }
 
-fn is_address_in_use_discovery_error(error: &AppError) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
+/// Another discovery holds the port: the last answer stands.
+fn is_address_in_use_discovery_error(error: &str) -> bool {
+    let message = error.to_ascii_lowercase();
     message.contains("could not send discovery message")
         && message.contains("could not bind to any port")
         && message.contains("address in use")
 }
 
 fn learn_ir_blocking(host: Ipv4Addr, local_ip: Option<Ipv4Addr>) -> Result<Vec<u8>, AppError> {
-    let device = Device::from_ip(host, local_ip).map_err(AppError::service_unavailable)?;
+    let device = Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
     match device {
-        Device::Remote { remote } => remote.learn_ir().map_err(AppError::service_unavailable),
+        Device::Remote { remote } => remote.learn_ir().map_err(|error| net::unreachable(BLASTER, error)),
         Device::Hvac { .. } => Err(AppError::bad_request(
             "The selected Broadlink device does not support IR learning",
         )),
@@ -705,11 +622,9 @@ fn send_packet_blocking(
     local_ip: Option<Ipv4Addr>,
     packet: Vec<u8>,
 ) -> Result<(), AppError> {
-    let device = Device::from_ip(host, local_ip).map_err(AppError::service_unavailable)?;
+    let device = Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
     match device {
-        Device::Remote { remote } => remote
-            .send_code(&packet)
-            .map_err(AppError::service_unavailable),
+        Device::Remote { remote } => remote.send_code(&packet).map_err(|error| net::unreachable(BLASTER, error)),
         Device::Hvac { .. } => Err(AppError::bad_request(
             "The selected Broadlink device does not support IR code sending",
         )),
@@ -745,35 +660,6 @@ fn is_mitsubishi_entry(entry: &BroadlinkCodeEntry) -> bool {
 mod tests {
     use super::*;
 
-    /// The single gate against SSRF: only what a LAN device can be gets through.
-    #[test]
-    fn device_addresses_accept_lan_devices_only() {
-        for good in ["192.168.1.52", "10.0.0.3", "172.16.4.1", "172.31.255.254", "rabbit.local", "Living-Room.TV.local"] {
-            assert!(device_host(good).is_ok(), "{good} should be accepted");
-        }
-        assert_eq!(device_host("Rabbit.LOCAL").unwrap(), "rabbit.local");
-        assert_eq!(device_address("192.168.1.153:5555").unwrap(), ("192.168.1.153".into(), Some(5555)));
-        assert_eq!(device_address("tv.local:1925").unwrap(), ("tv.local".into(), Some(1925)));
-        for bad in [
-            "", "127.0.0.1", "0.0.0.0", "169.254.169.254", "8.8.8.8", "172.32.0.1", "255.255.255.255",
-            "224.0.0.1", "localhost", "example.com", "rabbit", ".local", "a..local", "-a.local",
-            "http://192.168.1.2", "192.168.1.2/status", "192.168.1.2?x", "192.168.1.2#x",
-            "user@192.168.1.2", "192.168.1.2 ", "x.local/../y", "[::1]", "::1", "192.168.1.2:",
-            "192.168.1.2:0", "192.168.1.2:65536", "192.168.1.2:+80", "192.168.01.2",
-        ] {
-            assert!(device_address(bad).is_err(), "{bad:?} should be refused");
-        }
-        assert!(device_host("192.168.1.2:80").is_err(), "no port where none is expected");
-        assert!(device_ipv4("rabbit.local").is_err(), "Broadlink speaks IPv4 only");
-        assert_eq!(device_ipv4("192.168.1.73").unwrap(), Ipv4Addr::new(192, 168, 1, 73));
-    }
-
-    #[test]
-    fn unreachable_says_nothing_about_the_network() {
-        let error = unreachable("TV", "connection refused (os error 61) at 192.168.1.9:22");
-        assert_eq!(error.to_string(), "TV unreachable");
-    }
-
     #[test]
     fn normalize_lookup_value_trims_and_lowercases() {
         assert_eq!(normalize_lookup_value("  Cool_22_Auto "), "cool_22_auto");
@@ -792,9 +678,8 @@ mod tests {
 
     #[tokio::test]
     async fn save_code_normalizes_and_persists() {
-        let temp_root = std::env::temp_dir()
-            .join("maison-broadlink-tests")
-            .join(Uuid::new_v4().to_string());
+        let dir = crate::util::test_dir();
+        let temp_root = dir.path();
         let path = temp_root.join("broadlink-codes.json");
         let climate_path = temp_root.join("climate-state.json");
         let manager = BroadlinkManager::new(&path, &climate_path).expect("manager should build");
@@ -821,11 +706,77 @@ mod tests {
         assert!(saved.contains("cool_22_auto"));
     }
 
+    fn code(name: &str) -> SaveCodeRequest {
+        SaveCodeRequest {
+            name: name.to_string(),
+            brand: Some("mitsubishi".to_string()),
+            model: None,
+            command: "power".to_string(),
+            packet_base64: STANDARD.encode([1_u8, 2]),
+            tags: Vec::new(),
+        }
+    }
+
+    /// Saves at once all land on disk: none renames an older list over a newer one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_saves_lose_no_code() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broadlink-codes.json");
+        let manager = BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
+        let saves: Vec<_> = (0..16)
+            .map(|n| {
+                let manager = manager.clone();
+                tokio::spawn(async move { manager.save_code(code(&format!("code {n}"))).await })
+            })
+            .collect();
+        for save in saves {
+            save.await.expect("joined").expect("saved");
+        }
+        assert_eq!(manager.list_codes().await.len(), 16);
+        assert_eq!(read_codes(&path).expect("readable").len(), 16, "the disk holds every code");
+    }
+
+    /// A save that cannot be written is not kept: memory never runs ahead of the disk.
+    #[tokio::test]
+    async fn a_failed_save_is_not_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broadlink-codes.json");
+        let manager = BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
+        manager.save_code(code("first")).await.expect("saved");
+        std::fs::remove_file(&path).expect("removed");
+        std::fs::create_dir(&path).expect("a directory where the file goes");
+        assert!(manager.save_code(code("second")).await.is_err());
+        let names: Vec<_> = manager.list_codes().await.into_iter().map(|c| c.name).collect();
+        assert_eq!(names, vec!["first"]);
+    }
+
+    #[test]
+    fn older_codes_files_hold_a_bare_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codes.json");
+        let entry = serde_json::json!({
+            "id": "1", "name": "n", "brand": null, "model": null, "command": "c",
+            "packetBase64": "AQ==", "packetLength": 1, "tags": [],
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+        });
+        std::fs::write(&path, serde_json::json!([entry]).to_string()).expect("written");
+        assert_eq!(read_codes(&path).expect("legacy").len(), 1);
+        std::fs::write(&path, serde_json::json!({"codes": [entry]}).to_string()).expect("written");
+        assert_eq!(read_codes(&path).expect("current").len(), 1);
+    }
+
+    #[test]
+    fn discovery_recognises_a_busy_port() {
+        assert!(is_address_in_use_discovery_error(
+            "Could not send discovery message: could not bind to any port: Address in use"
+        ));
+        assert!(!is_address_in_use_discovery_error("timed out"));
+    }
+
     #[tokio::test]
     async fn climate_state_is_recorded_and_reloaded() {
-        let temp_root = std::env::temp_dir()
-            .join("maison-broadlink-tests")
-            .join(Uuid::new_v4().to_string());
+        let dir = crate::util::test_dir();
+        let temp_root = dir.path();
         let codes_path = temp_root.join("broadlink-codes.json");
         let climate_path = temp_root.join("climate-state.json");
         let manager =
@@ -845,7 +796,7 @@ mod tests {
         // Turning off must not forget the last on-state settings.
         assert_eq!(state.last_on_command.as_deref(), Some(on_command));
         let settings = state.settings.as_ref().expect("settings should be parsed");
-        assert_eq!(settings.mode, "cool");
+        assert_eq!(settings.mode, mitsubishi_ir::Mode::Cool);
         assert_eq!(settings.temperature, 21);
         assert_eq!(settings.stop_in_minutes, Some(180));
 

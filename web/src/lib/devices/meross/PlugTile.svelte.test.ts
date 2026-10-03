@@ -2,13 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { forgetAll } from '#lib/live.svelte.ts';
 import { json, sentBody, stubFetch } from '#lib/test/fetch.ts';
 import PlugTile from './PlugTile.svelte';
 
 afterEach(() => {
 	vi.useRealTimers();
-	forgetAll();
 });
 
 describe('PlugTile', () => {

@@ -10,4 +10,6 @@ declare global {
 	}
 }
 
+// a module, so that `declare global` above augments App
+// oxlint-disable-next-line unicorn/require-module-specifiers
 export {};

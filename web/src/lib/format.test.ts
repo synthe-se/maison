@@ -38,7 +38,9 @@ describe('unreachableSince', () => {
 	it('within the hour: « depuis 12 min »; then the time it was last heard', () => {
 		const now = Date.now();
 		expect(unreachableSince(now - 12 * 60_000)).toBe(m.state_unreachable_for({ duration: m.duration_minutes({ m: 12 }) }));
-		expect(unreachableSince(new Date(now - 30_000).toISOString())).toBe(m.state_unreachable_for({ duration: m.duration_minutes({ m: 1 }) }));
+		expect(unreachableSince(new Date(now - 30_000).toISOString())).toBe(
+			m.state_unreachable_for({ duration: m.duration_minutes({ m: 1 }) })
+		);
 		const old = now - 3 * 3_600_000;
 		expect(unreachableSince(old)).toBe(m.state_unreachable_since({ when: when(old) }));
 	});

@@ -1,6 +1,6 @@
 <script lang="ts">
-	// A remote's settings, unfolded inside its tile: its addresses, saved together; whatever
-	// else the device needs (pairing, an APK) comes as children. A refusal is said under the
+	// A remote's settings, unfolded inside its tile (TileSettings): its addresses, saved
+	// together; whatever else the device needs (pairing, an APK) comes as children. A refusal is said under the
 	// fields, the focus back on the first one (not only in a toast).
 	import type { Snippet } from 'svelte';
 	import { m } from '#lib/paraglide/messages.js';
@@ -30,7 +30,7 @@
 	// svelte-ignore state_referenced_locally
 	let draft = $state(Object.fromEntries(fields.map((f) => [f.key, initial[f.key] ?? ''])));
 	const saving = new Gesture();
-	let first = $state<HTMLInputElement>();
+	let inputs = $state<HTMLInputElement[]>([]);
 
 	function submit(e: SubmitEvent) {
 		e.preventDefault();
@@ -41,32 +41,28 @@
 				onsaved?.();
 			},
 			'save',
-			{ field: () => first }
+			{ field: () => inputs[0] }
 		);
 	}
 </script>
 
-<div class="inset">
+<div class="block">
 	{#if hint}<p class="hint">{hint}</p>{/if}
 	<form class="fields" onsubmit={submit}>
 		{#each fields as f, i (f.key)}
 			<div class="field">
 				<label for="{id}-{f.key}">{f.label}</label>
-				{#if i === 0}
-					<input
-						id="{id}-{f.key}"
-						bind:this={first}
-						bind:value={draft[f.key]}
-						placeholder={f.placeholder}
-						autocomplete="off"
-						autocapitalize="off"
-						spellcheck="false"
-						aria-invalid={saving.error ? 'true' : undefined}
-						aria-describedby="{id}-error"
-					/>
-				{:else}
-					<input id="{id}-{f.key}" bind:value={draft[f.key]} placeholder={f.placeholder} autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="{id}-error" />
-				{/if}
+				<input
+					id="{id}-{f.key}"
+					bind:this={inputs[i]}
+					bind:value={draft[f.key]}
+					placeholder={f.placeholder}
+					autocomplete="off"
+					autocapitalize="off"
+					spellcheck="false"
+					aria-invalid={i === 0 && saving.error ? 'true' : undefined}
+					aria-describedby="{id}-error"
+				/>
 			</div>
 		{/each}
 		<p class="form-error" id="{id}-error">{saving.error}</p>
@@ -80,7 +76,16 @@
 </div>
 
 <style>
-	.fields { display: grid; gap: var(--s-3); grid-template-columns: repeat(auto-fill, minmax(min(12rem, 100%), 1fr)); }
-	.fields .actions, .fields .form-error { grid-column: 1 / -1; }
-	.fields input { min-width: 0; }
+	.fields {
+		display: grid;
+		gap: var(--s-3);
+		grid-template-columns: repeat(auto-fill, minmax(min(12rem, 100%), 1fr));
+	}
+	.fields .actions,
+	.fields .form-error {
+		grid-column: 1 / -1;
+	}
+	.fields input {
+		min-width: 0;
+	}
 </style>

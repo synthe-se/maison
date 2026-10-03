@@ -1,7 +1,7 @@
 use axum::{routing::get, Json, Router};
 use serde::Serialize;
 
-use crate::AppState;
+use crate::{routes::Answer, AppState};
 
 #[derive(Debug, Serialize)]
 struct RootResponse {
@@ -11,8 +11,7 @@ struct RootResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct HealthResponse {
-    success: bool,
+struct Health {
     status: &'static str,
     service: &'static str,
 }
@@ -38,10 +37,6 @@ async fn root_handler() -> Json<RootResponse> {
     Json(RootResponse { message: "Home API", version: env!("CARGO_PKG_VERSION"), description: "Maison backend" })
 }
 
-async fn health_handler() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        success: true,
-        status: "healthy",
-        service: "maison-backend",
-    })
+async fn health_handler() -> Json<Answer<Health>> {
+    Answer::ok(Health { status: "healthy", service: "maison-backend" })
 }

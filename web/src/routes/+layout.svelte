@@ -1,8 +1,6 @@
 <script lang="ts">
 	import '@fontsource-variable/fraunces';
 	import '../styles/app.css';
-	import '#lib/i18n.svelte.ts';
-	import { tick } from 'svelte';
 	import { afterNavigate, beforeNavigate } from '$app/navigation';
 	import { page, updated } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
@@ -10,8 +8,11 @@
 	import { ui } from '#lib/ui.svelte.ts';
 	import { cleanupLegacyServiceWorker } from '#lib/legacy.ts';
 	import { refocus } from '#lib/focus.ts';
+	import { pageTitle } from '#lib/i18n.svelte.ts';
 	import Header from '#lib/components/Header.svelte';
 	import SignIn from '#lib/components/SignIn.svelte';
+	import AuthShell from '#lib/components/AuthShell.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
 
 	let { children } = $props();
@@ -41,10 +42,9 @@
 
 	// on a change of view, focus goes to the new view's title
 	let first = true;
-	afterNavigate(async () => {
+	afterNavigate(() => {
 		if (first) return void (first = false);
-		await tick();
-		document.querySelector<HTMLElement>('main h1')?.focus();
+		void refocus('main h1');
 	});
 
 	// a new version deployed: taken at the next harmless moment, never under the fingers
@@ -64,7 +64,7 @@
 
 <!-- the screens before a page keep a title of their own, not the asked page's -->
 <svelte:head>
-	{#if session.status === 'unreachable'}<title>{m.unreachable_title()} · {m.branding_name()}</title>{/if}
+	{#if session.status === 'unreachable'}<title>{pageTitle(m.unreachable_title())}</title>{/if}
 </svelte:head>
 
 <nav class="skip" aria-label={m.skip_to_content()}><a href="#main">{m.skip_to_content()}</a></nav>
@@ -73,11 +73,13 @@
 	{#if session.status === 'loading'}
 		<p class="muted loading">{m.common_loading()}</p>
 	{:else if session.status === 'unreachable'}
-		<section class="notice">
-			<h1 tabindex="-1">{m.unreachable_title()}</h1>
-			<p>{m.unreachable_body()}</p>
-			<button class="btn primary" onclick={() => location.reload()}>{m.reload()}</button>
-		</section>
+		<AuthShell>
+			<section class="notice" aria-labelledby="unreachable-title">
+				<h1 id="unreachable-title" tabindex="-1">{m.unreachable_title()}</h1>
+				<p class="lead">{m.unreachable_body()}</p>
+				<button class="btn primary big" onclick={() => location.reload()}><Icon name="refresh-cw" />{m.reload()}</button>
+			</section>
+		</AuthShell>
 	{:else if session.status === 'signed_out' && !invitation}
 		<SignIn />
 	{:else}
@@ -91,9 +93,18 @@
 <div class="sr-only" role="alert">{ui.assertive}</div>
 
 <style>
-	main { padding-bottom: calc(var(--bottom-h) + var(--s-6)); }
-	.loading { padding: var(--s-6) var(--page-margin); }
-	.notice { max-width: var(--measure); margin: 12vh auto 0; padding-inline: var(--page-margin); display: grid; gap: var(--s-3); justify-items: start; }
-	.notice h1 { font: var(--t-page); }
-	.notice p { margin: 0; }
+	main {
+		padding-bottom: calc(var(--bottom-h) + var(--s-6));
+	}
+	.loading {
+		padding: var(--s-6) var(--page-margin);
+	}
+	.notice {
+		display: grid;
+		gap: var(--s-4);
+	}
+	/* the door fills the screen: no room kept for a bottom bar it does not have */
+	main:not(.page) {
+		padding-bottom: 0;
+	}
 </style>

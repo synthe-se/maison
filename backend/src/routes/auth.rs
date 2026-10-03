@@ -20,7 +20,8 @@ use crate::{
     error::AppError,
     passkey::Refusal,
     people::Person,
-    util::random_secret,
+    routes::{Answer, SimpleResponse},
+    util::{now_ms, random_secret},
 };
 
 /// Access token lifetime in minutes.
@@ -29,22 +30,14 @@ const ACCESS_TOKEN_MINUTES: i64 = 15;
 /// Refresh token lifetime in days (sliding window).
 const REFRESH_TOKEN_DAYS: i64 = 7;
 
+/// Who the session is: `{success, user}`.
 #[derive(Debug, Serialize)]
-pub(crate) struct SessionResponse {
-    success: bool,
-    user: AuthUser,
+pub(crate) struct Session {
+    pub(crate) user: AuthUser,
 }
 
-impl SessionResponse {
-    pub(crate) fn of(user: AuthUser) -> Json<Self> {
-        Json(Self { success: true, user })
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct LogoutResponse {
-    success: bool,
-    message: &'static str,
+pub(crate) fn session(user: AuthUser) -> Json<Answer<Session>> {
+    Answer::ok(Session { user })
 }
 
 pub fn router() -> Router<AppState> {
@@ -57,10 +50,6 @@ pub fn router() -> Router<AppState> {
 
 pub(crate) type SessionCookies = AppendHeaders<[(axum::http::HeaderName, String); 2]>;
 
-pub(crate) fn now_ms() -> i64 {
-    Utc::now().timestamp_millis()
-}
-
 /// A fresh session for `person`: its two cookies, and who it is. `auth_ms`: when they last
 /// signed in with a passkey; `family`: the sign-in a refresh rotates from (a new one when
 /// none).
@@ -69,12 +58,12 @@ pub(crate) async fn open_session(
     person: &Person,
     auth_ms: i64,
     family: Option<String>,
-) -> Result<(SessionCookies, Json<SessionResponse>), AppError> {
+) -> Result<(SessionCookies, Json<Answer<Session>>), AppError> {
     let claims = Claims {
         user_id: person.id.clone(),
         issued_ms: now_ms(),
         auth_ms,
-        exp: (Utc::now() + Duration::minutes(ACCESS_TOKEN_MINUTES)).timestamp() as usize,
+        exp: u64::try_from((Utc::now() + Duration::minutes(ACCESS_TOKEN_MINUTES)).timestamp()).unwrap_or_default(),
     };
     let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()))?;
     let refresh_token = random_secret();
@@ -95,7 +84,7 @@ pub(crate) async fn open_session(
         (SET_COOKIE, cookie(state, access, token, CookieDuration::minutes(ACCESS_TOKEN_MINUTES))),
         (SET_COOKIE, cookie(state, refresh, refresh_token, CookieDuration::days(REFRESH_TOKEN_DAYS))),
     ]);
-    Ok((cookies, SessionResponse::of(AuthUser::of(person, auth_ms))))
+    Ok((cookies, session(AuthUser::of(person, auth_ms))))
 }
 
 /// Both cookies, emptied.
@@ -118,8 +107,8 @@ fn cookie(state: &AppState, name: String, value: String, max_age: CookieDuration
         .to_string()
 }
 
-async fn verify_handler(user: AuthenticatedUser) -> Json<SessionResponse> {
-    SessionResponse::of(user.0)
+async fn verify_handler(user: AuthenticatedUser) -> Json<Answer<Session>> {
+    session(user.0)
 }
 
 async fn refresh_handler(State(state): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse, AppError> {
@@ -140,13 +129,13 @@ async fn logout_handler(State(state): State<AppState>, headers: HeaderMap) -> im
     if let Some(token) = refresh_cookie(&state, &headers) {
         state.refresh_store.remove(token).await;
     }
-    (closed_session(&state), Json(LogoutResponse { success: true, message: "Logged out successfully" }))
+    (closed_session(&state), SimpleResponse::ok("Logged out successfully"))
 }
 
 /// A lost phone: every session of this person ends at once, access tokens included.
 async fn logout_everywhere_handler(State(state): State<AppState>, user: AuthenticatedUser) -> Result<impl IntoResponse, AppError> {
     end_sessions(&state, &user.0.id).await?;
-    Ok((closed_session(&state), Json(LogoutResponse { success: true, message: "Logged out everywhere" })))
+    Ok((closed_session(&state), SimpleResponse::ok("Logged out everywhere")))
 }
 
 /// Every session of `person` over, now: their refresh tokens go, their access tokens are void.

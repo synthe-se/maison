@@ -15,17 +15,18 @@ export type Reply = unknown;
 
 /**
  * Stubs `fetch` with routes keyed « METHOD /path » or « /path » (any method). An unknown route
- * answers 404 with an error message naming it. The routes object stays live: a test may change
- * a reply between two requests (`api.routes['/x'] = …`).
+ * answers `otherwise` when given (a backend that says « ok » to every command), else 404 with an
+ * error message naming it. The routes object stays live: a test may change a reply between two
+ * requests (`api.routes['/x'] = …`).
  */
-export function stubApi(routes: Record<string, Reply>) {
+export function stubApi(routes: Record<string, Reply>, otherwise?: Reply) {
 	const calls: ApiCall[] = [];
 	stubFetch(async (url, init) => {
 		const path = url.replace(/^\/api/, '');
 		const method = init?.method ?? 'GET';
 		const call: ApiCall = { method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined };
 		calls.push(call);
-		let reply = `${method} ${path}` in routes ? routes[`${method} ${path}`] : routes[path];
+		let reply = `${method} ${path}` in routes ? routes[`${method} ${path}`] : (routes[path] ?? otherwise);
 		if (reply === undefined) return json({ success: false, error: `no route ${method} ${path}` }, 404);
 		if (typeof reply === 'function') reply = await (reply as (c: ApiCall) => unknown)(call);
 		if (reply instanceof Error) throw reply;

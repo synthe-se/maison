@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { CLIMATE_FANS, CLIMATE_MODES, CLIMATE_VANES } from './command.ts';
-import { degrees, fanOptions, modeLabel, modeOptions, vaneOptions } from './labels.ts';
+import { options } from '#lib/options.ts';
+import { degrees, FAN_LABEL, MODE_LABEL, modeLabel, VANE_LABEL } from './labels.ts';
+
+const modeOptions = () => options(CLIMATE_MODES, MODE_LABEL);
+const fanOptions = () => options(CLIMATE_FANS, FAN_LABEL);
+const vaneOptions = () => options(CLIMATE_VANES, VANE_LABEL);
 
 describe('climate labels', () => {
 	it('offers every mode, fan speed and vane position, in the grammar’s order, in words', () => {
@@ -15,14 +20,7 @@ describe('climate labels', () => {
 			m.climate_fan(),
 			m.climate_auto()
 		]);
-		expect(fanOptions().map((o) => o.label)).toEqual([
-			'Auto',
-			'Niveau 1',
-			'Niveau 2',
-			'Niveau 3',
-			'Niveau 4',
-			'Silencieux'
-		]);
+		expect(fanOptions().map((o) => o.label)).toEqual(['Auto', 'Niveau 1', 'Niveau 2', 'Niveau 3', 'Niveau 4', 'Silencieux']);
 		expect(vaneOptions().find((o) => o.value === 'swing')?.label).toBe(m.climate_vanes_swing());
 		for (const o of [...modeOptions(), ...fanOptions(), ...vaneOptions()]) expect(o.label).not.toBe('');
 	});

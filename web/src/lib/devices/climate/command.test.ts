@@ -19,9 +19,18 @@ describe('buildClimateCommand', () => {
 	});
 
 	it('adds the optional parts only when set, in the grammar’s order', () => {
-		expect(buildClimateCommand({ ...base, mode: 'heat', temperature: 23, fan: '3', vane: 'swing', wide: 'center', econo: true, stopInMinutes: 90 })).toBe(
-			'state-heat-23-fan-3-vane-swing-wide-center-econo-on-stopin-90'
-		);
+		expect(
+			buildClimateCommand({
+				...base,
+				mode: 'heat',
+				temperature: 23,
+				fan: '3',
+				vane: 'swing',
+				wide: 'center',
+				econo: true,
+				stopInMinutes: 90
+			})
+		).toBe('state-heat-23-fan-3-vane-swing-wide-center-econo-on-stopin-90');
 		expect(buildClimateCommand({ ...base, econo: false, stopInMinutes: null, wide: '' })).toBe('state-cool-20-fan-auto-vane-auto');
 		expect(buildClimateCommand({ ...base, stopInMinutes: 0 })).toBe('state-cool-20-fan-auto-vane-auto');
 	});
@@ -79,19 +88,23 @@ describe('settingsFromBackend', () => {
 	const fallback: ClimateSettings = { ...base, wide: 'center', econo: false, stopInMinutes: null };
 
 	it('takes every known value', () => {
-		expect(settingsFromBackend({ mode: 'heat', temperature: 24, fan: '2', vane: 'low', econo: true, stopInMinutes: 60 }, fallback)).toEqual({
-			mode: 'heat',
-			temperature: 24,
-			fan: '2',
-			vane: 'low',
-			wide: 'center',
-			econo: true,
-			stopInMinutes: 60
-		});
+		expect(settingsFromBackend({ mode: 'heat', temperature: 24, fan: '2', vane: 'low', econo: true, stopInMinutes: 60 }, fallback)).toEqual(
+			{
+				mode: 'heat',
+				temperature: 24,
+				fan: '2',
+				vane: 'low',
+				wide: 'center',
+				econo: true,
+				stopInMinutes: 60
+			}
+		);
 	});
 
 	it('falls back one value at a time, and clamps the setpoint', () => {
-		expect(settingsFromBackend({ mode: 'turbo', temperature: 99, fan: 'max', vane: 'left', econo: false, stopInMinutes: null }, fallback)).toEqual({
+		expect(
+			settingsFromBackend({ mode: 'turbo', temperature: 99, fan: 'max', vane: 'left', econo: false, stopInMinutes: null }, fallback)
+		).toEqual({
 			...fallback,
 			temperature: 31
 		});

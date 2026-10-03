@@ -1,13 +1,14 @@
 // The Tempo endpoints, each read under one key and at one pace, whoever asks (the dashboard
-// tile and the Tempo page share them). Call during component initialisation, like live().
+// tile, the Tempo page, the plugs' costs share them): `live(today)`.
 
-import { tempoApi } from '#lib/api.ts';
-import { live } from '#lib/live.svelte.ts';
+import { source, sources } from '#lib/live.svelte.ts';
+import { tempoApi } from './api.ts';
 
 /** RTE publishes once a day (tomorrow around 10:40); the server asks it again every quarter
  * of an hour until then: half an hour here is plenty. */
 const EVERY = 30 * 60_000;
 
-export const tempoToday = () => live('tempo', tempoApi.get, EVERY);
-export const tempoForecast = () => live('tempo-forecast', tempoApi.forecast, EVERY);
-export const tempoCalendar = (season: string) => live(`tempo-calendar-${season}`, () => tempoApi.calendar(season), EVERY);
+export const today = source('tempo:today', tempoApi.get, EVERY);
+export const forecast = source('tempo:forecast', tempoApi.forecast, EVERY);
+/** One season's calendar (« 2026-2027 »). */
+export const calendar = sources((season: string) => source(`tempo:calendar:${season}`, () => tempoApi.calendar(season), EVERY));

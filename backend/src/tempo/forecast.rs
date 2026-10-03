@@ -22,14 +22,20 @@ const K: f64 = 8.3042;
 /// Fewer past days than this and the normalisation is a guess: no forecast.
 pub const MIN_LEVEL_DAYS: usize = 200;
 
-/// A weather point: a city (weighted by its population) or a wind-farm area.
+/// A weather point: a city (weighted by its population) or a wind-farm area: a place
+/// (the same as the house's, `sun::Place`) and its weight.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Place {
-    pub name: String,
-    pub latitude: f64,
-    pub longitude: f64,
+pub struct WeatherPoint {
+    #[serde(flatten)]
+    pub place: crate::sun::Place,
     #[serde(default = "one")]
     pub weight: f64,
+}
+
+impl WeatherPoint {
+    pub fn new(name: &str, latitude: f64, longitude: f64, weight: f64) -> Self {
+        Self { place: crate::sun::Place { name: name.into(), latitude, longitude }, weight }
+    }
 }
 
 fn one() -> f64 {
@@ -37,14 +43,18 @@ fn one() -> f64 {
 }
 
 /// The fitted model and how it scored (`cache/tempo/model.json`, written by `fit_tempo`).
+/// Written camelCase; a file from before reads through the snake_case aliases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Model {
     /// When it was fitted (`2026-10-03`).
     pub version: String,
     /// The last day of data it learnt from.
+    #[serde(alias = "fitted_through")]
     pub fitted_through: NaiveDate,
-    pub cities: Vec<Place>,
-    pub wind_sites: Vec<Place>,
+    pub cities: Vec<WeatherPoint>,
+    #[serde(alias = "wind_sites")]
+    pub wind_sites: Vec<WeatherPoint>,
     /// Coefficients of [`consumption_features`], [`wind_features`], [`solar_features`].
     pub consumption: Vec<f64>,
     pub wind: Vec<f64>,
@@ -65,17 +75,22 @@ pub struct Backtest {
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct HorizonScore {
     pub horizon: u32,
     pub days: u32,
     /// Share of days right, every day / November to March only.
     pub accuracy: f64,
+    #[serde(alias = "winter_accuracy")]
     pub winter_accuracy: f64,
+    #[serde(alias = "red_f1")]
     pub red_f1: f64,
+    #[serde(alias = "white_f1")]
     pub white_f1: f64,
     /// Brier score of the probabilities (0 is perfect).
     pub brier: f64,
     /// « Always blue » on the same days, for scale.
+    #[serde(alias = "always_blue")]
     pub always_blue: f64,
 }
 
@@ -406,5 +421,19 @@ pub(crate) mod tests {
         let at = |temperature, wind_power| expected(&m, &levels, &DayWeather { date: day(2026, 1, 13), temperature, wind_power });
         assert!(at(-2.0, 0.2) > at(10.0, 0.2));
         assert!(at(5.0, 0.1) > at(5.0, 0.9), "wind lowers the net consumption");
+    }
+
+    #[test]
+    fn a_snake_case_model_file_still_loads_and_is_written_camel_case() {
+        // the vendored file, as fit_tempo wrote it before the API went camelCase
+        let old: Model = serde_json::from_str(include_str!("../../../cache/tempo/model.json")).unwrap();
+        assert!(!old.wind_sites.is_empty());
+        let score = old.backtest.horizons[0];
+        assert!(score.winter_accuracy > 0.0 && score.always_blue > 0.0 && score.red_f1 > 0.0);
+        let written = serde_json::to_value(&old).unwrap();
+        assert!(written["fittedThrough"].is_string() && written["windSites"].is_array());
+        assert!(written["backtest"]["horizons"][0]["winterAccuracy"].is_number());
+        let again: Model = serde_json::from_value(written).unwrap();
+        assert_eq!((again.fitted_through, again.backtest.horizons[0]), (old.fitted_through, score));
     }
 }

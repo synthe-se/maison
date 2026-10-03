@@ -40,9 +40,9 @@ describe('Select', () => {
 		expect(page.getByRole('option').all()).toHaveLength(3);
 	});
 
-	it('can hide its label for sight only, and be disabled', async () => {
-		await render(Select, { label: 'Lampe', value: 'salon', options, onchange: () => {}, hideLabel: true, disabled: true });
+	it('can hide its label for sight only (still named by it)', async () => {
+		await render(Select, { label: 'Lampe', value: 'salon', options, onchange: () => {}, hideLabel: true });
 		await expect.element(page.getByText('Lampe', { exact: true })).toHaveClass('sr-only');
-		await expect.element(page.getByRole('button', { name: 'Lampe Lampe du salon' })).toBeDisabled();
+		await expect.element(page.getByRole('button', { name: 'Lampe Lampe du salon' })).toBeVisible();
 	});
 });

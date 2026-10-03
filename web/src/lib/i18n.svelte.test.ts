@@ -5,14 +5,20 @@ import {
 	date,
 	dayFromToday,
 	dayLabel,
+	hhmm,
+	inSentence,
 	isoDay,
 	isLocale,
 	locale,
 	localeName,
+	list,
 	localDay,
 	locales,
+	longDate,
 	longDay,
+	lower,
 	num,
+	pageTitle,
 	percent,
 	shortDay,
 	switchLocale,
@@ -136,5 +142,27 @@ describe('calendar days', () => {
 		expect(weekday(0, 'long')).toBe('lundi');
 		expect(weekday(6, 'long')).toBe('dimanche');
 		expect(weekday(0, 'short')).toBe('lun.');
+	});
+
+	it('writes a device’s « 19:30 » in the reader’s time', () => {
+		expect(hhmm('08:05')).toBe(clock(new Date(2000, 0, 1, 8, 5)));
+		expect(hhmm('19:30')).toBe('19:30');
+	});
+
+	it('writes a date in full, from an ISO day (a local day, never UTC) or a moment', () => {
+		expect(longDate('2026-08-01')).toBe('1 août 2026');
+		expect(longDate(new Date(2026, 9, 2, 23, 30))).toBe('2 octobre 2026');
+	});
+
+	it('lists words as the reader does, and puts a word in a sentence', () => {
+		expect(list(['lun.', 'mer.', 'ven.'])).toBe('lun., mer. et ven.');
+		expect(lower('Bleu')).toBe('bleu');
+		expect(inSentence('Eau basse')).toBe('eau basse');
+	});
+
+	it('titles the window: the page, then Maison; Maison alone at home', () => {
+		expect(pageTitle('Salon')).toBe(`Salon · ${m.branding_name()}`);
+		expect(pageTitle(m.branding_name())).toBe(m.branding_name());
+		expect(pageTitle()).toBe(m.branding_name());
 	});
 });

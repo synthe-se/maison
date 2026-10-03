@@ -28,10 +28,10 @@ use crate::{
     auth::{AdminUser, AuthenticatedUser},
     error::AppError,
     passkey::{Ceremony, INVITE_DAYS, PasskeyState, Refusal, Via, client_ip, device_label},
-    people::{ADMIN, Invite, MEMBER, PasskeyInfo, PersonInfo, Removed, StoredInvite, StoredPasskey, People, clean_name, slug},
-    util::{hash_secret, random_secret},
-    auth::REAUTH_MS,
-    routes::auth::{SessionResponse, end_sessions, open_session},
+    people::{Invite, PasskeyInfo, PersonInfo, Removed, Role, StoredInvite, StoredPasskey, People, clean_name, slug},
+    util::{hash_secret, now_ms, random_id, random_secret},
+    auth::{AuthUser, REAUTH_MS},
+    routes::{Answer, auth::{end_sessions, open_session}},
 };
 
 pub fn router() -> Router<AppState> {
@@ -50,10 +50,6 @@ pub fn router() -> Router<AppState> {
 
 fn passkeys(state: &AppState) -> Result<&Arc<PasskeyState>, AppError> {
     state.passkeys.as_ref().ok_or_else(|| Refusal::PasskeyOff.into())
-}
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
 }
 
 // ---------- credentials as stored ----------
@@ -107,10 +103,10 @@ pub async fn new_invite(
 ) -> Result<CreatedInvite, AppError> {
     let name = clean_name(name).ok_or(Refusal::BadName)?;
     if person.is_empty() || slug(person) != person {
-        return Err(AppError::http(StatusCode::BAD_REQUEST, "A person's id: lowercase letters, digits and dashes"));
+        return Err(Refusal::BadPerson.into());
     }
     let token = random_secret();
-    let id = random_secret()[..16].to_string();
+    let id = random_id();
     let now = now_ms();
     let expires_ms = now + INVITE_DAYS * 86_400_000;
     people
@@ -119,7 +115,7 @@ pub async fn new_invite(
             token_hash: hash_secret(&token),
             person: person.to_string(),
             name: name.to_string(),
-            role: if admin { ADMIN } else { MEMBER }.to_string(),
+            role: if admin { Role::Admin } else { Role::Member },
             created_by: created_by.map(str::to_string),
             created_ms: now,
             expires_ms,
@@ -289,11 +285,11 @@ struct RegisterFinish {
     name: Option<String>,
 }
 
+/// `{success, passkey, user}`: the new passkey, and who the session is.
 #[derive(Serialize)]
 struct Registered {
     passkey: PasskeyInfo,
-    #[serde(flatten)]
-    session: SessionResponse,
+    user: AuthUser,
 }
 
 async fn register_finish(
@@ -329,7 +325,7 @@ async fn finish_registration(
     });
     let (json, backed_up) = stored(&pk)?;
     let key = StoredPasskey {
-        id: random_secret()[..16].to_string(),
+        id: random_id(),
         person: person.clone(),
         credential_id: credential_text(pk.cred_id())?,
         passkey: json,
@@ -351,15 +347,15 @@ async fn finish_registration(
             let redeemed = state.people.redeem_invite(&id, &handle.to_string(), key, now_ms()).await?;
             let person = redeemed.ok_or(Refusal::InviteInvalid)?.map_err(|_| Refusal::PasskeyExists)?;
             tracing::info!(person = %person.id, "invitation redeemed: passkey registered");
-            let (cookies, Json(session)) = open_session(state, &person, now_ms(), None).await?;
-            Ok((cookies, Json(Registered { passkey: info(&person.id).await?, session })).into_response())
+            let (cookies, Json(opened)) = open_session(state, &person, now_ms(), None).await?;
+            let user = opened.body.user;
+            Ok((cookies, Answer::ok(Registered { passkey: info(&person.id).await?, user })).into_response())
         }
         Via::Session => {
             state.people.add_passkey(key).await?.map_err(|_| Refusal::PasskeyExists)?;
             tracing::warn!(%person, "passkey added");
             let user = user.ok_or(Refusal::NotSignedIn)?.0;
-            let session = SessionResponse::of(user).0;
-            Ok(Json(Registered { passkey: info(&person).await?, session }).into_response())
+            Ok(Answer::ok(Registered { passkey: info(&person).await?, user }).into_response())
         }
     }
 }

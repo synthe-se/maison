@@ -51,10 +51,11 @@ use tokio::{
 
 use crate::{
     AppState,
-    broadlink::{self, BroadlinkManager, device_host, device_ipv4, unreachable},
+    broadlink::BroadlinkManager,
     error::AppError,
     ir::SwitchState,
-    json_config::JsonConfig,
+    json_config::{Checked, JsonConfig},
+    net::{self, device_host, device_ipv4, unreachable},
     philips_ir,
     util::non_blank,
 };
@@ -246,10 +247,10 @@ pub struct TvConfig {
     pub box_wake_app: Option<String>,
 }
 
-impl TvConfig {
-    /// Blank fields are absent; every address must be a LAN device (the set and the box
-    /// are reached over HTTP, the blaster over Broadlink's IPv4-only protocol) and the
-    /// DIAL app a plain name, since it goes into the URL path.
+/// Blank fields are absent; every address must be a LAN device (the set and the box are
+/// reached over HTTP, the blaster over Broadlink's IPv4-only protocol) and the DIAL app a
+/// plain name, since it goes into the URL path.
+impl Checked for TvConfig {
     fn checked(self) -> Result<Self, AppError> {
         let host = |value: Option<String>| non_blank(value).map(|v| device_host(&v)).transpose();
         let ir_blaster_host =
@@ -339,7 +340,7 @@ impl TvManager {
     pub fn new(config_path: &Path, broadlink: BroadlinkManager) -> Result<Self, AppError> {
         Ok(Self {
             config: Arc::new(JsonConfig::load(config_path)?),
-            client: broadlink::device_http_client(HTTP_TIMEOUT)?,
+            client: net::device_client(HTTP_TIMEOUT)?,
             gate: Arc::new(Mutex::new(None)),
             broadlink,
             ir_toggle: Arc::new(AtomicBool::new(false)),
@@ -351,13 +352,12 @@ impl TvManager {
     }
 
     pub async fn set_config(&self, config: TvConfig) -> Result<TvConfig, AppError> {
-        self.config.set(config.checked()?).await
+        self.config.set(config).await
     }
 
-    /// Checked again on use: a hand-edited file never went through `set_config`.
+    /// Checked where it came in (`Checked`), not again here.
     async fn host(&self) -> Result<String, AppError> {
-        let host = self.config().await.host.ok_or_else(|| AppError::service_unavailable("No TV configured"))?;
-        device_host(&host)
+        self.config().await.host.ok_or_else(|| AppError::service_unavailable("No TV configured"))
     }
 
     /// Waits out the inter-request gap, then reports the moment the caller may
@@ -386,7 +386,7 @@ impl TvManager {
                 response.status()
             )));
         }
-        let body = broadlink::read_capped(response, MAX_ANSWER_BYTES, "TV").await?;
+        let body = net::read_capped(response, MAX_ANSWER_BYTES, "TV").await?;
         serde_json::from_slice(&body).map_err(|error| unreachable("TV", error))
     }
 
@@ -438,15 +438,7 @@ impl TvManager {
             Probe::HostUpApiDown => return TvPower::On,
             Probe::Answering => {}
         }
-        match self.get(Endpoint::PowerState).await {
-            Ok(value) => match value.get("powerstate").and_then(|v| v.as_str()) {
-                Some("On") => TvPower::On,
-                // Saphi reports "Standby"; treat anything else answered by a
-                // live API as standby rather than guessing.
-                _ => TvPower::Standby,
-            },
-            Err(_) => TvPower::DeepStandby,
-        }
+        power_from_answer(self.get(Endpoint::PowerState).await)
     }
 
     /// Full snapshot for the dashboard shelf. Volume and Ambilight are only
@@ -662,9 +654,7 @@ impl TvManager {
         let host = config
             .box_host
             .ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))?;
-        let host = device_host(&host)?;
         let app = config.box_wake_app.unwrap_or_else(|| DEFAULT_WAKE_APP.to_string());
-        crate::androidtv::validate_package(&app)?;
         let url = format!("http://{host}:{BOX_DIAL_PORT}/apps/{app}");
 
         let response = self
@@ -682,6 +672,22 @@ impl TvManager {
             )));
         }
         Ok(())
+    }
+}
+
+/// What the set's `powerstate` answer says, the port having taken the connection. An
+/// answer that fails or cannot be read means the set is up and its server faltering, as
+/// with a refused connect (`Probe::HostUpApiDown`): reporting it asleep would have a toggle
+/// switch on a set that is on.
+fn power_from_answer(answer: Result<serde_json::Value, AppError>) -> TvPower {
+    match answer {
+        Ok(value) => match value.get("powerstate").and_then(|v| v.as_str()) {
+            Some("On") => TvPower::On,
+            // Saphi reports "Standby"; treat anything else answered by a
+            // live API as standby rather than guessing.
+            _ => TvPower::Standby,
+        },
+        Err(_) => TvPower::On,
     }
 }
 
@@ -763,6 +769,22 @@ mod tests {
         assert_eq!(probe_from_error(ErrorKind::HostUnreachable), Probe::Unreachable);
         assert_eq!(probe_from_error(ErrorKind::NetworkUnreachable), Probe::Unreachable);
         assert_eq!(probe_from_error(ErrorKind::TimedOut), Probe::Unreachable);
+    }
+
+    #[test]
+    fn a_failed_powerstate_after_a_connect_is_on() {
+        assert_eq!(power_from_answer(Err(AppError::service_unavailable("TV unreachable"))), TvPower::On);
+        assert_eq!(power_from_answer(Ok(json!({ "powerstate": "On" }))), TvPower::On);
+        assert_eq!(power_from_answer(Ok(json!({ "powerstate": "Standby" }))), TvPower::Standby);
+        assert_eq!(power_from_answer(Ok(json!({}))), TvPower::Standby);
+    }
+
+    #[tokio::test]
+    async fn a_hand_edited_file_is_checked_on_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tv.json");
+        std::fs::write(&path, r#"{"host": "169.254.169.254"}"#).expect("written");
+        assert!(TvManager::new(&path, test_broadlink(&dir)).is_err());
     }
 
     /// The wire spelling is not derivable from the variant name, so it is

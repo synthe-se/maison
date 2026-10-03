@@ -15,7 +15,7 @@ function keys() {
 
 const LABEL = 'Pavé';
 
-async function pad(props: Partial<{ volume: boolean; disabled: boolean }> = {}) {
+async function pad(props: Partial<{ volume: boolean; reason: string }> = {}) {
 	const k = keys();
 	await render(Pad, { label: LABEL, keys: k, under: ['back', 'home'], ...props });
 	const group = page.getByRole('group', { name: LABEL });
@@ -33,7 +33,7 @@ describe('Pad', () => {
 		await expect.element(group).toHaveAttribute('tabindex', '0');
 		const list = document.getElementById(el.getAttribute('aria-describedby')!);
 		expect(list?.textContent).toContain(m.tv_kbd_move());
-		expect(list?.textContent).toContain(m.tv_mute());
+		expect(list?.textContent).toContain(m.key_mute());
 	});
 
 	it('lists the volume shortcuts only when it drives the volume', async () => {
@@ -44,7 +44,17 @@ describe('Pad', () => {
 
 	it('draws the arrows, OK and the keys under it, plus any extra key', async () => {
 		await render(Pad, { label: LABEL, keys: keys(), under: ['back', 'home', 'menu'], extra: html('<button>Source</button>') });
-		for (const name of [m.remote_keys_up(), m.remote_keys_left(), m.tv_key_ok(), m.remote_keys_right(), m.remote_keys_down(), m.tv_key_back(), m.nav_home(), m.remote_keys_menu(), 'Source'])
+		for (const name of [
+			m.key_up(),
+			m.key_left(),
+			m.key_ok(),
+			m.key_right(),
+			m.key_down(),
+			m.key_back(),
+			m.nav_home(),
+			m.key_menu(),
+			'Source'
+		])
 			await expect.element(page.getByRole('button', { name, exact: true })).toBeVisible();
 	});
 
@@ -76,7 +86,7 @@ describe('Pad', () => {
 
 	it('on a focused key, Enter activates that key, not OK, and arrows do nothing', async () => {
 		const { k } = await pad();
-		(page.getByRole('button', { name: m.remote_keys_up() }).element() as HTMLElement).focus();
+		(page.getByRole('button', { name: m.key_up() }).element() as HTMLElement).focus();
 		await userEvent.keyboard('{Enter}{ArrowDown}');
 		expect(k.up).toHaveBeenCalledExactlyOnceWith(false);
 		expect(k.ok).not.toHaveBeenCalled();
@@ -92,11 +102,11 @@ describe('Pad', () => {
 		expect(k.up).not.toHaveBeenCalled();
 	});
 
-	it('a disabled pad answers no shortcut', async () => {
-		const off = await pad({ disabled: true });
+	it('a pad that cannot act answers no shortcut, its keys saying why', async () => {
+		const off = await pad({ reason: 'why' });
 		off.press('ArrowUp');
 		expect(off.k.up).not.toHaveBeenCalled();
-		await expect.element(page.getByRole('button', { name: m.remote_keys_up() })).toBeDisabled();
+		await expect.element(page.getByRole('button', { name: m.key_up() })).toHaveAttribute('aria-disabled', 'true');
 	});
 
 	it('a held keyboard key repeats at the pad’s pace (100 ms arrows, 200 ms volume), never for OK', async () => {

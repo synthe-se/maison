@@ -2,12 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import type { IrAction, IrBinding, IrEvent } from '#lib/api.ts';
+import type { IrAction, IrBinding, IrEvent } from '#lib/devices/remote/api.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { deferred, stubApi, type ApiCall } from '#lib/test/api.ts';
 import { remoteSources } from '#lib/test/remote.ts';
+import { Draft } from '#lib/draft.svelte.ts';
 import BindingEditor from './BindingEditor.svelte';
-import { summarize } from './actions.ts';
+import { bindingForm, summarize } from './actions.ts';
 import { keyName } from './keys.ts';
 
 const nab = (command: string): IrAction => ({ action: 'nabaztag', command });
@@ -19,8 +20,10 @@ const codeBox = () => page.getByRole('textbox', { name: m.remote_key_code() });
 async function editor(code: number | undefined, keymap: Record<string, IrBinding> = {}) {
 	const onsaved = vi.fn();
 	const oncancel = vi.fn();
-	await render(BindingEditor, { code, keymap, sources: remoteSources(), onsaved, oncancel });
-	return { onsaved, oncancel };
+	// as the remote page opens it: a draft of the key's binding
+	const draft = new Draft(bindingForm(code === undefined ? undefined : keymap[String(code)]));
+	await render(BindingEditor, { code, keymap, sources: remoteSources(), draft, onsaved, oncancel });
+	return { onsaved, oncancel, draft };
 }
 
 /** The STB's recent events: nothing at first, then `press` (newer than the baseline). */
@@ -80,7 +83,12 @@ describe('BindingEditor', () => {
 		let asked = 0;
 		const old: IrEvent = { seq: 7, code: 2, value: 1, mapped: false, receivedAt: '2026-10-02T10:00:00Z' };
 		// the new press is stamped earlier than the old one: the clock went back
-		stubApi({ '/ir/recent': () => ({ success: true, events: ++asked > 1 ? [{ ...old, seq: 8, code: 115, receivedAt: '2026-10-02T09:59:00Z' }, old] : [old] }) });
+		stubApi({
+			'/ir/recent': () => ({
+				success: true,
+				events: ++asked > 1 ? [{ ...old, seq: 8, code: 115, receivedAt: '2026-10-02T09:59:00Z' }, old] : [old]
+			})
+		});
 		await editor(undefined);
 		await expect.element(codeBox(), { timeout: 3000 }).toHaveValue('115');
 	});
@@ -205,16 +213,16 @@ describe('BindingEditor', () => {
 		await expect.element(page.getByText(m.remote_test_passed())).toBeVisible();
 	});
 
-	it('saves the whole binding, keeping the actions it does not edit and debounce_ms', async () => {
+	it('saves the whole binding, keeping the actions it does not edit and debounceMs', async () => {
 		const api = stubApi({ 'PUT /ir/keymap/116': { success: true, message: '' } });
 		const tv = { action: 'tv_power', state: 'standby' } as unknown as IrAction;
-		const binding = { label: 'TV', actions: [tv, nab('ping')], debounce_ms: 300 } as IrBinding;
+		const binding = { label: 'TV', actions: [tv, nab('ping')], debounceMs: 300 } as IrBinding;
 		const { onsaved } = await editor(116, { '116': binding });
 		await page.getByLabelText(m.remote_label()).fill('  ');
 		await page.getByRole('switch', { name: m.remote_repeat() }).click();
 		await save().click();
 		await expect.poll(() => onsaved).toHaveBeenCalledOnce();
-		expect(api.sent('PUT', '/ir/keymap/116')[0].body).toEqual({ actions: [tv, nab('ping')], debounce_ms: 300, repeat: true });
+		expect(api.sent('PUT', '/ir/keymap/116')[0].body).toEqual({ actions: [tv, nab('ping')], debounceMs: 300, repeat: true });
 		expect(ui.toasts.map((t) => t.text)).toContain(m.remote_saved({ key: keyName(116) }));
 	});
 
@@ -228,6 +236,16 @@ describe('BindingEditor', () => {
 		await save().click();
 		await expect.poll(() => onsaved).toHaveBeenCalledOnce();
 		expect(api.sent('PUT', '/ir/keymap/412')[0].body).toEqual({ actions: [nab('ping')], label: 'Lumière', repeat: false });
+	});
+
+	it('a configured key adopted leaves the draft untouched; an edit marks it changed', async () => {
+		stubApi({ '/ir/recent': () => new Promise(() => {}) });
+		const { draft } = await editor(undefined, { '102': { label: 'Accueil', actions: [nab('ping')] } });
+		await codeBox().fill('102');
+		await expect.element(commands()).toHaveValue('ping');
+		expect(draft.dirty).toBe(false);
+		await page.getByLabelText(m.remote_label()).fill('Maison');
+		expect(draft.dirty).toBe(true);
 	});
 
 	it('cancels', async () => {

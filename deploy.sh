@@ -34,6 +34,7 @@ STATE_FILES=(
   nabaztag.json
   refresh-tokens.json
   ir-keymap.json
+  scenes.json
   tv.json
   androidtv.json
   adb-key

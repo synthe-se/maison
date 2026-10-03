@@ -23,7 +23,7 @@ use crate::{
     config::Config,
     error::AppError,
     passkey::Refusal,
-    people::{Person, ADMIN},
+    people::{Person, Role},
     store::{self, Access, Corrupt},
     util::{constant_time_eq, hash_secret},
     AppState,
@@ -40,7 +40,7 @@ pub struct Claims {
     pub issued_ms: i64,
     /// When the person last proved it with a passkey (ms), carried across refreshes.
     pub auth_ms: i64,
-    pub exp: usize,
+    pub exp: u64,
 }
 
 /// Who is signed in, as the store says now.
@@ -48,7 +48,7 @@ pub struct Claims {
 pub struct AuthUser {
     pub id: String,
     pub name: String,
-    pub role: String,
+    pub role: Role,
     /// When they last signed in with a passkey (ms).
     #[serde(skip)]
     pub auth_ms: i64,
@@ -56,11 +56,11 @@ pub struct AuthUser {
 
 impl AuthUser {
     pub fn of(person: &Person, auth_ms: i64) -> Self {
-        Self { id: person.id.clone(), name: person.name.clone(), role: person.role.clone(), auth_ms }
+        Self { id: person.id.clone(), name: person.name.clone(), role: person.role, auth_ms }
     }
 
     pub fn is_admin(&self) -> bool {
-        self.role == ADMIN
+        self.role == Role::Admin
     }
 }
 
@@ -150,10 +150,12 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
-        let Some(expected) = app_state.config.ir_api_token.as_deref() else {
-            return Err(AppError::unauthorized("Machine API disabled: IR_API_TOKEN is not configured"));
-        };
         let token = extract_bearer_token(&parts.headers)?;
+        // unset or wrong, the same answer: the LAN learns nothing of the setup
+        let Some(expected) = app_state.config.ir_api_token.as_deref() else {
+            tracing::warn!("a machine call, but IR_API_TOKEN is not set: refused");
+            return Err(AppError::unauthorized("Invalid machine token"));
+        };
         if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
             return Err(AppError::unauthorized("Invalid machine token"));
         }
@@ -171,7 +173,7 @@ pub fn cookie_value<'a>(headers: &'a HeaderMap, cookie_name: &str) -> Option<&'a
         .find_map(|(name, value)| (name == cookie_name).then_some(value))
 }
 
-pub fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, AppError> {
+fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, AppError> {
     headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -179,7 +181,7 @@ pub fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, AppError> {
         .ok_or_else(|| AppError::unauthorized("No token provided"))
 }
 
-pub fn decode_token(token: &str, secret: &[u8]) -> Result<jsonwebtoken::TokenData<Claims>, jsonwebtoken::errors::Error> {
+fn decode_token(token: &str, secret: &[u8]) -> Result<jsonwebtoken::TokenData<Claims>, jsonwebtoken::errors::Error> {
     decode::<Claims>(token, &DecodingKey::from_secret(secret), &Validation::default())
 }
 
@@ -246,7 +248,7 @@ impl RefreshTokenStore {
     pub async fn insert(&self, token: &str, entry: RefreshEntry) {
         let mut tokens = self.inner.lock().await;
         tokens.live.insert(hash_secret(token), entry);
-        self.persist(&tokens);
+        self.persist(&tokens).await;
     }
 
     /// The token, spent in the same breath (two refreshes racing with it: one wins).
@@ -254,18 +256,24 @@ impl RefreshTokenStore {
         let now = Utc::now().timestamp();
         let key = hash_secret(token);
         let mut tokens = self.inner.lock().await;
-        prune(&mut tokens, now);
+        let mut changed = prune(&mut tokens, now);
         let taken = if let Some(entry) = tokens.live.remove(&key) {
             tokens.spent.insert(key, Spent { family: entry.family.clone(), expires_at: entry.expires_at });
+            changed = true;
             Taken::Valid(entry)
         } else if let Some(spent) = tokens.spent.get(&key).cloned() {
             let user_id = tokens.live.values().find(|e| e.family == spent.family).map(|e| e.user_id.clone());
+            let before = tokens.live.len();
             tokens.live.retain(|_, e| e.family != spent.family);
+            changed |= tokens.live.len() != before;
             Taken::Replayed { user_id }
         } else {
             Taken::Unknown
         };
-        self.persist(&tokens);
+        // a garbage cookie costs no write (nor an fsync)
+        if changed {
+            self.persist(&tokens).await;
+        }
         taken
     }
 
@@ -276,7 +284,7 @@ impl RefreshTokenStore {
         tokens.live.retain(|_, e| e.user_id != user_id);
         let removed = before - tokens.live.len();
         if removed > 0 {
-            self.persist(&tokens);
+            self.persist(&tokens).await;
         }
         removed
     }
@@ -285,24 +293,27 @@ impl RefreshTokenStore {
     pub async fn remove(&self, token: &str) {
         let mut tokens = self.inner.lock().await;
         if tokens.live.remove(&hash_secret(token)).is_some() {
-            self.persist(&tokens);
+            self.persist(&tokens).await;
         }
     }
 
     /// Write-through; failures are logged, never propagated: an unwritable disk must not
     /// break signing in (the tokens then live until the next restart).
-    fn persist(&self, tokens: &Tokens) {
+    async fn persist(&self, tokens: &Tokens) {
         if let Some(path) = self.path.as_deref() {
-            if let Err(error) = store::write_json(path, tokens, Access::Private) {
+            if let Err(error) = store::write_json_async(path, tokens, Access::Private).await {
                 tracing::warn!(%error, "failed to persist refresh tokens");
             }
         }
     }
 }
 
-fn prune(tokens: &mut Tokens, now: i64) {
+/// The expired go; whether any did.
+fn prune(tokens: &mut Tokens, now: i64) -> bool {
+    let before = tokens.live.len() + tokens.spent.len();
     tokens.live.retain(|_, e| e.expires_at > now);
     tokens.spent.retain(|_, s| s.expires_at > now);
+    tokens.live.len() + tokens.spent.len() != before
 }
 
 #[cfg(test)]
@@ -315,7 +326,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_token_is_spent_once_and_a_replay_ends_its_family() {
-        let path = std::env::temp_dir().join(format!("maison-refresh-{}", crate::util::random_secret())).join("t.json");
+        let dir = crate::util::test_dir();
+        let path = dir.path().join("t.json");
         let tokens = RefreshTokenStore::load(&path);
         tokens.insert("a", entry("f1")).await;
         tokens.insert("other", entry("f2")).await;
@@ -339,5 +351,24 @@ mod tests {
         let (x, y) = tokio::join!(tokens.take("a"), tokens.take("a"));
         let valid = [x, y].iter().filter(|t| matches!(t, Taken::Valid(_))).count();
         assert_eq!(valid, 1);
+    }
+
+    /// An unknown token (a stale or garbage cookie) writes nothing.
+    #[tokio::test]
+    async fn an_unknown_token_writes_nothing() {
+        let dir = crate::util::test_dir();
+        let path = dir.path().join("t.json");
+        let tokens = RefreshTokenStore::load(&path);
+        assert!(matches!(tokens.take("nope").await, Taken::Unknown));
+        assert!(!path.exists(), "no write for nothing");
+        tokens.insert("a", entry("f")).await;
+        let written = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(matches!(tokens.take("nope").await, Taken::Unknown));
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), written);
+        // an expired one going is a change worth keeping
+        tokens.insert("old", RefreshEntry { expires_at: Utc::now().timestamp() - 1, ..entry("g") }).await;
+        assert!(matches!(tokens.take("nope").await, Taken::Unknown));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains(&hash_secret("old")), "pruned on disk");
     }
 }

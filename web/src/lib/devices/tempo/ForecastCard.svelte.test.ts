@@ -8,7 +8,7 @@ import { probable } from './colors.ts';
 import ForecastCard from './ForecastCard.svelte';
 
 describe('ForecastCard', () => {
-	it('names the day and says the colour with its probability', async () => {
+	it('names the day and says the color with its probability', async () => {
 		const d = forecastDay(dayFromToday(1), 1, 'RED', 0.62);
 		await render(ForecastCard, { d });
 		const card = page.getByRole('article', { name: m.day_tomorrow() });
@@ -17,7 +17,7 @@ describe('ForecastCard', () => {
 		await expect.element(card.getByText(shortDay(d.date))).toBeVisible();
 	});
 
-	it('lists the three probabilities cheapest first, each colour named, and the bar beside', async () => {
+	it('lists the three probabilities cheapest first, each color named, and the bar beside', async () => {
 		const { container } = await render(ForecastCard, { d: forecastDay(dayFromToday(2), 2, 'RED', 0.62) });
 		const items = page.getByRole('list', { name: m.tempo_probabilities() }).getByRole('listitem');
 		await expect.element(items).toHaveLength(3);
@@ -27,13 +27,17 @@ describe('ForecastCard', () => {
 		await expect.element(items.nth(2)).toMatchTextContent(percent(0.62));
 		const bar = container.querySelector('.bar')!;
 		expect(bar.getAttribute('aria-hidden')).toBe('true');
-		expect((bar.querySelector('.rouge') as HTMLElement).style.width).toBe('62%');
+		expect((bar.querySelector('.red') as HTMLElement).style.width).toBe('62%');
 	});
 
 	it('says how often it was right this far ahead', async () => {
 		const d = forecastDay(dayFromToday(3), 3, 'BLUE', 0.45);
 		await render(ForecastCard, { d });
-		const text = m.tempo_reliability_day({ percent: percent(d.reliability!.accuracy), n: 3, winter: percent(d.reliability!.winter_accuracy) });
+		const text = m.tempo_reliability_day({
+			percent: percent(d.reliability!.accuracy),
+			n: 3,
+			winter: percent(d.reliability!.winterAccuracy)
+		});
 		await expect.element(page.getByText(text)).toBeVisible();
 	});
 

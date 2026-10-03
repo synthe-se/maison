@@ -1,19 +1,24 @@
 <script lang="ts">
-	// A season's days, one month at a time (docs/ux/tableau-de-bord.md § 8): a plain <table>
+	// A season's days, one month at a time (docs/ux.md § 8): a plain <table>
 	// (nothing to select, so no grid role), a caption naming the month, abbreviated weekday
-	// headers with their full name in `abbr`, today marked `aria-current="date"`, two labelled
-	// buttons and Page Up / Page Down (Shift: a year) while the table has focus. The legend stays
-	// above with the season's counters in words. Weeks start on Monday, as in France.
-	import Select from '#lib/components/Select.svelte';
+	// headers with their full name in `abbr`, each cell read as « mardi 12 novembre, rouge »,
+	// today marked `aria-current="date"`, two labelled buttons and Page Up / Page Down (Shift: a
+	// year) while the table has focus; at either end the buttons stay, not operable, saying why.
+	// The legend stays above with the season's counters in words. Weeks start on Monday, as in
+	// France. Each season is read by its own SeasonData, keyed: changing season stops the old
+	// one's polling, and the table keeps the focus.
 	import { m } from '#lib/paraglide/messages.js';
-	import type { TempoCalendar, TempoCalendarDay } from '#lib/api.ts';
 	import type { Live } from '#lib/live.svelte.ts';
 	import { date, isoDay, longDay, percent, weekday } from '#lib/i18n.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
+	import { unavailable } from '#lib/gesture.svelte.ts';
+	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
+	import Select from '#lib/components/Select.svelte';
+	import type { TempoCalendar, TempoCalendarDay } from './api.ts';
 	import { TEMPO, TEMPO_COLORS, UNSURE, dayWords } from './colors.ts';
 	import { seasonOf } from './dates.ts';
-	import { tempoCalendar } from './data.ts';
+	import SeasonData from './SeasonData.svelte';
 	import Swatch from './Swatch.svelte';
 
 	/** RTE's Tempo data starts with this season (cache/tempo/ holds every one since). */
@@ -29,7 +34,9 @@
 	const MAX = index(lastDay.getFullYear(), lastDay.getMonth());
 	const thisMonth = index(now.getFullYear(), now.getMonth());
 	const currentSeason = seasonOf(now.getFullYear(), now.getMonth());
-	const seasons = Array.from({ length: Number(currentSeason.slice(0, 4)) - FIRST_SEASON_YEAR + 1 }, (_, i) => seasonOf(FIRST_SEASON_YEAR + i, 8)).reverse();
+	const seasons = Array.from({ length: Number(currentSeason.slice(0, 4)) - FIRST_SEASON_YEAR + 1 }, (_, i) =>
+		seasonOf(FIRST_SEASON_YEAR + i, 8)
+	).toReversed();
 
 	let month = $state(thisMonth);
 	const year = $derived(Math.floor(month / 12));
@@ -37,11 +44,8 @@
 	const season = $derived(seasonOf(year, mo));
 	const caption = (i: number) => date(new Date(Math.floor(i / 12), i % 12, 1), { month: 'long', year: 'numeric' });
 
-	// one live value per season; changing season stops the old one's polling
 	let cal = $state.raw<Live<TempoCalendar>>();
-	$effect(() => {
-		cal = tempoCalendar(season);
-	});
+	const id = $props.id();
 	const data = $derived(cal?.data);
 	const byDate = $derived(new Map((data?.calendar ?? []).map((d) => [d.date, d])));
 
@@ -76,10 +80,9 @@
 		go(s === currentSeason ? thisMonth : index(Number(s.slice(0, 4)), 8));
 	}
 
-	const words = (d: TempoCalendarDay | undefined) =>
-		d?.color ? dayWords(d.color, d.is_prediction, d.confidence) : '';
+	const words = (d: TempoCalendarDay | undefined) => (d?.color ? dayWords(d.color, d.isPrediction, d.confidence) : '');
 	const stock = $derived(data?.stock);
-	const forecasts = $derived(data?.calendar.filter((d) => d.is_prediction).length ?? 0);
+	const forecasts = $derived(data?.calendar.filter((d) => d.isPrediction).length ?? 0);
 	const legend = $derived({
 		BLUE: stock ? m.tempo_legend_blue({ count: stock.blue.used }) : TEMPO.BLUE.name(),
 		WHITE: stock ? m.tempo_legend_white({ count: stock.white.used, total: stock.white.total }) : TEMPO.WHITE.name(),
@@ -87,9 +90,10 @@
 	});
 </script>
 
-<section class="group" aria-labelledby="tempo-calendar-title">
-	<div class="group-head">
-		<h2 id="tempo-calendar-title" class="group-title">{m.tempo_calendar_title()}</h2>
+{#key season}<SeasonData {season} bind:value={cal} />{/key}
+
+<Group id="tempo-calendar-title" title={m.tempo_calendar_title()}>
+	{#snippet actions()}
 		<div class="season">
 			<Select
 				hideLabel
@@ -99,9 +103,9 @@
 				onchange={pickSeason}
 			/>
 		</div>
-	</div>
+	{/snippet}
 
-	<ul class="legend">
+	<ul class="legend plain-list">
 		{#each TEMPO_COLORS as c (c)}
 			<li><Swatch color={c} />{legend[c]}</li>
 		{/each}
@@ -112,14 +116,16 @@
 	</ul>
 
 	<div class="nav">
-		<button class="btn" aria-label={m.tempo_prev_month()} disabled={month <= MIN} onclick={() => go(month - 1)}>
+		<button class="btn" aria-label={m.tempo_prev_month()} {...unavailable(month <= MIN && `${id}-first`)} onclick={() => go(month - 1)}>
 			<Icon name="chevron-left" />
 		</button>
 		<!-- always there: pressed on another month, it does not vanish under the focus -->
 		<button class="btn" aria-disabled={month === thisMonth ? 'true' : undefined} onclick={() => go(thisMonth)}>{m.day_today()}</button>
-		<button class="btn" aria-label={m.tempo_next_month()} disabled={month >= MAX} onclick={() => go(month + 1)}>
+		<button class="btn" aria-label={m.tempo_next_month()} {...unavailable(month >= MAX && `${id}-last`)} onclick={() => go(month + 1)}>
 			<Icon name="chevron-right" />
 		</button>
+		<span class="sr-only" id="{id}-first">{m.tempo_calendar_first({ year: FIRST_SEASON_YEAR })}</span>
+		<span class="sr-only" id="{id}-last">{m.tempo_calendar_last()}</span>
 	</div>
 
 	<!-- Page Up / Page Down need the table to hold focus (APG date picker) -->
@@ -139,9 +145,15 @@
 							{@const d = byDate.get(iso)}
 							{@const isToday = iso === todayIso}
 							<td aria-current={isToday ? 'date' : undefined}>
-								<Swatch color={d?.color} forecast={d?.is_prediction} unsure={d?.is_prediction && (d.confidence ?? 0) < UNSURE} size="cell" current={isToday}>
+								<Swatch
+									color={d?.color}
+									forecast={d?.isPrediction}
+									unsure={d?.isPrediction && (d.confidence ?? 0) < UNSURE}
+									size="cell"
+									current={isToday}
+								>
 									<span>{Number(iso.slice(8))}</span>
-									{#if d?.is_prediction && d.confidence !== undefined}<span class="pct">{percent(d.confidence)}</span>{/if}
+									{#if d?.isPrediction && d.confidence !== undefined}<span class="pct">{percent(d.confidence)}</span>{/if}
 								</Swatch>
 								<span class="sr-only">{d?.color ? m.tempo_day_label({ date: longDay(iso), state: words(d) }) : longDay(iso)}</span>
 							</td>
@@ -156,21 +168,63 @@
 	{#if cal?.loading}<p class="hint">{m.common_loading()}</p>{/if}
 
 	<p class="hint" id="tempo-calendar-info">{m.tempo_calendar_info()}</p>
-</section>
+</Group>
 
 <style>
-	.season { margin-left: auto; min-width: 12rem; }
-	:global(.select-content) :global(.grow) { flex: 1; }
-	.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); font: var(--t-secondary); }
-	.legend li { display: inline-flex; align-items: center; gap: var(--s-2); font-variant-numeric: tabular-nums; }
-	.nav { display: flex; gap: var(--s-2); }
-	.nav .btn { min-height: var(--control-h); min-width: var(--control-h); justify-content: center; }
-	table { width: 100%; max-width: 28rem; border-collapse: collapse; table-layout: fixed; }
-	caption { font: var(--t-label); text-align: left; padding-bottom: var(--s-2); }
-	caption::first-letter { text-transform: uppercase; }
-	th { font: var(--t-meta); color: var(--ink-muted); padding-bottom: var(--s-1); }
-	td { padding: 2px; text-align: center; vertical-align: middle; }
-	td :global(.swatch) { margin-inline: auto; }
+	.season {
+		min-width: 12rem;
+	}
+	.legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--s-2) var(--s-4);
+		font: var(--t-secondary);
+	}
+	.legend li {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--s-2);
+		font-variant-numeric: tabular-nums;
+	}
+	.nav {
+		display: flex;
+		gap: var(--s-2);
+	}
+	.nav .btn {
+		min-height: var(--control-h);
+		min-width: var(--control-h);
+		justify-content: center;
+	}
+	table {
+		width: 100%;
+		max-width: 28rem;
+		border-collapse: collapse;
+		table-layout: fixed;
+	}
+	caption {
+		font: var(--t-label);
+		text-align: left;
+		padding-bottom: var(--s-2);
+	}
+	caption::first-letter {
+		text-transform: uppercase;
+	}
+	th {
+		font: var(--t-meta);
+		color: var(--ink-muted);
+		padding-bottom: var(--s-1);
+	}
+	td {
+		padding: var(--s-half);
+		text-align: center;
+		vertical-align: middle;
+	}
+	td :global(.swatch) {
+		margin-inline: auto;
+	}
 	/* the forecast's probability: small, never below 12 px, never faded */
-	.pct { font-size: 0.75rem; margin-top: 2px; }
+	.pct {
+		font: var(--t-tiny);
+		margin-top: var(--s-half);
+	}
 </style>

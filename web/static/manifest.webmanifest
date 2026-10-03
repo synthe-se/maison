@@ -13,5 +13,11 @@
 		{ "src": "/icons/icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
 		{ "src": "/icons/icon-maskable-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
 		{ "src": "/icons/icon-maskable-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+	],
+	"shortcuts": [
+		{ "name": "Je pars", "short_name": "Je pars", "description": "Lancer la scène « Je pars » (confirmée d’abord)", "url": "/?scene=je-pars", "icons": [{ "src": "/icons/shortcut-leave.png", "sizes": "96x96", "type": "image/png" }] },
+		{ "name": "Nuit", "short_name": "Nuit", "description": "Lancer la scène « Nuit » (confirmée d’abord)", "url": "/?scene=nuit", "icons": [{ "src": "/icons/shortcut-night.png", "sizes": "96x96", "type": "image/png" }] },
+		{ "name": "Tempo", "short_name": "Tempo", "description": "Couleur du jour, prévisions et prix", "url": "/tempo-predictions", "icons": [{ "src": "/icons/shortcut-tempo.png", "sizes": "96x96", "type": "image/png" }] },
+		{ "name": "Nourrir le chat", "short_name": "Nourrir", "description": "Le distributeur de croquettes", "url": "/device/feeder", "icons": [{ "src": "/icons/shortcut-feed.png", "sizes": "96x96", "type": "image/png" }] }
 	]
 }

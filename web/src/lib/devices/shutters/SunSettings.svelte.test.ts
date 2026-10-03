@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { m } from '#lib/paraglide/messages.js';
-import { forgetAll } from '#lib/live.svelte.ts';
 import { session } from '#lib/session.svelte.ts';
 import { alex, leonard } from '#lib/test/passkeys.ts';
 import { stubApi } from '#lib/test/api.ts';
@@ -14,11 +13,10 @@ const lyon = { name: 'Lyon, Auvergne-Rhône-Alpes, France', latitude: 45.75, lon
 describe('SunSettings', () => {
 	beforeEach(() => session.adopt(leonard));
 	afterEach(() => {
-		forgetAll();
 		vi.unstubAllGlobals();
 	});
 
-	it('without a place, asks for the town first, then saves the one picked', async () => {
+	it('without a place, asks for the town first, then saves the one picked among the matches', async () => {
 		const api = stubApi({
 			'GET /matter/place': { success: true, place: null },
 			'PUT /matter/place': ({ body }: { body: unknown }) => ({ success: true, place: body })
@@ -32,7 +30,7 @@ describe('SunSettings', () => {
 		await userEvent.fill(page.getByLabelText(m.place_search()), 'Lyon');
 		await expect.poll(() => searched().length).toBe(1); // asked once, after the typing pause
 		expect(searched()[0].path).toContain('q=Lyon');
-		await page.getByRole('button', { name: lyon.name }).click();
+		await page.getByRole('option', { name: lyon.name }).click();
 		await expect.poll(() => api.sent('PUT', '/matter/place').length).toBe(1);
 		expect(api.sent('PUT', '/matter/place')[0].body).toEqual(lyon);
 	});
@@ -59,7 +57,8 @@ describe('SunSettings', () => {
 		const lang = document.documentElement.lang || 'en';
 		let first!: () => void;
 		const api = stubApi({ 'GET /matter/place': { success: true, place: null } });
-		api.routes[`GET /matter/place/search?q=Ly&lang=${lang}`] = () => new Promise((r) => (first = () => r({ success: true, places: [{ ...lyon, name: 'Old' }] })));
+		api.routes[`GET /matter/place/search?q=Ly&lang=${lang}`] = () =>
+			new Promise((r) => (first = () => r({ success: true, places: [{ ...lyon, name: 'Old' }] })));
 		api.routes[`GET /matter/place/search?q=Lyon&lang=${lang}`] = { success: true, places: [lyon] };
 		const say = vi.spyOn(await import('#lib/ui.svelte.ts').then((x) => x.ui), 'say');
 		render(SunSettings, { cover: shutter(), onchange: () => {} });
@@ -67,16 +66,19 @@ describe('SunSettings', () => {
 		await userEvent.fill(field, 'Ly');
 		await expect.poll(() => api.calls.some((c) => c.path.includes('q=Ly&'))).toBe(true);
 		await userEvent.fill(field, 'Lyon');
-		await expect.element(page.getByRole('button', { name: lyon.name })).toBeVisible();
+		await expect.element(page.getByRole('option', { name: lyon.name })).toBeVisible();
 		first();
 		await new Promise((r) => setTimeout(r, 50));
-		await expect.element(page.getByRole('button', { name: 'Old' })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('option', { name: 'Old' })).not.toBeInTheDocument();
 		expect(say).toHaveBeenCalledWith(m.place_results({ count: 1 }));
 	});
 
 	it('a failed search is said under the field, not in a toast', async () => {
 		const api = stubApi({ 'GET /matter/place': { success: true, place: null } });
-		api.routes[`GET /matter/place/search?q=Paris&lang=${document.documentElement.lang || 'en'}`] = new Response('{"error":"Geocoding down"}', { status: 502 });
+		api.routes[`GET /matter/place/search?q=Paris&lang=${document.documentElement.lang || 'en'}`] = new Response(
+			'{"error":"Geocoding down"}',
+			{ status: 502 }
+		);
 		render(SunSettings, { cover: shutter(), onchange: () => {} });
 		await userEvent.fill(page.getByLabelText(m.place_search()), 'Paris');
 		await expect.element(page.getByLabelText(m.place_search())).toHaveAccessibleDescription(new RegExp('Geocoding down'));

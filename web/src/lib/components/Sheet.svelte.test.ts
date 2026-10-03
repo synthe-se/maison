@@ -3,7 +3,15 @@ import { page, userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { m } from '#lib/paraglide/messages.js';
 import { html } from '#lib/test/snippet.ts';
+import { Draft } from '#lib/draft.svelte.ts';
 import Sheet from './Sheet.svelte';
+
+/** A form changed since it opened. */
+const changed = () => {
+	const d = new Draft({ name: '' });
+	d.current.name = 'Lampe';
+	return d;
+};
 
 const body = html('<label>Nom <input /></label>');
 
@@ -41,7 +49,7 @@ describe('Sheet', () => {
 describe('Sheet with unsaved changes', () => {
 	it('asks before Escape loses them, and keeps the form on « Continuer »', async () => {
 		const onclose = vi.fn();
-		await render(Sheet, { open: true, onclose, title: 'Liaison', dirty: true, children: body });
+		await render(Sheet, { open: true, onclose, title: 'Liaison', draft: changed(), children: body });
 		await expect.element(page.getByRole('dialog')).toBeVisible();
 		await userEvent.keyboard('{Escape}');
 		const ask = page.getByRole('alertdialog', { name: m.sheet_discard_title() });
@@ -54,7 +62,7 @@ describe('Sheet with unsaved changes', () => {
 
 	it('closes once the changes are given up', async () => {
 		const onclose = vi.fn();
-		await render(Sheet, { open: true, onclose, title: 'Liaison', dirty: true, children: body });
+		await render(Sheet, { open: true, onclose, title: 'Liaison', draft: changed(), children: body });
 		await page.getByRole('button', { name: m.dismiss() }).click();
 		await page.getByRole('alertdialog').getByRole('button', { name: m.sheet_discard() }).click();
 		expect(onclose).toHaveBeenCalledOnce();

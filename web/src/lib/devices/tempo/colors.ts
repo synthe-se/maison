@@ -1,22 +1,23 @@
-// The Tempo colours, once (docs/ux/tableau-de-bord.md § 8): each colour has a name, a token and
-// a shape, never the colour alone. Bleu: filled; blanc: an empty ring; rouge: filled and
-// hatched at 45°. The shapes are drawn by Swatch.svelte from `shape`; every view (the tile,
-// the calendar, the forecasts, the Nabaztag) imports this module rather than its own map.
+// The Tempo colors, once (docs/ux.md § 8): each color has a name, a token and a shape, never
+// the color alone. Blue: filled; white: an empty ring; red: filled and hatched at 45°. The
+// shapes are drawn by Swatch.svelte from `key` (its class); every view (the tile, the
+// calendar, the forecasts) imports this module rather than its own map.
 
 import { m } from '#lib/paraglide/messages.js';
 import { percent } from '#lib/i18n.svelte.ts';
-import type { TempoColor } from '#lib/api.ts';
+import type { TempoColor } from './api.ts';
 
 export type { TempoColor };
 
 /** In the order of the tariff, cheapest first: legends, probabilities and tariff tables. */
 export const TEMPO_COLORS: readonly TempoColor[] = ['BLUE', 'WHITE', 'RED'];
 
-/** `key`: the colour's field in the server's per-colour objects (prices, days left). */
-export const TEMPO: Record<TempoColor, { name: () => string; token: string; shape: 'bleu' | 'blanc' | 'rouge'; key: 'blue' | 'white' | 'red' }> = {
-	BLUE: { name: m.color_blue, token: 'var(--tempo-bleu)', shape: 'bleu', key: 'blue' },
-	WHITE: { name: m.color_white, token: 'var(--tempo-blanc-ring)', shape: 'blanc', key: 'white' },
-	RED: { name: m.color_red, token: 'var(--tempo-rouge)', shape: 'rouge', key: 'red' }
+/** `key`: the color's field in the server's per-color objects (prices, days left), and the
+ * class its shape is drawn by. */
+export const TEMPO: Record<TempoColor, { name: () => string; token: string; key: 'blue' | 'white' | 'red' }> = {
+	BLUE: { name: m.color_blue, token: 'var(--tempo-blue)', key: 'blue' },
+	WHITE: { name: m.color_white, token: 'var(--tempo-white-ring)', key: 'white' },
+	RED: { name: m.color_red, token: 'var(--tempo-red)', key: 'red' }
 };
 
 /** Under this probability a forecast is drawn « not sure » (a dotted outline, no wash). */

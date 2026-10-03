@@ -10,7 +10,7 @@ use maison_backend::{
     broadlink::{self, BroadlinkCodeEntry},
     broadlink_ir,
     mitsubishi_ir::{
-        self, MitsubishiFrame, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US, MITSUBISHI_HDR_SPACE_US,
+        self, MitsubishiFrame, Setting, Vane, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US, MITSUBISHI_HDR_SPACE_US,
         MITSUBISHI_ONE_SPACE_US, MITSUBISHI_REPEAT_GAP_US, MITSUBISHI_STATE_LEN, MITSUBISHI_ZERO_SPACE_US,
     },
     util,
@@ -116,98 +116,60 @@ fn print_code_report(code: &BroadlinkCodeEntry, packet: &DecodedPacket) {
         }
     );
 
-    let state = interpret_state(&first_frame.bytes);
+    let bytes = &first_frame.bytes;
+    let state = mitsubishi_ir::read_state(bytes);
+    let extras = read_extras(bytes);
     println!("  power: {}", on_off(state.power));
-    println!("  mode: {} (0b{:03b})", mode_name(state.mode), state.mode);
-    println!(
-        "  temperature: {} C",
-        format_temperature(state.temperature_half_degrees)
-    );
-    println!(
-        "  fan: {} (code={}, auto={})",
-        fan_name(state.fan_code, state.fan_auto),
-        state.fan_code,
-        on_off(state.fan_auto)
-    );
-    println!(
-        "  vane vertical: {} (code={}, bit={})",
-        vertical_vane_name(state.vertical_vane_code),
-        state.vertical_vane_code,
-        on_off(state.vertical_vane_enabled)
-    );
-    println!(
-        "  vane horizontal: {} (code={})",
-        horizontal_vane_name(state.horizontal_vane_code),
-        state.horizontal_vane_code
-    );
+    println!("  mode: {} (0b{:03b})", name(state.mode), (bytes[6] >> 3) & 0x07);
+    println!("  temperature: {} C", format_temperature(state.temperature_half_degrees));
+    println!("  fan: {} (byte 9 = {:02X})", name(state.fan), bytes[9]);
+    println!("  vane vertical: {} (bit={})", name(state.vane), on_off(bytes[9] & 0x40 != 0));
+    println!("  vane horizontal: {} (code={})", name(state.wide_vane), bytes[8] >> 4);
     println!(
         "  timers: current={}, clock={}, start={}, stop={}, weekly={}",
-        timer_name(state.timer_mode),
+        name(state.timer),
         format_clock_value(state.clock),
         format_clock_value(state.start_clock),
         format_clock_value(state.stop_clock),
-        on_off(state.weekly_timer)
+        on_off(extras.weekly_timer)
     );
     println!(
         "  extras: i-see={}, econo={}, natural-flow={}, absence={}, i-save-10c={}, direct-indirect={}, left-vane={}",
         on_off(state.i_see),
-        on_off(state.ecocool),
-        on_off(state.natural_flow),
-        on_off(state.absence_detect),
-        on_off(state.i_save_10c),
-        direct_indirect_name(state.direct_indirect),
-        vertical_vane_name(state.left_vane_code)
+        on_off(state.econo),
+        on_off(extras.natural_flow),
+        on_off(extras.absence_detect),
+        on_off(extras.i_save_10c),
+        direct_indirect_name(extras.direct_indirect),
+        name(extras.left_vane)
     );
     println!();
 }
 
+/// A value's command token, as the tables say it.
+fn name<T: Setting>(value: Option<T>) -> &'static str {
+    value.map_or("unknown", Setting::token)
+}
+
+/// The bits only captures have shown so far: read here, never sent by the backend.
 #[derive(Debug)]
-struct InterpretedState {
-    power: bool,
-    mode: u8,
-    i_see: bool,
-    temperature_half_degrees: u8,
-    horizontal_vane_code: u8,
-    fan_code: u8,
-    fan_auto: bool,
-    vertical_vane_code: u8,
-    vertical_vane_enabled: bool,
-    clock: u8,
-    stop_clock: u8,
-    start_clock: u8,
-    timer_mode: u8,
+struct Extras {
     weekly_timer: bool,
-    ecocool: bool,
     direct_indirect: u8,
     absence_detect: bool,
     i_save_10c: bool,
     natural_flow: bool,
-    left_vane_code: u8,
+    left_vane: Option<Vane>,
 }
 
-fn interpret_state(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> InterpretedState {
-    InterpretedState {
-        power: bytes[5] & 0x20 != 0,
-        mode: (bytes[6] >> 3) & 0x07,
-        i_see: bytes[6] & 0x40 != 0,
-        temperature_half_degrees: ((bytes[7] & 0x0F) * 2)
-            + if bytes[7] & 0x10 != 0 { 1 } else { 0 },
-        horizontal_vane_code: bytes[8] >> 4,
-        fan_code: bytes[9] & 0x07,
-        vertical_vane_code: (bytes[9] >> 3) & 0x07,
-        vertical_vane_enabled: bytes[9] & 0x40 != 0,
-        fan_auto: bytes[9] & 0x80 != 0,
-        clock: bytes[10],
-        stop_clock: bytes[11],
-        start_clock: bytes[12],
-        timer_mode: bytes[13] & 0x07,
+fn read_extras(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> Extras {
+    Extras {
         weekly_timer: bytes[13] & 0x08 != 0,
-        ecocool: bytes[14] & 0x20 != 0,
         direct_indirect: bytes[15] & 0x03,
         absence_detect: bytes[15] & 0x04 != 0,
         i_save_10c: bytes[15] & 0x20 != 0,
         natural_flow: bytes[16] & 0x02 != 0,
-        left_vane_code: (bytes[16] >> 3) & 0x07,
+        left_vane: Vane::from_code((bytes[16] >> 3) & 0x07),
     }
 }
 
@@ -224,68 +186,6 @@ fn on_off(enabled: bool) -> &'static str {
         "on"
     } else {
         "off"
-    }
-}
-
-fn mode_name(mode: u8) -> &'static str {
-    match mode {
-        0b100 => "auto",
-        0b011 => "cool",
-        0b010 => "dry",
-        0b001 => "heat",
-        0b111 => "fan",
-        _ => "unknown",
-    }
-}
-
-fn fan_name(fan_code: u8, fan_auto: bool) -> &'static str {
-    if fan_auto {
-        return "auto";
-    }
-
-    match fan_code {
-        1 => "level-1",
-        2 => "level-2",
-        3 => "level-3",
-        4 => "max",
-        5 => "silent",
-        _ => "unknown",
-    }
-}
-
-fn vertical_vane_name(code: u8) -> &'static str {
-    match code {
-        0b000 => "auto",
-        0b001 => "highest",
-        0b010 => "high",
-        0b011 => "middle",
-        0b100 => "low",
-        0b101 => "lowest",
-        0b111 => "swing",
-        _ => "unknown",
-    }
-}
-
-fn horizontal_vane_name(code: u8) -> &'static str {
-    match code {
-        0b0001 => "far-left",
-        0b0010 => "left",
-        0b0011 => "center",
-        0b0100 => "right",
-        0b0101 => "far-right",
-        0b0110 => "wide",
-        0b1000 => "auto",
-        _ => "unknown",
-    }
-}
-
-fn timer_name(code: u8) -> &'static str {
-    match code {
-        0 => "none",
-        3 => "stop",
-        5 => "start",
-        7 => "start+stop",
-        _ => "unknown",
     }
 }
 

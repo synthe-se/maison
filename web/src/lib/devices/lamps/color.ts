@@ -1,5 +1,5 @@
-// Colour maths for the Zigbee lamps: the lamps speak CIE xy (0–1), the screen speaks sRGB.
-// The picker is a hue/saturation wheel; presets are named colours computed once.
+// Color maths for the Zigbee lamps: the lamps speak CIE xy (0–1), the screen speaks sRGB.
+// The picker is a hue/saturation wheel; presets are named colors computed once.
 
 import { m } from '#lib/paraglide/messages.js';
 
@@ -37,8 +37,7 @@ export function hsvToRgb(h: number, s: number, v: number): Rgb {
 	const c = v * s;
 	const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
 	const k = v - c;
-	const [r, g, b] =
-		h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+	const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
 	return [r, g, b].map((n) => Math.round((n + k) * 255)) as Rgb;
 }
 
@@ -79,14 +78,14 @@ export function paintWheel(canvas: HTMLCanvasElement) {
 	ctx.putImageData(img, 0, 0);
 }
 
-/** Where a colour sits on the wheel, as fractions (0–1) of its box. */
+/** Where a color sits on the wheel, as fractions (0–1) of its box. */
 export function wheelPosition(x: number, y: number): { left: number; top: number } {
 	const { hue, sat } = rgbToHs(xyToRgb(x, y));
 	const rad = (hue * Math.PI) / 180;
 	return { left: 0.5 + (sat / 2) * Math.cos(rad), top: 0.5 + (sat / 2) * Math.sin(rad) };
 }
 
-/** The colour under a point of the wheel (fractions of its box), or null outside it. */
+/** The color under a point of the wheel (fractions of its box), or null outside it. */
 export function wheelColor(left: number, top: number): { x: number; y: number } | null {
 	const dx = left - 0.5;
 	const dy = top - 0.5;
@@ -95,7 +94,7 @@ export function wheelColor(left: number, top: number): { x: number; y: number } 
 	return rgbToXy(hsvToRgb(((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360, dist, 1));
 }
 
-/** Named colours: the keyboard and screen-reader way to pick one (the wheel is pointer-only). */
+/** Named colors: the keyboard and screen-reader way to pick one (the wheel is pointer-only). */
 export const PRESETS: { name: () => string; rgb: Rgb }[] = [
 	{ name: m.color_red, rgb: [239, 68, 68] },
 	{ name: m.zigbee_lamps_color_orange, rgb: [249, 115, 22] },

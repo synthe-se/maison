@@ -9,5 +9,4 @@ export const html = (markup: string) => createRawSnippet(() => ({ render: () => 
 export const text = (s: string) => html(`<span>${s}</span>`);
 
 /** A snippet with one argument, rendered by `render(arg)` (one root element). */
-export const htmlOf = <T>(render: (arg: T) => string) =>
-	createRawSnippet((arg: () => T) => ({ render: () => render(arg()) }));
+export const htmlOf = <T>(render: (arg: T) => string) => createRawSnippet((arg: () => T) => ({ render: () => render(arg()) }));

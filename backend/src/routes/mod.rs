@@ -10,6 +10,7 @@ pub mod meross;
 pub mod nabaztag;
 pub mod passkeys;
 pub mod root;
+pub mod scenes;
 pub mod tempo;
 pub mod tv;
 pub mod zigbee;
@@ -25,4 +26,27 @@ impl SimpleResponse {
     pub fn ok(message: impl Into<String>) -> axum::Json<Self> {
         axum::Json(Self { success: true, message: message.into() })
     }
+}
+
+/// Any other answer: `{success: true, ..body}`, the body's fields flattened in (the body
+/// is a struct or a JSON object).
+#[derive(Debug, serde::Serialize)]
+pub struct Answer<T> {
+    pub success: bool,
+    #[serde(flatten)]
+    pub body: T,
+}
+
+impl<T: serde::Serialize> Answer<T> {
+    pub fn ok(body: T) -> axum::Json<Self> {
+        axum::Json(Self { success: true, body })
+    }
+}
+
+/// A device as the device routes name it in their answers (`device: {id, name}`), Tuya and
+/// Meross alike: the shape of the API, so it lives with the routes.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct DeviceRef {
+    pub id: String,
+    pub name: String,
 }

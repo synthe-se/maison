@@ -96,7 +96,16 @@
 </form>
 
 <style>
-	.row { display: flex; gap: var(--s-2); flex-wrap: wrap; }
-	.row input { flex: 1 1 12rem; min-width: 0; }
-	.row .btn { min-height: var(--control-h); }
+	.row {
+		display: flex;
+		gap: var(--s-2);
+		flex-wrap: wrap;
+	}
+	.row input {
+		flex: 1 1 12rem;
+		min-width: 0;
+	}
+	.row .btn {
+		min-height: var(--control-h);
+	}
 </style>

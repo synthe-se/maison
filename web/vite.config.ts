@@ -3,6 +3,7 @@ import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
+import { STORAGE } from './src/env.ts';
 
 export default defineConfig({
 	plugins: [
@@ -23,7 +24,7 @@ export default defineConfig({
 			project: '../i18n/project.inlang',
 			outdir: './src/lib/paraglide',
 			strategy: ['localStorage', 'preferredLanguage', 'baseLocale'],
-			localStorageKey: 'maison-locale',
+			localStorageKey: STORAGE.locale,
 			emitTsDeclarations: true
 		})
 	],

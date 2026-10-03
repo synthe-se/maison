@@ -2,19 +2,22 @@
 	// On/off for something the house confirms (APG switch): the state is the device's, never
 	// guessed; while the command travels the switch says so and does not flip twice. Busy, it
 	// keeps the focus (never `disabled`: the focus would fall to the page, WCAG 2.4.3) and
-	// ignores presses (docs/ux/tableau-de-bord.md § 2).
+	// ignores presses (docs/ux.md § 2). One that cannot act stays in place, not operable, and
+	// says why (`reason`: the id of the words, `unavailable`).
 	import { Switch } from 'bits-ui';
-	import { pending as inFlight } from '#lib/gesture.svelte.ts';
+	import { pending, unavailable } from '#lib/gesture.svelte.ts';
 
 	interface Props {
 		label: string;
 		checked: boolean;
 		onchange: (next: boolean) => void;
-		pending?: boolean;
-		disabled?: boolean;
+		/** Its order travels: busy, it keeps the focus and ignores presses. */
+		busy?: boolean;
+		/** The id of what says why it cannot act now; none: it can. */
+		reason?: string;
 		hideLabel?: boolean;
 	}
-	let { label, checked, onchange, pending = false, disabled = false, hideLabel = false }: Props = $props();
+	let { label, checked, onchange, busy = false, reason, hideLabel = false }: Props = $props();
 	const id = $props.id();
 </script>
 
@@ -23,9 +26,9 @@
 	<!-- controlled: the switch shows what the device says, a press only asks -->
 	<Switch.Root
 		{id}
-		bind:checked={() => checked, (v) => !pending && onchange(v)}
-		{disabled}
-		{...inFlight(pending)}
+		bind:checked={() => checked, (v) => !busy && !reason && onchange(v)}
+		{...pending(busy)}
+		{...unavailable(reason)}
 		class="switch"
 	>
 		<Switch.Thumb class="switch-thumb" />
@@ -33,16 +36,50 @@
 </div>
 
 <style>
-	.toggle { display: inline-flex; align-items: center; gap: var(--s-3); min-height: var(--control-h); }
-	.toggle label { font: var(--t-label); }
-	:global(.switch) {
-		position: relative; width: 48px; height: 28px; padding: 2px; border-radius: var(--radius-pill); cursor: pointer;
-		border: 2px solid var(--ink-muted); background: var(--ground-raised); display: inline-flex; align-items: center;
+	.toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--s-3);
+		min-height: var(--control-h);
 	}
-	:global(.switch[data-state='checked']) { background: var(--accent); border-color: var(--accent); }
-	:global(.switch[aria-busy='true']) { cursor: progress; opacity: 0.7; }
-	:global(.switch[data-disabled]) { opacity: 0.55; cursor: not-allowed; }
-	/* the thumb moves and the track fills: on/off read by shape and place, not colour alone */
-	:global(.switch-thumb) { display: block; width: 20px; height: 20px; border-radius: 50%; background: var(--ink-muted); transition: transform 0.15s ease-out; }
-	:global(.switch[data-state='checked'] .switch-thumb) { transform: translateX(20px); background: var(--on-accent); }
+	.toggle label {
+		font: var(--t-label);
+	}
+	:global(.switch) {
+		position: relative;
+		width: var(--switch-w);
+		height: var(--switch-h);
+		padding: var(--s-half);
+		border-radius: var(--radius-pill);
+		cursor: pointer;
+		border: 2px solid var(--ink-muted);
+		background: var(--ground-raised);
+		display: inline-flex;
+		align-items: center;
+	}
+	:global(.switch[data-state='checked']) {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+	:global(.switch[aria-busy='true']) {
+		cursor: progress;
+		opacity: var(--disabled-opacity);
+	}
+	:global(.switch[aria-disabled='true']:not([aria-busy='true'])) {
+		opacity: var(--disabled-opacity);
+		cursor: not-allowed;
+	}
+	/* the thumb moves and the track fills: on/off read by shape and place, not color alone */
+	:global(.switch-thumb) {
+		display: block;
+		width: var(--switch-thumb);
+		height: var(--switch-thumb);
+		border-radius: 50%;
+		background: var(--ink-muted);
+		transition: transform 0.15s ease-out;
+	}
+	:global(.switch[data-state='checked'] .switch-thumb) {
+		transform: translateX(var(--switch-thumb));
+		background: var(--on-accent);
+	}
 </style>

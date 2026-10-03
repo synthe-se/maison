@@ -8,11 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     auth::{AdminUser, AuthenticatedUser},
-    broadlink::{self, BroadlinkSecurityMode, LearnCodeSaveRequest, SaveCodeRequest},
+    broadlink::{BroadlinkSecurityMode, LearnCodeSaveRequest, LearnResult, SaveCodeRequest, SendResult},
     error::AppError,
+    mitsubishi_ir::ClimateSettings,
     passkey::Refusal,
-    routes::SimpleResponse,
+    routes::{Answer, SimpleResponse},
 };
+use serde_json::{Value, json};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,18 +43,7 @@ struct LearnIrRequest {
     host: String,
     local_ip: Option<String>,
     timeout_secs: Option<u64>,
-    save_code: Option<LearnCodeSaveBody>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LearnCodeSaveBody {
-    name: String,
-    brand: Option<String>,
-    model: Option<String>,
-    command: String,
-    #[serde(default)]
-    tags: Vec<String>,
+    save_code: Option<LearnCodeSaveRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,58 +61,29 @@ struct SendCodeRequest {
     local_ip: Option<String>,
 }
 
+/// A structured command as text (`state-cool-21-…`) or as settings (`{mode, temperature,
+/// …}`, written into a command by the backend): one of the two.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MitsubishiCommandRequest {
     host: String,
     local_ip: Option<String>,
-    command: String,
+    command: Option<String>,
+    settings: Option<ClimateSettings>,
     model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct DiscoverResponse {
-    success: bool,
-    devices: Vec<broadlink::BroadlinkDiscoveredDevice>,
+struct Listed<T> {
     total: usize,
+    #[serde(flatten)]
+    items: T,
     message: &'static str,
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LearnResponse {
-    success: bool,
-    result: broadlink::LearnResult,
-    message: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SendResponse {
-    success: bool,
-    result: broadlink::SendResult,
-    message: String,
-}
-
-#[derive(Debug, Serialize)]
-struct CodesResponse {
-    success: bool,
-    codes: Vec<broadlink::BroadlinkCodeEntry>,
-    total: usize,
-    message: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct ClimateStateResponse {
-    success: bool,
-    state: Option<broadlink::StoredClimateState>,
-    message: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct CodeResponse {
-    success: bool,
-    code: broadlink::BroadlinkCodeEntry,
+struct Done<T> {
+    result: T,
     message: String,
 }
 
@@ -142,7 +104,7 @@ async fn discover(
     State(state): State<AppState>,
     Query(query): Query<DiscoverQuery>,
     user: AuthenticatedUser,
-) -> Result<Json<DiscoverResponse>, AppError> {
+) -> Result<Json<Answer<Listed<Value>>>, AppError> {
     // The climate tile reads the cached list; scanning the network again, or from a
     // chosen interface, is setting up.
     let force_refresh = query.force_refresh.unwrap_or(false);
@@ -153,10 +115,9 @@ async fn discover(
         .broadlink
         .discover(query.local_ip, force_refresh)
         .await?;
-    Ok(Json(DiscoverResponse {
-        success: true,
+    Ok(Answer::ok(Listed {
         total: devices.len(),
-        devices,
+        items: json!({ "devices": devices }),
         message: "Broadlink discovery completed",
     }))
 }
@@ -182,20 +143,12 @@ async fn learn_ir(
     State(state): State<AppState>,
     _admin: AdminUser,
     Json(body): Json<LearnIrRequest>,
-) -> Result<Json<LearnResponse>, AppError> {
-    let save_code = body.save_code.map(|save| LearnCodeSaveRequest {
-        name: save.name,
-        brand: save.brand,
-        model: save.model,
-        command: save.command,
-        tags: save.tags,
-    });
+) -> Result<Json<Answer<Done<LearnResult>>>, AppError> {
     let result = state
         .broadlink
-        .learn_ir(body.host, body.local_ip, body.timeout_secs, save_code)
+        .learn_ir(body.host, body.local_ip, body.timeout_secs, body.save_code)
         .await?;
-    Ok(Json(LearnResponse {
-        success: true,
+    Ok(Answer::ok(Done {
         message: "IR code learned successfully".to_string(),
         result,
     }))
@@ -205,54 +158,41 @@ async fn send_packet(
     State(state): State<AppState>,
     _admin: AdminUser,
     Json(body): Json<SendPacketRequest>,
-) -> Result<Json<SendResponse>, AppError> {
+) -> Result<Json<Answer<Done<SendResult>>>, AppError> {
     let result = state
         .broadlink
         .send_packet(body.host, body.local_ip, body.packet_base64, None, None)
         .await?;
-    Ok(Json(SendResponse {
-        success: true,
+    Ok(Answer::ok(Done {
         message: format!("Packet sent to Broadlink device {}", result.host),
         result,
     }))
 }
 
-async fn list_codes(
-    State(state): State<AppState>,
-) -> Result<Json<CodesResponse>, AppError> {
+async fn list_codes(State(state): State<AppState>) -> Json<Answer<Listed<Value>>> {
     let codes = state.broadlink.list_codes().await;
-    Ok(Json(CodesResponse {
-        success: true,
-        total: codes.len(),
-        codes,
-        message: "Broadlink codes retrieved",
-    }))
+    Answer::ok(Listed { total: codes.len(), items: json!({ "codes": codes }), message: "Broadlink codes retrieved" })
 }
 
 async fn save_code(
     State(state): State<AppState>,
     _admin: AdminUser,
     Json(body): Json<SaveCodeRequest>,
-) -> Result<Json<CodeResponse>, AppError> {
+) -> Result<Json<Answer<Value>>, AppError> {
     let code = state.broadlink.save_code(body).await?;
-    Ok(Json(CodeResponse {
-        success: true,
-        message: format!("Code '{}' saved", code.name),
-        code,
-    }))
+    Ok(Answer::ok(json!({ "message": format!("Code '{}' saved", code.name), "code": code })))
 }
 
 async fn send_code(
     State(state): State<AppState>,
     Path(code_id): Path<String>,
     Json(body): Json<SendCodeRequest>,
-) -> Result<Json<SendResponse>, AppError> {
+) -> Result<Json<Answer<Done<SendResult>>>, AppError> {
     let result = state
         .broadlink
         .send_saved_code(body.host, body.local_ip, code_id)
         .await?;
-    Ok(Json(SendResponse {
-        success: true,
+    Ok(Answer::ok(Done {
         message: format!("Saved code sent to Broadlink device {}", result.host),
         result,
     }))
@@ -261,40 +201,31 @@ async fn send_code(
 async fn list_mitsubishi_codes(
     State(state): State<AppState>,
     Query(query): Query<MitsubishiQuery>,
-) -> Result<Json<CodesResponse>, AppError> {
-    let codes = state
-        .broadlink
-        .list_mitsubishi_codes(query.model.as_deref())
-        .await;
-    Ok(Json(CodesResponse {
-        success: true,
-        total: codes.len(),
-        codes,
-        message: "Mitsubishi IR codes retrieved",
-    }))
+) -> Json<Answer<Listed<Value>>> {
+    let codes = state.broadlink.list_mitsubishi_codes(query.model.as_deref()).await;
+    Answer::ok(Listed { total: codes.len(), items: json!({ "codes": codes }), message: "Mitsubishi IR codes retrieved" })
 }
 
-async fn get_climate_state(
-    State(state): State<AppState>,
-) -> Result<Json<ClimateStateResponse>, AppError> {
-    let climate_state = state.broadlink.climate_state().await;
-    Ok(Json(ClimateStateResponse {
-        success: true,
-        state: climate_state,
-        message: "Last commanded Mitsubishi state",
+async fn get_climate_state(State(state): State<AppState>) -> Json<Answer<Value>> {
+    Answer::ok(json!({
+        "state": state.broadlink.climate_state().await,
+        "message": "Last commanded Mitsubishi state",
     }))
 }
 
 async fn send_mitsubishi_command(
     State(state): State<AppState>,
     Json(body): Json<MitsubishiCommandRequest>,
-) -> Result<Json<SendResponse>, AppError> {
-    let result = state
-        .broadlink
-        .send_mitsubishi_command(body.host, body.local_ip, body.command, body.model)
-        .await?;
-    Ok(Json(SendResponse {
-        success: true,
+) -> Result<Json<Answer<Done<SendResult>>>, AppError> {
+    let broadlink = &state.broadlink;
+    let result = match (body.command, body.settings) {
+        (Some(command), None) => broadlink.send_mitsubishi_command(body.host, body.local_ip, command, body.model).await?,
+        (None, Some(settings)) => {
+            broadlink.send_mitsubishi_settings(body.host, body.local_ip, &settings, body.model).await?
+        }
+        _ => return Err(AppError::bad_request("Send either a command or settings")),
+    };
+    Ok(Answer::ok(Done {
         message: format!("Mitsubishi command sent via Broadlink device {}", result.host),
         result,
     }))

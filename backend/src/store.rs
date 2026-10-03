@@ -54,14 +54,17 @@ pub fn read_json<T: DeserializeOwned + Default>(path: &Path, corrupt: Corrupt) -
     };
     match (parsed, corrupt) {
         (Ok(value), _) => Ok(value),
-        (Err(why), Corrupt::Fail) => Err(AppError::http(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("unreadable state file: {why}"),
-        )),
+        (Err(why), Corrupt::Fail) => {
+            // the path and the parse error go to the log, never to a client
+            tracing::error!(%why, "unreadable state file");
+            Err(AppError::http(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "A state file is unreadable (see the log)"))
+        }
         (Err(why), Corrupt::Reset) => {
             let aside = sibling(path, "corrupt");
             tracing::warn!(%why, aside = %aside.display(), "corrupt cache file: kept aside, starting empty");
-            let _ = fs::rename(path, &aside);
+            if let Err(error) = fs::rename(path, &aside) {
+                tracing::warn!(%error, "could not keep the corrupt file aside");
+            }
             Ok(T::default())
         }
     }
@@ -77,7 +80,7 @@ pub fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T, access: Access)
 pub fn write_bytes(path: &Path, bytes: &[u8], access: Access) -> Result<(), AppError> {
     let dir = parent(path);
     fs::create_dir_all(dir)?;
-    let tmp = sibling(path, &format!("{}.tmp", crate::util::random_secret()[..12].to_owned()));
+    let tmp = sibling(path, &format!("{}.tmp", crate::util::random_id()));
     let result = (|| -> std::io::Result<()> {
         let mut file = create_new(&tmp, access)?;
         file.write_all(bytes)?;
@@ -94,6 +97,23 @@ pub fn write_bytes(path: &Path, bytes: &[u8], access: Access) -> Result<(), AppE
         let _ = fs::remove_file(&tmp);
     }
     Ok(result?)
+}
+
+/// `write_json` off the async runtime: the fsyncs stall the Pi's single core otherwise (the
+/// IR key path included). The value is serialised here, before leaving the caller's thread.
+pub async fn write_json_async<T: Serialize + ?Sized>(path: &Path, value: &T, access: Access) -> Result<(), AppError> {
+    let text = format!("{}\n", serde_json::to_string_pretty(value)?);
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_bytes(&path, text.as_bytes(), access)).await?
+}
+
+/// `locked` off the async runtime (the OS lock may wait for another process).
+pub async fn locked_async<T: Send + 'static>(
+    path: &Path,
+    f: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || locked(&path, f)).await?
 }
 
 /// A private directory (0700), created if missing.
@@ -188,16 +208,12 @@ fn keep_owner(file: &Path, like: &Path, dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn dir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("maison-store-{}", crate::util::random_secret()));
-        fs::create_dir_all(&d).unwrap();
-        d
-    }
+    use crate::util::test_dir;
 
     #[test]
     fn missing_is_default_and_a_write_reads_back() {
-        let d = dir();
+        let dir = test_dir();
+        let d = dir.path();
         let path = d.join("sub").join("x.json");
         assert_eq!(read_json::<Vec<u8>>(&path, Corrupt::Fail).unwrap(), Vec::<u8>::new());
         write_json(&path, &vec![1u8, 2], Access::Shared).unwrap();
@@ -209,7 +225,8 @@ mod tests {
 
     #[test]
     fn an_empty_or_torn_file_is_an_error_unless_it_is_a_cache() {
-        let d = dir();
+        let dir = test_dir();
+        let d = dir.path();
         let path = d.join("x.json");
         fs::write(&path, "").unwrap();
         assert!(read_json::<Vec<u8>>(&path, Corrupt::Fail).is_err(), "empty is not « nothing »");
@@ -224,7 +241,8 @@ mod tests {
     #[test]
     fn private_files_are_0600_from_the_start() {
         use std::os::unix::fs::PermissionsExt;
-        let path = dir().join("secret.json");
+        let dir = test_dir();
+        let path = dir.path().join("secret.json");
         write_json(&path, &"s", Access::Private).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         write_json(&path, &"t", Access::Private).unwrap();
@@ -233,7 +251,8 @@ mod tests {
 
     #[test]
     fn a_stale_temp_file_does_not_block_writes() {
-        let d = dir();
+        let dir = test_dir();
+        let d = dir.path();
         let path = d.join("x.json");
         fs::write(d.join("x.json.tmp"), "left by a crash").unwrap();
         write_json(&path, &1, Access::Shared).unwrap();
@@ -242,7 +261,8 @@ mod tests {
 
     #[test]
     fn a_bad_secret_is_replaced_and_a_good_one_kept() {
-        let path = dir().join("key");
+        let dir = test_dir();
+        let path = dir.path().join("key");
         let decode = |b: &[u8]| (b == b"good").then_some(1);
         fs::write(&path, b"torn").unwrap();
         assert_eq!(load_or_create_secret(&path, decode, || Ok((1, b"good".to_vec()))).unwrap(), 1);
@@ -253,7 +273,8 @@ mod tests {
 
     #[test]
     fn locked_edits_from_two_threads_lose_nothing() {
-        let path = dir().join("n.json");
+        let dir = test_dir();
+        let path = dir.path().join("n.json");
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let path = path.clone();

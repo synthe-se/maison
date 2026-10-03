@@ -16,9 +16,8 @@ pub mod tariffs;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use chrono_tz::Europe::Paris;
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 
 pub use rules::{current_season, Color};
 
@@ -26,6 +25,7 @@ use crate::{
     config::Config,
     error::AppError,
     store::{self, Access, Corrupt},
+    util::{house_today, HOUSE_TZ},
 };
 use forecast::{expected, likeliest, seed, simulate, Ahead, Levels, Model};
 use inputs::{fetch_load, fetch_weather, NetLoad, Weather};
@@ -62,8 +62,22 @@ struct Inner {
     open_meteo_url: String,
     dir: PathBuf,
     model: Option<Model>,
-    /// One refresh at a time: the dashboard and the page ask together, upstream once.
+    /// One refresh at a time: the dashboard and the page ask together, upstream once. Held
+    /// across the sources' answers (seconds, up to their timeouts).
     state: Mutex<State>,
+    /// The last answers, served while a refresh holds `state`: a reader never waits on
+    /// RTE when it has today's already.
+    last_today: Last<Today>,
+    last_forecast: Last<Forecast>,
+}
+
+/// An answer and the day it is for.
+type Last<T> = std::sync::Mutex<Option<(NaiveDate, T)>>;
+
+/// Who answers: the caller, holding the refresh lock, or the last answer (a refresh runs).
+enum Turn<'a, T> {
+    Refresh(MutexGuard<'a, State>),
+    Last(T),
 }
 
 /// When a source was last asked, and whether it answered.
@@ -133,6 +147,7 @@ impl SeasonStock {
 /// Peak hours (« heures pleines »), local time: the rest is off-peak. A Tempo day runs
 /// 06:00 to 06:00: before 06:00 the colour in force is the day before's.
 #[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Hours {
     pub peak_start: &'static str,
     pub peak_end: &'static str,
@@ -143,15 +158,15 @@ pub const HOURS: Hours = Hours { peak_start: "06:00", peak_end: "22:00" };
 /// Yesterday (in force until 06:00), today, tomorrow (`None` until RTE publishes it), the
 /// prices and their hours, and the days left.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Today {
     pub yesterday: Day,
     pub today: Day,
     pub tomorrow: Day,
-    pub tarifs: Option<Tariffs>,
+    pub tariffs: Option<Tariffs>,
     pub hours: Hours,
     pub stock: SeasonStock,
     /// When the colours were last fetched (`None`: only from the file so far).
-    #[serde(rename = "lastUpdated")]
     pub last_updated: Option<DateTime<Utc>>,
     /// The last ask failed: what is shown is older.
     pub cached: bool,
@@ -175,12 +190,14 @@ impl From<[f64; 3]> for Probabilities {
 
 /// How the model did at this horizon on past seasons (`model.json`).
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Reliability {
     pub accuracy: f64,
     pub winter_accuracy: f64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ForecastDay {
     pub date: NaiveDate,
     /// Days after today.
@@ -196,6 +213,7 @@ pub struct ForecastDay {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub version: String,
     pub fitted_through: NaiveDate,
@@ -205,6 +223,7 @@ pub struct ModelInfo {
 
 /// The days after today up to J+7: RTE's when published, the forecast's after.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Forecast {
     pub issued: NaiveDate,
     /// The day of the weather forecast used (older than today: Open-Meteo is down, the
@@ -220,6 +239,7 @@ pub struct Forecast {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CalendarDay {
     pub date: NaiveDate,
     pub color: Color,
@@ -237,10 +257,6 @@ pub struct Calendar {
     pub season: String,
     pub calendar: Vec<CalendarDay>,
     pub stock: SeasonStock,
-}
-
-pub fn paris_today() -> NaiveDate {
-    Utc::now().with_timezone(&Paris).date_naive()
 }
 
 /// The days after today up to J+7: the published ones, then the forecast's from `weather`
@@ -309,11 +325,7 @@ pub fn outlook(
 
 impl TempoService {
     pub fn from_config(config: &Config) -> Result<Self, AppError> {
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()?;
+        let client = crate::net::web_client(USER_AGENT, std::time::Duration::from_secs(30))?;
         let dir = config.source_root.join("cache").join("tempo");
         let model = match store::read_json::<Option<Model>>(&dir.join("model.json"), Corrupt::Fail) {
             Ok(Some(model)) => Some(model),
@@ -338,34 +350,63 @@ impl TempoService {
                 dir,
                 model,
                 state: Mutex::new(State::default()),
+                last_today: Last::default(),
+                last_forecast: Last::default(),
             }),
         })
     }
 
-    pub fn model(&self) -> Option<&Model> {
-        self.inner.model.as_ref()
+    /// The refresh lock; or, while a refresh holds it, the last answer for today (unless
+    /// `force`: then wait for it).
+    async fn turn<'a, T: Clone>(&'a self, force: bool, last: &Last<T>) -> Turn<'a, T> {
+        if let Ok(state) = self.inner.state.try_lock() {
+            return Turn::Refresh(state);
+        }
+        if !force {
+            let kept = last.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some((day, answer)) = kept.filter(|(day, _)| *day == house_today()) {
+                tracing::debug!(%day, "tempo: a refresh runs, the last answer is served");
+                return Turn::Last(answer);
+            }
+        }
+        Turn::Refresh(self.inner.state.lock().await)
     }
 
     /// Today, tomorrow, the prices and the days left; `force` asks the sources again.
     pub async fn today(&self, force: bool) -> Result<Today, AppError> {
-        let (now, today) = (Utc::now(), paris_today());
-        let mut state = self.inner.state.lock().await;
-        let history = self.current_season(&mut state, today, now, force).await?;
-        let quotas = self.quotas(&mut state, today, &history).await;
-        let tarifs = self.tariffs(&mut state, today, now, force).await;
+        let mut state = match self.turn(force, &self.inner.last_today).await {
+            Turn::Last(today) => return Ok(today),
+            Turn::Refresh(state) => state,
+        };
+        let answer = self.today_in(&mut state, force).await?;
+        remember(&self.inner.last_today, answer.today.date, &answer);
+        Ok(answer)
+    }
+
+    async fn today_in(&self, state: &mut State, force: bool) -> Result<Today, AppError> {
+        let (now, today) = (Utc::now(), house_today());
+        let history = self.current_season(state, today, now, force).await?;
+        let quotas = self.quotas(state, today, &history).await;
+        let tariffs = self.tariffs(state, today, now, force).await;
         let yesterday = today - Duration::days(1);
         // on 1 September, yesterday is the last season's
         let before = if season_start_year(yesterday) == season_start_year(today) {
             history.get(&yesterday).copied()
         } else {
-            self.past_season(&mut state, season_start_year(yesterday), today).await.ok().and_then(|h| h.get(&yesterday).copied())
+            match self.past_season(state, season_start_year(yesterday), today).await {
+                Ok(past) => past.get(&yesterday).copied(),
+                Err(error) => {
+                    tracing::warn!(%error, "last season unavailable: yesterday's colour unknown");
+                    None
+                }
+            }
         };
         let day = |date: NaiveDate| Day { date, color: history.get(&date).copied() };
         Ok(Today {
             yesterday: Day { date: yesterday, color: before },
             today: day(today),
             tomorrow: day(today + Duration::days(1)),
-            tarifs,
+            tariffs,
             hours: HOURS,
             stock: SeasonStock::new(season_start_year(today), &history, quotas),
             last_updated: state.current.filter(|a| a.ok).map(|a| a.at),
@@ -375,10 +416,19 @@ impl TempoService {
 
     /// J+1 to J+7: RTE's colours, then the forecast's.
     pub async fn forecast(&self, force: bool) -> Result<Forecast, AppError> {
-        let (now, today) = (Utc::now(), paris_today());
-        let mut state = self.inner.state.lock().await;
-        let history = self.current_season(&mut state, today, now, false).await?;
-        let quotas = self.quotas(&mut state, today, &history).await;
+        let mut state = match self.turn(force, &self.inner.last_forecast).await {
+            Turn::Last(forecast) => return Ok(forecast),
+            Turn::Refresh(state) => state,
+        };
+        let answer = self.forecast_in(&mut state, force).await?;
+        remember(&self.inner.last_forecast, answer.issued, &answer);
+        Ok(answer)
+    }
+
+    async fn forecast_in(&self, state: &mut State, force: bool) -> Result<Forecast, AppError> {
+        let (now, today) = (Utc::now(), house_today());
+        let history = self.current_season(state, today, now, false).await?;
+        let quotas = self.quotas(state, today, &history).await;
         let stock = SeasonStock::new(season_start_year(today), &history, quotas);
         let Some(model) = self.inner.model.as_ref() else {
             let (days, _) = outlook(&Model::empty(), &history, quotas, None, None, today);
@@ -392,8 +442,8 @@ impl TempoService {
                 note: Some("no forecast model".into()),
             });
         };
-        self.refresh_load(&mut state, today, now).await;
-        self.refresh_weather(&mut state, model, today, now, force).await;
+        self.refresh_load(state, today, now).await;
+        self.refresh_weather(state, model, today, now, force).await;
         let levels = state.netload.as_ref().and_then(|n| n.levels(today));
         let (days, note) = outlook(model, &history, quotas, state.weather.as_ref(), levels, today);
         let weather_issued = state.weather.as_ref().and_then(|w| w.issued);
@@ -414,20 +464,19 @@ impl TempoService {
 
     /// A season's published days, and for the current one the forecast's after them.
     pub async fn calendar(&self, season: Option<&str>) -> Result<Calendar, AppError> {
-        let today = paris_today();
+        let today = house_today();
         let start = season.map_or(Ok(season_start_year(today)), |s| parse_season(s, today))?;
         let current = start == season_start_year(today);
-        let forecast = if current { Some(self.forecast(false).await?) } else { None };
-        let (history, quotas) = {
-            let mut state = self.inner.state.lock().await;
-            let history = if current {
-                self.current_season(&mut state, today, Utc::now(), false).await?
-            } else {
-                self.past_season(&mut state, start, today).await?
-            };
-            let quotas = if current { self.quotas(&mut state, today, &history).await } else { Quotas::default() };
-            (history, quotas)
+        // one turn of the lock for all of it
+        let mut state = self.inner.state.lock().await;
+        let forecast = if current { Some(self.forecast_in(&mut state, false).await?) } else { None };
+        let history = if current {
+            self.current_season(&mut state, today, Utc::now(), false).await?
+        } else {
+            self.past_season(&mut state, start, today).await?
         };
+        let quotas = if current { self.quotas(&mut state, today, &history).await } else { Quotas::default() };
+        drop(state);
         let mut calendar: Vec<CalendarDay> = history
             .iter()
             .map(|(date, color)| CalendarDay {
@@ -476,8 +525,8 @@ impl TempoService {
         Ok(store::read_json::<Values>(&self.season_path(start_year), Corrupt::Reset)?.history())
     }
 
-    fn write_season(&self, start_year: i32, history: &History) -> Result<(), AppError> {
-        store::write_json(&self.season_path(start_year), &Values::from_history(history), Access::Shared)
+    async fn write_season(&self, start_year: i32, history: &History) -> Result<(), AppError> {
+        store::write_json_async(&self.season_path(start_year), &Values::from_history(history), Access::Shared).await
     }
 
     /// The current season: asked once a day, every [`RETRY`] while tomorrow is unknown or
@@ -488,7 +537,7 @@ impl TempoService {
             entry.insert(self.read_season(start)?);
         }
         let tomorrow_known = state.seasons[&start].contains_key(&(today + Duration::days(1)));
-        let asked_today = state.current.is_some_and(|a| a.at.with_timezone(&Paris).date_naive() == today);
+        let asked_today = state.current.is_some_and(|a| a.at.with_timezone(&HOUSE_TZ).date_naive() == today);
         let due = force
             || !asked_today
             || state.current.is_some_and(|a| (!a.ok || !tomorrow_known) && now - a.at >= RETRY);
@@ -497,7 +546,7 @@ impl TempoService {
                 Ok(fetched) => {
                     let history = state.seasons.entry(start).or_default();
                     history.extend(fetched);
-                    self.write_season(start, history)?;
+                    self.write_season(start, history).await?;
                     state.current = Some(Asked { at: now, ok: true });
                 }
                 Err(error) => {
@@ -523,7 +572,7 @@ impl TempoService {
             match self.inner.sources.season(&self.inner.client, start, today).await {
                 Ok(fetched) => {
                     history.extend(fetched);
-                    self.write_season(start, &history)?;
+                    self.write_season(start, &history).await?;
                 }
                 // not remembered: asked again next time
                 Err(error) if !history.is_empty() => {
@@ -588,8 +637,8 @@ impl TempoService {
         })
     }
 
-    fn save_netload(&self, net: &NetLoad) {
-        if let Err(error) = store::write_json(&self.inner.dir.join("netload.json"), net, Access::Shared) {
+    async fn save_netload(&self, net: &NetLoad) {
+        if let Err(error) = store::write_json_async(&self.inner.dir.join("netload.json"), net, Access::Shared).await {
             tracing::warn!(%error, "netload.json not saved");
         }
     }
@@ -608,7 +657,7 @@ impl TempoService {
             Ok(load) => {
                 let net = self.netload(state);
                 net.merge(load, &Default::default(), today);
-                self.save_netload(net);
+                self.save_netload(net).await;
             }
             Err(error) => tracing::warn!(%error, "ODRE unavailable: the normalisation keeps its past year"),
         }
@@ -632,17 +681,22 @@ impl TempoService {
         state.weather_asked = Some(Asked { at: now, ok: fetched.is_ok() });
         match fetched {
             Ok(weather) => {
-                if let Err(error) = store::write_json(&path, &weather, Access::Shared) {
+                if let Err(error) = store::write_json_async(&path, &weather, Access::Shared).await {
                     tracing::warn!(%error, "weather.json not saved");
                 }
                 let net = self.netload(state);
                 net.merge(Default::default(), &weather.temperature, today);
-                self.save_netload(net);
+                self.save_netload(net).await;
                 state.weather = Some(weather);
             }
             Err(error) => tracing::warn!(%error, "Open-Meteo unavailable: the last forecast, older"),
         }
     }
+}
+
+/// Keeps `answer` as the last one for `day`.
+fn remember<T: Clone>(last: &Last<T>, day: NaiveDate, answer: &T) {
+    *last.lock().unwrap_or_else(|p| p.into_inner()) = Some((day, answer.clone()));
 }
 
 impl Model {
@@ -749,5 +803,25 @@ mod tests {
         assert_eq!(stock.red, Count { used: 5, total: 22, remaining: 17 });
         assert_eq!(stock.blue.total, 300);
         assert_eq!(stock.blue.used + stock.white.used + stock.red.used, history.len() as u32);
+    }
+
+    /// A refresh holds the lock across the sources: a reader with today's answer gets it at
+    /// once; one forcing, or with only yesterday's, waits for the refresh.
+    #[tokio::test]
+    async fn a_reader_gets_the_last_answer_while_a_refresh_runs() {
+        let dir = crate::util::test_dir();
+        let service = TempoService::from_config(&Config::defaults(dir.path().to_path_buf())).unwrap();
+        let last: Last<u32> = Last::default();
+        let wait = std::time::Duration::from_millis(50);
+        assert!(matches!(service.turn(false, &last).await, Turn::Refresh(_)), "nobody refreshing: refresh");
+        let refreshing = service.inner.state.lock().await;
+        assert!(tokio::time::timeout(wait, service.turn(false, &last)).await.is_err(), "nothing kept: wait");
+        remember(&last, house_today(), &7);
+        assert!(matches!(service.turn(false, &last).await, Turn::Last(7)));
+        assert!(tokio::time::timeout(wait, service.turn(true, &last)).await.is_err(), "forced: wait");
+        remember(&last, house_today() - Duration::days(1), &7);
+        assert!(tokio::time::timeout(wait, service.turn(false, &last)).await.is_err(), "yesterday's: wait");
+        drop(refreshing);
+        assert!(matches!(service.turn(false, &last).await, Turn::Refresh(_)));
     }
 }

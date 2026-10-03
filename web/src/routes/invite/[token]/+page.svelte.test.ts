@@ -29,6 +29,9 @@ describe('invitation page', () => {
 		await expect.element(page.getByText(m.invite_why_devices())).toBeVisible();
 		await expect.element(page.getByText(m.pk_handshake())).toBeVisible();
 		await expect.poll(() => document.title).toBe(`${m.invite_title({ name: 'Léonard' })} · ${m.branding_name()}`);
+		// in the door, as signing in is: the name, the promise, the region named by its title
+		await expect.element(page.getByRole('region', { name: m.invite_title({ name: 'Léonard' }) })).toBeVisible();
+		await expect.element(page.getByText(m.branding_promise())).toBeVisible();
 	});
 
 	it('creates the passkey with the link, confirms, then goes in', async () => {

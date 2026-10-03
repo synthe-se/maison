@@ -1,6 +1,6 @@
 // Lamp fixtures as the backend sends them (Hue over Bluetooth, Zigbee), for the lamp tests.
 
-import type { HueLamp, ZigbeeLamp } from '#lib/api.ts';
+import type { HueLamp, ZigbeeLamp } from '#lib/devices/lamps/api.ts';
 
 export function hueLamp(over: Partial<Omit<HueLamp, 'state'>> & { state?: Partial<HueLamp['state']> } = {}): HueLamp {
 	const { state, ...rest } = over;
@@ -37,6 +37,16 @@ export function zigbeeLamp(over: Partial<Omit<ZigbeeLamp, 'state'>> & { state?: 
 		supportsColor: true,
 		lastSeen: null,
 		...rest,
-		state: { isOn: true, brightness: 60, temperature: 40, temperatureMin: 0, temperatureMax: 100, colorX: 0.3, colorY: 0.3, colorMode: 2, ...state }
+		state: {
+			isOn: true,
+			brightness: 60,
+			temperature: 40,
+			temperatureMin: 0,
+			temperatureMax: 100,
+			colorX: 0.3,
+			colorY: 0.3,
+			colorMode: 2,
+			...state
+		}
 	};
 }

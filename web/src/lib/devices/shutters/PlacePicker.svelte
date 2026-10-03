@@ -1,17 +1,18 @@
 <script lang="ts">
 	// Where the house is: a town looked up by name (Open-Meteo geocoding, through the backend),
-	// picked from a short list. Typing waits a moment before asking; only the answer to the last
-	// question counts (an older one arriving late never replaces it); the search, its count and
-	// a failure are said where they happen, not in a toast. Changing the place is an admin's.
+	// picked from its matches (Combobox). Typing waits a moment before asking; only the answer
+	// to the last question counts (an older one arriving late, or failing, is dropped); the
+	// search, its count and a failure are said where they happen (the field's description), not
+	// in a toast. Changing the place is an admin's.
 	import { m } from '#lib/paraglide/messages.js';
-	import { shuttersApi, type Place } from '#lib/api.ts';
 	import { locale } from '#lib/i18n.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { errorText } from '#lib/errors.ts';
 	import { refocus } from '#lib/focus.ts';
-	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { Gesture } from '#lib/gesture.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
+	import Combobox from '#lib/components/Combobox.svelte';
 	import Icon from '#lib/components/Icon.svelte';
+	import { shuttersApi, type Place } from './api.ts';
 
 	/** Wait this long after the last key before asking (a town name is typed in one go). */
 	const TYPING_PAUSE = 400;
@@ -21,43 +22,46 @@
 	let editing = $state(false);
 	let query = $state('');
 	let results = $state.raw<Place[] | null>(null);
-	let searching = $state(false);
-	let searchError = $state('');
+	let open = $state(false);
+	/** The searches (each its own key: a newer one never waits for an older); the choice. */
+	const finder = new Gesture();
 	const g = new Gesture();
 	const id = $props.id();
 	let editButton = $state<HTMLButtonElement>();
 	/** The last question asked: an answer to an older one is dropped. */
 	let asked = 0;
+	const searching = $derived(finder.is());
+	const key = (p: Place) => `${p.latitude},${p.longitude}`;
 
 	$effect(() => {
 		const q = query.trim();
 		const lang = locale();
 		const mine = ++asked;
-		searchError = '';
 		if (q.length < 2) {
 			results = null;
-			searching = false;
 			return;
 		}
-		const timer = setTimeout(async () => {
-			searching = true;
-			try {
-				const r = await shuttersApi.searchPlaces(q, lang);
-				if (mine !== asked) return;
-				results = r.places;
-				ui.say(m.place_results({ count: r.places.length }));
-			} catch (e) {
-				if (mine !== asked) return;
-				results = null;
-				searchError = errorText(e);
-			} finally {
-				if (mine === asked) searching = false;
-			}
-		}, TYPING_PAUSE);
+		const timer = setTimeout(
+			() =>
+				finder.run(
+					() => shuttersApi.searchPlaces(q, lang),
+					(r) => {
+						if (mine !== asked) return;
+						results = r.places;
+						open = r.places.length > 0;
+						ui.say(m.place_results({ count: r.places.length }));
+					},
+					`search-${mine}`,
+					{ inline: true, refused: () => mine !== asked }
+				),
+			TYPING_PAUSE
+		);
 		return () => clearTimeout(timer);
 	});
 
-	function pick(p: Place) {
+	function pick(value: string) {
+		const p = results?.find((r) => key(r) === value);
+		if (!p) return;
 		return g.run(
 			() => shuttersApi.setPlace(p),
 			async (r) => {
@@ -66,7 +70,7 @@
 				query = '';
 				results = null;
 				onpicked(r.place);
-				// the list and its field are gone: the focus goes to the way to change it again
+				// the field is gone: the focus goes to the way to change it again
 				await refocus(editButton);
 			},
 			'save'
@@ -87,37 +91,39 @@
 		<p class="hint">{m.place_admin()}</p>
 	{:else}
 		<p class="hint">{m.place_hint()}</p>
-		<div class="field">
-			<label for="{id}-search">{m.place_search()}</label>
-			<input
-				id="{id}-search"
-				bind:value={query}
-				autocomplete="address-level2"
-				aria-describedby="{id}-title {id}-status"
-				aria-invalid={searchError ? 'true' : undefined}
-			/>
-			<p class="hint" id="{id}-status">
-				{#if searching}{m.place_searching()}{:else if searchError}<span class="warn-text">{searchError}</span>{:else if results && !results.length}{m.place_none()}{/if}
-			</p>
-		</div>
-		{#if results?.length}
-			<ul class="list results" aria-label={m.place_search()} aria-busy={searching}>
-				{#each results as r (`${r.latitude},${r.longitude}`)}
-					<li>
-						<button class="list-row option" {...pending(g.is('save'))} onclick={() => pick(r)}>
-							<span class="lead"><Icon name="house" size={16} /></span><span class="title">{r.name}</span>
-						</button>
-					</li>
-				{/each}
-			</ul>
-		{/if}
+		<Combobox
+			label={m.place_search()}
+			bind:query
+			bind:open
+			options={(results ?? []).map((r) => ({ value: key(r), label: r.name }))}
+			onpick={pick}
+			icon="house"
+			autocomplete="address-level2"
+			describedby="{id}-title {id}-status"
+			invalid={!!finder.error}
+		/>
+		<p class="hint" id="{id}-status" aria-busy={searching || g.is()}>
+			{#if searching}{m.place_searching()}{:else if finder.error}<span class="warn-text">{finder.error}</span
+				>{:else if results && !results.length}{m.place_none()}{/if}
+		</p>
 	{/if}
 </div>
 
 <style>
-	.place { display: grid; gap: var(--s-2); }
-	.head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-3); }
-	.current { display: flex; align-items: center; gap: var(--s-2); margin: 0; }
-	.results { display: grid; }
-	.option { grid-template-columns: 20px minmax(0, 1fr); }
+	.place {
+		display: grid;
+		gap: var(--s-2);
+	}
+	.head {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: var(--s-3);
+	}
+	.current {
+		display: flex;
+		align-items: center;
+		gap: var(--s-2);
+		margin: 0;
+	}
 </style>

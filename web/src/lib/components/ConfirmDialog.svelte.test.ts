@@ -59,7 +59,7 @@ describe('ConfirmDialog', () => {
 		const { rerender } = await render(ConfirmDialog, props());
 		const trigger = page.getByRole('button', { name: 'Remettre à zéro' }).element() as HTMLElement;
 		trigger.focus();
-		await rerender({ pending: true });
+		await rerender({ busy: true });
 		expect(document.activeElement).toBe(trigger);
 	});
 
@@ -68,16 +68,14 @@ describe('ConfirmDialog', () => {
 		await expect.element(page.getByRole('button', { name: 'Retirer la clé MacBook' })).toHaveClass('ghost');
 	});
 
-	it('cannot be opened while the action runs, or when disabled', async () => {
-		const { rerender } = await render(ConfirmDialog, props({ pending: true, icon: 'refresh-cw', danger: true }));
+	it('cannot be opened while the action runs', async () => {
+		await render(ConfirmDialog, props({ busy: true, icon: 'refresh-cw', danger: true }));
 		const trigger = page.getByRole('button', { name: 'Remettre à zéro' });
 		// busy: still focusable, said busy, and a press opens nothing
 		await expect.element(trigger).toHaveAttribute('aria-disabled', 'true');
 		await expect.element(trigger).toHaveAttribute('aria-busy', 'true');
 		(trigger.element() as HTMLElement).click();
 		await expect.element(page.getByRole('alertdialog')).not.toBeInTheDocument();
-		await rerender({ pending: false, disabled: true });
-		await expect.element(trigger).toBeDisabled();
 		await expect.element(trigger).toHaveClass('danger');
 	});
 });

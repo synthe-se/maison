@@ -29,6 +29,11 @@ pub trait LampBackend: Send + Sync + 'static {
     fn list(&self) -> impl Future<Output = Vec<Self::View>> + Send;
     fn get(&self, id: &str) -> impl Future<Output = Option<Self::View>> + Send;
     fn stats(&self) -> impl Future<Output = LampStats> + Send;
+    /// The list and its counts, for `GET /`: a family that syncs before answering does it
+    /// once for both.
+    fn listing(&self) -> impl Future<Output = (Vec<Self::View>, LampStats)> + Send {
+        async { (self.list().await, self.stats().await) }
+    }
     fn set_power(&self, id: &str, on: bool) -> impl Future<Output = Result<LampState, AppError>> + Send;
     fn set_brightness(&self, id: &str, brightness: u8) -> impl Future<Output = Result<LampState, AppError>> + Send;
     fn set_temperature(&self, id: &str, temperature: u8) -> impl Future<Output = Result<LampState, AppError>> + Send;
@@ -55,7 +60,7 @@ struct StatsResponse {
 #[derive(Debug, Serialize)]
 struct LampResponse<V> {
     success: bool,
-    lamp: Option<V>,
+    lamp: V,
     message: String,
 }
 
@@ -106,9 +111,7 @@ pub fn router<B: LampBackend>() -> Router<AppState> {
 }
 
 async fn list<B: LampBackend>(State(state): State<AppState>) -> Json<ListResponse<B::View>> {
-    let backend = B::of(&state);
-    let lamps = backend.list().await;
-    let stats = backend.stats().await;
+    let (lamps, stats) = B::of(&state).listing().await;
     Json(ListResponse {
         success: true,
         lamps,
@@ -123,10 +126,13 @@ async fn stats<B: LampBackend>(State(state): State<AppState>) -> Json<StatsRespo
     Json(StatsResponse { success: true, stats: B::of(&state).stats().await })
 }
 
-async fn lamp<B: LampBackend>(State(state): State<AppState>, Path(lamp_id): Path<String>) -> Json<LampResponse<B::View>> {
-    let lamp = B::of(&state).get(&lamp_id).await;
-    let message = format!("{} {}", B::NAME, if lamp.is_some() { "retrieved" } else { "not found" });
-    Json(LampResponse { success: lamp.is_some(), lamp, message })
+/// One lamp; an unknown id is a 404.
+async fn lamp<B: LampBackend>(
+    State(state): State<AppState>,
+    Path(lamp_id): Path<String>,
+) -> Result<Json<LampResponse<B::View>>, AppError> {
+    let lamp = B::of(&state).get(&lamp_id).await.ok_or_else(|| AppError::not_found(format!("{} not found", B::NAME)))?;
+    Ok(Json(LampResponse { success: true, lamp, message: format!("{} retrieved", B::NAME) }))
 }
 
 async fn power<B: LampBackend>(

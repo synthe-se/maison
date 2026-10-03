@@ -1,7 +1,7 @@
 // Meross plug answers as the backend sends them (src/meross.rs): the formatted electricity
 // fields carry their unit (« 230.4V », « 0.183A », « 42.4W »); `raw` is in dV, mA and mW.
 
-import type { MerossElectricityResponse, MerossPlug, MerossPlugStatusResponse } from '#lib/api.ts';
+import type { MerossElectricityResponse, MerossPlug, MerossPlugStatusResponse } from '#lib/devices/meross/api.ts';
 
 export const merossPlug = (over: Partial<MerossPlug> = {}): MerossPlug => ({
 	id: 'p1',

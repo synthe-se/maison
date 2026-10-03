@@ -136,7 +136,7 @@ impl<T: LampRecord> LampStoreGuard<'_, T> {
         if self.written.lamps.as_ref() == Some(&lamps) {
             return Ok(false);
         }
-        write_off_runtime(&self.store.lamps_path, &lamps).await?;
+        store::write_json_async(&self.store.lamps_path, &lamps, Access::Shared).await?;
         self.written.lamps = Some(lamps);
         Ok(true)
     }
@@ -148,7 +148,7 @@ impl<T: LampRecord> LampStoreGuard<'_, T> {
         if self.written.blacklist.as_ref() == Some(&blacklist) {
             return Ok(false);
         }
-        write_off_runtime(&self.store.blacklist_path, &blacklist).await?;
+        store::write_json_async(&self.store.blacklist_path, &blacklist, Access::Shared).await?;
         self.written.blacklist = Some(blacklist);
         Ok(true)
     }
@@ -157,13 +157,6 @@ impl<T: LampRecord> LampStoreGuard<'_, T> {
 fn sorted<T: LampRecord>(mut lamps: Vec<T>) -> Vec<T> {
     lamps.sort_by(|a, b| a.id().cmp(b.id()));
     lamps
-}
-
-/// The write (fsyncs on an SD card) runs on the blocking pool, not on the async runtime.
-async fn write_off_runtime<V: Serialize + Clone + Send + 'static>(path: &Path, value: &V) -> Result<(), AppError> {
-    let path = path.to_path_buf();
-    let value = value.clone();
-    tokio::task::spawn_blocking(move || store::write_json(&path, &value, Access::Shared)).await?
 }
 
 #[cfg(test)]
@@ -187,14 +180,14 @@ mod tests {
         Lamp { id: id.into(), name: name.into() }
     }
 
-    fn paths() -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("maison-lamps-{}", crate::util::random_secret()));
-        (dir.join("lamps.json"), dir.join("blacklist.json"))
+    fn paths() -> (PathBuf, PathBuf, tempfile::TempDir) {
+        let dir = crate::util::test_dir();
+        (dir.path().join("lamps.json"), dir.path().join("blacklist.json"), dir)
     }
 
     #[tokio::test]
     async fn only_a_change_is_written_whatever_the_order() {
-        let (lamps_path, blacklist_path) = paths();
+        let (lamps_path, blacklist_path, _dir) = paths();
         let store = LampStore::<Lamp>::new(&lamps_path, &blacklist_path);
         assert!(store.load_lamps().unwrap().is_empty(), "a missing file is no lamp");
         assert!(store.load_blacklist().unwrap().is_empty());
@@ -217,7 +210,7 @@ mod tests {
 
     #[test]
     fn a_torn_lamps_file_is_an_error_not_an_empty_house() {
-        let (lamps_path, blacklist_path) = paths();
+        let (lamps_path, blacklist_path, _dir) = paths();
         std::fs::create_dir_all(lamps_path.parent().unwrap()).unwrap();
         std::fs::write(&lamps_path, "[{\"id\": \"a\"").unwrap();
         std::fs::write(&blacklist_path, "").unwrap();

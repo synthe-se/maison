@@ -1,11 +1,11 @@
 <script lang="ts">
-	// A confirmation for what cannot be undone (docs/ux/tableau-de-bord.md § 6): the
+	// A confirmation for what cannot be undone (docs/ux.md § 6): the
 	// consequence said, a button with the precise verb and « Garder », no default button: the
 	// focus goes to the title.
 	import { AlertDialog } from 'bits-ui';
 	import { m } from '#lib/paraglide/messages.js';
 	import Icon, { type IconName } from '#lib/components/Icon.svelte';
-	import { pending as inFlight } from '#lib/gesture.svelte.ts';
+	import { pending } from '#lib/gesture.svelte.ts';
 
 	interface Props {
 		/** The button that opens it; without one, the caller opens it (`open`). */
@@ -23,8 +23,8 @@
 		/** The precise verb (« Remettre à zéro »). */
 		action: string;
 		onconfirm: () => void;
-		pending?: boolean;
-		disabled?: boolean;
+		/** Its gesture travels: busy, it keeps the focus and does not open again. */
+		busy?: boolean;
 		/** The trigger removes or resets something: in brick. */
 		danger?: boolean;
 	}
@@ -39,8 +39,7 @@
 		description,
 		action,
 		onconfirm,
-		pending = false,
-		disabled = false,
+		busy = false,
 		danger = false
 	}: Props = $props();
 	let heading = $state<HTMLElement | null>(null);
@@ -49,14 +48,13 @@
 <AlertDialog.Root bind:open>
 	<!-- busy, it keeps the focus (never disabled under the finger) and does not open again -->
 	{#if label}<AlertDialog.Trigger
-		class={['btn', danger && 'danger', ghost && 'ghost']}
-		aria-label={ariaLabel}
-		{disabled}
-		{...inFlight(pending)}
-		onclick={(e: MouseEvent) => pending && e.preventDefault()}
-	>
-		{#if pending || icon}<Icon name={icon ?? 'loader-circle'} busy={pending} />{/if}{label}
-	</AlertDialog.Trigger>{/if}
+			class={['btn', danger && 'danger', ghost && 'ghost']}
+			aria-label={ariaLabel}
+			{...pending(busy)}
+			onclick={(e: MouseEvent) => busy && e.preventDefault()}
+		>
+			{#if busy || icon}<Icon name={icon ?? 'loader-circle'} {busy} />{/if}{label}
+		</AlertDialog.Trigger>{/if}
 	<AlertDialog.Portal>
 		<AlertDialog.Overlay class="overlay" />
 		<AlertDialog.Content
@@ -76,8 +74,8 @@
 						onclick={() => {
 							open = false;
 							onconfirm();
-						}}
-					>{action}</AlertDialog.Action>
+						}}>{action}</AlertDialog.Action
+					>
 				</div>
 			</div>
 		</AlertDialog.Content>
@@ -85,6 +83,10 @@
 </AlertDialog.Root>
 
 <style>
-	:global(.modal.confirm) { width: min(420px, calc(100vw - 32px)); }
-	:global(.modal.confirm .btn) { min-height: var(--control-h); }
+	:global(.modal.confirm) {
+		width: min(var(--confirm-w), calc(100vw - var(--s-6)));
+	}
+	:global(.modal.confirm .btn) {
+		min-height: var(--control-h);
+	}
 </style>

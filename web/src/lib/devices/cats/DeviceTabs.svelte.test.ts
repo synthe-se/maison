@@ -6,7 +6,11 @@ import { text } from '#lib/test/snippet.ts';
 import DeviceTabs from './DeviceTabs.svelte';
 
 describe('DeviceTabs', () => {
-	const props = () => ({ other: { label: 'Planning', icon: 'calendar' as const }, controls: text('Les commandes'), second: text('Le planning') });
+	const props = () => ({
+		other: { label: 'Planning', icon: 'calendar' as const },
+		controls: text('Les commandes'),
+		second: text('Le planning')
+	});
 
 	it('opens on the controls', async () => {
 		await render(DeviceTabs, props());

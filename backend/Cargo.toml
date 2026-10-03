@@ -11,7 +11,7 @@ bluetooth = ["dep:btleplug"]
 live-runtime-tests = []
 
 [dependencies]
-# passkeys (docs/dependances/passkeys.md): usernameless sign-in needs `conditional-ui`
+# passkeys (docs/passkeys.md): usernameless sign-in needs `conditional-ui`
 webauthn-rs = { version = "0.5.5", default-features = false, features = ["conditional-ui"] }
 webauthn-rs-proto = "0.5.5"   # the same version webauthn-rs pins; for the options it builds
 # webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the Pi

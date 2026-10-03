@@ -27,17 +27,16 @@ use std::{
 
 use axum::{body::Bytes, http::StatusCode};
 use futures::{Stream, StreamExt};
-use rsa::RsaPrivateKey;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     AppState,
-    adb::{self, AdbDevice},
+    adb::{self, AdbDevice, AdbKey},
     atvremote::{Identity, Pairing, Session},
-    broadlink::device_host,
+    net::device_host,
     error::AppError,
-    json_config::JsonConfig,
+    json_config::{Checked, JsonConfig},
     store,
     util::non_blank,
 };
@@ -80,66 +79,42 @@ pub enum AndroidKey {
 }
 
 impl AndroidKey {
-    /// Numeric Android keycode, which is what the Remote v2 protocol carries
-    /// (ADB takes the symbolic name instead — same key, two spellings).
-    fn android_keycode(self) -> i64 {
+    /// The key's two spellings, said once: the symbolic name ADB's `input keyevent`
+    /// takes, and the numeric Android keycode the Remote v2 protocol carries. One table,
+    /// so a button cannot behave differently depending on whether the box is paired.
+    fn codes(self) -> (&'static str, i64) {
         match self {
-            Self::Home => 3,
-            Self::Back => 4,
-            Self::Up => 19,
-            Self::Down => 20,
-            Self::Left => 21,
-            Self::Right => 22,
-            Self::Ok => 23,
-            Self::VolumeUp => 24,
-            Self::VolumeDown => 25,
-            Self::Power => 26,
-            Self::Menu => 82,
-            Self::Search => 84,
-            Self::PlayPause => 85,
-            Self::Stop => 86,
-            Self::Next => 87,
-            Self::Previous => 88,
-            Self::Rewind => 89,
-            Self::FastForward => 90,
-            Self::Play => 126,
-            Self::Pause => 127,
-            Self::Mute => 164,
-            Self::ChannelUp => 166,
-            Self::ChannelDown => 167,
-            Self::Sleep => 223,
-            Self::Wakeup => 224,
+            Self::Home => ("KEYCODE_HOME", 3),
+            Self::Back => ("KEYCODE_BACK", 4),
+            Self::Up => ("KEYCODE_DPAD_UP", 19),
+            Self::Down => ("KEYCODE_DPAD_DOWN", 20),
+            Self::Left => ("KEYCODE_DPAD_LEFT", 21),
+            Self::Right => ("KEYCODE_DPAD_RIGHT", 22),
+            Self::Ok => ("KEYCODE_DPAD_CENTER", 23),
+            Self::VolumeUp => ("KEYCODE_VOLUME_UP", 24),
+            Self::VolumeDown => ("KEYCODE_VOLUME_DOWN", 25),
+            Self::Power => ("KEYCODE_POWER", 26),
+            Self::Menu => ("KEYCODE_MENU", 82),
+            Self::Search => ("KEYCODE_SEARCH", 84),
+            Self::PlayPause => ("KEYCODE_MEDIA_PLAY_PAUSE", 85),
+            Self::Stop => ("KEYCODE_MEDIA_STOP", 86),
+            Self::Next => ("KEYCODE_MEDIA_NEXT", 87),
+            Self::Previous => ("KEYCODE_MEDIA_PREVIOUS", 88),
+            Self::Rewind => ("KEYCODE_MEDIA_REWIND", 89),
+            Self::FastForward => ("KEYCODE_MEDIA_FAST_FORWARD", 90),
+            Self::Play => ("KEYCODE_MEDIA_PLAY", 126),
+            Self::Pause => ("KEYCODE_MEDIA_PAUSE", 127),
+            Self::Mute => ("KEYCODE_VOLUME_MUTE", 164),
+            Self::ChannelUp => ("KEYCODE_CHANNEL_UP", 166),
+            Self::ChannelDown => ("KEYCODE_CHANNEL_DOWN", 167),
+            Self::Sleep => ("KEYCODE_SLEEP", 223),
+            Self::Wakeup => ("KEYCODE_WAKEUP", 224),
         }
     }
 
-    fn keycode(self) -> &'static str {
-        match self {
-            Self::Up => "KEYCODE_DPAD_UP",
-            Self::Down => "KEYCODE_DPAD_DOWN",
-            Self::Left => "KEYCODE_DPAD_LEFT",
-            Self::Right => "KEYCODE_DPAD_RIGHT",
-            Self::Ok => "KEYCODE_DPAD_CENTER",
-            Self::Back => "KEYCODE_BACK",
-            Self::Home => "KEYCODE_HOME",
-            Self::Menu => "KEYCODE_MENU",
-            Self::Search => "KEYCODE_SEARCH",
-            Self::VolumeUp => "KEYCODE_VOLUME_UP",
-            Self::VolumeDown => "KEYCODE_VOLUME_DOWN",
-            Self::Mute => "KEYCODE_VOLUME_MUTE",
-            Self::PlayPause => "KEYCODE_MEDIA_PLAY_PAUSE",
-            Self::Play => "KEYCODE_MEDIA_PLAY",
-            Self::Pause => "KEYCODE_MEDIA_PAUSE",
-            Self::Stop => "KEYCODE_MEDIA_STOP",
-            Self::Next => "KEYCODE_MEDIA_NEXT",
-            Self::Previous => "KEYCODE_MEDIA_PREVIOUS",
-            Self::Rewind => "KEYCODE_MEDIA_REWIND",
-            Self::FastForward => "KEYCODE_MEDIA_FAST_FORWARD",
-            Self::ChannelUp => "KEYCODE_CHANNEL_UP",
-            Self::ChannelDown => "KEYCODE_CHANNEL_DOWN",
-            Self::Power => "KEYCODE_POWER",
-            Self::Sleep => "KEYCODE_SLEEP",
-            Self::Wakeup => "KEYCODE_WAKEUP",
-        }
+    /// The ADB command that presses it.
+    fn adb_command(self) -> String {
+        format!("input keyevent {}", self.codes().0)
     }
 }
 
@@ -151,9 +126,22 @@ pub struct AndroidTvConfig {
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// Packages surfaced as shortcuts in the dashboard.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub favourite_apps: Vec<AndroidApp>,
+    /// Packages surfaced as shortcuts in the dashboard. Written `favoriteApps`; the British
+    /// spelling older files kept still loads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "favouriteApps")]
+    pub favorite_apps: Vec<AndroidApp>,
+}
+
+/// The host must be a LAN device address; package names are checked since they reach the
+/// shell.
+impl Checked for AndroidTvConfig {
+    fn checked(mut self) -> Result<Self, AppError> {
+        self.host = non_blank(self.host).map(|host| device_host(&host)).transpose()?;
+        for app in &self.favorite_apps {
+            validate_package(&app.package)?;
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,7 +172,7 @@ pub struct AndroidTvManager {
     key_path: PathBuf,
     identity_path: PathBuf,
     config: Arc<JsonConfig<AndroidTvConfig>>,
-    key: Arc<Mutex<Option<RsaPrivateKey>>>,
+    key: Arc<Mutex<Option<AdbKey>>>,
     /// Reused across calls; also serializes them, which suits a remote
     /// control and keeps a single ADB stream open at a time.
     device: Arc<Mutex<Option<AdbDevice>>>,
@@ -223,13 +211,7 @@ impl AndroidTvManager {
         self.config.get().await
     }
 
-    /// The host must be a LAN device address; package names are checked since they
-    /// reach the shell.
-    pub async fn set_config(&self, mut config: AndroidTvConfig) -> Result<AndroidTvConfig, AppError> {
-        config.host = non_blank(config.host).map(|host| device_host(&host)).transpose()?;
-        for app in &config.favourite_apps {
-            validate_package(&app.package)?;
-        }
+    pub async fn set_config(&self, config: AndroidTvConfig) -> Result<AndroidTvConfig, AppError> {
         let config = self.config.set(config).await?;
         // The address may have changed: nothing may keep talking to the old box.
         *self.device.lock().await = None;
@@ -239,11 +221,9 @@ impl AndroidTvManager {
         Ok(config)
     }
 
-    /// The box's host, checked again on use (a hand-edited file never went through
-    /// `set_config`).
+    /// The box's host, checked where it came in (`Checked`).
     async fn host(&self) -> Result<String, AppError> {
-        let host = self.config().await.host.ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))?;
-        device_host(&host)
+        self.config().await.host.ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))
     }
 
     async fn address(&self) -> Result<String, AppError> {
@@ -262,7 +242,7 @@ impl AndroidTvManager {
 
     /// Loads the signing key, generating and persisting one on first use.
     /// Generation is CPU-bound and slow on the Pi, hence `spawn_blocking`.
-    async fn signing_key(&self) -> Result<RsaPrivateKey, AppError> {
+    async fn signing_key(&self) -> Result<AdbKey, AppError> {
         let mut slot = self.key.lock().await;
         if let Some(key) = slot.as_ref() {
             return Ok(key.clone());
@@ -285,42 +265,29 @@ impl AndroidTvManager {
         })
         .await??;
 
+        let key = AdbKey::new(key);
         *slot = Some(key.clone());
         Ok(key)
     }
 
-    /// Runs a shell command, reconnecting once if the kept connection died.
+    /// Runs a shell command on the kept connection, reconnecting once if it died.
     async fn shell(&self, command: &str) -> Result<String, AppError> {
         let address = self.address().await?;
         let key = self.signing_key().await?;
         let mut slot = self.device.lock().await;
-
-        if let Some(device) = slot.as_mut() {
-            match device.shell(command).await {
-                Ok(output) => return Ok(output),
-                // A stale connection is the common case (the box slept, or
-                // adbd restarted); fall through and dial again.
-                Err(error) => {
-                    tracing::debug!(%error, "ADB connection went stale, reconnecting");
-                    *slot = None;
-                }
-            }
-        }
-
-        let mut device = AdbDevice::connect(&address, &key).await?;
-        let output = device.shell(command).await?;
-        *slot = Some(device);
-        Ok(output)
+        shell_on(&mut slot, &address, &key, command).await
     }
 
-    /// Sends a key, over Remote v2 when the box is paired.
-    ///
-    /// The fallback matters: Remote v2 is unavailable until someone has paired
-    /// the host, and ADB keeps working meanwhile — a slower remote beats no
-    /// remote.
-    pub async fn send_key(&self, key: AndroidKey) -> Result<(), AppError> {
+    /// Over Remote v2 when the box is paired, else (or when the session fails) the same
+    /// thing over ADB. The fallback matters: Remote v2 is unavailable until someone has
+    /// paired the host, and ADB keeps working meanwhile — a slower remote beats no remote.
+    async fn remote_or_adb<F, Fut>(&self, remote: F, adb_command: &str) -> Result<(), AppError>
+    where
+        F: FnOnce(Session) -> Fut,
+        Fut: std::future::Future<Output = Result<(), AppError>>,
+    {
         if let Some(session) = self.remote_session().await {
-            match session.key(key.android_keycode()).await {
+            match remote(session).await {
                 Ok(()) => return Ok(()),
                 Err(error) => {
                     tracing::debug!(%error, "remote session failed, falling back to ADB");
@@ -328,17 +295,19 @@ impl AndroidTvManager {
                 }
             }
         }
-        self.shell(&format!("input keyevent {}", key.keycode()))
-            .await
-            .map(|_| ())
+        self.shell(adb_command).await.map(|_| ())
+    }
+
+    /// Sends a key, over Remote v2 when the box is paired.
+    pub async fn send_key(&self, key: AndroidKey) -> Result<(), AppError> {
+        let (_, number) = key.codes();
+        self.remote_or_adb(|session| async move { session.key(number).await }, &key.adb_command()).await
     }
 
     /// Sends a key over ADB, bypassing the Remote v2 preference. Exists so
     /// the live benchmark can compare the two channels directly.
     pub async fn adb_key_for_benchmark(&self, key: AndroidKey) -> Result<(), AppError> {
-        self.shell(&format!("input keyevent {}", key.keycode()))
-            .await
-            .map(|_| ())
+        self.shell(&key.adb_command()).await.map(|_| ())
     }
 
     /// The live Remote v2 session, reconnecting if it dropped. Returns `None`
@@ -448,20 +417,11 @@ impl AndroidTvManager {
 
     pub async fn launch_app(&self, package: &str) -> Result<(), AppError> {
         validate_package(package)?;
-        if let Some(session) = self.remote_session().await {
-            match session.launch(package).await {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    tracing::debug!(%error, "remote launch failed, falling back to ADB");
-                    *self.remote.lock().await = None;
-                }
-            }
-        }
-        self.shell(&format!(
-            "monkey -p {package} -c android.intent.category.LAUNCHER 1"
-        ))
+        self.remote_or_adb(
+            |session| async move { session.launch(package).await },
+            &format!("monkey -p {package} -c android.intent.category.LAUNCHER 1"),
+        )
         .await
-        .map(|_| ())
     }
 
     /// Installed launchable packages, for the app picker.
@@ -535,21 +495,12 @@ impl AndroidTvManager {
         let mut transfer = AdbDevice::connect(&address, &key).await?;
         let whole = futures::stream::iter([Ok(Bytes::from(head))]).chain(apk);
         transfer.push_stream(REMOTE_PATH, whole, 0o644).await?;
+        drop(transfer);
 
-        let mut slot = self.device.lock().await;
-
-        let device = match slot.as_mut() {
-            Some(device) => device,
-            None => {
-                *slot = Some(AdbDevice::connect(&address, &key).await?);
-                slot.as_mut().expect("just connected")
-            }
-        };
-
-        let output = device
-            .shell(&format!("pm install -r {REMOTE_PATH}"))
-            .await?;
-        let _ = device.shell(&format!("rm -f {REMOTE_PATH}")).await;
+        let output = self.shell(&format!("pm install -r {REMOTE_PATH}")).await;
+        // cleaned up whatever the install said: the box's storage is small
+        cleaned_up(self.shell(&format!("rm -f {REMOTE_PATH}")).await);
+        let output = output?;
 
         if output.contains("Success") {
             Ok(output.trim().to_string())
@@ -563,6 +514,45 @@ impl AndroidTvManager {
 
     pub async fn one_touch_play(&self) -> Result<(), AppError> {
         self.shell("cmd hdmi_control onetouchplay").await.map(|_| ())
+    }
+}
+
+/// Runs `command` on the kept connection, dialling again once if it went stale (the box
+/// slept, or adbd restarted): the common case, not a fault.
+async fn shell_on(
+    slot: &mut Option<AdbDevice>,
+    address: &str,
+    key: &AdbKey,
+    command: &str,
+) -> Result<String, AppError> {
+    if let Some(device) = slot.as_mut() {
+        match device.shell(command).await {
+            Ok(output) => return Ok(output),
+            Err(error) => {
+                tracing::debug!(%error, "ADB connection went stale, reconnecting");
+                *slot = None;
+            }
+        }
+    }
+    let mut device = AdbDevice::connect(address, key).await?;
+    let output = device.shell(command).await?;
+    *slot = Some(device);
+    Ok(output)
+}
+
+/// Whether the uploaded APK was removed from the box. A leftover costs storage, not the
+/// install, so it is logged rather than returned (`rm -f` prints nothing when it works).
+fn cleaned_up(rm: Result<String, AppError>) -> bool {
+    match rm {
+        Ok(output) if output.trim().is_empty() => true,
+        Ok(output) => {
+            tracing::warn!(output = output.trim(), "the uploaded APK stayed on the box");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not remove the uploaded APK from the box");
+            false
+        }
     }
 }
 
@@ -625,16 +615,52 @@ mod tests {
             (AndroidKey::Wakeup, "KEYCODE_WAKEUP", 224),
         ];
         for (key, name, code) in pairs {
-            assert_eq!(key.keycode(), name, "{key:?} name");
-            assert_eq!(key.android_keycode(), code, "{key:?} number");
+            assert_eq!(key.codes(), (name, code), "{key:?}");
+        }
+        assert_eq!(AndroidKey::Ok.adb_command(), "input keyevent KEYCODE_DPAD_CENTER");
+    }
+
+    /// The wire names the API takes map onto the table: every key has both spellings,
+    /// and no two keys share one.
+    #[test]
+    fn every_key_has_its_own_codes() {
+        let names = [
+            "up", "down", "left", "right", "ok", "back", "home", "menu", "search", "volume_up",
+            "volume_down", "mute", "play_pause", "play", "pause", "stop", "next", "previous",
+            "rewind", "fast_forward", "channel_up", "channel_down", "power", "sleep", "wakeup",
+        ];
+        let codes: Vec<_> = names
+            .iter()
+            .map(|name| serde_json::from_value::<AndroidKey>(serde_json::json!(name)).expect(name).codes())
+            .collect();
+        for (index, (name, number)) in codes.iter().enumerate() {
+            assert!(name.starts_with("KEYCODE_"));
+            assert!(codes[index + 1..].iter().all(|(n, c)| n != name && c != number), "{name} twice");
         }
     }
 
     #[test]
-    fn keycodes_match_android_names() {
-        assert_eq!(AndroidKey::Ok.keycode(), "KEYCODE_DPAD_CENTER");
-        assert_eq!(AndroidKey::PlayPause.keycode(), "KEYCODE_MEDIA_PLAY_PAUSE");
-        assert_eq!(AndroidKey::Mute.keycode(), "KEYCODE_VOLUME_MUTE");
+    fn a_failed_cleanup_is_reported() {
+        assert!(cleaned_up(Ok(String::new())));
+        assert!(!cleaned_up(Ok("rm: /data/local/tmp/maison-install.apk: Read-only file system".into())));
+        assert!(!cleaned_up(Err(AppError::service_unavailable("Android TV box unreachable"))));
+    }
+
+    /// A kept connection that died is dialled again once, transparently; a box that is
+    /// really gone is an error.
+    #[tokio::test]
+    async fn a_stale_connection_is_dialled_again() {
+        let (address, connections) = adb::fake::serve(1, |command| vec![format!("ran {command}").into_bytes()]).await;
+        let key = AdbKey::new(adb::generate_key().expect("key"));
+        let mut slot = None;
+        assert_eq!(shell_on(&mut slot, &address, &key, "first").await.expect("first"), "ran first");
+        // the fake hangs up after one command: the kept connection is now stale
+        assert_eq!(shell_on(&mut slot, &address, &key, "second").await.expect("second"), "ran second");
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let mut nowhere = None;
+        assert!(shell_on(&mut nowhere, "127.0.0.1:1", &key, "x").await.is_err());
+        assert!(nowhere.is_none());
     }
 
     /// Package names are interpolated into a shell command, so anything that
@@ -757,7 +783,7 @@ mod tests {
         std::fs::write(dir.path().join("adb-key"), b"torn").unwrap();
         let key = manager.signing_key().await.expect("a new key");
         let reread = new_manager(&dir).signing_key().await.expect("kept");
-        assert_eq!(key, reread);
+        assert_eq!(key.private_key(), reread.private_key());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -777,7 +803,7 @@ mod tests {
             .set_config(AndroidTvConfig {
                 host: Some("192.168.1.153".to_string()),
                 port: None,
-                favourite_apps: vec![AndroidApp {
+                favorite_apps: vec![AndroidApp {
                     package: "org.smarttube.beta".to_string(),
                     label: "SmartTube".to_string(),
                 }],
@@ -794,18 +820,27 @@ mod tests {
             .config()
             .await;
         assert_eq!(reloaded.host.as_deref(), Some("192.168.1.153"));
-        assert_eq!(reloaded.favourite_apps.len(), 1);
+        assert_eq!(reloaded.favorite_apps.len(), 1);
 
         let rejected = manager
             .set_config(AndroidTvConfig {
                 host: Some("192.168.1.153".to_string()),
                 port: None,
-                favourite_apps: vec![AndroidApp {
+                favorite_apps: vec![AndroidApp {
                     package: "evil; reboot".to_string(),
                     label: "nope".to_string(),
                 }],
             })
             .await;
         assert!(rejected.is_err());
+    }
+
+    #[test]
+    fn favorite_apps_keep_loading_under_their_old_spelling() {
+        let old = r#"{"host":"192.168.1.153","favouriteApps":[{"package":"org.smarttube.beta","label":"SmartTube"}]}"#;
+        let config: AndroidTvConfig = serde_json::from_str(old).expect("old file");
+        assert_eq!(config.favorite_apps.len(), 1);
+        let written = serde_json::to_string(&config).expect("written");
+        assert!(written.contains("\"favoriteApps\"") && !written.contains("favourite"), "{written}");
     }
 }

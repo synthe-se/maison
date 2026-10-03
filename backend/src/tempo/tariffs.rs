@@ -9,21 +9,24 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::AppError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// One colour's prices: off-peak (« heures creuses », HC) and peak (« heures pleines », HP).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Price {
-    pub hc: f64,
-    pub hp: f64,
+    pub off_peak: f64,
+    pub peak: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tariffs {
     pub blue: Price,
     pub white: Price,
     pub red: Price,
     /// The yearly subscription, tax included (€).
     pub subscription: Option<f64>,
-    #[serde(rename = "dateDebut")]
-    pub date_debut: NaiveDate,
+    /// When these prices came into force.
+    pub starts_on: NaiveDate,
 }
 
 #[derive(Deserialize)]
@@ -86,14 +89,14 @@ pub fn parse(body: &str, today: NaiveDate) -> Result<Option<Tariffs>, AppError> 
     let page: Page = serde_json::from_str(body)?;
     let Some(row) = page.data.first() else { return Ok(None) };
     let ended = row.DATE_FIN.as_deref().and_then(|d| d.parse::<NaiveDate>().ok()).is_some_and(|end| end < today);
-    let price = |hc: Option<f64>, hp: Option<f64>| Some(Price { hc: hc?, hp: hp? });
+    let price = |off_peak: Option<f64>, peak: Option<f64>| Some(Price { off_peak: off_peak?, peak: peak? });
     let tariffs = (|| {
         Some(Tariffs {
             blue: price(row.PART_VARIABLE_HCBleu_TTC, row.PART_VARIABLE_HPBleu_TTC)?,
             white: price(row.PART_VARIABLE_HCBlanc_TTC, row.PART_VARIABLE_HPBlanc_TTC)?,
             red: price(row.PART_VARIABLE_HCRouge_TTC, row.PART_VARIABLE_HPRouge_TTC)?,
             subscription: row.PART_FIXE_TTC,
-            date_debut: start_date(&row.DATE_DEBUT)?,
+            starts_on: start_date(&row.DATE_DEBUT)?,
         })
     })();
     Ok(tariffs.filter(|_| !ended))
@@ -128,15 +131,15 @@ mod tests {
     #[test]
     fn august_2026_prices() {
         let t = parse(AUGUST_2026, day(2026, 10, 3)).unwrap().unwrap();
-        assert_eq!(t.date_debut, day(2026, 8, 1));
-        assert_eq!((t.blue.hc, t.blue.hp, t.white.hp, t.red.hp), (0.1356, 0.1654, 0.1921, 0.7295));
+        assert_eq!(t.starts_on, day(2026, 8, 1));
+        assert_eq!((t.blue.off_peak, t.blue.peak, t.white.peak, t.red.peak), (0.1356, 0.1654, 0.1921, 0.7295));
         assert_eq!(t.subscription, Some(189.9802924));
     }
 
     #[test]
     fn prices_as_text_or_over() {
         let text = AUGUST_2026.replace("0.7295", "\"0.7295\"");
-        assert_eq!(parse(&text, day(2026, 10, 3)).unwrap().unwrap().red.hp, 0.7295);
+        assert_eq!(parse(&text, day(2026, 10, 3)).unwrap().unwrap().red.peak, 0.7295);
         let over = AUGUST_2026.replace("\"DATE_FIN\":null", "\"DATE_FIN\":\"2026-09-30\"");
         assert_eq!(parse(&over, day(2026, 10, 3)).unwrap(), None);
         let missing = AUGUST_2026.replace("\"PART_VARIABLE_HPRouge_TTC\":0.7295", "\"PART_VARIABLE_HPRouge_TTC\":null");

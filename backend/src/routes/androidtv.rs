@@ -5,19 +5,19 @@ use axum::{
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::{
     AppState,
     androidtv::{self, AndroidKey, AndroidTvConfig, AndroidTvStatus},
     auth::AdminUser,
     error::AppError,
-    routes::SimpleResponse,
+    routes::{Answer, SimpleResponse},
 };
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StatusResponse {
-    success: bool,
+struct Status {
     config: AndroidTvConfig,
     status: AndroidTvStatus,
 }
@@ -40,24 +40,13 @@ struct LaunchRequest {
     package: String,
     /// Power the television on and route it to the box first — launching an
     /// app on a set that is off or on another input is rarely what is meant.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::util::default_true")]
     ensure_tv_on: bool,
 }
 
 /// 96 MB covers any sideloaded app worth the name while staying survivable
 /// on a 512 MB Pi.
 const APK_SIZE_LIMIT: usize = 96 * 1024 * 1024;
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppsResponse {
-    success: bool,
-    packages: Vec<String>,
-}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -78,9 +67,8 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
-    Json(StatusResponse {
-        success: true,
+async fn status(State(state): State<AppState>) -> Json<Answer<Status>> {
+    Answer::ok(Status {
         config: state.androidtv.config().await,
         status: state.androidtv.status().await,
     })
@@ -111,11 +99,8 @@ async fn launch(
     Ok(SimpleResponse::ok(format!("Launched {}", body.package)))
 }
 
-async fn apps(State(state): State<AppState>) -> Result<Json<AppsResponse>, AppError> {
-    Ok(Json(AppsResponse {
-        success: true,
-        packages: state.androidtv.apps().await?,
-    }))
+async fn apps(State(state): State<AppState>) -> Result<Json<Answer<Value>>, AppError> {
+    Ok(Answer::ok(json!({ "packages": state.androidtv.apps().await? })))
 }
 
 async fn wake(State(state): State<AppState>) -> Result<Json<SimpleResponse>, AppError> {

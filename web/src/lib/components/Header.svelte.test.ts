@@ -54,29 +54,29 @@ describe('Header', () => {
 		await expect.element(panel.getByRole('group', { name: m.theme_label() })).toBeVisible();
 	});
 
-	it('switches the language; the current one is pressed', async () => {
+	it('switches the language; the current one is checked (one choice of a group)', async () => {
 		switchLocale('fr');
 		await render(Header);
 		await screen.getByRole('button', { name: m.session_menu({ name: 'léonard' }) }).click();
-		await expect.element(screen.getByRole('button', { name: localeName('fr') })).toHaveAttribute('aria-pressed', 'true');
-		const english = screen.getByRole('button', { name: localeName('en') });
-		await expect.element(english).toHaveAttribute('aria-pressed', 'false');
+		await expect.element(screen.getByRole('radio', { name: localeName('fr') })).toHaveAttribute('aria-checked', 'true');
+		const english = screen.getByRole('radio', { name: localeName('en') });
+		await expect.element(english).toHaveAttribute('aria-checked', 'false');
 		await english.click();
 		expect(locale()).toBe('en');
 		expect(document.documentElement.lang).toBe('en');
-		await expect.element(english).toHaveAttribute('aria-pressed', 'true');
+		await expect.element(english).toHaveAttribute('aria-checked', 'true');
 		await expect.element(screen.getByRole('group', { name: 'Language' })).toBeVisible();
 	});
 
-	it('switches the theme; the current one is pressed', async () => {
+	it('switches the theme; the current one is checked', async () => {
 		await render(Header);
 		await screen.getByRole('button', { name: m.session_menu({ name: 'léonard' }) }).click();
-		await expect.element(screen.getByRole('button', { name: m.theme_system() })).toHaveAttribute('aria-pressed', 'true');
-		const dark = screen.getByRole('button', { name: m.theme_dark() });
+		await expect.element(screen.getByRole('radio', { name: m.theme_system() })).toHaveAttribute('aria-checked', 'true');
+		const dark = screen.getByRole('radio', { name: m.theme_dark() });
 		await dark.click();
 		expect(ui.theme).toBe('dark');
-		await expect.element(dark).toHaveAttribute('aria-pressed', 'true');
-		await expect.element(screen.getByRole('button', { name: m.theme_system() })).toHaveAttribute('aria-pressed', 'false');
+		await expect.element(dark).toHaveAttribute('aria-checked', 'true');
+		await expect.element(screen.getByRole('radio', { name: m.theme_system() })).toHaveAttribute('aria-checked', 'false');
 	});
 
 	it('leads to my account (my passkeys), and the panel closes on the way', async () => {

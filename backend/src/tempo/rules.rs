@@ -50,6 +50,24 @@ impl Color {
     pub fn index(self) -> usize {
         self as usize
     }
+
+    /// Its LED colour, as RGB hex (the rabbit's belly).
+    pub fn led_hex(self) -> &'static str {
+        match self {
+            Color::Blue => "0000ff",
+            Color::White => "ffffff",
+            Color::Red => "ff0000",
+        }
+    }
+
+    /// The rabbit's ear position for it (0 to 16: down, level, up).
+    pub fn ear_position(self) -> u8 {
+        match self {
+            Color::Blue => 0,
+            Color::White => 8,
+            Color::Red => 16,
+        }
+    }
 }
 
 /// A season's colours by day, in date order.

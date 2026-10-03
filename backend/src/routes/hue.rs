@@ -3,7 +3,6 @@ use axum::{
     extract::{Path, State},
     routing::post,
 };
-use serde::Deserialize;
 
 use crate::{
     AppState,
@@ -13,7 +12,7 @@ use crate::{
     lamps::{HueLampView, LampState, LampStats},
     routes::{
         SimpleResponse,
-        lamps::{self, ActionResponse, LampBackend},
+        lamps::{self, LampBackend},
     },
 };
 
@@ -47,23 +46,11 @@ impl LampBackend for HueManager {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct StateBody {
-    #[serde(rename = "isOn")]
-    is_on: bool,
-    brightness: Option<u8>,
-}
-
-/// The shared lamp routes, plus Bluetooth's own: scanning and blacklisting (admin),
-/// connecting, and power with brightness in one write.
+/// The shared lamp routes, plus Bluetooth's own (admin): scanning and blacklisting.
+/// Lamps connect by themselves when a scan sees them: there is no connect route.
 pub fn router() -> Router<AppState> {
     lamps::router::<HueManager>()
         .route("/scan", post(scan))
-        .route("/connect", post(connect_all))
-        .route("/disconnect", post(disconnect_all))
-        .route("/{lamp_id}/connect", post(connect_lamp))
-        .route("/{lamp_id}/disconnect", post(disconnect_lamp))
-        .route("/{lamp_id}/state", post(set_state))
         .route("/{lamp_id}/blacklist", post(blacklist_lamp))
 }
 
@@ -72,52 +59,14 @@ async fn scan(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<S
     Ok(SimpleResponse::ok("Hue lamp scan started"))
 }
 
-async fn connect_all(State(state): State<AppState>) -> Json<SimpleResponse> {
-    state.hue.connect_all().await;
-    SimpleResponse::ok("Hue lamp connections started")
-}
-
-async fn disconnect_all(State(state): State<AppState>) -> Json<SimpleResponse> {
-    state.hue.disconnect_all().await;
-    SimpleResponse::ok("Hue lamps disconnected")
-}
-
-async fn connect_lamp(
-    State(state): State<AppState>,
-    Path(lamp_id): Path<String>,
-) -> Result<Json<SimpleResponse>, AppError> {
-    let connected = state.hue.connect_lamp(&lamp_id).await?;
-    Ok(Json(SimpleResponse {
-        success: connected,
-        message: if connected { "Hue lamp connected" } else { "Hue lamp connection unavailable" }.to_string(),
-    }))
-}
-
-async fn disconnect_lamp(
-    State(state): State<AppState>,
-    Path(lamp_id): Path<String>,
-) -> Result<Json<SimpleResponse>, AppError> {
-    state.hue.disconnect_lamp(&lamp_id).await?;
-    Ok(SimpleResponse::ok("Hue lamp disconnected"))
-}
-
-async fn set_state(
-    State(state): State<AppState>,
-    Path(lamp_id): Path<String>,
-    Json(body): Json<StateBody>,
-) -> Result<Json<ActionResponse>, AppError> {
-    let lamp_state = state.hue.set_lamp_state(&lamp_id, body.is_on, body.brightness).await?;
-    Ok(ActionResponse::ok(lamp_state, "Hue lamp state updated".to_string()))
-}
-
 async fn blacklist_lamp(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
     _admin: AdminUser,
 ) -> Result<Json<SimpleResponse>, AppError> {
-    let success = state.hue.blacklist_lamp(&lamp_id).await?;
-    Ok(Json(SimpleResponse {
-        success,
-        message: if success { "Hue lamp blacklisted" } else { "Hue lamp not found" }.to_string(),
-    }))
+    if state.hue.blacklist_lamp(&lamp_id).await? {
+        Ok(SimpleResponse::ok("Hue lamp blacklisted"))
+    } else {
+        Err(AppError::not_found("Hue lamp not found"))
+    }
 }

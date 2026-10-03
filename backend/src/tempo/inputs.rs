@@ -9,12 +9,11 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
-use chrono_tz::Europe::Paris;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::forecast::{effective_temperature, wind_power, DayWeather, Levels, Model, PastDay, Place};
-use crate::error::AppError;
+use super::forecast::{effective_temperature, wind_power, DayWeather, Levels, Model, PastDay, WeatherPoint};
+use crate::{error::AppError, util::HOUSE_TZ};
 
 /// The weather model the forecast was fitted and replayed with.
 pub const WEATHER_MODEL: &str = "ecmwf_ifs025";
@@ -80,7 +79,7 @@ fn daily_means(series: &[Series], day_of: fn(NaiveDateTime) -> NaiveDate, f: fn(
 }
 
 /// The cities' mean temperature per calendar day, weighted by population.
-pub fn daily_temperature(series: &[Series], cities: &[Place]) -> BTreeMap<NaiveDate, f64> {
+pub fn daily_temperature(series: &[Series], cities: &[WeatherPoint]) -> BTreeMap<NaiveDate, f64> {
     let total: f64 = cities.iter().map(|c| c.weight).sum();
     daily_means(series, |t| t.date(), |t| t)
         .into_iter()
@@ -97,9 +96,9 @@ pub fn daily_wind_power(series: &[Series]) -> BTreeMap<NaiveDate, f64> {
 }
 
 /// `latitude=…&longitude=…` for places.
-pub fn coordinates(places: &[Place]) -> [(&'static str, String); 2] {
-    let join = |f: fn(&Place) -> f64| places.iter().map(|p| f(p).to_string()).collect::<Vec<_>>().join(",");
-    [("latitude", join(|p| p.latitude)), ("longitude", join(|p| p.longitude))]
+pub fn coordinates(places: &[WeatherPoint]) -> [(&'static str, String); 2] {
+    let join = |f: fn(&WeatherPoint) -> f64| places.iter().map(|p| f(p).to_string()).collect::<Vec<_>>().join(",");
+    [("latitude", join(|p| p.place.latitude)), ("longitude", join(|p| p.place.longitude))]
 }
 
 /// The weather around the forecast: past days' and coming days' temperatures, coming days'
@@ -127,13 +126,13 @@ impl Weather {
 /// Today's forecast from Open-Meteo: 3 past days (the temperature lags), 9 ahead (J+7 ends
 /// at 06:00 on J+8).
 pub async fn fetch_weather(client: &reqwest::Client, url: &str, model: &Model, today: NaiveDate) -> Result<Weather, AppError> {
-    let ask = |places: &[Place], key: &'static str| {
+    let ask = |places: &[WeatherPoint], key: &'static str| {
         let mut query = coordinates(places).to_vec();
         query.extend([
             ("hourly", key.to_string()),
             ("past_days", "3".into()),
             ("forecast_days", "9".into()),
-            ("timezone", "Europe/Paris".into()),
+            ("timezone", HOUSE_TZ.name().into()),
             ("models", WEATHER_MODEL.into()),
         ]);
         async move {
@@ -168,7 +167,7 @@ pub fn tempo_days(rows: &[OdreRow]) -> BTreeMap<NaiveDate, [f64; 3]> {
     let mut days: BTreeMap<NaiveDate, ([f64; 3], usize, u32)> = BTreeMap::new();
     for row in rows {
         let (Some(c), Some(w), Some(s)) = (row.consommation, row.eolien, row.solaire) else { continue };
-        let local = row.date_heure.with_timezone(&Paris).naive_local();
+        let local = row.date_heure.with_timezone(&HOUSE_TZ).naive_local();
         let day = days.entry(tempo_day_of(local)).or_default();
         day.0[0] += c;
         day.0[1] += w;
@@ -185,7 +184,7 @@ pub fn tempo_days(rows: &[OdreRow]) -> BTreeMap<NaiveDate, [f64; 3]> {
 /// 06:00 in Paris on `day`, in UTC (where ODRE's rows start a Tempo day).
 pub fn tempo_day_start(day: NaiveDate) -> DateTime<chrono::Utc> {
     let six = day.and_time(NaiveTime::from_hms_opt(6, 0, 0).expect("06:00"));
-    Paris
+    HOUSE_TZ
         .from_local_datetime(&six)
         .earliest()
         .expect("06:00 exists in Paris")
@@ -257,8 +256,8 @@ mod tests {
     use crate::tempo::rules::tests::day;
     use serde_json::json;
 
-    fn place(weight: f64) -> Place {
-        Place { name: "x".into(), latitude: 48.85, longitude: 2.35, weight }
+    fn place(weight: f64) -> WeatherPoint {
+        WeatherPoint::new("x", 48.85, 2.35, weight)
     }
 
     fn hours(from: &str, values: &[f64]) -> Value {

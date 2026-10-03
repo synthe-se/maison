@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { forgetAll, live, refresh } from './live.svelte.ts';
+import { time } from './clock.svelte.ts';
+import { live, refresh, source, sources, STALE_CADENCES, type Every, type Source } from './live.svelte.ts';
 
 /** Runs `live()` the way a component would, and returns the value plus the unmount. */
-function mount<T>(key: string, fetch: () => Promise<T>, every?: number | ((d: T | undefined) => number)) {
-	let entry!: ReturnType<typeof live<T>>;
+function mountSource<T, A = never>(src: Source<T, A>) {
+	let entry!: ReturnType<typeof live<T, A>>;
 	const destroy = $effect.root(() => {
-		entry = live(key, fetch, every);
+		entry = live(src);
 	});
 	flushSync();
 	return { entry, destroy };
 }
+const mount = <T>(key: string, fetch: () => Promise<T>, every?: Every<T>) => mountSource(source(key, fetch, every));
 
 const settle = () => vi.advanceTimersByTimeAsync(0);
 
@@ -18,7 +20,6 @@ describe('live', () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => {
 		vi.useRealTimers();
-		forgetAll();
 	});
 
 	it('loads on mount and exposes the data', async () => {
@@ -141,5 +142,81 @@ describe('live', () => {
 		expect(plug).toHaveBeenCalledOnce();
 		a.destroy();
 		b.destroy();
+	});
+
+	it('one fetch per key: declaring a key again with another fetch is refused (in development)', () => {
+		const a = mount('dup', async () => 1);
+		expect(() => mount('dup', async () => 2)).toThrow(/dup/);
+		a.destroy();
+	});
+
+	it('a family of sources gives back one source per key, so every view asks the same way', () => {
+		const plug = sources((id: string) => source(`plug:${id}`, async () => id));
+		expect(plug('a')).toBe(plug('a'));
+		expect(plug('a')).not.toBe(plug('b'));
+	});
+
+	it('says a value is old: its last ask failed, or no answer for STALE_CADENCES polls', async () => {
+		let fail = false;
+		const { entry, destroy } = mount(
+			'old',
+			async () => {
+				if (fail) throw new Error('down');
+				return 1;
+			},
+			1_000
+		);
+		await settle();
+		expect(entry.stale).toBe(false);
+		fail = true;
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(entry.stale).toBe(true);
+		expect(entry.data).toBe(1);
+		fail = false;
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(entry.stale).toBe(false);
+		// the polls stopped (a hidden tab, a frozen timer): old once the clock is past them
+		time.now = new Date(entry.at + (STALE_CADENCES + 1) * 1_000);
+		expect(entry.stale).toBe(true);
+		time.now = new Date();
+		destroy();
+	});
+
+	it('update() changes part of what is known; nothing known, nothing to change', async () => {
+		const { entry, destroy } = mount('u', async () => ({ a: 1, b: 2 }));
+		entry.update((d) => ({ ...d, b: 3 }));
+		expect(entry.data).toBeUndefined();
+		await settle();
+		entry.update((d) => ({ ...d, b: 3 }));
+		expect(entry.data).toEqual({ a: 1, b: 3 });
+		destroy();
+	});
+
+	it('refresh(arg) is an ask of its own (a forced scan): its argument reaches the fetch, and `since` starts again', async () => {
+		const fetch = vi.fn(async (force?: boolean) => (force ? 'scan' : 'cache'));
+		const { entry, destroy } = mountSource(source('scan', fetch));
+		await settle();
+		const started = entry.since;
+		await vi.advanceTimersByTimeAsync(10);
+		await entry.refresh(true);
+		expect(fetch).toHaveBeenLastCalledWith(true);
+		expect(entry.data).toBe('scan');
+		expect(entry.since).toBeGreaterThan(started);
+		destroy();
+	});
+
+	it('the cadence may stop once a search has gone on long enough (`since`)', async () => {
+		const fetch = vi.fn(async () => 0);
+		const { destroy } = mount('search', fetch, (_d, since) => (Date.now() - since < 3_000 ? 1_000 : 0));
+		await settle();
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(fetch.mock.calls.length).toBeLessThanOrEqual(4);
+		destroy();
+	});
+
+	it('ready: the first answer, once (now when one is known)', async () => {
+		const { entry, destroy } = mount('r', async () => 'first');
+		await expect(entry.ready).resolves.toBe('first');
+		destroy();
 	});
 });

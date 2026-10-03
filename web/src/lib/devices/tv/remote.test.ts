@@ -34,9 +34,9 @@ describe('remote timing', () => {
 	});
 
 	it('names every key in words', () => {
-		expect(PAD_KEY.up.label()).toBe(m.remote_keys_up());
-		expect(PAD_KEY.ok.label()).toBe(m.tv_key_ok());
-		expect(PAD_KEY.mute.label()).toBe(m.tv_mute());
+		expect(PAD_KEY.up.label()).toBe(m.key_up());
+		expect(PAD_KEY.ok.label()).toBe(m.key_ok());
+		expect(PAD_KEY.mute.label()).toBe(m.key_mute());
 		for (const k of Object.keys(PAD_KEY) as PadKey[]) expect(PAD_KEY[k].label()).not.toBe('');
 	});
 });
@@ -115,7 +115,7 @@ describe('pacedKeys', () => {
 	it('gives every pad key its own paced sender', async () => {
 		const sent: PadKey[] = [];
 		const keys = pacedKeys(async (k) => void sent.push(k));
-		expect(Object.keys(keys).sort()).toEqual(Object.keys(PAD_KEY).sort());
+		expect(Object.keys(keys).toSorted()).toEqual(Object.keys(PAD_KEY).toSorted());
 		await keys.up(false);
 		await keys.mute(false);
 		expect(sent).toEqual(['up', 'mute']);

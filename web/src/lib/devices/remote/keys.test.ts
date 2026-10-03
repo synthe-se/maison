@@ -4,10 +4,10 @@ import { REMOTE_ROWS, keyName } from './keys.ts';
 
 describe('remote keys', () => {
 	it('names a key by its name, or by what is printed on it', () => {
-		expect(keyName(116)).toBe(m.remote_keys_power());
+		expect(keyName(116)).toBe(m.key_power());
 		expect(keyName(5)).toBe('4');
 		expect(keyName(353)).toBe('OK');
-		expect(keyName(365)).toBe(m.remote_keys_guide());
+		expect(keyName(365)).toBe(m.key_guide());
 	});
 
 	it('says « n° 412 » for a code not on the picture', () => {

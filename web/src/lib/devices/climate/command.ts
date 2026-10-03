@@ -1,9 +1,9 @@
-// The Mitsubishi command grammar, the one place it is written (AGENTBRIEF.md § 4):
+// The Mitsubishi command grammar, the one place it is written (AGENTS.md « Climate »):
 //   state-<mode>-<temp>-fan-<fan>-vane-<vane>[-wide-<wide>][-econo-on][-stopin-<minutes>]
 // or `state-off`. The backend (`mitsubishi_ir.rs`) encodes it; the dashboard and the IR
 // remote's « climate toggle » action both build and read it through here.
 
-import type { BroadlinkClimateSettings } from '#lib/api.ts';
+import type { BroadlinkClimateSettings } from '#lib/devices/climate/api.ts';
 
 export const CLIMATE_MODES = ['cool', 'heat', 'dry', 'fan', 'auto'] as const;
 export const CLIMATE_FANS = ['auto', '1', '2', '3', '4', 'silent'] as const;

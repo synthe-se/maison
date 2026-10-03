@@ -17,14 +17,14 @@ describe('Key', () => {
 
 	it('is named in words from the pad key, with its pressed state when it toggles', async () => {
 		await render(Key, { k: 'mute', fire: vi.fn(), pressed: true });
-		const key = page.getByRole('button', { name: m.tv_mute() });
+		const key = page.getByRole('button', { name: m.key_mute() });
 		await expect.element(key).toHaveAttribute('aria-pressed', 'true');
-		await expect.element(key).toHaveAttribute('title', m.tv_mute());
+		await expect.element(key).toHaveAttribute('title', m.key_mute());
 	});
 
 	it('a free label wins over the pad key; no pressed state unless asked', async () => {
-		await render(Key, { label: m.tv_key_source(), icon: 'monitor', fire: vi.fn() });
-		const key = page.getByRole('button', { name: m.tv_key_source() });
+		await render(Key, { label: m.key_source(), icon: 'monitor', fire: vi.fn() });
+		const key = page.getByRole('button', { name: m.key_source() });
 		await expect.element(key).not.toHaveAttribute('aria-pressed');
 	});
 
@@ -32,7 +32,7 @@ describe('Key', () => {
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 		const fire = vi.fn();
 		await render(Key, { k: 'up', fire });
-		const el = page.getByRole('button', { name: m.remote_keys_up() }).element();
+		const el = page.getByRole('button', { name: m.key_up() }).element();
 		pointer(el, 'pointerdown');
 		expect(fire).toHaveBeenCalledExactlyOnceWith(false);
 		flushSync();
@@ -54,7 +54,7 @@ describe('Key', () => {
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 		const fire = vi.fn();
 		await render(Key, { k: 'volume_up', fire });
-		const el = page.getByRole('button', { name: m.tv_volume_up() }).element();
+		const el = page.getByRole('button', { name: m.key_volume_up() }).element();
 		pointer(el, 'pointerdown');
 		vi.advanceTimersByTime(500 + 400);
 		expect(fire).toHaveBeenCalledTimes(4);
@@ -66,7 +66,7 @@ describe('Key', () => {
 	it('stays shown pressed at least 100 ms after a quick tap', async () => {
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 		await render(Key, { k: 'ok', fire: vi.fn() });
-		const el = page.getByRole('button', { name: m.tv_key_ok() }).element();
+		const el = page.getByRole('button', { name: m.key_ok() }).element();
 		pointer(el, 'pointerdown');
 		pointer(el, 'pointerup');
 		flushSync();
@@ -80,7 +80,7 @@ describe('Key', () => {
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 		const fire = vi.fn();
 		await render(Key, { k: 'ok', fire });
-		const el = page.getByRole('button', { name: m.tv_key_ok() }).element();
+		const el = page.getByRole('button', { name: m.key_ok() }).element();
 		pointer(el, 'pointerdown', 2);
 		expect(fire).not.toHaveBeenCalled();
 		pointer(el, 'pointerdown');
@@ -92,7 +92,7 @@ describe('Key', () => {
 	it('a keyboard activation sends once; a pointer click does not send twice', async () => {
 		const fire = vi.fn();
 		await render(Key, { k: 'ok', fire });
-		const key = page.getByRole('button', { name: m.tv_key_ok() });
+		const key = page.getByRole('button', { name: m.key_ok() });
 		(key.element() as HTMLElement).focus();
 		await userEvent.keyboard('{Enter}');
 		expect(fire).toHaveBeenCalledExactlyOnceWith(false);
@@ -103,7 +103,7 @@ describe('Key', () => {
 	it('a held Enter sends once: the repeated presses never reach the TV unpaced', async () => {
 		const fire = vi.fn();
 		await render(Key, { k: 'up', fire });
-		const key = page.getByRole('button', { name: m.remote_keys_up() }).element() as HTMLElement;
+		const key = page.getByRole('button', { name: m.key_up() }).element() as HTMLElement;
 		key.focus();
 		const repeat = new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true });
 		key.dispatchEvent(repeat);
@@ -113,20 +113,27 @@ describe('Key', () => {
 		expect(first.defaultPrevented).toBe(false);
 	});
 
-	it('a disabled key sends nothing', async () => {
+	it('a key that cannot act stays, says why, and sends nothing', async () => {
+		const why = document.createElement('p');
+		why.id = 'why';
+		why.textContent = 'Injoignable';
+		document.body.append(why);
 		const fire = vi.fn();
-		await render(Key, { k: 'up', fire, disabled: true });
-		const key = page.getByRole('button', { name: m.remote_keys_up() });
-		await expect.element(key).toBeDisabled();
+		await render(Key, { k: 'up', fire, reason: 'why' });
+		const key = page.getByRole('button', { name: m.key_up() });
+		await expect.element(key).toHaveAttribute('aria-disabled', 'true');
+		await expect.element(key).toHaveAccessibleDescription('Injoignable');
 		pointer(key.element(), 'pointerdown');
+		key.element().dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
 		expect(fire).not.toHaveBeenCalled();
+		why.remove();
 	});
 
 	it('stops repeating when it leaves the page mid-hold', async () => {
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 		const fire = vi.fn();
 		const { unmount } = await render(Key, { k: 'down', fire });
-		pointer(page.getByRole('button', { name: m.remote_keys_down() }).element(), 'pointerdown');
+		pointer(page.getByRole('button', { name: m.key_down() }).element(), 'pointerdown');
 		await unmount();
 		vi.advanceTimersByTime(2000);
 		expect(fire).toHaveBeenCalledOnce();

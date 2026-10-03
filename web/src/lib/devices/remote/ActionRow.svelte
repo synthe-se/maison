@@ -3,24 +3,20 @@
 	// (buttons, so the order can be changed from the keyboard). An action type the configurator
 	// does not edit is shown by its summary and carried through untouched.
 	import { m } from '#lib/paraglide/messages.js';
-	import type { IrAction, IrSwitchState } from '#lib/api.ts';
+	import { options } from '#lib/options.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Range from '#lib/components/Range.svelte';
 	import Select from '#lib/components/Select.svelte';
-	import {
-		buildClimateCommand,
-		parseClimateCommand,
-		TEMP_MAX_C,
-		TEMP_MIN_C,
-		type ClimateSettings
-	} from '#lib/devices/climate/command.ts';
-	import { degrees, fanOptions, modeOptions, vaneOptions } from '#lib/devices/climate/labels.ts';
+	import type { IrAction, IrCoverCommand, IrSwitchState } from './api.ts';
+	import ClimateFields from './ClimateFields.svelte';
+	import LampFields from './LampFields.svelte';
+	import NabaztagFields from './NabaztagFields.svelte';
 	import {
 		ACTION_TYPES,
-		BRIGHTNESS_MAX,
+		COVER_COMMANDS,
 		defaultAction,
+		HALF,
 		isEditable,
-		NABAZTAG_PRESETS,
 		summarize,
 		SWITCH_STATES,
 		type ActionType,
@@ -36,24 +32,23 @@
 		onchange: (a: IrAction) => void;
 		onmove: (direction: -1 | 1) => void;
 		onremove: () => void;
+		/** The types offered (a scene's actions never hold a scene); all by default. */
+		types?: ActionType[];
 	}
-	let { action, index, count, sources, onchange, onmove, onremove }: Props = $props();
+	let { action, index, count, sources, onchange, onmove, onremove, types = Object.keys(ACTION_TYPES) as ActionType[] }: Props = $props();
 	const id = $props.id();
 	const n = $derived(index + 1);
 
-	const typeOptions = (Object.keys(ACTION_TYPES) as ActionType[]).map((t) => ({ value: t, label: ACTION_TYPES[t]() }));
-	const stateOptions = (Object.keys(SWITCH_STATES) as IrSwitchState[]).map((s) => ({ value: s, label: SWITCH_STATES[s]() }));
+	const STATES = Object.keys(SWITCH_STATES) as IrSwitchState[];
+	const COVER = Object.keys(COVER_COMMANDS) as IrCoverCommand[];
+	const TV_STATES = ['on', 'off'] as const;
 
-	const lampOptions = $derived(sources.lamps.map((l) => ({ value: l.id, label: l.name })));
+	const coverOptions = $derived(sources.covers.map((c) => ({ value: c.id, label: c.name })));
 	const plugOptions = $derived(sources.plugs.map((p) => ({ value: p.id, label: `${p.name} (${p.ip})` })));
 	const hostOptions = $derived(sources.hosts.map((h) => ({ value: h.host, label: `${h.name} (${h.host})` })));
 	const codeOptions = $derived(sources.codes.map((c) => ({ value: c.id, label: c.name })));
-
-	const climate = $derived(action.action === 'climate_toggle' ? parseClimateCommand(action.on_command) : null);
-	function setClimate(patch: Partial<ClimateSettings>) {
-		if (action.action !== 'climate_toggle' || !climate) return;
-		onchange({ ...action, on_command: buildClimateCommand({ ...climate, ...patch }) });
-	}
+	const appOptions = $derived(sources.apps.map((a) => ({ value: a.package, label: a.label })));
+	const sceneOptions = $derived(sources.scenes.map((x) => ({ value: x.id, label: x.name })));
 </script>
 
 <li class="action" aria-labelledby="{id}-n">
@@ -64,7 +59,7 @@
 				<Select
 					label={m.remote_action_type()}
 					value={action.action}
-					options={typeOptions}
+					options={options(types, ACTION_TYPES)}
 					onchange={(t) => t !== action.action && onchange(defaultAction(t, sources))}
 				/>
 			{:else}
@@ -73,7 +68,14 @@
 			{/if}
 		</div>
 		<div class="order">
-			<button type="button" class="icon-btn" id="{id}-up" disabled={index === 0} aria-label={m.remote_move_up({ n })} onclick={() => onmove(-1)}>
+			<button
+				type="button"
+				class="icon-btn"
+				id="{id}-up"
+				disabled={index === 0}
+				aria-label={m.remote_move_up({ n })}
+				onclick={() => onmove(-1)}
+			>
 				<Icon name="chevron-up" />
 			</button>
 			<button
@@ -93,61 +95,61 @@
 	</div>
 
 	{#if action.action === 'nabaztag'}
-		<div class="field">
-			<label for="{id}-cmd">{m.remote_fields_command()}</label>
-			<input
-				id="{id}-cmd"
-				value={action.command}
-				oninput={(e) => onchange({ ...action, command: e.currentTarget.value })}
-				placeholder={m.remote_fields_command_placeholder()}
-				autocomplete="off"
-				aria-describedby="{id}-cmd-hint"
-			/>
-			<p class="help" id="{id}-cmd-hint">{m.remote_fields_command_hint()}</p>
-			<div class="actions" role="group" aria-labelledby="{id}-presets">
-				<span class="help" id="{id}-presets">{m.remote_fields_presets()}</span>
-				{#each NABAZTAG_PRESETS as preset (preset)}
-					<button type="button" class="pill-btn mono" onclick={() => onchange({ ...action, command: preset })}>{preset}</button>
-				{/each}
-			</div>
-		</div>
-	{:else if action.action === 'zigbee_power'}
+		<NabaztagFields {action} {onchange} />
+	{:else if action.action === 'zigbee_power' || action.action === 'zigbee_brightness' || action.action === 'hue_power' || action.action === 'hue_brightness'}
+		<LampFields {action} {sources} {onchange} />
+	{:else if action.action === 'cover'}
 		<div class="grid">
 			<Select
-				label={m.remote_fields_lamp()}
-				value={action.lamp}
-				options={lampOptions} placeholder={m.remote_fields_lamp_placeholder()}
-				onchange={(lamp) => onchange({ ...action, lamp })}
+				label={m.remote_fields_cover()}
+				value={action.cover}
+				options={coverOptions}
+				placeholder={m.remote_fields_cover_placeholder()}
+				onchange={(cover) => onchange({ ...action, cover })}
 			/>
-			<Select label={m.remote_fields_state()} value={action.state} options={stateOptions} onchange={(state) => onchange({ ...action, state })} />
+			<Select
+				label={m.remote_fields_command()}
+				value={action.command}
+				options={options(COVER, COVER_COMMANDS)}
+				onchange={(command) => {
+					// a position travels with its command only (the backend refuses it elsewhere)
+					const { position: _, ...rest } = action;
+					onchange(command === 'position' ? { ...rest, command, position: action.position ?? HALF } : { ...rest, command });
+				}}
+			/>
 		</div>
-	{:else if action.action === 'zigbee_brightness'}
+		{#if action.command === 'position'}
+			<Range
+				label={m.shutters_position()}
+				value={action.position ?? HALF}
+				valueText={(v) => m.shutters_open_percent({ percent: v })}
+				oncommit={(position) => onchange({ ...action, position })}
+			/>
+		{/if}
+	{:else if action.action === 'climate_off' || action.action === 'climate_on'}
+		{#if action.action === 'climate_on'}<p class="hint">{m.remote_fields_climate_on_hint()}</p>{/if}
 		<Select
-			label={m.remote_fields_lamp()}
-			value={action.lamp}
-			options={lampOptions} placeholder={m.remote_fields_lamp_placeholder()}
-			onchange={(lamp) => onchange({ ...action, lamp })}
-		/>
-		<Range
-			label={m.lamps_brightness()}
-			value={action.brightness}
-			max={BRIGHTNESS_MAX}
-			valueText={(v) => m.remote_brightness_value({ value: v })}
-			oncommit={(brightness) => onchange({ ...action, brightness })}
+			label={m.remote_fields_host()}
+			value={action.host}
+			options={hostOptions}
+			placeholder={m.remote_fields_host_placeholder()}
+			onchange={(host) => onchange({ ...action, host })}
 		/>
 	{:else if action.action === 'broadlink_code'}
 		<div class="grid">
 			<Select
 				label={m.remote_fields_host()}
 				value={action.host}
-				options={hostOptions} placeholder={m.remote_fields_host_placeholder()}
+				options={hostOptions}
+				placeholder={m.remote_fields_host_placeholder()}
 				onchange={(host) => onchange({ ...action, host })}
 			/>
 			<Select
 				label={m.remote_fields_code()}
-				value={action.code_id}
-				options={codeOptions} placeholder={m.remote_fields_code_placeholder()}
-				onchange={(code_id) => onchange({ ...action, code_id })}
+				value={action.codeId}
+				options={codeOptions}
+				placeholder={m.remote_fields_code_placeholder()}
+				onchange={(codeId) => onchange({ ...action, codeId })}
 			/>
 		</div>
 	{:else if action.action === 'meross_power'}
@@ -155,63 +157,92 @@
 			<Select
 				label={m.remote_fields_device()}
 				value={action.device}
-				options={plugOptions} placeholder={m.remote_fields_device_placeholder()}
+				options={plugOptions}
+				placeholder={m.remote_fields_device_placeholder()}
 				onchange={(device) => onchange({ ...action, device })}
 			/>
-			<Select label={m.remote_fields_state()} value={action.state} options={stateOptions} onchange={(state) => onchange({ ...action, state })} />
-		</div>
-	{:else if action.action === 'climate_toggle'}
-		<p class="hint">{m.remote_fields_climate_hint()}</p>
-		<Select
-			label={m.remote_fields_host()}
-			value={action.host}
-			options={hostOptions} placeholder={m.remote_fields_host_placeholder()}
-			onchange={(host) => onchange({ ...action, host })}
-		/>
-		{#if climate}
-			<div class="grid three">
-				<Select label={m.climate_mode()} value={climate.mode} options={modeOptions()} onchange={(mode) => setClimate({ mode })} />
-				<Select label={m.climate_fan()} value={climate.fan} options={fanOptions()} onchange={(fan) => setClimate({ fan })} />
-				<Select label={m.climate_vertical_vane()} value={climate.vane} options={vaneOptions()} onchange={(vane) => setClimate({ vane })} />
-			</div>
-			<Range
-				label={m.climate_temperature()}
-				value={climate.temperature}
-				min={TEMP_MIN_C}
-				max={TEMP_MAX_C}
-				valueText={degrees}
-				oncommit={(temperature) => setClimate({ temperature })}
+			<Select
+				label={m.remote_fields_state()}
+				value={action.state}
+				options={options(STATES, SWITCH_STATES)}
+				onchange={(state) => onchange({ ...action, state })}
 			/>
-		{:else}
-			<!-- a command the pickers cannot represent (absolute stop time…): kept as text, not destroyed -->
-			<div class="field">
-				<label for="{id}-raw">{m.remote_fields_climate_raw_command()}</label>
-				<input
-					id="{id}-raw"
-					class="mono"
-					value={action.on_command}
-					autocomplete="off"
-					spellcheck="false"
-					oninput={(e) => onchange({ ...action, on_command: e.currentTarget.value })}
-				/>
-			</div>
-		{/if}
+		</div>
+	{:else if action.action === 'tv_power'}
+		<Select
+			label={m.remote_fields_state()}
+			value={action.state}
+			options={options(TV_STATES, SWITCH_STATES)}
+			onchange={(state) => onchange({ ...action, state })}
+		/>
+	{:else if action.action === 'androidtv_app'}
+		<Select
+			label={m.remote_fields_app()}
+			value={action.package}
+			options={appOptions}
+			placeholder={m.remote_fields_app_placeholder()}
+			onchange={(pkg) => onchange({ ...action, package: pkg })}
+		/>
+	{:else if action.action === 'scene'}
+		<Select
+			label={m.remote_fields_scene()}
+			value={action.scene}
+			options={sceneOptions}
+			placeholder={m.remote_fields_scene_placeholder()}
+			onchange={(scene) => onchange({ ...action, scene })}
+		/>
+	{:else if action.action === 'climate_toggle'}
+		<ClimateFields {action} {hostOptions} {onchange} />
 	{/if}
 </li>
 
 <style>
-	.action { display: grid; gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--radius-m); background: var(--surface); }
-	.head { display: flex; align-items: flex-end; gap: var(--s-2); flex-wrap: wrap; }
-	.n {
-		flex: none; display: grid; place-items: center; width: var(--control-h-xs); height: var(--control-h);
-		font: var(--t-label); color: var(--ink-muted); font-variant-numeric: tabular-nums;
+	.action {
+		display: grid;
+		gap: var(--s-3);
+		padding: var(--s-3);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-m);
+		background: var(--surface);
 	}
-	.type { flex: 1 1 12rem; min-width: 0; }
-	.type p { margin: 0; }
-	.order { display: flex; gap: var(--s-1); margin-left: auto; }
-	.order .icon-btn { width: var(--control-h); height: var(--control-h); }
-	.danger { color: var(--status-down-text); }
-	.grid { display: grid; gap: var(--s-3); grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); }
-	.grid.three { grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr)); }
-	.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+	.head {
+		display: flex;
+		align-items: flex-end;
+		gap: var(--s-2);
+		flex-wrap: wrap;
+	}
+	.n {
+		flex: none;
+		display: grid;
+		place-items: center;
+		width: var(--control-h-xs);
+		height: var(--control-h);
+		font: var(--t-label);
+		color: var(--ink-muted);
+		font-variant-numeric: tabular-nums;
+	}
+	.type {
+		flex: 1 1 12rem;
+		min-width: 0;
+	}
+	.type p {
+		margin: 0;
+	}
+	.order {
+		display: flex;
+		gap: var(--s-1);
+		margin-left: auto;
+	}
+	.order .icon-btn {
+		width: var(--control-h);
+		height: var(--control-h);
+	}
+	.danger {
+		color: var(--status-down-text);
+	}
+	.grid {
+		display: grid;
+		gap: var(--s-3);
+		grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+	}
 </style>

@@ -10,12 +10,11 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use chrono::{Duration, NaiveDate, TimeZone};
-use chrono_tz::Europe::Paris;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
 use super::rules::{season_bounds, season_name, Color, History, Quotas};
-use crate::{config::Config, error::AppError};
+use crate::{config::Config, error::AppError, util::HOUSE_TZ};
 
 /// RTE's answers and the season files: `{"values": {"2026-01-29": "RED", …}}`. Other keys
 /// (RTE's `"2026-01-29-fallback": "false"`) and unknown colours are dropped.
@@ -181,7 +180,7 @@ struct CalendarDay {
 
 /// Midnight in Paris, as RTE's API wants its bounds.
 fn paris_midnight(day: NaiveDate) -> String {
-    Paris
+    HOUSE_TZ
         .from_local_datetime(&day.and_hms_opt(0, 0, 0).expect("midnight"))
         .earliest()
         .expect("midnight exists in Paris")

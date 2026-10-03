@@ -111,3 +111,42 @@ async fn blaster_addresses_outside_the_lan_are_refused() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{host}: {body}");
     }
 }
+
+/// Every answer keeps its envelope: `success`, the list, its `total`, a `message`.
+#[tokio::test]
+async fn answers_keep_their_envelope() {
+    let app = test_app();
+    let (status, list) = common::send_authed(&app, Method::GET, "/api/broadlink/codes", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list, json!({"success": true, "total": 0, "codes": [], "message": "Broadlink codes retrieved"}));
+    let (status, state) = common::send_authed(&app, Method::GET, "/api/broadlink/mitsubishi/state", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state, json!({"success": true, "state": null, "message": "Last commanded Mitsubishi state"}));
+}
+
+/// The climate is sent as a command or as settings, never both or neither; settings the
+/// unit cannot take are refused before anything is sent.
+#[tokio::test]
+async fn mitsubishi_takes_a_command_or_settings() {
+    let app = test_app();
+    let settings = json!({"mode": "cool", "temperature": 40, "fan": "auto", "vane": "swing"});
+    for body in [
+        json!({"host": "192.168.1.73"}),
+        json!({"host": "192.168.1.73", "command": "state-off", "settings": settings}),
+        json!({"host": "192.168.1.73", "settings": settings}),
+        json!({"host": "192.168.1.73", "settings": {"mode": "turbo", "temperature": 20, "fan": "auto", "vane": "swing"}}),
+    ] {
+        let (status, answer) = common::send_authed(&app, Method::POST, "/api/broadlink/mitsubishi/send", Some(body.clone())).await;
+        assert!(status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY, "{body}: {status} {answer}");
+    }
+    // settings that are fine reach the address check, which refuses a public host
+    let ok = json!({"mode": "cool", "temperature": 21, "fan": "auto", "vane": "swing"});
+    let (status, _) = common::send_authed(
+        &app,
+        Method::POST,
+        "/api/broadlink/mitsubishi/send",
+        Some(json!({"host": "8.8.8.8", "settings": ok})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

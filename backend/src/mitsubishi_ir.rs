@@ -20,8 +20,58 @@ const TICKS_PER_DAY: u16 = 144;
 pub const MIN_TEMPERATURE_C: u8 = 16;
 pub const MAX_TEMPERATURE_C: u8 = 31;
 
+/// A setting's values, said once: its command token and its code in the frame. The parser,
+/// the encoder, the serde form (the API, `climate-state.json`) and the decoder all read the
+/// table, so a token and its code cannot drift apart.
+pub trait Setting: Copy + Eq + 'static {
+    /// What the setting is called in error messages.
+    const NAME: &'static str;
+    /// `(value, command token, code in the frame)`.
+    const TABLE: &'static [(Self, &'static str, u8)];
+
+    fn token(self) -> &'static str {
+        Self::TABLE.iter().find(|(value, ..)| *value == self).map_or("", |(_, token, _)| token)
+    }
+
+    fn code(self) -> u8 {
+        Self::TABLE.iter().find(|(value, ..)| *value == self).map_or(0, |(.., code)| *code)
+    }
+
+    fn from_token(token: &str) -> Option<Self> {
+        Self::TABLE.iter().find(|(_, t, _)| *t == token).map(|(value, ..)| *value)
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        Self::TABLE.iter().find(|(.., c)| *c == code).map(|(value, ..)| *value)
+    }
+
+    /// The value of a command token, or why not.
+    fn parse(token: Option<&str>) -> Result<Self, String> {
+        let token = token.ok_or_else(|| format!("missing {} token", Self::NAME))?;
+        Self::from_token(token).ok_or_else(|| format!("unsupported {} '{token}'", Self::NAME))
+    }
+}
+
+/// Serialised as its command token, both ways (the strings the API has always used).
+macro_rules! setting_serde {
+    ($($setting:ty),*) => {$(
+        impl serde::Serialize for $setting {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.token())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $setting {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let token = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+                <$setting>::parse(Some(&token)).map_err(serde::de::Error::custom)
+            }
+        }
+    )*};
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Mode {
+pub enum Mode {
     Auto,
     Cool,
     Dry,
@@ -29,8 +79,20 @@ enum Mode {
     Fan,
 }
 
+/// The code is the 3-bit mode of byte 6 (bits 3 to 5).
+impl Setting for Mode {
+    const NAME: &'static str = "mode";
+    const TABLE: &'static [(Self, &'static str, u8)] = &[
+        (Mode::Heat, "heat", 0b001),
+        (Mode::Dry, "dry", 0b010),
+        (Mode::Cool, "cool", 0b011),
+        (Mode::Auto, "auto", 0b100),
+        (Mode::Fan, "fan", 0b111),
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Fan {
+pub enum Fan {
     Auto,
     Level1,
     Level2,
@@ -39,8 +101,21 @@ enum Fan {
     Silent,
 }
 
+/// The code is byte 9's fan bits: the speed (0 to 2), or the « auto » bit 7.
+impl Setting for Fan {
+    const NAME: &'static str = "fan";
+    const TABLE: &'static [(Self, &'static str, u8)] = &[
+        (Fan::Auto, "auto", 0x80),
+        (Fan::Level1, "1", 1),
+        (Fan::Level2, "2", 2),
+        (Fan::Level3, "3", 3),
+        (Fan::Level4, "4", 4),
+        (Fan::Silent, "silent", 5),
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Vane {
+pub enum Vane {
     Auto,
     Highest,
     High,
@@ -50,8 +125,22 @@ enum Vane {
     Swing,
 }
 
+/// The code is byte 9's bits 3 to 5 (bit 6 set alongside: « vane set »).
+impl Setting for Vane {
+    const NAME: &'static str = "vane";
+    const TABLE: &'static [(Self, &'static str, u8)] = &[
+        (Vane::Auto, "auto", 0b000),
+        (Vane::Highest, "highest", 0b001),
+        (Vane::High, "high", 0b010),
+        (Vane::Middle, "middle", 0b011),
+        (Vane::Low, "low", 0b100),
+        (Vane::Lowest, "lowest", 0b101),
+        (Vane::Swing, "swing", 0b111),
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WideVane {
+pub enum WideVane {
     LeftMax,
     Left,
     Center,
@@ -61,13 +150,41 @@ enum WideVane {
     Auto,
 }
 
+/// The code is byte 8's high nibble.
+impl Setting for WideVane {
+    const NAME: &'static str = "wide vane";
+    const TABLE: &'static [(Self, &'static str, u8)] = &[
+        (WideVane::LeftMax, "left-max", 0x1),
+        (WideVane::Left, "left", 0x2),
+        (WideVane::Center, "center", 0x3),
+        (WideVane::Right, "right", 0x4),
+        (WideVane::RightMax, "right-max", 0x5),
+        (WideVane::Wide, "wide", 0x6),
+        (WideVane::Auto, "auto", 0x8),
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TimerMode {
+pub enum TimerMode {
     None,
     Stop,
     Start,
     StartStop,
 }
+
+/// The code is byte 13's low 3 bits. Not a command token: the timers follow from
+/// `start-…`/`stop-…`/`stopin-…`; the names are for the decoder.
+impl Setting for TimerMode {
+    const NAME: &'static str = "timer";
+    const TABLE: &'static [(Self, &'static str, u8)] = &[
+        (TimerMode::None, "none", 0),
+        (TimerMode::Stop, "stop", 3),
+        (TimerMode::Start, "start", 5),
+        (TimerMode::StartStop, "start-stop", 7),
+    ];
+}
+
+setting_serde!(Mode, Fan, Vane, WideVane);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MitsubishiState {
@@ -140,83 +257,87 @@ pub fn encode_mitsubishi_command(
 /// Current wall-clock time as 10-minute ticks since midnight, the unit used
 /// by the Mitsubishi clock/timer bytes.
 ///
-/// Uses an explicit timezone rather than `chrono::Local`: on the Alpine Pi
-/// deployment there is no tzdata, so `Local` silently degrades to UTC and
-/// every absolute timer would fire hours off.
+/// In the house's time zone (`util::HOUSE_TZ`), never `chrono::Local` (UTC on the Pi).
 pub fn current_clock_ticks() -> u8 {
     use chrono::Timelike;
-    let now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Paris);
+    let now = chrono::Utc::now().with_timezone(&crate::util::HOUSE_TZ);
     (now.hour() * 6 + now.minute() / 10) as u8
 }
 
-/// The settings encoded in a structured `state-*` command, in API-friendly
-/// form. This is the single source of truth for restoring the UI form —
-/// the frontend must not re-parse the command grammar.
+/// The settings encoded in a structured `state-*` command, in API-friendly form. This is
+/// the single source of truth for restoring the UI form: the frontend reads these instead of
+/// re-parsing the command grammar, and may send them instead of a command
+/// ([`ClimateSettings::command`] writes it).
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClimateSettings {
-    pub mode: String,
+    pub mode: Mode,
     pub temperature: u8,
-    pub fan: String,
-    pub vane: String,
+    pub fan: Fan,
+    pub vane: Vane,
+    /// The horizontal vane; absent, the unit's default (centre). Absent from files written
+    /// before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wide: Option<WideVane>,
+    #[serde(default)]
     pub econo: bool,
     /// Relative sleep timer in minutes (`stopin` token), if armed.
+    #[serde(default)]
     pub stop_in_minutes: Option<u16>,
 }
+
+impl ClimateSettings {
+    /// The `state-…` command for these settings (checked: an out-of-range temperature or
+    /// timer is refused as a hand-written command would be).
+    pub fn command(&self) -> Result<String, String> {
+        let mut parts = vec![
+            "state".to_string(),
+            self.mode.token().to_string(),
+            self.temperature.to_string(),
+            "fan".to_string(),
+            self.fan.token().to_string(),
+            "vane".to_string(),
+            self.vane.token().to_string(),
+        ];
+        if let Some(wide) = self.wide {
+            parts.extend(["wide".to_string(), wide.token().to_string()]);
+        }
+        if self.econo {
+            parts.extend(["econo".to_string(), "on".to_string()]);
+        }
+        if let Some(minutes) = self.stop_in_minutes {
+            parts.extend(["stopin".to_string(), minutes.to_string()]);
+        }
+        let command = parts.join("-");
+        parse_state_command(&command)?;
+        Ok(command)
+    }
+}
+
+/// The command that switches the unit off (it carries no settings).
+pub const OFF_COMMAND: &str = "state-off";
 
 /// Parses a structured command back into its settings. Returns `None` for
 /// `state-off`, non-structured commands, and anything unparseable.
 pub fn parse_climate_settings(command: &str) -> Option<ClimateSettings> {
-    if command == "state-off" || !command.starts_with("state-") {
+    if command == OFF_COMMAND || !command.starts_with("state-") {
         return None;
     }
 
     let state = parse_state_command(command).ok()?;
     Some(ClimateSettings {
-        mode: mode_token(state.mode).to_string(),
+        mode: state.mode,
         temperature: state.temperature_c,
-        fan: fan_token(state.fan).to_string(),
-        vane: vane_token(state.vane).to_string(),
+        fan: state.fan,
+        vane: state.vane,
+        wide: Some(state.wide_vane),
         econo: state.ecocool,
         stop_in_minutes: state.stop_in_ticks.map(|ticks| u16::from(ticks) * 10),
     })
 }
 
-fn mode_token(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Auto => "auto",
-        Mode::Cool => "cool",
-        Mode::Dry => "dry",
-        Mode::Heat => "heat",
-        Mode::Fan => "fan",
-    }
-}
-
-fn fan_token(fan: Fan) -> &'static str {
-    match fan {
-        Fan::Auto => "auto",
-        Fan::Level1 => "1",
-        Fan::Level2 => "2",
-        Fan::Level3 => "3",
-        Fan::Level4 => "4",
-        Fan::Silent => "silent",
-    }
-}
-
-fn vane_token(vane: Vane) -> &'static str {
-    match vane {
-        Vane::Auto => "auto",
-        Vane::Highest => "highest",
-        Vane::High => "high",
-        Vane::Middle => "middle",
-        Vane::Low => "low",
-        Vane::Lowest => "lowest",
-        Vane::Swing => "swing",
-    }
-}
-
 fn parse_state_command(command: &str) -> Result<MitsubishiState, String> {
-    if command == "state-off" {
+    if command == OFF_COMMAND {
         return Ok(MitsubishiState {
             power: false,
             mode: Mode::Cool,
@@ -234,7 +355,7 @@ fn parse_state_command(command: &str) -> Result<MitsubishiState, String> {
     }
 
     let mut index = 1;
-    let mode = parse_mode(tokens[index])?;
+    let mode = Mode::parse(Some(tokens[index]))?;
     index += 1;
 
     let temperature_c = parse_temperature(tokens.get(index).copied())?;
@@ -242,12 +363,12 @@ fn parse_state_command(command: &str) -> Result<MitsubishiState, String> {
 
     expect_token(&tokens, index, "fan")?;
     index += 1;
-    let fan = parse_fan(tokens.get(index).copied())?;
+    let fan = Fan::parse(tokens.get(index).copied())?;
     index += 1;
 
     expect_token(&tokens, index, "vane")?;
     index += 1;
-    let vane = parse_vane(tokens.get(index).copied())?;
+    let vane = Vane::parse(tokens.get(index).copied())?;
     index += 1;
 
     let mut state = MitsubishiState {
@@ -268,9 +389,9 @@ fn parse_state_command(command: &str) -> Result<MitsubishiState, String> {
                     && tokens.get(index + 1).copied() == Some("max");
                 state.wide_vane = if max {
                     index += 1;
-                    parse_wide_vane(side.map(|side| if side == "left" { "left-max" } else { "right-max" }))?
+                    WideVane::parse(side.map(|side| if side == "left" { "left-max" } else { "right-max" }))?
                 } else {
-                    parse_wide_vane(side)?
+                    WideVane::parse(side)?
                 };
                 index += 1;
             }
@@ -333,17 +454,6 @@ fn parse_state_command(command: &str) -> Result<MitsubishiState, String> {
     Ok(state)
 }
 
-fn parse_mode(token: &str) -> Result<Mode, String> {
-    match token {
-        "auto" => Ok(Mode::Auto),
-        "cool" => Ok(Mode::Cool),
-        "dry" => Ok(Mode::Dry),
-        "heat" => Ok(Mode::Heat),
-        "fan" => Ok(Mode::Fan),
-        _ => Err(format!("unsupported mode '{token}'")),
-    }
-}
-
 fn parse_temperature(token: Option<&str>) -> Result<u8, String> {
     let value = token.ok_or_else(|| "missing temperature token".to_string())?;
     let temperature = value
@@ -353,44 +463,6 @@ fn parse_temperature(token: Option<&str>) -> Result<u8, String> {
         return Err(format!("temperature out of range '{value}'"));
     }
     Ok(temperature)
-}
-
-fn parse_fan(token: Option<&str>) -> Result<Fan, String> {
-    match token.ok_or_else(|| "missing fan token".to_string())? {
-        "auto" => Ok(Fan::Auto),
-        "1" => Ok(Fan::Level1),
-        "2" => Ok(Fan::Level2),
-        "3" => Ok(Fan::Level3),
-        "4" => Ok(Fan::Level4),
-        "silent" => Ok(Fan::Silent),
-        other => Err(format!("unsupported fan '{other}'")),
-    }
-}
-
-fn parse_vane(token: Option<&str>) -> Result<Vane, String> {
-    match token.ok_or_else(|| "missing vane token".to_string())? {
-        "auto" => Ok(Vane::Auto),
-        "highest" => Ok(Vane::Highest),
-        "high" => Ok(Vane::High),
-        "middle" => Ok(Vane::Middle),
-        "low" => Ok(Vane::Low),
-        "lowest" => Ok(Vane::Lowest),
-        "swing" => Ok(Vane::Swing),
-        other => Err(format!("unsupported vane '{other}'")),
-    }
-}
-
-fn parse_wide_vane(token: Option<&str>) -> Result<WideVane, String> {
-    match token.ok_or_else(|| "missing wide vane token".to_string())? {
-        "left-max" => Ok(WideVane::LeftMax),
-        "left" => Ok(WideVane::Left),
-        "center" => Ok(WideVane::Center),
-        "right" => Ok(WideVane::Right),
-        "right-max" => Ok(WideVane::RightMax),
-        "wide" => Ok(WideVane::Wide),
-        "auto" => Ok(WideVane::Auto),
-        other => Err(format!("unsupported wide vane '{other}'")),
-    }
 }
 
 fn parse_toggle(token: Option<&str>, label: &str) -> Result<bool, String> {
@@ -450,81 +522,28 @@ fn build_state_bytes(state: MitsubishiState) -> [u8; MITSUBISHI_STATE_LEN] {
     let mut bytes = [0_u8; MITSUBISHI_STATE_LEN];
     bytes[..5].copy_from_slice(&[0x23, 0xCB, 0x26, 0x01, 0x00]);
     bytes[5] = if state.power { 0x20 } else { 0x00 };
-    bytes[6] = mode_byte(state.mode) | if state.i_see { 0x40 } else { 0x00 };
+    bytes[6] = (state.mode.code() << 3) | if state.i_see { 0x40 } else { 0x00 };
     bytes[7] = state.temperature_c.saturating_sub(16);
-    bytes[8] = (wide_vane_byte(state.wide_vane) << 4) | mode_nibble(state.mode);
-    bytes[9] = fan_byte(state.fan) | vane_byte(state.vane);
+    bytes[8] = (state.wide_vane.code() << 4) | mode_nibble(state.mode);
+    // bit 6: the vane is set
+    bytes[9] = state.fan.code() | 0x40 | (state.vane.code() << 3);
     bytes[10] = state.clock;
     bytes[11] = state.stop_clock.unwrap_or(0);
     bytes[12] = state.start_clock.unwrap_or(0);
-    bytes[13] = timer_mode_byte(state.timer_mode);
+    bytes[13] = state.timer_mode.code();
     bytes[14] = if state.ecocool { 0x20 } else { 0x00 };
     bytes[17] = checksum(&bytes);
     bytes
 }
 
-fn mode_byte(mode: Mode) -> u8 {
-    match mode {
-        Mode::Heat => 0x08,
-        Mode::Dry => 0x10,
-        Mode::Cool => 0x18,
-        Mode::Auto => 0x20,
-        Mode::Fan => 0x38,
-    }
-}
-
+/// Byte 8's low nibble, which each mode sets its own way (not a table code: auto and heat
+/// share theirs).
 fn mode_nibble(mode: Mode) -> u8 {
     match mode {
-        Mode::Auto => 0x00,
+        Mode::Auto | Mode::Heat => 0x00,
         Mode::Cool => 0x06,
         Mode::Dry => 0x02,
-        Mode::Heat => 0x00,
         Mode::Fan => 0x07,
-    }
-}
-
-fn wide_vane_byte(wide_vane: WideVane) -> u8 {
-    match wide_vane {
-        WideVane::LeftMax => 0x1,
-        WideVane::Left => 0x2,
-        WideVane::Center => 0x3,
-        WideVane::Right => 0x4,
-        WideVane::RightMax => 0x5,
-        WideVane::Wide => 0x6,
-        WideVane::Auto => 0x8,
-    }
-}
-
-fn fan_byte(fan: Fan) -> u8 {
-    match fan {
-        Fan::Auto => 0x80,
-        Fan::Level1 => 0x01,
-        Fan::Level2 => 0x02,
-        Fan::Level3 => 0x03,
-        Fan::Level4 => 0x04,
-        Fan::Silent => 0x05,
-    }
-}
-
-fn vane_byte(vane: Vane) -> u8 {
-    let code = match vane {
-        Vane::Auto => 0x00,
-        Vane::Highest => 0x01,
-        Vane::High => 0x02,
-        Vane::Middle => 0x03,
-        Vane::Low => 0x04,
-        Vane::Lowest => 0x05,
-        Vane::Swing => 0x07,
-    };
-    0x40 | (code << 3)
-}
-
-fn timer_mode_byte(timer_mode: TimerMode) -> u8 {
-    match timer_mode {
-        TimerMode::None => 0x00,
-        TimerMode::Stop => 0x03,
-        TimerMode::Start => 0x05,
-        TimerMode::StartStop => 0x07,
     }
 }
 
@@ -585,6 +604,43 @@ fn decode_frame(durations_us: &[u32]) -> MitsubishiFrame {
         header_space_us: durations_us[1],
         footer_mark_us: durations_us[MITSUBISHI_FRAME_DURATIONS - 1],
         bytes,
+    }
+}
+
+/// What a frame's state bytes say, read with the same tables the encoder writes with;
+/// `None` for a code no table knows (a capture from a mode this module never sends).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadState {
+    pub power: bool,
+    pub mode: Option<Mode>,
+    pub i_see: bool,
+    /// Above 16 °C, in half degrees.
+    pub temperature_half_degrees: u8,
+    pub fan: Option<Fan>,
+    pub vane: Option<Vane>,
+    pub wide_vane: Option<WideVane>,
+    /// The clock bytes, in 10-minute ticks (0: unset).
+    pub clock: u8,
+    pub stop_clock: u8,
+    pub start_clock: u8,
+    pub timer: Option<TimerMode>,
+    pub econo: bool,
+}
+
+pub fn read_state(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> ReadState {
+    ReadState {
+        power: bytes[5] & 0x20 != 0,
+        mode: Mode::from_code((bytes[6] >> 3) & 0x07),
+        i_see: bytes[6] & 0x40 != 0,
+        temperature_half_degrees: ((bytes[7] & 0x0F) * 2) + u8::from(bytes[7] & 0x10 != 0),
+        fan: Fan::from_code(if bytes[9] & 0x80 != 0 { 0x80 } else { bytes[9] & 0x07 }),
+        vane: Vane::from_code((bytes[9] >> 3) & 0x07),
+        wide_vane: WideVane::from_code(bytes[8] >> 4),
+        clock: bytes[10],
+        stop_clock: bytes[11],
+        start_clock: bytes[12],
+        timer: TimerMode::from_code(bytes[13] & 0x07),
+        econo: bytes[14] & 0x20 != 0,
     }
 }
 
@@ -694,10 +750,11 @@ mod tests {
             "state-heat-24-fan-2-vane-middle-wide-center-econo-off-stopin-90",
         )
         .expect("settings should parse");
-        assert_eq!(settings.mode, "heat");
+        assert_eq!(settings.mode, Mode::Heat);
         assert_eq!(settings.temperature, 24);
-        assert_eq!(settings.fan, "2");
-        assert_eq!(settings.vane, "middle");
+        assert_eq!(settings.fan, Fan::Level2);
+        assert_eq!(settings.vane, Vane::Middle);
+        assert_eq!(settings.wide, Some(WideVane::Center));
         assert!(!settings.econo);
         assert_eq!(settings.stop_in_minutes, Some(90));
 
@@ -756,6 +813,92 @@ mod tests {
             assert!(checksum_valid(&bytes));
         }
         assert!(parse_state_command("state-cool-20-fan-auto-vane-auto-wide-max").is_err());
+    }
+
+    /// Every value of every table: its token parses, encodes into a packet, and reads back
+    /// from the packet's bytes as itself.
+    #[test]
+    fn every_setting_round_trips_command_packet_and_back() {
+        fn read(command: &str) -> ReadState {
+            let packet = encode_mitsubishi_command(command, 0).expect(command).expect("a state command");
+            let durations = broadlink_ir::decode(&packet).expect("decodes");
+            let (frames, _) = decode_frames(&durations).expect("frames");
+            assert!(checksum_valid(&frames[0].bytes));
+            read_state(&frames[0].bytes)
+        }
+        for (mode, token, _) in Mode::TABLE {
+            let state = read(&format!("state-{token}-20-fan-auto-vane-auto"));
+            assert_eq!(state.mode, Some(*mode), "{token}");
+            assert!(state.power);
+            assert_eq!(state.temperature_half_degrees, 8, "20 °C");
+        }
+        for (fan, token, _) in Fan::TABLE {
+            assert_eq!(read(&format!("state-cool-20-fan-{token}-vane-auto")).fan, Some(*fan), "{token}");
+        }
+        for (vane, token, _) in Vane::TABLE {
+            assert_eq!(read(&format!("state-cool-20-fan-auto-vane-{token}")).vane, Some(*vane), "{token}");
+        }
+        for (wide, token, _) in WideVane::TABLE {
+            let state = read(&format!("state-cool-20-fan-auto-vane-auto-wide-{token}"));
+            assert_eq!(state.wide_vane, Some(*wide), "{token}");
+        }
+        let timed = read("state-cool-20-fan-auto-vane-auto-start-06-00-stop-11-00");
+        assert_eq!(timed.timer, Some(TimerMode::StartStop));
+        assert_eq!((timed.start_clock, timed.stop_clock), (36, 66));
+    }
+
+    /// Tables say each token and each code once.
+    #[test]
+    fn tables_hold_no_duplicate() {
+        fn unique<T: Setting>() {
+            for (i, (_, token, code)) in T::TABLE.iter().enumerate() {
+                for (_, other_token, other_code) in &T::TABLE[i + 1..] {
+                    assert_ne!(token, other_token, "{}", T::NAME);
+                    assert_ne!(code, other_code, "{}", T::NAME);
+                }
+            }
+        }
+        unique::<Mode>();
+        unique::<Fan>();
+        unique::<Vane>();
+        unique::<WideVane>();
+        unique::<TimerMode>();
+    }
+
+    /// The JSON the API and `climate-state.json` have always held still reads, and writes
+    /// the same strings back.
+    #[test]
+    fn settings_json_is_unchanged() {
+        let old = serde_json::json!({
+            "mode": "cool", "temperature": 21, "fan": "auto", "vane": "swing",
+            "econo": false, "stopInMinutes": 180
+        });
+        let settings: ClimateSettings = serde_json::from_value(old.clone()).expect("old JSON reads");
+        assert_eq!((settings.mode, settings.fan, settings.vane, settings.wide), (Mode::Cool, Fan::Auto, Vane::Swing, None));
+        assert_eq!(serde_json::to_value(&settings).unwrap(), old);
+        let level: ClimateSettings =
+            serde_json::from_value(serde_json::json!({"mode": "heat", "temperature": 22, "fan": "3", "vane": "low", "wide": "left-max"}))
+                .expect("reads");
+        assert_eq!((level.fan, level.wide, level.econo, level.stop_in_minutes), (Fan::Level3, Some(WideVane::LeftMax), false, None));
+        assert!(serde_json::from_value::<ClimateSettings>(serde_json::json!({"mode": "turbo", "temperature": 20, "fan": "1", "vane": "low"})).is_err());
+    }
+
+    #[test]
+    fn settings_write_the_command_they_were_read_from() {
+        for command in [
+            "state-cool-21-fan-auto-vane-swing-wide-center",
+            "state-heat-24-fan-2-vane-middle-wide-left-max-stopin-90",
+            "state-cool-16-fan-4-vane-swing-wide-center-econo-on",
+        ] {
+            let settings = parse_climate_settings(command).expect(command);
+            assert_eq!(settings.command().expect("valid"), command);
+        }
+        let mut bad = parse_climate_settings("state-cool-21-fan-auto-vane-swing").unwrap();
+        bad.temperature = 40;
+        assert!(bad.command().is_err());
+        bad.temperature = 21;
+        bad.stop_in_minutes = Some(15);
+        assert!(bad.command().is_err());
     }
 
     #[test]

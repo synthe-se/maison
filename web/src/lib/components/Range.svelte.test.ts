@@ -8,12 +8,13 @@ import Range from './Range.svelte';
 const valueText = (v: number) => `Ouvert à ${v} %`;
 const base = { label: 'Volet du salon', value: 50, valueText };
 
-const thumb = () => document.querySelector<HTMLElement>('[role=slider]')!;
+const thumb = () => page.getByRole('slider').element() as HTMLElement;
 const said = () => thumb().getAttribute('aria-valuetext');
 
 /** A pointer gesture on the band: down at the first position (0–1 of the track), moves, release. */
 function pointer(type: string, at?: number) {
-	const band = document.querySelector<HTMLElement>('.range-band')!;
+	// the band around the thumb: the 44 px target (WCAG 2.5.7)
+	const band = thumb().parentElement!;
 	const { left, width, top, height } = band.getBoundingClientRect();
 	const init = { bubbles: true, button: 0, clientX: left + (at ?? 0) * width, clientY: top + height / 2, pointerId: 1 };
 	(type === 'pointerdown' ? band : document).dispatchEvent(new PointerEvent(type, init));
@@ -38,11 +39,19 @@ describe('Range', () => {
 		await expect.element(page.getByText('Fermé')).toBeVisible();
 	});
 
-	it('can keep its label for readers only, and be disabled', async () => {
-		await render(Range, { ...base, hideLabel: true, disabled: true });
+	it('can keep its label for readers only, and say why it cannot act (still focusable)', async () => {
+		const why = document.createElement('p');
+		why.id = 'why';
+		why.textContent = 'Injoignable';
+		document.body.append(why);
+		await render(Range, { ...base, hideLabel: true, reason: 'why' });
 		const slider = page.getByRole('slider', { name: 'Volet du salon' });
 		await expect.element(slider).toHaveAttribute('aria-disabled', 'true');
-		expect(document.querySelector('.head')!.classList.contains('sr-only')).toBe(true);
+		await expect.element(slider).toHaveAccessibleDescription('Injoignable');
+		await expect.element(slider).toHaveAttribute('tabindex', '0');
+		why.remove();
+		// the label stays for readers only
+		expect(page.getByText('Volet du salon').element().closest('.sr-only')).not.toBeNull();
 	});
 
 	describe('a form value', () => {
@@ -81,9 +90,9 @@ describe('Range', () => {
 			expect(oncommit).toHaveBeenLastCalledWith(0);
 		});
 
-		it('Page keys do nothing when disabled', async () => {
+		it('Page keys do nothing when it cannot act', async () => {
 			const oncommit = vi.fn();
-			await render(Range, { ...base, oncommit, disabled: true });
+			await render(Range, { ...base, oncommit, reason: 'why' });
 			thumb().dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }));
 			flushSync();
 			expect(oncommit).not.toHaveBeenCalled();

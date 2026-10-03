@@ -3,10 +3,11 @@
 
 import { m } from '#lib/paraglide/messages.js';
 import { CONFIRM, TAP } from '#lib/haptics.ts';
+import type { Gesture } from '#lib/gesture.svelte.ts';
 import type { IconName } from '#lib/components/Icon.svelte';
 
 /**
- * Both are read once a minute (docs/ux/tableau-de-bord.md § 4). Deliberately slow for the TV:
+ * Both are read once a minute (docs/ux.md § 4). Deliberately slow for the TV:
  * its JointSPACE HTTP server is single-threaded and dies for good under bursts (only a mains
  * power cycle revives it), so the dashboard asks rarely and the backend spaces every call it
  * makes (900 ms between two, a status read is four of them). Never poll it faster.
@@ -14,7 +15,7 @@ import type { IconName } from '#lib/components/Icon.svelte';
 export const REMOTE_POLL = 60_000;
 
 /**
- * Repeat on hold (docs/ux/tableau-de-bord.md § 7, NSStepper.autorepeat): one step on press,
+ * Repeat on hold (docs/ux.md § 7, NSStepper.autorepeat): one step on press,
  * then after 500 ms ten steps a second. Volume is capped at five a second, what the TV follows.
  */
 export const REPEAT_DELAY = 500;
@@ -70,17 +71,17 @@ export function holdRepeat(fire: (repeat: boolean) => unknown, every: number): (
 
 /** Each pad key's name (in words, never the code: § 7), icon and touch feedback, once. */
 export const PAD_KEY: Record<PadKey, { label: () => string; icon?: IconName; pattern: typeof TAP }> = {
-	up: { label: m.remote_keys_up, icon: 'chevron-up', pattern: TAP },
-	down: { label: m.remote_keys_down, icon: 'chevron-down', pattern: TAP },
-	left: { label: m.remote_keys_left, icon: 'chevron-left', pattern: TAP },
-	right: { label: m.remote_keys_right, icon: 'chevron-right', pattern: TAP },
-	ok: { label: m.tv_key_ok, icon: 'circle', pattern: CONFIRM },
-	back: { label: m.tv_key_back, icon: 'corner-up-left', pattern: TAP },
+	up: { label: m.key_up, icon: 'chevron-up', pattern: TAP },
+	down: { label: m.key_down, icon: 'chevron-down', pattern: TAP },
+	left: { label: m.key_left, icon: 'chevron-left', pattern: TAP },
+	right: { label: m.key_right, icon: 'chevron-right', pattern: TAP },
+	ok: { label: m.key_ok, icon: 'circle', pattern: CONFIRM },
+	back: { label: m.key_back, icon: 'corner-up-left', pattern: TAP },
 	home: { label: m.nav_home, icon: 'house', pattern: TAP },
-	menu: { label: m.remote_keys_menu, icon: 'menu', pattern: TAP },
-	volume_up: { label: m.tv_volume_up, icon: 'plus', pattern: TAP },
-	volume_down: { label: m.tv_volume_down, icon: 'minus', pattern: TAP },
-	mute: { label: m.tv_mute, icon: 'volume-x', pattern: CONFIRM }
+	menu: { label: m.key_menu, icon: 'menu', pattern: TAP },
+	volume_up: { label: m.key_volume_up, icon: 'plus', pattern: TAP },
+	volume_down: { label: m.key_volume_down, icon: 'minus', pattern: TAP },
+	mute: { label: m.key_mute, icon: 'volume-x', pattern: CONFIRM }
 };
 
 export type Fire = (repeat: boolean) => Promise<void>;
@@ -92,4 +93,14 @@ export type Fire = (repeat: boolean) => Promise<void>;
 export function pacedKeys(send: (key: PadKey) => Promise<unknown>): Record<PadKey, Fire> {
 	const keys = Object.keys(PAD_KEY) as PadKey[];
 	return Object.fromEntries(keys.map((k) => [k, paced(() => send(k))])) as Record<PadKey, Fire>;
+}
+
+/**
+ * The keys' sender, once for both remotes: each press through `g` under a key of its own, so
+ * keys never wait for one another (the pacing is `paced`'s) and show nothing in flight; a
+ * failure is said by the gesture. `send` makes the request for a key (a pad key, a thunk).
+ */
+export function keySender<K>(g: Gesture, send: (k: K) => Promise<unknown>): (k: K) => Promise<unknown> {
+	let sent = 0;
+	return (k) => g.run(() => send(k), undefined, `key-${++sent}`);
 }

@@ -1,7 +1,8 @@
 // Who is signed in. The session is an HttpOnly cookie the backend sets (after a passkey,
 // passkeys.ts); the page only asks whether it is still good, and forgets everything on sign-out.
 
-import { ApiError, UNREACHABLE, authApi, onUnauthorized, type User } from '#lib/api.ts';
+import { ApiError, UNREACHABLE, onUnauthorized } from '#lib/api.ts';
+import { authApi, type User } from '#lib/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import * as passkeys from '#lib/passkeys.ts';
 

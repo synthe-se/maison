@@ -3,6 +3,7 @@
 import { chromium, type Browser, type BrowserContextOptions, type Locator, type Page } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { m } from '../web/src/lib/paraglide/messages.js';
 
 /** The backend under test; run.sh passes it. */
 export const BASE = process.env.BASE ?? 'http://localhost:3099';
@@ -11,6 +12,20 @@ export const SHOTS = process.env.SHOTS;
 export const PHONE = { width: 390, height: 844 };
 /** The account every scenario signs in as (an admin, made by invitation). */
 export const USER = { id: 'e2e', name: 'E2E' };
+
+// ---- the app's words
+
+/**
+ * The French UI's words, as the app says them: i18n/messages/fr.json compiled by Paraglide
+ * (web/src/lib/paraglide), so a scenario never hard-codes a text the app may reword. The
+ * scenarios run in French (`open`).
+ */
+export const fr: typeof m = new Proxy(m, {
+	get: (messages, key) => {
+		const say = Reflect.get(messages, key) as (inputs: object, options: { locale: 'fr' }) => string;
+		return (inputs: object = {}) => say(inputs, { locale: 'fr' });
+	}
+});
 
 // ---- checks and the exit code
 
@@ -26,6 +41,27 @@ export function check(label: string, cond: boolean, detail = '') {
 /** From now on, only the failed checks are printed (long measured grids). */
 export function onlyFailures() {
 	quiet = true;
+}
+
+/** Polls `cond` until it holds (true) or `timeout` ms pass (false): a wait on what the page or
+ * the simulated house says, never on a fixed delay. */
+export async function until(cond: () => boolean | Promise<boolean>, timeout = 5_000): Promise<boolean> {
+	const end = Date.now() + timeout;
+	for (;;) {
+		if (await cond()) return true;
+		if (Date.now() > end) return false;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+}
+
+/** Waits for a page to be still: its fonts loaded, no skeleton nor busy list left, two frames
+ * painted (what an axe audit, a measure or a screenshot needs). */
+export async function settled(page: Page, timeout = 15_000) {
+	await page.waitForFunction(() => !document.querySelector('.skeleton, [aria-busy="true"]'), undefined, { timeout }).catch(() => {});
+	await page.evaluate(async () => {
+		await document.fonts.ready;
+		await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+	});
 }
 
 /** Closes the browser and exits: 0 when every check (and `also`) held. */
@@ -53,7 +89,7 @@ const EXPECTED = /status of (401|403|404|409|500|502|503)/;
 
 function watchErrors(page: Page) {
 	page.on('pageerror', (e) => errors.push(e.message));
-	page.on('console', (m) => m.type() === 'error' && !EXPECTED.test(m.text()) && errors.push(m.text()));
+	page.on('console', (msg) => msg.type() === 'error' && !EXPECTED.test(msg.text()) && errors.push(msg.text()));
 }
 
 /** The check every scenario ends with; the errors themselves printed when there are some. */
@@ -80,7 +116,14 @@ export async function authenticator(page: Page) {
 	await cdp.send('WebAuthn.enable');
 	const add = () =>
 		cdp.send('WebAuthn.addVirtualAuthenticator', {
-			options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true }
+			options: {
+				protocol: 'ctap2',
+				transport: 'internal',
+				hasResidentKey: true,
+				hasUserVerification: true,
+				isUserVerified: true,
+				automaticPresenceSimulation: true
+			}
 		});
 	return { cdp, add, ...(await add()) };
 }
@@ -89,8 +132,8 @@ export async function authenticator(page: Page) {
 export async function signIn(page: Page, path = '/') {
 	await authenticator(page);
 	await page.goto(invitation());
-	await page.getByRole('button', { name: /Créer ma clé d’accès|Create my passkey/ }).click();
-	await page.getByRole('button', { name: /Entrer dans Maison|Enter Maison/ }).click();
+	await page.getByRole('button', { name: fr.invite_create() }).click();
+	await page.getByRole('button', { name: fr.invite_enter() }).click();
 	await page.waitForURL((url) => !url.pathname.startsWith('/invite/'));
 	if (path !== '/') await page.goto(BASE + path);
 	await page.locator('main h1').first().waitFor();
