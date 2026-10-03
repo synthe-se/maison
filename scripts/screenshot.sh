@@ -5,15 +5,17 @@
 # fresh invitation on a throwaway backend) and writes a JPEG.
 #
 # Usage:
-#   scripts/screenshot.sh                       # screenshots/maison.jpg, README cache-busted
+#   scripts/screenshot.sh                       # screenshots/maison-<hash>.jpg, in README.md
 #   scripts/screenshot.sh --out screenshots/x.jpg --no-readme
 #
-# When the image is referenced in README.md, its URL gets a fresh `?v=<timestamp>` so GitHub
-# busts its image cache and shows the new screenshot.
+# The README's picture is named after its content (`maison-<hash>.jpg`), the previous one
+# removed: GitHub redirects a README image to raw.githubusercontent.com without its query
+# string and caches that address (CDN and browsers), so a `?v=` never reached it; a new name
+# is a new address no cache has seen.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$REPO/screenshots/maison.jpg"
+OUT=""
 BUMP_README=1
 
 while [[ $# -gt 0 ]]; do
@@ -24,16 +26,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p "$(dirname "$OUT")"
+SHOTS="$REPO/screenshots"
+SHOT="${OUT:-$(mktemp -t maison-shot).jpg}"
+mkdir -p "$(dirname "$SHOT")" "$SHOTS"
 cargo build --quiet --manifest-path "$REPO/backend/Cargo.toml" --bin maison-backend
 (cd "$REPO/web" && bun run build >/dev/null)
-(cd "$REPO/e2e" && OUT="$OUT" ./run.sh readme.ts)
+(cd "$REPO/e2e" && OUT="$SHOT" ./run.sh readme.ts)
+[[ -n "$OUT" ]] && exit 0
 
-# Cache-bust: refresh `?v=<timestamp>` on this image's URL in README.md.
+# The README's picture: named after its content, the previous ones removed, README pointed at it.
+HASH="$(shasum -a 256 "$SHOT" | cut -c1-12)"
+NAME="maison-$HASH.jpg"
+find "$SHOTS" -maxdepth 1 -name 'maison*.jpg' ! -name "$NAME" -delete
+mv "$SHOT" "$SHOTS/$NAME"
 README="$REPO/README.md"
-REL="${OUT#"$REPO"}"   # e.g. /screenshots/maison.jpg
-if [[ "$BUMP_README" == 1 && -f "$README" ]] && grep -q "$REL" "$README"; then
-  TS="$(date +%s)"
-  perl -i -pe "s{\Q$REL\E(\?v=\d+)?}{$REL?v=$TS}g" "$README"
-  echo "Bumped README image cache -> $REL?v=$TS"
+if [[ "$BUMP_README" == 1 && -f "$README" ]]; then
+  perl -i -pe "s{/screenshots/maison[^)\s]*\.jpg(\?v=\d+)?}{/screenshots/$NAME}g" "$README"
+  echo "README picture -> /screenshots/$NAME"
 fi

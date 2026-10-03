@@ -1,8 +1,14 @@
-# Maison
+# <img src="web/static/brand.svg" alt="" width="36" align="top"> Maison
+
+[![last commit](https://img.shields.io/github/last-commit/synthe-se/maison)](https://github.com/synthe-se/maison/commits/main)
+[![top language](https://img.shields.io/github/languages/top/synthe-se/maison)](https://github.com/synthe-se/maison)
+[![code size](https://img.shields.io/github/languages/code-size/synthe-se/maison)](https://github.com/synthe-se/maison)
+[![runs on](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%201-C51A4A?logo=raspberrypi&logoColor=white)](docs/deploy.md)
+[![sign-in](https://img.shields.io/badge/sign--in-passkeys%20only-3B82F6)](docs/passkeys.md)
 
 A self-hosted home dashboard: one Rust binary on a 2012 Raspberry Pi 1.
 
-![Maison](/screenshots/maison.jpg?v=1791001056)
+![Maison](/screenshots/maison-c3c9986267d9.jpg)
 
 ## Why not Home Assistant
 

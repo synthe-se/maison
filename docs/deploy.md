@@ -126,7 +126,8 @@ to 127.0.0.1.
   `cargo run --release --manifest-path backend/Cargo.toml --bin fit_tempo`, commit
   `cache/tempo/`, then `make deploy`. See [tempo.md](tempo.md).
 - **README screenshot**: `scripts/screenshot.sh` renders an invented house
-  (`e2e/readme.ts`) into `screenshots/maison.jpg` and bumps the README's `?v=`.
+  (`e2e/readme.ts`) into `screenshots/maison-<hash>.jpg`, named after its content (GitHub's
+  image redirect drops a `?v=` and caches the address), and points the README at it.
 - **Icons**: `scripts/icons.sh` regenerates every icon and `favicon.ico` from
   `web/static/brand.svg` and `web/brand/maskable.svg`.
 - **Matter roots**: `scripts/update-matter-trust.sh` when a new device fails attestation.
