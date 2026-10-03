@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The feeder's page: serve now (no dialog: the count is in the button, § 6), what it
-	// reports (its power, its last meal, a fault), and its scheduled meals.
+	// reports (its power, its last meal), and its scheduled meals.
 	import { m } from '#lib/paraglide/messages.js';
 	import { clock } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
@@ -68,9 +68,6 @@
 							<StatusRow icon="plug" label={m.feeder_power_source()} value={POWER[s.system.poweredBy]?.() ?? s.system.poweredBy} />
 						{/if}
 						<StatusRow icon="clock" label={m.feeder_last_meal()} value={meal ?? m.common_unknown()} />
-						{#if s.system?.faultStatus}
-							<StatusRow icon="triangle-alert" label={m.common_status()} value={m.feeder_fault()} warn />
-						{/if}
 					</dl>
 				{/if}
 			</Loaded>

@@ -61,7 +61,8 @@ describe('NowStrip', () => {
 		await expect.element(chip(m.now_lamps_on({ count: 2 }))).not.toHaveClass('warn');
 		await expect.element(chip(m.shutters_will_close({ name: 'Volet salon', time: clock(close) }))).toBeVisible();
 		await expect.element(chip(m.now_alert({ name: 'Fontaine', what: inSentence(m.cats_water_low()) }))).toHaveClass('warn');
-		await expect.element(chip(m.now_unreachable({ count: 2 }))).toHaveClass('warn');
+		// out of reach is said on each tile, not in the strip (normal here: a plug unplugged)
+		await expect.element(page.getByText(/injoignable/i)).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: /Lave-linge/ })).toHaveClass('warn');
 	});
 

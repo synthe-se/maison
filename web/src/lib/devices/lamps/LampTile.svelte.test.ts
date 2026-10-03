@@ -76,10 +76,10 @@ describe('LampTile', () => {
 		await render(LampTile, { lamp: fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })), driver: zigbee });
 		const toggle = page.getByRole('button', { name: 'Suspension' });
 		await expect.element(toggle).toHaveAttribute('aria-disabled', 'true');
-		await expect.element(toggle).toHaveAccessibleDescription(m.state_never_seen());
+		await expect.element(toggle).toHaveAccessibleDescription(m.state_unreachable());
 		(toggle.element() as HTMLElement).click();
 		expect(calls).toEqual([]);
-		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
+		await expect.element(page.getByText(m.state_unreachable())).toBeVisible();
 		await expect.element(page.getByRole('slider')).not.toBeInTheDocument();
 	});
 

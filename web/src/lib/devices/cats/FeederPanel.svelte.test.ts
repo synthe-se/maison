@@ -13,27 +13,26 @@ const withStatus = (parsedStatus: unknown, more: Record<string, unknown> = {}) =
 	stubApi({ [STATUS]: { success: true, parsedStatus }, [MEALS]: { success: true, decoded: [] }, ...more });
 
 describe('FeederPanel', () => {
-	it('says what the feeder reports, in words, warning on what needs a hand', async () => {
+	it('says what the feeder reports, in words, and no fault it cannot read', async () => {
 		withStatus({
 			feeding: { manualFeedEnabled: true, lastFeedSize: '2 portions', lastFeedReport: 0, quickFeedAvailable: false },
-			system: { poweredBy: 'Battery', faultStatus: true, ipAddress: '10.0.0.2' },
+			system: { poweredBy: 'Battery', ipAddress: '10.0.0.2' },
 			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006', timestampReadable: '' } }
 		});
 		await render(FeederPanel, { id: 'f1' });
-		await expect.element(page.getByText(m.feeder_fault())).toBeVisible();
+		await expect.element(page.getByText(m.feeder_power_battery())).toBeVisible();
 		expect(facts()).toEqual([
 			{ term: m.feeder_power_source(), value: m.feeder_power_battery(), warn: false },
 			{
 				term: m.feeder_last_meal(),
 				value: m.feeder_last_meal_value({ portions: m.feeder_portion({ count: 2 }), when: when(1773270006000) }),
 				warn: false
-			},
-			{ term: m.common_status(), value: m.feeder_fault(), warn: true }
+			}
 		]);
 	});
 
 	it('says only what it knows, and the backend’s own word for a power it does not name', async () => {
-		withStatus({ system: { poweredBy: 'Mode 7', faultStatus: false }, history: null });
+		withStatus({ system: { poweredBy: 'Mode 7' }, history: null });
 		await render(FeederPanel, { id: 'f1' });
 		await expect.element(page.getByText('Mode 7')).toBeVisible();
 		expect(facts()).toEqual([

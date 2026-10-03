@@ -107,7 +107,6 @@ fn parse_feeder_status(dps: &Map<String, Value>) -> Value {
             "alexaFeedEnabled": read(ALEXA_FEED, json!(false)),
         },
         "system": {
-            "faultStatus": dps.get(FAULT).and_then(Value::as_i64).unwrap_or_default() != 0,
             "poweredBy": powered_by,
             "ipAddress": read(IP_ADDRESS, json!("Unknown")),
         },
@@ -220,7 +219,7 @@ mod tests {
         assert_eq!(parsed["feeding"]["manualFeedEnabled"], true);
         assert_eq!(parsed["settings"]["soundEnabled"], false);
         assert_eq!(parsed["system"]["poweredBy"], "Battery");
-        assert_eq!(parsed["system"]["faultStatus"], false);
+        assert!(parsed["system"].get("faultStatus").is_none(), "DPS 14 is not read as a fault (meaning unknown)");
         assert_eq!(parsed["system"]["ipAddress"], "10.0.0.2");
         assert_eq!(parsed["history"]["parsed"]["remaining"], "3");
         assert_eq!(parsed["history"]["parsed"]["count"], "5");
@@ -313,6 +312,13 @@ mod tests {
             if let (Some(parsed), Some(legacy)) = (parsed.as_object_mut(), legacy.as_object_mut()) {
                 parsed.remove("history");
                 legacy.remove("history");
+            }
+            // the legacy app read the feeder's DPS 14 as a fault, and this capture of a feeder
+            // that was fine says `true`: DPS 14 is not read as a fault any more
+            if let Some(system) = legacy.get_mut("system").and_then(Value::as_object_mut) {
+                if kind == TuyaDeviceType::Feeder {
+                    assert_eq!(system.remove("faultStatus"), Some(Value::Bool(true)), "the capture that shows it");
+                }
             }
             assert_eq!(parsed, legacy, "{kind:?}");
         }

@@ -42,6 +42,8 @@ pub mod dps {
         pub const MEAL_PLAN: &str = "1";
         pub const QUICK_FEED: &str = "2";
         pub const MANUAL_FEED: &str = "3";
+        /// Reported by the Pixi feeder, but its meaning is unknown: it reads 1 in normal
+        /// use (a fresh meal, a full tank). Never shown as a fault until it is understood.
         pub const FAULT: &str = "14";
         pub const FEED_REPORT: &str = "15";
         pub const FEED_SIZE: &str = "101";

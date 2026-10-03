@@ -20,10 +20,8 @@ const fact = (text: string): Line => ({ text, warn: false });
 /** The device's own line from its status; null when it has nothing to say. */
 export function statusLine(kind: Kind, status: unknown): Line | null {
 	if (!status) return null;
-	if (kind === 'feeder') {
-		const s = status as FeederStatus;
-		return s.system?.faultStatus ? warn(m.cats_fault()) : null;
-	}
+	// the feeder reports no fault it can be trusted with (its DPS 14 reads 1 when all is well)
+	if (kind === 'feeder') return null;
 	if (kind === 'fountain') {
 		const s = status as FountainStatus;
 		return s.waterLevel === 'low' ? warn(m.cats_water_low()) : null;

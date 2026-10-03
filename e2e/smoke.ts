@@ -66,5 +66,15 @@ await passkeyButton.click();
 await title(p, fr.nav_tempo());
 check('signed in again where asked, with the passkey alone', p.url().endsWith('/tempo-predictions'));
 
+// « back » to a page already seen: its live values are read again, never a 500 (they once
+// belonged to the destroyed view and looped)
+await p.goto(`${BASE}/`);
+await title(p, fr.nav_home());
+await p.getByRole('link', { name: fr.nav_tempo() }).first().click();
+await title(p, fr.nav_tempo());
+await p.goBack();
+await title(p, fr.nav_home());
+check('back from Tempo shows the dashboard again', new URL(p.url()).pathname === '/');
+
 checkNoErrors();
 await done(browser);

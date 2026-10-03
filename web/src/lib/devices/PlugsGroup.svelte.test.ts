@@ -31,7 +31,7 @@ describe('PlugsGroup', () => {
 					.toSorted()
 			)
 			.toEqual(['/api/meross', '/api/meross/a/electricity']);
-		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
+		await expect.element(page.getByText(m.state_unreachable())).toBeVisible();
 	});
 
 	it('an unreachable plug keeps its gesture, unavailable, and says since when', async () => {

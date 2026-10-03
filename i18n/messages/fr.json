@@ -38,7 +38,6 @@
 	"branding_name": "Maison",
 	"branding_promise": "Ta maison te répond, ici, sans passer par le nuage.",
 	"cats_clean": "Propre",
-	"cats_fault": "En défaut",
 	"cats_litter_half": "Litière à moitié pleine",
 	"cats_offline_reason": "Hors ligne : reconnecte-le pour le commander d’ici.",
 	"cats_water_low": "Eau basse",
@@ -191,7 +190,6 @@
 		}
 	],
 	"feeder_distributing": "Distribution…",
-	"feeder_fault": "Le distributeur signale un défaut",
 	"feeder_feeder_status": "État du distributeur",
 	"feeder_last_meal": "Dernier repas",
 	"feeder_last_meal_value": "{portions}, {when}",
@@ -590,21 +588,6 @@
 	"now_red_peak": "{name} en HP rouge · {cost}",
 	"now_tempo": "{color} {period} · {cents} c€ jusqu’à {time}",
 	"now_title": "Maintenant",
-	"now_unreachable": [
-		{
-			"declarations": [
-				"input count",
-				"local p = count: plural"
-			],
-			"selectors": [
-				"p"
-			],
-			"match": {
-				"p=one": "{count} injoignable",
-				"p=*": "{count} injoignables"
-			}
-		}
-	],
 	"people_admin": "Administration",
 	"people_intro": "Les personnes de la maison et leurs clés. En retirer une ferme ses sessions et efface ses clés.",
 	"people_passkeys": [
@@ -946,7 +929,6 @@
 	"shutters_will_close": "{name} ferme à {time}",
 	"shutters_will_open": "{name} ouvre à {time}",
 	"skip_to_content": "Aller au contenu",
-	"state_never_seen": "Injoignable, jamais vu",
 	"state_off": "Éteinte",
 	"state_on": "Allumée",
 	"state_standby": "En veille",

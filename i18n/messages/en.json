@@ -38,7 +38,6 @@
 	"branding_name": "Maison",
 	"branding_promise": "Your home answers you, right here, without the cloud.",
 	"cats_clean": "Clean",
-	"cats_fault": "Fault",
 	"cats_litter_half": "Litter half full",
 	"cats_offline_reason": "Offline: reconnect it to control it from here.",
 	"cats_water_low": "Water low",
@@ -191,7 +190,6 @@
 		}
 	],
 	"feeder_distributing": "Dispensing…",
-	"feeder_fault": "The feeder reports a fault",
 	"feeder_feeder_status": "Feeder status",
 	"feeder_last_meal": "Last meal",
 	"feeder_last_meal_value": "{portions}, {when}",
@@ -590,21 +588,6 @@
 	"now_red_peak": "{name} in red peak hours · {cost}",
 	"now_tempo": "{color} {period} · {cents} c€ until {time}",
 	"now_title": "Right now",
-	"now_unreachable": [
-		{
-			"declarations": [
-				"input count",
-				"local p = count: plural"
-			],
-			"selectors": [
-				"p"
-			],
-			"match": {
-				"p=one": "{count} unreachable",
-				"p=*": "{count} unreachable"
-			}
-		}
-	],
 	"people_admin": "Admin",
 	"people_intro": "The people of the house and their passkeys. Removing someone ends their sessions and erases their passkeys.",
 	"people_passkeys": [
@@ -946,7 +929,6 @@
 	"shutters_will_close": "{name} closes at {time}",
 	"shutters_will_open": "{name} opens at {time}",
 	"skip_to_content": "Skip to content",
-	"state_never_seen": "Unreachable, never seen",
 	"state_off": "Off",
 	"state_on": "On",
 	"state_standby": "Standby",

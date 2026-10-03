@@ -149,6 +149,8 @@ export interface Loadable {
 }
 
 const all = new Map<string, Live<unknown, unknown>>();
+/** Each Live's own reactive root (see live()), released by forgetAll(). */
+const roots = new Map<string, () => void>();
 
 /** A source, declared once (the identity of its `fetch` is what live() checks). */
 export function source<T, A = never>(key: string, fetch: (arg?: A) => Promise<T>, every?: Every<T>): Source<T, A> {
@@ -177,7 +179,16 @@ export function sources<Args extends unknown[], T, A = never>(make: (...args: Ar
 export function live<T, A = never>(src: Source<T, A>): Live<T, A> {
 	let entry = all.get(src.key) as Live<T, A> | undefined;
 	if (!entry) {
-		entry = new Live(src);
+		// A Live outlives the component that first asks for it (the next page reads it too): its
+		// deriveds (loading, failed, stale) must not belong to that component, or they go inert
+		// when it is destroyed and the next view reads stale values (an effect loop, a 500 page,
+		// after « back »). So it is made in a root of its own.
+		let made!: Live<T, A>;
+		roots.set(
+			src.key,
+			$effect.root(() => void (made = new Live(src)))
+		);
+		entry = made;
 		all.set(src.key, entry as Live<unknown, unknown>);
 	} else if (import.meta.env.DEV && entry.source.fetch !== src.fetch) {
 		throw new Error(`live('${src.key}'): declared twice with different fetches (declare it once, in the family's data.ts)`);
@@ -197,6 +208,8 @@ export function refresh(prefix: string): Promise<void[]> {
 
 /** Forget everything (sign-out: the next person starts clean). */
 export function forgetAll() {
+	for (const release of roots.values()) release();
+	roots.clear();
 	all.clear();
 }
 

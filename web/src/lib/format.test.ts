@@ -46,7 +46,7 @@ describe('unreachableSince', () => {
 	});
 
 	it('never heard: says so', () => {
-		expect(unreachableSince(0)).toBe(m.state_never_seen());
-		expect(unreachableSince(null)).toBe(m.state_never_seen());
+		expect(unreachableSince(0)).toBe(m.state_unreachable());
+		expect(unreachableSince(null)).toBe(m.state_unreachable());
 	});
 });

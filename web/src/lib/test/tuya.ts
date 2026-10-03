@@ -15,7 +15,7 @@ export const tuyaDevice = (over: Partial<Device> = {}): Device => ({
 export const feederStatus = (at = Date.UTC(2026, 9, 2, 6), over: Partial<FeederStatus> = {}): FeederStatus => ({
 	feeding: { manualFeedEnabled: true, lastFeedSize: '2 portions', lastFeedReport: 0, quickFeedAvailable: false },
 	settings: { soundEnabled: true, alexaFeedEnabled: false },
-	system: { faultStatus: false, poweredBy: 'AC Power', ipAddress: '192.168.1.174' },
+	system: { poweredBy: 'AC Power', ipAddress: '192.168.1.174' },
 	history: {
 		raw: `R:0 C:2 T:${Math.floor(at / 1000)}`,
 		parsed: { remaining: '0', count: '2', timestamp: String(Math.floor(at / 1000)), timestampReadable: '' }

@@ -58,7 +58,7 @@ await shot(tile('Salon'), 'lamp-no-answer');
 
 // ── plugs: power as the one fact, the offline one says so ──
 await tile('Lave-linge').waitFor();
-check('a plug offline says so', (await tile('Radiateur').innerText()).includes(fr.state_never_seen()));
+check('a plug offline says so', (await tile('Radiateur').innerText()).includes(fr.state_unreachable()));
 await gesture('Lave-linge').click();
 check('plug toggled off', await until(() => h.state.plugs[0].isOn === false), h.state.sent.at(-1));
 

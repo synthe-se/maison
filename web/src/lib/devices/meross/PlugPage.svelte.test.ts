@@ -97,7 +97,7 @@ describe('PlugPage', () => {
 		plugServer(merossStatus({ online: false, wifi: { signal: null } }));
 		await render(PlugPage, { id: 'p1' });
 		await expect.element(page.getByText(m.meross_not_connected())).toBeVisible();
-		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
+		await expect.element(page.getByText(m.state_unreachable())).toBeVisible();
 		await expect.element(page.getByText(m.meross_wifi_signal())).not.toBeInTheDocument();
 	});
 

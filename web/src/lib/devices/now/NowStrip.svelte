@@ -43,17 +43,6 @@
 			.toSorted((a, b) => new Date(nextEvent(a)!.at).getTime() - new Date(nextEvent(b)!.at).getTime())[0]
 	);
 
-	/** Out of reach, per group (the chip leads to the first group that has one). */
-	const unreachable = $derived(
-		[
-			{ to: 'lamps-title', count: lamps.filter((l) => !l.reachable).length },
-			{ to: 'cats-title', count: (cats.data?.devices ?? []).filter((d) => !d.connected).length },
-			{ to: 'shutters-title', count: (covers.data?.covers ?? []).filter((c) => !c.online).length },
-			{ to: 'meross-title', count: (plugs.data?.devices ?? []).filter((p) => !p.isOnline).length }
-		].filter((g) => g.count > 0)
-	);
-	const unreachableCount = $derived(unreachable.reduce((n, g) => n + g.count, 0));
-
 	// two lines at most on a phone: what does not fit waits behind « +2 » (the facts first, what
 	// needs a hand last), shown on demand; hidden chips are hidden for everyone (`hidden`)
 	const LINES = 2;
@@ -129,7 +118,6 @@
 			{#if d.type !== 'unknown'}<CatChip device={d} />{/if}
 		{/each}
 		{#each plugs.data?.devices ?? [] as p (p.id)}<PlugChip plug={p} {price} />{/each}
-		{#if unreachableCount}<Chip text={m.now_unreachable({ count: unreachableCount })} to={unreachable[0].to} warn />{/if}
 		<li bind:this={more} hidden>
 			<button class="pill-btn now-chip" aria-expanded={open} aria-label={m.now_more({ count: folded })} onclick={unfold}>+{folded}</button>
 		</li>

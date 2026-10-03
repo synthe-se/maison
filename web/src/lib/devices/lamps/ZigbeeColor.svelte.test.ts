@@ -92,7 +92,7 @@ describe('ZigbeeColor', () => {
 		await render(ZigbeeColor, { lamp: zigbeeLamp({ reachable: false, lastSeen: null }) });
 		await expect
 			.element(page.getByRole('button', { name: PRESETS[0].name(), exact: true }))
-			.toHaveAccessibleDescription(m.state_never_seen());
+			.toHaveAccessibleDescription(m.state_unreachable());
 	});
 
 	it('a failure is told', async () => {

@@ -10,7 +10,7 @@ import { status } from './data.ts';
 
 describe('tuya', () => {
 	it('reads a device’s status and keeps it fresh while shown', async () => {
-		const reported = { system: { faultStatus: false, poweredBy: 'AC Power' } };
+		const reported = { system: { poweredBy: 'AC Power' } };
 		const api = stubApi({ '/devices/f1/feeder/status': { success: true, parsedStatus: reported } });
 		let entry!: { readonly data: unknown };
 		const destroy = $effect.root(() => {

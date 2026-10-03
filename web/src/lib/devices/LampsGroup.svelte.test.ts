@@ -58,7 +58,7 @@ describe('LampsGroup', () => {
 		await expect.element(group).toBeVisible();
 		await expect.element(group.getByRole('link', { name: 'Lampe du salon' })).toHaveAttribute('href', '/hue-lamp/hue-1');
 		await expect.element(group.getByRole('link', { name: 'Suspension' })).toHaveAttribute('href', '/zigbee-lamp/zb-1');
-		await expect.element(page.getByText(m.state_never_seen())).toBeVisible();
+		await expect.element(page.getByText(m.state_unreachable())).toBeVisible();
 	});
 
 	it('leaves out a radio the server runs without, and hides when it has none', async () => {

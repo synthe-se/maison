@@ -35,11 +35,11 @@ export function formatMinutes(minutes: number): string {
 /**
  * Since when a device is out of reach, for every tile alike (docs/ux.md § 4):
  * « Injoignable depuis 12 min » within the hour, then the time it was last heard
- * (« Injoignable depuis 14:20 », with the day when not today), « Injoignable, jamais vu »
+ * (« Injoignable depuis 14:20 », with the day when not today), or just « Injoignable »
  * when it never answered. `at`: ISO text or ms since the epoch; 0 or null is never.
  */
 export function unreachableSince(at: string | number | null | undefined): string {
-	if (!at) return m.state_never_seen();
+	if (!at) return m.state_unreachable();
 	const ms = typeof at === 'number' ? at : new Date(at).getTime();
 	const minutes = Math.max(1, Math.round((Date.now() - ms) / 60_000));
 	return minutes < HOUR / MINUTE

@@ -35,7 +35,7 @@ export interface DeviceStatusResponse<T = unknown> {
 export interface FeederStatus {
 	feeding?: { manualFeedEnabled?: boolean; lastFeedSize?: string; lastFeedReport?: number; quickFeedAvailable?: boolean };
 	settings?: { soundEnabled?: boolean; alexaFeedEnabled?: boolean };
-	system?: { faultStatus?: boolean; poweredBy?: string; ipAddress?: string };
+	system?: { poweredBy?: string; ipAddress?: string };
 	/** The last meal's report (`R:<left> C:<portions> T:<unix seconds>`), each field read; null
 	 * until the feeder sent one. */
 	history?: {

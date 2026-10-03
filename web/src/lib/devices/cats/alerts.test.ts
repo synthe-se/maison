@@ -7,13 +7,12 @@ describe('statusLine', () => {
 	it('nothing to say without a status, or when all is well', () => {
 		expect(statusLine('fountain', undefined)).toBeNull();
 		expect(statusLine('fountain', { waterLevel: 'ok' })).toBeNull();
-		expect(statusLine('feeder', { system: { faultStatus: false, poweredBy: 'AC Power' } })).toBeNull();
+		expect(statusLine('feeder', { system: { poweredBy: 'AC Power' } })).toBeNull();
 		expect(statusLine('unknown', {})).toBeNull();
 	});
 
 	it('what needs a hand, in the warning style', () => {
 		expect(statusLine('fountain', { waterLevel: 'low' })).toEqual({ text: m.cats_water_low(), warn: true });
-		expect(statusLine('feeder', { system: { faultStatus: true } })).toEqual({ text: m.cats_fault(), warn: true });
 		expect(statusLine('litter-box', { sensors: { litterLevel: 'half' }, system: { state: 'satnd_by' } })).toEqual({
 			text: m.cats_litter_half(),
 			warn: true

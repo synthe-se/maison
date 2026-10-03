@@ -41,7 +41,7 @@ describe('lampState (line 2 of the tile)', () => {
 		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: '2026-10-02T11:59:59Z' })))).toBe(
 			m.state_unreachable_for({ duration: m.duration_minutes({ m: 1 }) })
 		);
-		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })))).toBe(m.state_never_seen());
+		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })))).toBe(m.state_unreachable());
 	});
 });
 

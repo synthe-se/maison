@@ -74,7 +74,7 @@ describe('CatsGroup', () => {
 			'/devices/f2/feeder/status': {
 				success: true,
 				device: fed,
-				parsedStatus: { system: { faultStatus: false, poweredBy: 'AC Power' } },
+				parsedStatus: { system: { poweredBy: 'AC Power' } },
 				message: ''
 			},
 			'/devices/w1/fountain/status': { success: true, device: water, parsedStatus: { waterLevel: 'low' }, message: '' },
