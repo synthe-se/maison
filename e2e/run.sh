@@ -9,9 +9,6 @@ cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
 DIR=$(mktemp -d)
 PORT=${PORT:-3099}
-for f in devices.json meross-devices.json hue-lamps.json hue-lamps-blacklist.json zigbee-lamps.json \
-	zigbee-lamps-blacklist.json broadlink-codes.json; do echo '[]' > "$DIR/$f"; done
-echo '{}' > "$DIR/device-cache.json"
 cp -R "$ROOT/cache" "$DIR/cache"
 export MAISON_SOURCE_ROOT="$DIR" PUBLIC_URL="http://localhost:$PORT" MAISON_BIN="$ROOT/backend/target/debug/maison-backend"
 FRONTEND_DIST_DIR="$ROOT/web/build" PORT="$PORT" HOST=127.0.0.1 \

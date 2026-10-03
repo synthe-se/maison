@@ -18,25 +18,26 @@ RUNTIME_FILES=(
   meross-devices.json
 )
 
-# Mutable state owned by the backend on the Pi: never pushed, seeded when
-# absent (APP_DIR belongs to root, so the backend cannot create them itself)
-# and handed to the service user. Format: "name|seed"; an empty seed creates
-# an empty file.
+# Mutable state owned by the backend on the Pi: never pushed, never seeded (a
+# missing file is the backend's default, an empty one an error), handed back to
+# the service user when present. The backend creates them itself: APP_DIR is
+# root:maison 1775 (group-writable, sticky like /tmp), so the service makes and
+# renames its own files but can never replace root's (.env, devices.json…).
 STATE_FILES=(
-  'device-cache.json|[]'
-  'broadlink-codes.json|{"codes":[]}'
-  'hue-lamps.json|[]'
-  'hue-lamps-blacklist.json|[]'
-  'zigbee-lamps.json|[]'
-  'zigbee-lamps-blacklist.json|[]'
-  'climate-state.json|'
-  'nabaztag.json|'
-  'refresh-tokens.json|'
-  'ir-keymap.json|'
-  'tv.json|'
-  'androidtv.json|'
-  'adb-key|'
-  'atv-identity|'
+  device-cache.json
+  broadlink-codes.json
+  hue-lamps.json
+  hue-lamps-blacklist.json
+  zigbee-lamps.json
+  zigbee-lamps-blacklist.json
+  climate-state.json
+  nabaztag.json
+  refresh-tokens.json
+  ir-keymap.json
+  tv.json
+  androidtv.json
+  adb-key
+  atv-identity
 )
 
 # State directories handed recursively to the service user. Format:
@@ -181,6 +182,11 @@ for dir in ${LAYOUT}; do
   mkdir -p "${APP_DIR}/${dir}"
 done
 
+# The service writes its state by temp file + rename next to it: the app dir is
+# group-writable for it, sticky so nobody replaces a file they do not own.
+chown "root:${SERVICE_GROUP}" "${APP_DIR}"
+chmod 1775 "${APP_DIR}"
+
 # rsync runs as root, so ownership is handed back after every push —
 # otherwise the backend gets EACCES on its next persist.
 for entry in ${STATE_DIRS}; do
@@ -193,17 +199,11 @@ for entry in ${STATE_DIRS}; do
   fi
 done
 
-for entry in "$@"; do
-  file="${APP_DIR}/${entry%%|*}"
-  seed="${entry#*|}"
-  if [ ! -e "${file}" ]; then
-    if [ -n "${seed}" ]; then
-      printf '%s\n' "${seed}" > "${file}"
-    else
-      : > "${file}"
-    fi
+for name in "$@"; do
+  file="${APP_DIR}/${name}"
+  if [ -e "${file}" ]; then
+    chown "${SERVICE_USER}:${SERVICE_GROUP}" "${file}"
   fi
-  chown "${SERVICE_USER}:${SERVICE_GROUP}" "${file}"
 done
 EOF
 }
@@ -302,8 +302,7 @@ push_to_pi() {
     fi
   done
 
-  for entry in "${STATE_FILES[@]}"; do
-    relative_path="${entry%%|*}"
+  for relative_path in "${STATE_FILES[@]}"; do
     if [ -f "${ROOT_DIR}/${relative_path}" ]; then
       warn "Skipping push of mutable runtime file ${relative_path}; keeping remote state"
       ## Enable on first deploy

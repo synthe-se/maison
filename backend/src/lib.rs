@@ -305,6 +305,22 @@ fn request_allowed(
     }
 }
 
+/// How long a response may be kept, by Cloudflare's edge and by the browser. Said for
+/// every path: without it Cloudflare keeps static files 4 h, and a new logo or icon
+/// stays invisible that long after a deploy.
+/// - `/api/`: answers about the house and its people, never kept;
+/// - `/_app/immutable/`: SvelteKit's hashed build files, a new name for every change: a year;
+/// - everything else (the page, the logo, icons, the manifest): kept but revalidated each time.
+fn cache_policy(path: &str) -> &'static str {
+    if path.starts_with("/api/") {
+        "no-store"
+    } else if path.starts_with("/_app/immutable/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
 /// A path as logs keep it: an invitation's token is a secret (the query string, a town
 /// searched for, is left out altogether).
 fn loggable_path(path: &str) -> std::borrow::Cow<'_, str> {
@@ -319,13 +335,10 @@ async fn security_headers(
     next: Next,
     csp: header::HeaderValue,
 ) -> Response {
-    let api = request.uri().path().starts_with("/api/");
+    let cache = cache_policy(request.uri().path());
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    if api {
-        // answers about the house and its people are never kept by a cache
-        headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    }
+    headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static(cache));
     headers.insert("cross-origin-opener-policy", "same-origin".parse().unwrap());
     headers.insert(
         "permissions-policy",
@@ -438,6 +451,14 @@ mod guard_tests {
         assert!(post(&[("origin", "https://home.kahn.studio"), ("host", "home.kahn.studio")]).is_ok());
         assert!(post(&[]).is_ok(), "kird and curl say nothing");
         assert!(request_allowed(local, &Method::GET, "/api/x", &headers(&[("sec-fetch-site", "cross-site")])).is_ok(), "reads are harmless");
+    }
+
+    #[test]
+    fn every_path_says_how_long_it_may_be_kept() {
+        assert_eq!(cache_policy("/api/tempo"), "no-store");
+        assert_eq!(cache_policy("/_app/immutable/chunks/app.4f2a.js"), "public, max-age=31536000, immutable");
+        assert_eq!(cache_policy("/brand.svg"), "no-cache", "a new logo shows at the next visit");
+        assert_eq!(cache_policy("/"), "no-cache");
     }
 
     #[test]

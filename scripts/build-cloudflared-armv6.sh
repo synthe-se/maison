@@ -29,16 +29,18 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
-# Pull latest unless SKIP_PULL is set
+# The latest release unless SKIP_PULL is set, or the tag CLOUDFLARED_VERSION names: a
+# release tag, never whatever the default branch holds (and a checkout parked on an old
+# tag would otherwise rebuild that tag forever).
 if [ "${SKIP_PULL:-0}" != "1" ]; then
-  printf '==> Pulling latest cloudflared source\n'
-  git -C "${CLOUDFLARED_SRC}" pull --ff-only || {
-    printf 'Warning: git pull failed, building from current checkout\n' >&2
-  }
+  printf '==> Fetching cloudflared releases\n'
+  git -C "${CLOUDFLARED_SRC}" fetch --quiet --tags origin
+  TAG="${CLOUDFLARED_VERSION:-$(git -C "${CLOUDFLARED_SRC}" tag --list '20*' --sort=-v:refname | head -n1)}"
+  git -C "${CLOUDFLARED_SRC}" checkout --quiet "${TAG}"
 fi
 
 # Determine version and commit from git
-VERSION="$(git -C "${CLOUDFLARED_SRC}" describe --tags --abbrev=0 2>/dev/null || echo "unknown")"
+VERSION="$(git -C "${CLOUDFLARED_SRC}" describe --tags --exact-match 2>/dev/null || git -C "${CLOUDFLARED_SRC}" describe --tags --abbrev=0 2>/dev/null || echo "unknown")"
 COMMIT="$(git -C "${CLOUDFLARED_SRC}" rev-parse --short HEAD)"
 DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
