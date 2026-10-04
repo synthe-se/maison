@@ -47,9 +47,9 @@ export async function showcase(page: Page) {
 		['BLUE', 0.77]
 	];
 	const lamps = [
-		zigbeeLamp({ id: 'zb-1', name: 'Suspension' }),
-		zigbeeLamp({ id: 'zb-2', name: 'Lampe de chevet', state: { isOn: false } }),
-		zigbeeLamp({ id: 'zb-3', name: 'Ruban LED', state: { isOn: true, brightness: 35 } })
+		zigbeeLamp({ id: 'zb-1', name: 'Pendant' }),
+		zigbeeLamp({ id: 'zb-2', name: 'Bedside lamp', state: { isOn: false } }),
+		zigbeeLamp({ id: 'zb-3', name: 'LED strip', state: { isOn: true, brightness: 35 } })
 	];
 	const answers: Answers = {
 		'/api/tempo': tempoToday({
@@ -86,7 +86,7 @@ export async function showcase(page: Page) {
 			status: {
 				configured: true,
 				power: 'standby',
-				name: 'TV du salon',
+				name: 'Living room TV',
 				volume: { current: 12, min: 0, max: 60, muted: false },
 				ambilight: { power: false }
 			}
@@ -94,9 +94,9 @@ export async function showcase(page: Page) {
 		'/api/scenes': {
 			success: true,
 			scenes: [
-				{ id: 'je-pars', name: 'Je pars', icon: 'log-out', actions: [{ action: 'zigbee_power', lamp: 'zb-1', state: 'off' }] },
-				{ id: 'nuit', name: 'Nuit', icon: 'moon', actions: [{ action: 'zigbee_power', lamp: 'zb-1', state: 'off' }] },
-				{ id: 'film', name: 'Film', icon: 'film', actions: [{ action: 'tv_power', state: 'on' }] }
+				{ id: 'je-pars', name: 'Leaving', icon: 'log-out', actions: [{ action: 'zigbee_power', lamp: 'zb-1', state: 'off' }] },
+				{ id: 'nuit', name: 'Night', icon: 'moon', actions: [{ action: 'zigbee_power', lamp: 'zb-1', state: 'off' }] },
+				{ id: 'film', name: 'Movie', icon: 'film', actions: [{ action: 'tv_power', state: 'on' }] }
 			]
 		},
 		'/api/androidtv': {

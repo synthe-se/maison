@@ -8,7 +8,7 @@
 
 A self-hosted home dashboard: one Rust binary on a 2012 Raspberry Pi 1.
 
-![Maison](/screenshots/maison-c3c9986267d9.jpg)
+![Maison](/screenshots/maison-e4a164a85c37.jpg)
 
 ## Why not Home Assistant
 
