@@ -198,24 +198,41 @@ where
     })
 }
 
+/// The device and settings routers, under `/api`: anyone signed in drives them, and so does a
+/// service token (`auth::DeviceClient`, the LAN included). Admin-only routes inside add
+/// `AdminUser`, which a service token never is.
+const DEVICE_ROUTES: [(&str, DeviceRouter); 11] = [
+    ("/broadlink", routes::broadlink::router),
+    ("/devices", routes::devices::router),
+    ("/hue-lamps", routes::hue::router),
+    ("/matter", routes::matter::router),
+    ("/meross", routes::meross::router),
+    ("/nabaztag", routes::nabaztag::router),
+    ("/scenes", routes::scenes::router),
+    ("/tempo", routes::tempo::router),
+    ("/tv", routes::tv::router),
+    ("/androidtv", routes::androidtv::router),
+    ("/zigbee", routes::zigbee::router),
+];
+
+type DeviceRouter = fn() -> Router<AppState>;
+
+/// Whether `path` is one of `DEVICE_ROUTES`.
+fn is_device_path(path: &str) -> bool {
+    path.strip_prefix("/api").is_some_and(|rest| {
+        DEVICE_ROUTES.iter().any(|(prefix, _)| rest.strip_prefix(prefix).is_some_and(|r| r.is_empty() || r.starts_with('/')))
+    })
+}
+
 pub fn build_app(state: AppState) -> Router {
-    // Every device and settings route needs someone signed in, said once here: a handler
-    // never has to remember it. Admin-only ones add `AdminUser`. Signing in itself
-    // (`auth`, `passkeys`), `/health` and the IR bridge's machine route (`ir`, whose
-    // handlers name their own extractor) stay outside.
-    let signed_in = Router::<AppState>::new()
-        .nest("/broadlink", routes::broadlink::router())
-        .nest("/devices", routes::devices::router())
-        .nest("/hue-lamps", routes::hue::router())
-        .nest("/matter", routes::matter::router())
-        .nest("/meross", routes::meross::router())
-        .nest("/nabaztag", routes::nabaztag::router())
-        .nest("/scenes", routes::scenes::router())
-        .nest("/tempo", routes::tempo::router())
-        .nest("/tv", routes::tv::router())
-        .nest("/androidtv", routes::androidtv::router())
-        .nest("/zigbee", routes::zigbee::router())
-        .route_layer(middleware::from_extractor_with_state::<auth::AuthenticatedUser, AppState>(state.clone()));
+    // Every device and settings route needs someone signed in (or a service token), said
+    // once here: a handler never has to remember it. Admin-only ones add `AdminUser`.
+    // Signing in itself (`auth`, `passkeys`), `/health` and the IR bridge's machine route
+    // (`ir`, whose handlers name their own extractor) stay outside.
+    let signed_in = DEVICE_ROUTES
+        .into_iter()
+        .fold(Router::<AppState>::new(), |router, (prefix, routes)| router.nest(prefix, routes()))
+        .route_layer(middleware::from_extractor_with_state::<auth::DeviceClient, AppState>(state.clone()));
     let api_router = Router::<AppState>::new()
         .merge(routes::root::api_router())
         .nest("/auth", routes::auth::router())
@@ -284,10 +301,11 @@ async fn guard_request(request: axum::extract::Request, next: Next) -> Response 
 }
 
 /// Two rules, before routing:
-/// - From the LAN (not loopback, where cloudflared and the dev proxy are), only `/health`
-///   and the IR bridge's `/api/ir/key`: everything else goes through the tunnel's HTTPS.
-///   Passkeys cannot sign in over the LAN address anyway; this also keeps the API and its
-///   cookies off cleartext HTTP.
+/// - From the LAN (not loopback, where cloudflared and the dev proxy are), only `/health`,
+///   the IR bridge's `/api/ir/key`, and the device routes for a service token (a companion
+///   app on the LAN or Tailscale; the token is checked by the route layer): everything else
+///   goes through the tunnel's HTTPS. Passkeys cannot sign in over the LAN address anyway;
+///   this also keeps people's sessions and cookies off cleartext HTTP.
 /// - A request that changes something must come from this site: a browser says where it
 ///   comes from (`Sec-Fetch-Site`, else `Origin` against `Host`); a sibling subdomain is
 ///   « same-site » but not this site. Clients that say nothing (kird, curl) pass.
@@ -298,7 +316,8 @@ fn request_allowed(
     headers: &axum::http::HeaderMap,
 ) -> Result<(), &'static str> {
     let local = peer.is_none_or(|ip| ip.to_canonical().is_loopback());
-    if !local && !matches!(path, "/health" | "/api/ir/key") {
+    let machine = || auth::has_service_token(headers) && is_device_path(path);
+    if !local && !matches!(path, "/health" | "/api/ir/key") && !machine() {
         return Err("Use the public address");
     }
     if matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS) {
@@ -444,6 +463,20 @@ mod guard_tests {
         assert!(request_allowed(lan, &Method::GET, "/", &none).is_err());
         assert!(request_allowed(tunnel, &Method::GET, "/api/meross", &none).is_ok());
         assert!(request_allowed(Some("::ffff:127.0.0.1".parse().unwrap()), &Method::GET, "/x", &none).is_ok());
+    }
+
+    #[test]
+    fn a_service_token_reaches_the_device_routes_from_the_lan_and_nothing_else() {
+        let lan = Some("100.64.0.7".parse().unwrap());
+        let service = headers(&[("authorization", "Bearer maison_abc")]);
+        let session = headers(&[("authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.x.y")]);
+        for path in ["/api/zigbee/lamps", "/api/zigbee/lamps/1/power", "/api/matter/covers", "/api/tv", "/api/scenes/x/run"] {
+            assert!(request_allowed(lan, &Method::POST, path, &service).is_ok(), "{path}");
+            assert!(request_allowed(lan, &Method::POST, path, &session).is_err(), "{path}: a session goes through the tunnel");
+        }
+        for path in ["/api/people", "/api/invites", "/api/passkeys", "/api/auth/verify", "/api/ir/keymap", "/api/zigbeex", "/"] {
+            assert!(request_allowed(lan, &Method::GET, path, &service).is_err(), "{path}");
+        }
     }
 
     #[test]

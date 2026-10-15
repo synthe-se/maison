@@ -53,3 +53,29 @@ the sign-in screen, `routes/invite/[token]`, `routes/account`.
   pairing, APK installs, Matter commissioning, the house's place, the remote's keymap);
   `member` does everything else, driving the house included.
 - **Edition 2021**: no let-chains; Ariane's are rewritten as nested `if`s.
+
+## Service tokens (machines)
+
+A companion app (Achi, on a phone) drives the devices without a passkey: a long-lived
+service token, sent as `Authorization: Bearer maison_…`.
+
+- Made, listed and revoked from the CLI only (as root on the Pi, like `invite`); the token is
+  printed once, only its `hash_secret` is kept, in `auth/auth.json` (`tokens`). 256 random
+  bits, base64url, prefixed `maison_`. A revoked token stops at the next request.
+
+  ```bash
+  ssh <pi> 'cd /opt/maison && ./backend/target/release/maison-backend token create achi'
+  ssh <pi> 'cd /opt/maison && ./backend/target/release/maison-backend token list'
+  ssh <pi> 'cd /opt/maison && ./backend/target/release/maison-backend token revoke achi'
+  ```
+- One scope, `devices`: every route under the device layer (`auth::DeviceClient`, the
+  routers of `DEVICE_ROUTES` in `lib.rs`), as a member drives them. Anything that takes
+  `AuthenticatedUser` or `AdminUser` (people, passkeys, invitations, sessions, the keymap,
+  pairing, device settings, scene editing) answers 403 `forbidden` to a service token. An
+  unknown or revoked one is 401 `not_signed_in`.
+- The request guard lets a service token reach the device routes from the LAN or Tailscale
+  (`http://<pi>:3033`), not only through the tunnel; people's sessions still go through the
+  tunnel. Plain LAN HTTP carries the token in clear: prefer Tailscale or the public HTTPS
+  address.
+- The last use is dated (`lastUsedMs`, written at most once an hour: the SD card). Tokens
+  never reach the logs (only the path is traced).

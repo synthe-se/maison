@@ -8,8 +8,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 async fn main() {
     dotenvy::dotenv().ok();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("invite") {
-        std::process::exit(invite(&args[1..]).await);
+    match args.first().map(String::as_str) {
+        Some("invite") => std::process::exit(invite(&args[1..]).await),
+        Some("token") => std::process::exit(token(&args[1..]).await),
+        _ => {}
     }
     init_tracing();
 
@@ -88,6 +90,84 @@ async fn invite(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+const TOKEN_USAGE: &str = "usage: maison-backend token create <name> [--scope devices]
+       maison-backend token list
+       maison-backend token revoke <name or id>
+  A service token lets a machine (a companion app) drive the devices with
+  `Authorization: Bearer <token>`, from the LAN too; never people, passkeys,
+  invitations, tokens nor settings. Shown once at creation; only its hash is kept.";
+
+/// `maison-backend token create achi`: prints the token, once. `list`, `revoke`.
+async fn token(args: &[String]) -> i32 {
+    let config = maison_backend::config::Config::from_env();
+    let people = maison_backend::people::People::new(&config.auth_path);
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let outcome = match words.as_slice() {
+        ["create", name, rest @ ..] if !name.starts_with('-') => {
+            let scope = match rest {
+                [] => Ok(maison_backend::people::Scope::Devices),
+                ["--scope", scope] => scope.parse(),
+                _ => {
+                    eprintln!("{TOKEN_USAGE}");
+                    return 2;
+                }
+            };
+            let scope = match scope {
+                Ok(scope) => scope,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return 2;
+                }
+            };
+            maison_backend::auth::issue_service_token(&people, name, scope).await.map(|token| match token {
+                Some(token) => {
+                    println!("Service token « {} » (scope {}). Shown this once, keep it now:", name.trim(), scope.as_str());
+                    println!("{token}");
+                    0
+                }
+                None => {
+                    eprintln!("A token is already named « {} »: revoke it first.", name.trim());
+                    1
+                }
+            })
+        }
+        ["list"] => people.tokens().await.map(|tokens| {
+            if tokens.is_empty() {
+                println!("No service tokens.");
+            }
+            for t in tokens {
+                let day = |ms: i64| {
+                    chrono::DateTime::from_timestamp_millis(ms).map_or_else(|| "?".into(), |d| d.format("%Y-%m-%d").to_string())
+                };
+                let used = t.last_used_ms.map_or_else(|| "never".into(), day);
+                println!("{}  {}  {}  created {}  last used {used}", t.id, t.name, t.scope.as_str(), day(t.created_ms));
+            }
+            0
+        }),
+        ["revoke", key] => people.revoke_token(key).await.map(|gone| {
+            if gone {
+                println!("Revoked: « {key} » no longer opens anything.");
+                0
+            } else {
+                eprintln!("No service token named « {key} ».");
+                1
+            }
+        }),
+        ["-h" | "--help"] => {
+            println!("{TOKEN_USAGE}");
+            return 0;
+        }
+        _ => {
+            eprintln!("{TOKEN_USAGE}");
+            return 2;
+        }
+    };
+    outcome.unwrap_or_else(|error| {
+        eprintln!("{error}");
+        1
+    })
 }
 
 async fn shutdown_signal() {

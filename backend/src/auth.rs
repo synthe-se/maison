@@ -6,6 +6,11 @@
 //!   `not_before_ms`) ends every access token too.
 //! - The refresh token (7 days, rotating) is kept hashed; a spent one coming back means it
 //!   was copied: its whole family (every token rotated from the same sign-in) ends.
+//! - `DeviceClient`: who drives the devices, the route layer of every device router:
+//!   someone signed in, or a machine with a service token (`maison_…`, made by
+//!   `maison-backend token create`, kept hashed in `auth.json`). A service token is refused
+//!   everywhere else (`AuthenticatedUser`, `AdminUser`): people, passkeys, invitations,
+//!   tokens and settings stay with people.
 //! - `MachineClient`: the IR bridge's bearer token, nothing else.
 
 use std::{collections::HashMap, path::{Path, PathBuf}, sync::Arc};
@@ -23,9 +28,9 @@ use crate::{
     config::Config,
     error::AppError,
     passkey::Refusal,
-    people::{Person, Role},
+    people::{People, Person, Role, Scope, StoredToken},
     store::{self, Access, Corrupt},
-    util::{constant_time_eq, hash_secret},
+    util::{constant_time_eq, hash_secret, now_ms, random_id},
     AppState,
 };
 
@@ -87,10 +92,12 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let state = AppState::from_ref(state);
         let (access, _) = cookie_names(&state.config);
-        let token = extract_bearer_token(&parts.headers)
-            .ok()
-            .or_else(|| cookie_value(&parts.headers, &access))
-            .ok_or(Refusal::NotSignedIn)?;
+        let bearer = extract_bearer_token(&parts.headers).ok();
+        if bearer.is_some_and(is_service_token) {
+            // a machine where only a person may be
+            return Err(Refusal::Forbidden.into());
+        }
+        let token = bearer.or_else(|| cookie_value(&parts.headers, &access)).ok_or(Refusal::NotSignedIn)?;
         let claims = decode_token(token, state.config.jwt_secret.as_bytes()).map_err(|_| Refusal::NotSignedIn)?.claims;
         let person = state.people.person(&claims.user_id).await?.ok_or(Refusal::NotSignedIn)?;
         if claims.issued_ms < person.not_before_ms {
@@ -132,6 +139,86 @@ where
         }
         Ok(Self(user))
     }
+}
+
+/// Who drives the devices: someone signed in, or a service token with the `devices` scope.
+/// The device routers' layer (`lib.rs`); a handler that needs more asks `AdminUser`, which
+/// a service token never is.
+#[derive(Debug, Clone)]
+pub enum DeviceClient {
+    Person(AuthUser),
+    /// A service token, by its name.
+    Service(String),
+}
+
+impl DeviceClient {
+    pub fn is_admin(&self) -> bool {
+        matches!(self, Self::Person(user) if user.is_admin())
+    }
+}
+
+impl<S> FromRequestParts<S> for DeviceClient
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match extract_bearer_token(&parts.headers).ok().filter(|token| is_service_token(token)) {
+            Some(token) => {
+                let app_state = AppState::from_ref(state);
+                service_token(&app_state.people, token, Scope::Devices, now_ms()).await.map(Self::Service)
+            }
+            None => AuthenticatedUser::from_request_parts(parts, state).await.map(|user| Self::Person(user.0)),
+        }
+    }
+}
+
+/// What every service token starts with: told apart from a session's JWT (`eyJ…`) at a glance,
+/// by the request guard too.
+pub const SERVICE_TOKEN_PREFIX: &str = "maison_";
+
+/// How often a token's last use is written down, at most: an hour (the SD card counts writes).
+pub const TOKEN_USE_STEP_MS: i64 = 60 * 60 * 1000;
+
+pub fn is_service_token(token: &str) -> bool {
+    token.starts_with(SERVICE_TOKEN_PREFIX)
+}
+
+/// Whether the request carries a service token (said, not checked: the guard's question).
+pub fn has_service_token(headers: &HeaderMap) -> bool {
+    extract_bearer_token(headers).is_ok_and(is_service_token)
+}
+
+/// A new service token named `name`, for `scope`: the token, to show once (only its hash is
+/// kept); `None` when another token has the name. 256 random bits, base64url.
+pub async fn issue_service_token(people: &People, name: &str, scope: Scope) -> Result<Option<String>, AppError> {
+    use base64::Engine;
+    let name = crate::util::name(name)?.to_string();
+    let token = format!(
+        "{SERVICE_TOKEN_PREFIX}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
+    );
+    let stored =
+        StoredToken { id: random_id(), name, scope, token_hash: hash_secret(&token), created_ms: now_ms(), last_used_ms: None };
+    Ok(people.create_token(stored).await?.then_some(token))
+}
+
+/// The name of the service token `token`, when it exists and carries `scope`; its use is
+/// recorded (`TOKEN_USE_STEP_MS`). Unknown or revoked: not signed in.
+async fn service_token(people: &People, token: &str, scope: Scope, now_ms: i64) -> Result<String, AppError> {
+    let found = people.token_by_hash(&hash_secret(token)).await?.ok_or(Refusal::NotSignedIn)?;
+    if found.scope != scope {
+        return Err(Refusal::Forbidden.into());
+    }
+    if found.last_used_ms.is_none_or(|at| now_ms - at >= TOKEN_USE_STEP_MS) {
+        // a failed write costs only the date: the call goes on
+        if let Err(error) = people.token_used(&found.id, now_ms).await {
+            tracing::warn!(%error, token = %found.name, "service token use not recorded");
+        }
+    }
+    Ok(found.name)
 }
 
 /// Extractor for machine-to-machine clients (the kird IR bridge on the STB): a raw bearer
@@ -319,6 +406,32 @@ fn prune(tokens: &mut Tokens, now: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_service_token_is_random_base64url_shown_once_and_its_use_dated_hourly() {
+        let dir = crate::util::test_dir();
+        let people = People::new(&dir.path().join("auth.json"));
+        let token = issue_service_token(&people, " achi ", Scope::Devices).await.unwrap().unwrap();
+        let secret = token.strip_prefix(SERVICE_TOKEN_PREFIX).expect("prefixed");
+        assert_eq!(secret.len(), 43, "32 bytes, base64url without padding");
+        assert!(secret.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert!(issue_service_token(&people, "achi", Scope::Devices).await.unwrap().is_none(), "the name is taken");
+        assert!(issue_service_token(&people, " ", Scope::Devices).await.is_err(), "a name");
+        assert!(is_service_token(&token) && !is_service_token("eyJhbGciOiJIUzI1NiJ9.x.y"));
+
+        assert_eq!(service_token(&people, &token, Scope::Devices, 1_000).await.unwrap(), "achi");
+        let used = || async { people.tokens().await.unwrap()[0].last_used_ms };
+        assert_eq!(used().await, Some(1_000));
+        service_token(&people, &token, Scope::Devices, 1_000 + TOKEN_USE_STEP_MS - 1).await.unwrap();
+        assert_eq!(used().await, Some(1_000), "not rewritten within the hour");
+        service_token(&people, &token, Scope::Devices, 1_000 + TOKEN_USE_STEP_MS).await.unwrap();
+        assert_eq!(used().await, Some(1_000 + TOKEN_USE_STEP_MS));
+
+        let forged = format!("{SERVICE_TOKEN_PREFIX}{}", "A".repeat(43));
+        assert!(service_token(&people, &forged, Scope::Devices, 0).await.is_err());
+        assert!(people.revoke_token("achi").await.unwrap());
+        assert!(service_token(&people, &token, Scope::Devices, 0).await.is_err(), "revoked at once");
+    }
 
     fn entry(family: &str) -> RefreshEntry {
         RefreshEntry { user_id: "leonard".into(), expires_at: Utc::now().timestamp() + 60, family: family.into(), auth_ms: 0 }

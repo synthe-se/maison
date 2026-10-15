@@ -1,6 +1,7 @@
-//! Who may come in, and with what: people, their passkeys, and pending invitations, in one
-//! file (`auth.json`, 0600). There are no passwords: a person exists once an invitation has
-//! registered their first passkey (`routes::passkeys`, after Ariane's passkey mode).
+//! Who may come in, and with what: people, their passkeys, pending invitations and service
+//! tokens (machines: `auth::DeviceClient`), in one file (`auth.json`, 0600). There are no
+//! passwords: a person exists once an invitation has registered their first passkey
+//! (`routes::passkeys`, after Ariane's passkey mode).
 //!
 //! The file is the truth, read on every use and replaced whole (`store::write_json`) under
 //! an OS lock (`store::locked`): the server and `maison-backend invite` (run as root on the
@@ -106,6 +107,63 @@ pub struct Invite {
     pub expires_ms: i64,
 }
 
+/// What a service token may do. One scope for now: the devices, as a member drives them
+/// (never people, passkeys, invitations, tokens nor admin settings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    Devices,
+}
+
+impl Scope {
+    pub const ALL: [Self; 1] = [Self::Devices];
+
+    /// The word the file and the CLI say.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Devices => "devices",
+        }
+    }
+}
+
+impl std::str::FromStr for Scope {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|s| s.as_str() == value)
+            .ok_or_else(|| format!("unknown scope « {value} » (known: {})", Self::ALL.map(Self::as_str).join(", ")))
+    }
+}
+
+/// A long-lived token for a machine (a companion app), made from the CLI
+/// (`maison-backend token create`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredToken {
+    pub id: String,
+    /// Unique among the tokens: « achi ».
+    pub name: String,
+    pub scope: Scope,
+    /// `hash_secret` of the token: the token itself is never kept.
+    pub token_hash: String,
+    pub created_ms: i64,
+    /// Recorded at most once per `auth::TOKEN_USE_STEP_MS`: the SD card counts its writes.
+    pub last_used_ms: Option<i64>,
+}
+
+/// What the token list shows (never the hash).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenInfo {
+    pub id: String,
+    pub name: String,
+    pub scope: Scope,
+    pub created_ms: i64,
+    pub last_used_ms: Option<i64>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Book {
     #[serde(default)]
@@ -114,6 +172,8 @@ struct Book {
     passkeys: Vec<StoredPasskey>,
     #[serde(default)]
     invites: Vec<StoredInvite>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tokens: Vec<StoredToken>,
 }
 
 /// Why a passkey could not be removed.
@@ -404,6 +464,66 @@ impl People {
         })
         .await
     }
+
+    // ---------- service tokens ----------
+
+    /// A new token; false (nothing written) when another one has its name.
+    pub async fn create_token(&self, token: StoredToken) -> Result<bool, AppError> {
+        self.edit(move |b| {
+            if b.tokens.iter().any(|t| t.name == token.name) {
+                return (false, false);
+            }
+            b.tokens.push(token);
+            (true, true)
+        })
+        .await
+    }
+
+    pub async fn tokens(&self) -> Result<Vec<TokenInfo>, AppError> {
+        self.read(|b| {
+            b.tokens
+                .iter()
+                .map(|t| TokenInfo {
+                    id: t.id.clone(),
+                    name: t.name.clone(),
+                    scope: t.scope,
+                    created_ms: t.created_ms,
+                    last_used_ms: t.last_used_ms,
+                })
+                .collect()
+        })
+        .await
+    }
+
+    /// The token whose secret hashes to `token_hash`.
+    pub async fn token_by_hash(&self, token_hash: &str) -> Result<Option<StoredToken>, AppError> {
+        self.read(|b| b.tokens.iter().find(|t| same_hash(&t.token_hash, token_hash)).cloned()).await
+    }
+
+    /// The token named `name_or_id` (by its name or its id) goes, at once. False when unknown.
+    pub async fn revoke_token(&self, name_or_id: &str) -> Result<bool, AppError> {
+        let key = name_or_id.to_string();
+        self.edit(move |b| {
+            let before = b.tokens.len();
+            b.tokens.retain(|t| t.id != key && t.name != key);
+            let gone = b.tokens.len() != before;
+            (gone, gone)
+        })
+        .await
+    }
+
+    /// The token was used at `now_ms`.
+    pub async fn token_used(&self, id: &str, now_ms: i64) -> Result<(), AppError> {
+        let id = id.to_string();
+        self.edit(move |b| match b.tokens.iter_mut().find(|t| t.id == id) {
+            Some(t) => {
+                t.last_used_ms = Some(now_ms);
+                ((), true)
+            }
+            None => ((), false),
+        })
+        .await
+    }
 }
 
 fn info(k: &StoredPasskey) -> PasskeyInfo {
@@ -546,6 +666,46 @@ mod tests {
         assert!(p.delete_invite("i2").await.unwrap());
         assert!(!p.delete_invite("i2").await.unwrap());
         assert!(p.invites(10).await.unwrap().is_empty());
+    }
+
+    fn token(id: &str, name: &str, secret: &str) -> StoredToken {
+        StoredToken {
+            id: id.into(),
+            name: name.into(),
+            scope: Scope::Devices,
+            token_hash: hash_secret(secret),
+            created_ms: 0,
+            last_used_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_token_is_found_by_its_hash_named_once_and_revoked() {
+        let (dir, p) = people();
+        assert!(p.create_token(token("t1", "achi", "secret")).await.unwrap());
+        assert!(!p.create_token(token("t2", "achi", "other")).await.unwrap(), "one name, one token");
+        let found = p.token_by_hash(&hash_secret("secret")).await.unwrap().unwrap();
+        assert_eq!((found.id.as_str(), found.scope), ("t1", Scope::Devices));
+        assert!(p.token_by_hash(&hash_secret("other")).await.unwrap().is_none());
+        p.token_used("t1", 42).await.unwrap();
+        assert_eq!(p.tokens().await.unwrap()[0].last_used_ms, Some(42));
+        let text = std::fs::read_to_string(dir.path().join("auth").join("auth.json")).unwrap();
+        assert!(!text.contains("\"secret\""), "only the hash on disk");
+        assert!(p.revoke_token("achi").await.unwrap(), "by name");
+        assert!(!p.revoke_token("t1").await.unwrap());
+        assert!(p.token_by_hash(&hash_secret("secret")).await.unwrap().is_none(), "gone at once");
+        assert!(p.create_token(token("t3", "achi", "again")).await.unwrap());
+        assert!(p.revoke_token("t3").await.unwrap(), "by id");
+    }
+
+    #[test]
+    fn scopes_are_words() {
+        assert_eq!(serde_json::to_value(Scope::Devices).unwrap(), "devices");
+        assert_eq!("devices".parse::<Scope>(), Ok(Scope::Devices));
+        for scope in Scope::ALL {
+            assert_eq!(serde_json::to_value(scope).unwrap(), scope.as_str(), "one word for the file and the CLI");
+        }
+        assert!("admin".parse::<Scope>().is_err());
     }
 
     /// The file keeps the words it always had.

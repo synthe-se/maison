@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
-    auth::{AdminUser, AuthenticatedUser},
+    auth::{AdminUser, DeviceClient},
     broadlink::{BroadlinkSecurityMode, LearnCodeSaveRequest, LearnResult, SaveCodeRequest, SendResult},
     error::AppError,
     mitsubishi_ir::ClimateSettings,
@@ -103,12 +103,12 @@ pub fn router() -> Router<AppState> {
 async fn discover(
     State(state): State<AppState>,
     Query(query): Query<DiscoverQuery>,
-    user: AuthenticatedUser,
+    client: DeviceClient,
 ) -> Result<Json<Answer<Listed<Value>>>, AppError> {
     // The climate tile reads the cached list; scanning the network again, or from a
     // chosen interface, is setting up.
     let force_refresh = query.force_refresh.unwrap_or(false);
-    if (force_refresh || query.local_ip.is_some()) && !user.0.is_admin() {
+    if (force_refresh || query.local_ip.is_some()) && !client.is_admin() {
         return Err(Refusal::Forbidden.into());
     }
     let devices = state

@@ -91,7 +91,8 @@ ssh <pi> 'cd /opt/maison && ./backend/target/release/maison-backend invite leona
 ```
 
 It prints a one-time link (7 days). Open it on the device that will hold the passkey.
-After that, admins invite from « Mon compte ».
+After that, admins invite from « Mon compte ». A machine (a companion app) gets a service
+token instead: `maison-backend token create <name>` ([passkeys.md](passkeys.md#service-tokens-machines)).
 
 ## Layout and permissions on the Pi
 
@@ -106,8 +107,9 @@ After that, admins invite from « Mon compte ».
 | `matter-trust/` | root | CSA attestation roots (tracked; `scripts/update-matter-trust.sh` refreshes them) |
 
 `deploy.sh` restores that ownership after every push (rsync runs as root). From the LAN,
-`http://<pi>:3033` answers only `/health` and `/api/ir/key`; everything else goes through
-the tunnel, since passkeys need a domain and HTTPS. Mosquitto's plaintext listener is bound
+`http://<pi>:3033` answers only `/health`, `/api/ir/key` and, for a service token, the
+device routes ([passkeys.md](passkeys.md#service-tokens-machines)); everything else goes
+through the tunnel, since passkeys need a domain and HTTPS. Mosquitto's plaintext listener is bound
 to 127.0.0.1.
 
 ## Cloudflare

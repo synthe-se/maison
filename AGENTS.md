@@ -9,7 +9,8 @@ Cloudflare tunnel. Development on macOS. Deploying: [docs/deploy.md](docs/deploy
 
 ```
 backend/src/
-  main.rs            entrypoint; `maison-backend invite <id> --name X [--admin]`
+  main.rs            entrypoint; `maison-backend invite <id> --name X [--admin]`,
+                     `maison-backend token create|list|revoke` (service tokens)
   lib.rs             AppState, router, layers: security headers + CSP (SHA-256 of the
                      page's inline scripts), cache policy, guard_request, 180 s timeout,
                      `every()` / `supervised()` for background jobs (a panic is logged, the job
@@ -19,7 +20,8 @@ backend/src/
   store.rs           every JSON state file: read, atomic write, owner kept, `locked`
   util.rs            shared helpers (hex, random secrets, hashing, `HOUSE_TZ` = Europe/Paris:
                      never `chrono::Local`, which is UTC on the Pi; `test_dir()` for unit tests)
-  auth.rs            sessions: AuthenticatedUser, AdminUser, MachineClient (IR token)
+  auth.rs            sessions: AuthenticatedUser, AdminUser, DeviceClient (a person or a
+                     service token), MachineClient (IR token)
   passkey.rs people.rs routes/passkeys.rs   passkeys, people, invitations (docs/passkeys.md)
   tuya/              feeder, fountain, litter box (local TCP, uplg fork of rust-async-tuyapi):
                      mod (manager), worker (one supervised session per device), cache, parse,
@@ -92,8 +94,10 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
 - **Refusals are coded**: `AppError::Coded` with a `code` the web app maps to words
   (`web/src/lib/errors.ts`). 401 means only « not signed in » (the app reads it as a
   session that ended).
-- **Auth is a route layer**: device routers sit under one `AuthenticatedUser` layer, handlers
-  never repeat it; configuration routes take `AdminUser`. The IR bridge uses `MachineClient`.
+- **Auth is a route layer**: device routers (`DEVICE_ROUTES`) sit under one `DeviceClient`
+  layer (someone signed in, or a `devices` service token), handlers never repeat it;
+  configuration routes take `AdminUser`, which a service token never is. The IR bridge uses
+  `MachineClient`.
 - **Tests for everything**: Rust unit + integration, Vitest for every component and module
   (`*.svelte.test.ts` in Chromium, the rest in Node), e2e for every flow. `cargo test` must
   not touch the repo or the network (temp dirs, local stubs): integration tests build their
@@ -167,7 +171,8 @@ MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_l
 
 - Passkeys need a domain and HTTPS: the RP ID is the host of `PUBLIC_URL` (default
   `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`), never an IP. From the LAN the backend answers
-  only `/health` and `/api/ir/key`; everything else comes through cloudflared on loopback.
+  only `/health`, `/api/ir/key` and, to a service token, the device routes; everything else
+  comes through cloudflared on loopback.
   Client address = `CF-Connecting-IP` from loopback only.
 - Cloudflare overrides the backend's `Cache-Control` unless the zone's Browser Cache TTL is
   « Respect Existing Headers ».
