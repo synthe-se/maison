@@ -52,7 +52,8 @@ echo console >$g/configs/c.1/strings/0x409/configuration
 ln -s $g/functions/acm.usb0 $g/configs/c.1/
 udc=$(ls /sys/class/udc | head -1)
 [ -n "$udc" ] && echo $udc >$g/UDC && say "USB console on $udc"
-(while :; do [ -c /dev/ttyGS0 ] && mksh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done) &
+# (until /tmp/stop-console says the system's own getty takes it over)
+(while [ ! -e /tmp/stop-console ]; do [ -c /dev/ttyGS0 ] && mksh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done) &
 console=$!
 
 # 3. what came up, on the panel
@@ -81,8 +82,12 @@ if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data |
 	say "system: $img"
 	mkdir -p /newroot/android-data
 	mount --move /android-data /newroot/android-data
-	# the system's own getty takes the USB console
-	pkill -P $console; kill $console
+	# the system's own getty takes the USB console: the loop is told first, so the shell it runs,
+	# ended now, is not started again
+	# (never waited for: whatever happens to it, the system starts)
+	touch /tmp/stop-console
+	pkill -P $console
+	pkill -f "mksh -i"
 	for m in dev proc sys; do mount --move /$m /newroot/$m; done
 	exec switch_root /newroot /sbin/init
 fi
