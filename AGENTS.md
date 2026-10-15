@@ -69,7 +69,8 @@ frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): 
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
 matter-trust/        CSA attestation roots (tracked)
-docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md
+docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md, audio.md (planned audio
+                     companion)
 ```
 
 Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devices.json`,
