@@ -1,8 +1,11 @@
 #!/bin/sh
-# cog on the panel's KMS output, rotated 180° (the panel is mounted upside down), at the target;
-# drawn with GLES (Lima): cog's plain modeset renderer cannot rotate. The page's language rides in
-# the target's fragment, from the service's LANG (WPE always says en-US: web/src/lib/screen.ts).
+# cog on the panel's KMS output, rotated 180° (the panel is mounted upside down), at Maison's
+# address; drawn with GLES (Lima): cog's plain modeset renderer cannot rotate. Its cookies (the
+# wall screen's, set when an admin paired it) persist beside WebKit's storage. The page's
+# language rides in the address's fragment, from the service's LANG (WPE always says en-US:
+# web/src/lib/screens.ts); anything else there is dropped (an older target's token).
 set -eu
 target=$(cat "$CREDENTIALS_DIRECTORY/target")
-case "$target" in *#*) sep='&' ;; *) sep='#' ;; esac
-exec cog --platform=drm --platform-params=renderer=gles,rotation=2 "$target${sep}lang=${LANG%%_*}"
+exec cog --platform=drm --platform-params=renderer=gles,rotation=2 \
+	--cookie-store=always --cookie-jar="sqlite:$XDG_DATA_HOME/cookies.sqlite" \
+	"${target%%#*}#lang=${LANG%%_*}"

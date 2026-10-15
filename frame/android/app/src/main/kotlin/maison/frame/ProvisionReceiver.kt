@@ -11,7 +11,7 @@ import android.util.Log
  *
  * ```
  * adb shell am broadcast -a maison.frame.PROVISION -n maison.frame/.ProvisionReceiver \
- *   --es url https://maison.example --es token maison_…
+ *   --es url https://maison.example
  * adb shell am broadcast -a maison.frame.RELEASE -n maison.frame/.ProvisionReceiver
  * ```
  */
@@ -19,9 +19,9 @@ class ProvisionReceiver : BroadcastReceiver() {
 	override fun onReceive(context: Context, intent: Intent) {
 		when (intent.action) {
 			ACTION_PROVISION -> {
-				val target = Target.parse(intent.getStringExtra("url"), intent.getStringExtra("token"))
+				val target = Target.parse(intent.getStringExtra("url"))
 				if (target == null) {
-					Log.w(TAG, "provisioning refused: an HTTPS url and, if any, a maison_ token")
+					Log.w(TAG, "provisioning refused: an HTTPS url")
 					resultCode = Activity.RESULT_CANCELED
 					return
 				}

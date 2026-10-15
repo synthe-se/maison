@@ -3,8 +3,9 @@
 A Frameo photo frame (AMABOO GBZK-Y1000: Rockchip RK3126, 1 GB, 32 GB eMMC, 800×1280 MIPI panel,
 Android 6.0.1) turned into a screen that shows Maison and nothing else. It runs our own /system,
 built from the vendor's: no Frameo, no Adups FOTA, no SuperSU, and a GeckoView kiosk app as the
-only home and the device owner. It signs in with a service token ([passkeys.md](passkeys.md),
-« Service tokens »), which the web app keeps (`web/src/lib/screen.ts`): no person, no passkey.
+only home and the device owner. It is in as a paired wall screen ([passkeys.md](passkeys.md),
+« Wall screens »): « Utiliser comme écran mural » on its sign-in screen shows a code, an admin
+gives it from « Mon compte », Écrans, on the house's Wi-Fi. No token, no person, no passkey.
 
 Everything that is the vendor's, or secret, stays off the repo, in `~/maison-frame/`:
 `backup/` (the eMMC up to userdata, each partition, `layout.txt`, the vendor's device tree),
@@ -38,7 +39,7 @@ export ANDROID_SERIAL=<serial> RKDEVELOPTOOL=~/maison-frame/bin/rkdeveloptool
 frame/flash.sh keys     # once, on the vendor's Android: this computer's ADB key in adb_keys
 frame/flash.sh          # adb reboot loader, then resource, recovery and system, chunk by chunk, read back
 adb shell pm uninstall net.frameo.frame    # if Frameo had updated itself into /data
-ANDROID_SERIAL=<serial> frame/provision.sh https://<Maison's address>   # asks for the token
+ANDROID_SERIAL=<serial> frame/provision.sh https://<Maison's address>   # then pair it on the frame
 ```
 
 `flash.sh keys` matters: Frameo approved a computer's ADB key for the session only, and this
@@ -91,7 +92,8 @@ The loader may drop halfway: do the reset again, `rkwrite.py` resumes where it s
 
 - The kiosk is updated with `adb install -r` (same release key): there is no root any more.
 - `adb shell am broadcast -a maison.frame.PROVISION -n maison.frame/.ProvisionReceiver --es url
-  … --es token …` gives it a new address or token; `maison.frame.RELEASE` lifts the kiosk.
+  …` gives it a new address; `maison.frame.RELEASE` lifts the kiosk. Removed from « Mon
+  compte », it offers to pair again.
 - The frame stands in portrait, rotation 1: `ROTATION` in `provision.sh` and
   `bootanimation.sh` is one setting.
 
@@ -106,14 +108,15 @@ frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules
 frame/linux/rootfs.sh           # the system: rootfs.squashfs (Docker, armhf emulated, ~20 min)
 python3 -I frame/linux/initramfs.py frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
 python3 -I frame/linux/image.py frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/recovery-linux.img
-frame/linux/install.sh --target https://<maison>   # once: the system, Maison's address, the token
+frame/linux/install.sh --target https://<maison>   # once: the system and Maison's address
 frame/linux/try.sh --install --flash                # then: on the frame, booted, its console up
 frame/linux/console.sh 'systemctl status maison-kiosk'   # a root shell over the USB-C
 ```
 
-`install.sh` asks the token in the terminal (pushed as a 0600 file: Android 6's `adb shell` has
-no stdin of its own and echoes what it is sent). The kiosk opens `<url>#token=…`. The Wi-Fi
-takes the networks Android knows (its own `wpa_supplicant.conf`, read-only).
+The kiosk opens Maison's address with `#lang=fr` (WPE says `en-US` whatever its system), and is
+paired as a wall screen like the Android one; its cookies, WebKit's storage and cache persist in
+userdata's `/data/maison/kiosk` (mounted read-write; the system itself is read-only). The Wi-Fi
+takes the networks Android knows (its own `wpa_supplicant.conf`).
 
 What the bring-up taught, each point seen on the frame:
 
@@ -131,5 +134,5 @@ What the bring-up taught, each point seen on the frame:
   simpledrm left beside Rockchip's card is where cog would draw, unseen.
 - `reboot` from mainline brings Android even with the USB-C plugged in; `try.sh` handles either.
 
-Still to do: the language and the theme (WebKit says `en-US` and light, whatever the
-environment), the CPU above U-Boot's 600 MHz (its voltage), the boot's speed.
+Still to do: the theme following the sun (WebKit says light, whatever the hour), the CPU above
+U-Boot's 600 MHz (its voltage), the boot's speed.

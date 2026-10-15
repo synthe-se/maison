@@ -2,14 +2,13 @@ package maison.frame
 
 import java.net.URI
 
-/** Where the frame points: Maison's address, and the service token it drives the house with. */
-class Target private constructor(val url: URI, val token: String?) {
-	/** The page to open. The token rides in the fragment, which the browser never sends anywhere. */
+/** Where the frame points: Maison's address. The frame is in as a paired wall screen, by the
+ * HttpOnly cookie Maison set once an admin paired it (docs/passkeys.md « Wall screens »): no
+ * token here, nothing to provision but the address. */
+class Target private constructor(val url: URI) {
+	/** The page to open, without a fragment: nothing rides in the address. */
 	val startUrl: String
-		get() {
-			val page = url.toString().substringBefore('#')
-			return if (token == null) page else "$page#token=$token"
-		}
+		get() = url.toString().substringBefore('#')
 
 	/** Only Maison's own origin loads: same scheme, host and port. */
 	fun allows(uri: String): Boolean {
@@ -20,15 +19,11 @@ class Target private constructor(val url: URI, val token: String?) {
 	}
 
 	companion object {
-		/** A service token as `maison-backend token create` prints it (backend/src/auth.rs). */
-		private val TOKEN = Regex("maison_[A-Za-z0-9_-]{43}")
-
 		/** A target from what provisioning gave, or null: HTTPS only, no credentials in the URL. */
-		fun parse(url: String?, token: String?): Target? {
+		fun parse(url: String?): Target? {
 			val uri = url?.let { runCatching { URI(it) }.getOrNull() } ?: return null
 			if (!uri.scheme.equals("https", ignoreCase = true) || uri.host.isNullOrEmpty() || uri.userInfo != null) return null
-			if (token != null && !TOKEN.matches(token)) return null
-			return Target(uri, token)
+			return Target(uri)
 		}
 
 		private fun port(uri: URI): Int = if (uri.port != -1) uri.port else if (uri.scheme.equals("https", ignoreCase = true)) 443 else 80

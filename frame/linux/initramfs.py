@@ -70,11 +70,12 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d /sys/class/net/wlan0 ] && break; sleep 1;
 say "net: $(echo $(ls /sys/class/net))"
 
 # 5. the system, when Android's userdata holds one: its squashfs, read-only, a tmpfs over it, and
-#    userdata read-only at /android-data (Android's data is never written); else this shell stays
+#    userdata at /android-data, read-write for the kiosk's own state (/android-data/maison: its
+#    cookies, its cache); else this shell stays
 data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
 img=/android-data/local/tmp/maison/rootfs.squashfs
 mkdir -p /android-data /lower /rw /newroot
-if [ -n "$data" ] && mount -t ext4 -o ro,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data && [ -f $img ] &&
+if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data && [ -f $img ] &&
 	mount -t squashfs -o ro,loop $img /lower && mount -t tmpfs -o mode=755 tmpfs /rw &&
 	mkdir -p /rw/upper /rw/work && mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot; then
 	say "system: $img"

@@ -8,36 +8,26 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TargetTest {
-	private val token = "maison_" + "a".repeat(43)
-
 	@Test
 	fun `only HTTPS without credentials is accepted`() {
-		assertNotNull(Target.parse("https://maison.example", null))
-		assertNull(Target.parse("http://maison.example", null))
-		assertNull(Target.parse("https://user:pass@maison.example", null))
-		assertNull(Target.parse("https://", null))
-		assertNull(Target.parse("file:///sdcard/index.html", null))
-		assertNull(Target.parse(null, token))
-		assertNull(Target.parse("not a url", null))
+		assertNotNull(Target.parse("https://maison.example"))
+		assertNull(Target.parse("http://maison.example"))
+		assertNull(Target.parse("https://user:pass@maison.example"))
+		assertNull(Target.parse("https://"))
+		assertNull(Target.parse("file:///sdcard/index.html"))
+		assertNull(Target.parse(null))
+		assertNull(Target.parse("not a url"))
 	}
 
 	@Test
-	fun `a token must look like one the backend prints`() {
-		assertNotNull(Target.parse("https://maison.example", token))
-		assertNull(Target.parse("https://maison.example", "maison_short"))
-		assertNull(Target.parse("https://maison.example", "a".repeat(50)))
-		assertNull(Target.parse("https://maison.example", "$token&x"))
-	}
-
-	@Test
-	fun `the token rides in the fragment, replacing any`() {
-		assertEquals("https://maison.example/#token=$token", Target.parse("https://maison.example/#old", token)!!.startUrl)
-		assertEquals("https://maison.example/salon", Target.parse("https://maison.example/salon", null)!!.startUrl)
+	fun `nothing rides in the address it opens`() {
+		assertEquals("https://maison.example/", Target.parse("https://maison.example/#token=old")!!.startUrl)
+		assertEquals("https://maison.example/salon", Target.parse("https://maison.example/salon")!!.startUrl)
 	}
 
 	@Test
 	fun `only Maison's own origin loads`() {
-		val target = Target.parse("https://maison.example", token)!!
+		val target = Target.parse("https://maison.example")!!
 		assertTrue(target.allows("https://maison.example/api/zigbee/lamps"))
 		assertTrue(target.allows("https://MAISON.example:443/"))
 		assertFalse(target.allows("http://maison.example/"))

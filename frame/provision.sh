@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Once after a flash (and after any wipe): what a wall screen wants, set over ADB. Animations off
 # (Gecko then reports prefers-reduced-motion, which Maison honours), the rotation locked, the kiosk
-# made device owner (no status bar, no keyguard), then Maison's address and the screen's service
-# token (`maison-backend token create <name>` on the Pi). The token is read from the terminal,
-# never an argument: it stays out of the shell's history.
+# made device owner (no status bar, no keyguard), then Maison's address. The kiosk opens Maison's
+# sign-in: « Utiliser comme écran mural » on the frame shows a code, an admin gives it from
+# « Mon compte », Écrans (docs/passkeys.md « Wall screens »). No token to carry.
 # Usage: frame/provision.sh https://home.example     ROTATION=1 (portrait, as the frame stands)
 set -euo pipefail
 
@@ -26,8 +26,6 @@ case "$owner" in
 *) echo "device owner refused: $owner" >&2; exit 1 ;;
 esac
 
-read -rs -p "Service token (maison_…): " TOKEN
-echo
-a shell am broadcast -a maison.frame.PROVISION -n maison.frame/.ProvisionReceiver --es url "$URL" --es token "$TOKEN" |
-	grep -q "result=-1" || { echo "provisioning refused (an HTTPS URL and a maison_ token)" >&2; exit 1; }
+a shell am broadcast -a maison.frame.PROVISION -n maison.frame/.ProvisionReceiver --es url "$URL" |
+	grep -q "result=-1" || { echo "provisioning refused (an HTTPS URL)" >&2; exit 1; }
 echo "provisioned: $URL"

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Puts the frame's Linux system where its initramfs looks for it, from Android over ADB (no root,
 # no partition written): rootfs.squashfs in /data/local/tmp/maison, pushed under a temporary name
-# then renamed (a copy cut halfway never replaces the image). With --target, also Maison's address
-# and the screen's service token, which the kiosk opens as `<url>#token=<token>` (the fragment
-# never leaves the browser; the web app checks the token's form, screen.ts); the token is read
-# from the terminal, never an argument, and its file is 0600.
+# then renamed (a copy cut halfway never replaces the image). With --target, also Maison's address,
+# the one thing the kiosk is given: it is in as a wall screen paired from its sign-in screen
+# (docs/passkeys.md « Wall screens »), no token to carry.
 # Usage: frame/linux/install.sh [--target https://home.example]
 set -euo pipefail
 
@@ -30,13 +29,10 @@ echo "system: $DIR/rootfs.squashfs ($local_sum)"
 if [ "${1:-}" = --target ]; then
 	URL="${2:?usage: frame/linux/install.sh --target <Maison URL>}"
 	case "$URL" in https://*) ;; *) echo "an HTTPS address" >&2; exit 1 ;; esac
-	read -rs -p "Service token (maison_…): " TOKEN
-	echo
-	# pushed as a file: Android 6's `adb shell` has no stdin of its own (a pty that echoes what it is
-	# sent and never ends), so nothing secret goes through it
-	tmp=$(umask 077 && mktemp)
+	# pushed as a file: Android 6's `adb shell` has no stdin of its own (a pty that never ends)
+	tmp=$(mktemp)
 	trap 'rm -f "$tmp"' EXIT
-	printf '%s#token=%s' "${URL%%#*}" "$TOKEN" >"$tmp"
+	printf '%s' "${URL%%#*}" >"$tmp"
 	a push "$tmp" "$DIR/target.new" >/dev/null
 	a shell "chmod 600 $DIR/target.new && mv $DIR/target.new $DIR/target"
 	echo "target: ${URL%%#*}"
