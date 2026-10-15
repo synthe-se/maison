@@ -2,7 +2,8 @@
 /*
  * AMABOO GBZK-Y1000, a 10.1" Frameo photo frame: Rockchip RK3126, 1 GB DDR3, 32 GB eMMC, an
  * 800x1280 MIPI DSI panel (Jadard JD9365DA, 4 lanes), a Silead GSL touch controller, an AIC8800
- * Wi-Fi + BT chip on SDIO, an HYM8563 RTC, one power button. Pins come from the vendor's device
+ * Wi-Fi + BT chip on SDIO, one power button, no RTC (the vendor's tree has an HYM8563 at i2c2
+ * 0x51: nothing answers there). Pins come from the vendor's device
  * tree (Android 6, kernel 3.10; docs/frame.md).
  *
  * The CPU supply (PWM1, the vendor's own voltage table) is left as U-Boot set it: no cpu-supply,
@@ -69,6 +70,17 @@
 		default-brightness-level = <128>;
 	};
 
+	/*
+	 * The AIC8800DC's power enable (the vendor's WIFI,poweren_gpio, active high), with the
+	 * vendor's delays (its boot log): 100 ms off, a wait while the chip boots.
+	 */
+	sdio_pwrseq: sdio-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&gpio2 RK_PB2 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <200>;
+		power-off-delay-us = <100000>;
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
@@ -80,11 +92,6 @@
 		};
 	};
 
-	/* the AIC8800's power enable (the vendor's WIFI,poweren_gpio, active high) */
-	sdio_pwrseq: sdio-pwrseq {
-		compatible = "mmc-pwrseq-simple";
-		reset-gpios = <&gpio2 RK_PB2 GPIO_ACTIVE_LOW>;
-	};
 
 	vcc_sys: regulator-vcc-sys {
 		compatible = "regulator-fixed";
@@ -209,12 +216,6 @@
 		touchscreen-inverted-x;
 		silead,max-fingers = <10>;
 	};
-
-	rtc@51 {
-		compatible = "haoyu,hym8563";
-		reg = <0x51>;
-		#clock-cells = <0>;
-	};
 };
 
 &pwm0 {
@@ -224,7 +225,8 @@
 &sdio {
 	bus-width = <4>;
 	pinctrl-names = "default";
-	pinctrl-0 = <&sdio_clk &sdio_cmd &sdio_bus4>;
+	/* the controller's own PWREN pin powers the card, as the vendor's tree muxes it */
+	pinctrl-0 = <&sdio_clk &sdio_cmd &sdio_bus4 &sdio_pwren>;
 	cap-sd-highspeed;
 	cap-sdio-irq;
 	keep-power-in-suspend;
@@ -237,6 +239,25 @@
 };
 
 /* the USB-C port as a device: a console over USB (CDC ACM) while there is no UART */
+/*
+ * The SDIO lines have the board's own pull-ups: the SoC's default pulls (down) are off, as the
+ * vendor sets them; with them the AIC8800DC never answers CMD5 (seen on the frame).
+ */
+&sdio_cmd {
+	rockchip,pins = <0 RK_PA3 2 &pcfg_pull_none>;
+};
+
+&sdio_bus4 {
+	rockchip,pins = <1 RK_PA1 2 &pcfg_pull_none>,
+			<1 RK_PA2 2 &pcfg_pull_none>,
+			<1 RK_PA4 2 &pcfg_pull_none>,
+			<1 RK_PA5 2 &pcfg_pull_none>;
+};
+
+&sdio_pwren {
+	rockchip,pins = <0 RK_PD6 1 &pcfg_pull_none>;
+};
+
 &usb_otg {
 	dr_mode = "peripheral";
 	status = "okay";

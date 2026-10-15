@@ -58,12 +58,6 @@ docker run --rm -v "$VOLUME:/build" -v "$SRC:/src:ro" -v "$REPO/frame/linux:/fra
 	limit=$(( 0x62000000 - 0x200000 ))
 	[ $(( end + zsize )) -lt $limit ] || { printf "too big: the kernel ends at 0x%x, +%d of zImage, past 0x%x\n" $end $zsize $limit >&2; exit 1; }
 	printf "fits: the kernel ends at 0x%x, +%d of zImage, below 0x%x\n" $end $zsize $limit
-	# the display modules alone, not multi_v7'"'"'s two thousand
-	# in the order they load (initramfs.py keeps it): helpers, the PHY, the panel, the driver
-	mods="drivers/gpu/drm/drm_dma_helper.ko drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.ko drivers/phy/rockchip/phy-rockchip-inno-dsidphy.ko drivers/gpu/drm/panel/panel-jadard-jd9365da-h3.ko drivers/gpu/drm/rockchip/rockchipdrm.ko"
-	if ! $m $mods >>build.log 2>&1; then grep -E "error" build.log | tail -20; exit 1; fi
-	mkdir -p /out/modules && rm -f /out/modules/*.ko
-	n=0; for k in $mods; do n=$((n+1)); llvm-strip --strip-debug -o /out/modules/$n-$(basename $k) $k; done
 	cp arch/arm/boot/zImage arch/arm/boot/dts/rockchip/'"$DTB"'.dtb .config /out/
 	echo "built $(make -s kernelrelease)"
 '
