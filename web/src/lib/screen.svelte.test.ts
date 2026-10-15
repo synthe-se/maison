@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, useToken } from '#lib/api.ts';
+import { locale, switchLocale } from '#lib/i18n.svelte.ts';
 import { json, scriptFetch } from '#lib/test/fetch.ts';
 import { claimScreen } from './screen.ts';
 
@@ -17,6 +18,7 @@ describe('claimScreen', () => {
 	afterEach(() => {
 		localStorage.removeItem(KEY);
 		useToken(null);
+		switchLocale('fr');
 	});
 
 	it('is no screen without a token, given or kept', () => {
@@ -42,6 +44,21 @@ describe('claimScreen', () => {
 		const next = `maison_${'b'.repeat(43)}`;
 		expect(claimScreen(...at(`#token=${next}`))).toBe(true);
 		expect(localStorage.getItem(KEY)).toBe(next);
+	});
+
+	it('takes the language from the fragment, beside the token, and wipes it too', () => {
+		switchLocale('en');
+		const [location, history] = at(`#token=${TOKEN}&lang=fr`);
+		expect(claimScreen(location, history)).toBe(true);
+		expect(locale()).toBe('fr');
+		expect(document.documentElement.lang).toBe('fr');
+		expect(history.replaceState).toHaveBeenCalledWith(null, '', '/salon?x=1');
+	});
+
+	it('leaves the language as it is for one it does not have', () => {
+		switchLocale('en');
+		claimScreen(...at(`#token=${TOKEN}&lang=xx`));
+		expect(locale()).toBe('en');
 	});
 
 	it('refuses what is not a token, and still wipes it from the address', () => {

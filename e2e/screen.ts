@@ -1,15 +1,16 @@
-// A wall screen (the frame, frame/android): in by a service token given once in the address's
-// fragment, the house's pages with nobody signed in and no account; its token revoked, it says
-// so, and offers no passkey.
+// A wall screen (the frame, frame/android and frame/linux): in by a service token given once in
+// the address's fragment, its language beside it (the frame's WPE says en-US), the house's pages
+// with nobody signed in and no account; its token revoked, it says so, and offers no passkey.
 import { BASE, check, checkNoErrors, done, fr, launch, open, revokeToken, serviceToken, title } from './lib.ts';
 
 const browser = await launch();
-const p = await open(browser, { viewport: { width: 800, height: 1280 } });
+const p = await open(browser, { viewport: { width: 800, height: 1280 }, locale: 'en-US' });
 const token = serviceToken('cadre');
 
-await p.goto(`${BASE}/#token=${token}`);
+await p.goto(`${BASE}/#token=${token}&lang=fr`);
 await title(p, fr.nav_home());
-check('the screen is in by its token, on the dashboard', true);
+check('the screen is in by its token, on the dashboard, in the language its fragment names', true);
+check('the page says so', (await p.evaluate(() => document.documentElement.lang)) === 'fr');
 check('the token is gone from the address', !p.url().includes('#') && !p.url().includes(token), p.url());
 check('no passkey asked', (await p.getByRole('button', { name: fr.pk_button() }).count()) === 0);
 check('nobody signed in: no session menu', (await p.locator('header button').count()) === 0);

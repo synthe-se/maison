@@ -1,5 +1,8 @@
 #!/bin/sh
 # cog on the panel's KMS output, rotated 180° (the panel is mounted upside down), at the target;
-# drawn with GLES (Lima): cog's plain modeset renderer cannot rotate.
+# drawn with GLES (Lima): cog's plain modeset renderer cannot rotate. The page's language rides in
+# the target's fragment, from the service's LANG (WPE always says en-US: web/src/lib/screen.ts).
 set -eu
-exec cog --platform=drm --platform-params=renderer=gles,rotation=2 "$(cat "$CREDENTIALS_DIRECTORY/target")"
+target=$(cat "$CREDENTIALS_DIRECTORY/target")
+case "$target" in *#*) sep='&' ;; *) sep='#' ;; esac
+exec cog --platform=drm --platform-params=renderer=gles,rotation=2 "$target${sep}lang=${LANG%%_*}"

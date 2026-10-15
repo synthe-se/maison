@@ -10,8 +10,8 @@ After=network-online.target time-sync.target systemd-user-sessions.service
 User=kiosk
 SupplementaryGroups=video render input
 LoadCredential=target:/android-data/local/tmp/maison/target
-# the page's language: WebKit takes it from the environment
-Environment=HOME=/home/kiosk XDG_RUNTIME_DIR=/run/kiosk LANG=fr_FR.UTF-8 LANGUAGE=fr
+# the frame's language: the page's (maison-kiosk), and the system's locale
+Environment=HOME=/home/kiosk XDG_RUNTIME_DIR=/run/kiosk LANG=fr_FR.UTF-8
 RuntimeDirectory=kiosk
 ExecStart=/usr/local/sbin/maison-kiosk
 Restart=always
