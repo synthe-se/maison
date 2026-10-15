@@ -3,6 +3,7 @@ import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
 import { api } from '#lib/api.ts';
+import { refresh } from '#lib/live.svelte.ts';
 import { session } from '#lib/session.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
@@ -164,6 +165,46 @@ describe('layout', () => {
 		ui.setTheme('dark');
 		await expect.poll(() => document.documentElement.dataset.theme).toBe('dark');
 		ui.setTheme('system');
+		await expect.poll(() => document.documentElement.dataset.theme).toBeUndefined();
+	});
+
+	/** The house's place, the sun rising next (night) or setting next (day). */
+	const sunAt = (night: boolean) => {
+		const h = 3_600_000;
+		const now = Date.now();
+		return {
+			success: true,
+			place: { name: 'Paris', latitude: 48.85, longitude: 2.35 },
+			sun: { sunriseMs: now + (night ? h : 13 * h), sunsetMs: now + (night ? 12 * h : 2 * h) }
+		};
+	};
+
+	it('a wall screen follows the sun with nothing chosen: dark at night, light by day', async () => {
+		const refused = new Response('{}', { status: 401 });
+		const backend = stubApi({
+			'POST /auth/verify': refused,
+			'POST /auth/refresh': refused,
+			'GET /screens/me': { success: true, screen: { name: 'Salon' } },
+			'GET /matter/place': sunAt(true)
+		});
+		await show();
+		await expect.poll(() => document.documentElement.dataset.theme).toBe('dark');
+		// the sun has risen: its source, read again just after, says day
+		backend.routes['GET /matter/place'] = sunAt(false);
+		await refresh('shutters:place');
+		await expect.poll(() => document.documentElement.dataset.theme).toBe('light');
+		// a theme chosen on the screen is kept over the sun
+		ui.setTheme('dark');
+		await expect.poll(() => document.documentElement.dataset.theme).toBe('dark');
+	});
+
+	it('someone may choose the sun too; with no place set it is the system’s', async () => {
+		const backend = stubApi({ ...signedIn, 'GET /matter/place': sunAt(true) });
+		await show();
+		ui.setTheme('sun');
+		await expect.poll(() => document.documentElement.dataset.theme).toBe('dark');
+		backend.routes['GET /matter/place'] = { success: true, place: null, sun: null };
+		await refresh('shutters:place');
 		await expect.poll(() => document.documentElement.dataset.theme).toBeUndefined();
 	});
 });

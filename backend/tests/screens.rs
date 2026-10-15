@@ -385,3 +385,40 @@ async fn only_an_admin_on_the_screens_network_pairs_it() {
         "from the house: paired"
     );
 }
+
+/// A screen's theme follows the sun at the house: the place answers when it next rises and sets.
+#[tokio::test]
+async fn the_place_says_when_the_sun_next_rises_and_sets() {
+    let app = common::app(common::isolated_config("maison-screens-sun"));
+    let (s, v) = common::send_authed(&app, Method::GET, "/api/matter/place", None).await;
+    assert_eq!(
+        (s, &v["place"], &v["sun"]),
+        (StatusCode::OK, &Value::Null, &Value::Null),
+        "no place, no sun"
+    );
+
+    let paris = json!({ "name": "Paris", "latitude": 48.8566, "longitude": 2.3522 });
+    let (s, v) = common::send_authed(&app, Method::PUT, "/api/matter/place", Some(paris)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        v["sun"]["sunriseMs"].is_i64(),
+        "said on setting it too: {v}"
+    );
+
+    let cookie = paired(&app, "Salon").await;
+    let (s, _, v) = with_cookie(&app, Method::GET, "/api/matter/place", &cookie).await;
+    assert_eq!(s, StatusCode::OK, "a screen reads it");
+    let now = chrono::Utc::now().timestamp_millis();
+    let (rise, set) = (
+        v["sun"]["sunriseMs"].as_i64().unwrap(),
+        v["sun"]["sunsetMs"].as_i64().unwrap(),
+    );
+    let day = 24 * 3600 * 1000;
+    assert!(rise > now && set > now, "both ahead");
+    assert!(rise < now + day && set < now + day, "both within a day");
+    assert_ne!(
+        rise < set,
+        set < rise,
+        "one comes first: night when it is the sunrise"
+    );
+}

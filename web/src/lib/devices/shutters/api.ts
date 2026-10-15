@@ -1,6 +1,7 @@
 // The Matter shutters' API (Sonoff Orb-RBS, backend/src/matter/).
 
 import { get, post, put, patch, del, path } from '#lib/api.ts';
+import type { NextSun } from '#lib/sun.ts';
 // Positions are "how open": 100 = fully open, 0 = closed; null until the switch is calibrated.
 
 export type ShutterMotion = 'stopped' | 'opening' | 'closing';
@@ -50,6 +51,13 @@ export interface ShutterResponse {
 	cover: Shutter;
 }
 
+/** The house's place, and when the sun next rises and sets there (null with no place). */
+export interface PlaceAnswer {
+	success: boolean;
+	place: Place | null;
+	sun: NextSun | null;
+}
+
 export const shuttersApi = {
 	list: () => get<ShuttersResponse>('/matter/covers'),
 	commission: (code: string, name: string) => post<ShutterResponse>('/matter/commission', { code, name }),
@@ -62,8 +70,9 @@ export const shuttersApi = {
 	setSchedule: (id: string, schedule: SunSchedule) => put<ShutterResponse>(path`/matter/covers/${id}/schedule`, schedule),
 	/** Skip (or no longer skip) the next scheduled opening or closing, once. */
 	skip: (id: string, event: 'open' | 'close', skip: boolean) => post<ShutterResponse>(path`/matter/covers/${id}/skip`, { event, skip }),
-	place: () => get<{ success: boolean; place: Place | null }>('/matter/place'),
-	setPlace: (place: Place) => put<{ success: boolean; place: Place }>('/matter/place', place),
+	place: () => get<PlaceAnswer>('/matter/place'),
+	/** The answer names the place just set. */
+	setPlace: (place: Place) => put<PlaceAnswer & { place: Place }>('/matter/place', place),
 	searchPlaces: (query: string, lang: string) =>
 		get<{ success: boolean; places: Place[] }>(`/matter/place/search?${new URLSearchParams({ q: query, lang })}`)
 };

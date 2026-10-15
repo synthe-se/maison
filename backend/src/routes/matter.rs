@@ -45,8 +45,33 @@ struct RenameRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Where {
     place: Option<Place>,
+    /// When the sun next rises and sets there (ms): the wall screens' theme follows it.
+    sun: Option<NextSun>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NextSun {
+    sunrise_ms: Option<i64>,
+    sunset_ms: Option<i64>,
+}
+
+async fn where_now(state: &AppState) -> Where {
+    let sun = state
+        .matter
+        .next_sun(chrono::Utc::now())
+        .await
+        .map(|(rise, set)| NextSun {
+            sunrise_ms: rise.map(|t| t.timestamp_millis()),
+            sunset_ms: set.map(|t| t.timestamp_millis()),
+        });
+    Where {
+        place: state.matter.place().await,
+        sun,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -120,9 +145,7 @@ async fn skip(
 }
 
 async fn place(State(state): State<AppState>) -> Json<Answer<Where>> {
-    Answer::ok(Where {
-        place: state.matter.place().await,
-    })
+    Answer::ok(where_now(&state).await)
 }
 
 async fn set_place(
@@ -130,8 +153,8 @@ async fn set_place(
     _admin: AdminUser,
     Json(body): Json<Place>,
 ) -> Result<Json<Answer<Where>>, AppError> {
-    let place = state.matter.set_place(body).await?;
-    Ok(Answer::ok(Where { place: Some(place) }))
+    state.matter.set_place(body).await?;
+    Ok(Answer::ok(where_now(&state).await))
 }
 
 async fn search_places(

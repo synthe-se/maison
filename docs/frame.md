@@ -134,5 +134,8 @@ What the bring-up taught, each point seen on the frame:
   simpledrm left beside Rockchip's card is where cog would draw, unseen.
 - `reboot` from mainline brings Android even with the USB-C plugged in; `try.sh` handles either.
 
-Still to do: the theme following the sun (WebKit says light, whatever the hour), the CPU above
-U-Boot's 600 MHz (its voltage), the boot's speed.
+A wall screen's theme follows the sun at the house when nothing is chosen (« Soleil », which
+anyone may choose too): dark from sunset to sunrise, from the house's place (set with the
+shutters' sun schedule), read again just after each sunrise and sunset.
+
+Still to do: the CPU above U-Boot's 600 MHz (its voltage), the boot's speed.

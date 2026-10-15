@@ -1053,6 +1053,7 @@
 	"theme_dark": "Dark",
 	"theme_label": "Theme",
 	"theme_light": "Light",
+	"theme_sun": "Sun",
 	"theme_system": "System",
 	"tv_ambilight": "Ambilight",
 	"tv_assumed": "State unknown, the set stopped answering",

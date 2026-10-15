@@ -14,7 +14,8 @@
 		<script>
 			try {
 				const t = localStorage.getItem('%sveltekit.env.PUBLIC_THEME_KEY%');
-				if (t) document.documentElement.dataset.theme = t;
+				// « sun » waits for the house's sun (SunTheme): the system's until then
+				if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
 			} catch {}
 		</script>
 		%sveltekit.head%

@@ -6,7 +6,8 @@ import { errorText } from '#lib/errors.ts';
 import { stored, text as words } from '#lib/stored.ts';
 import { PUBLIC_THEME_KEY } from '$app/env/public';
 
-export type Theme = 'system' | 'light' | 'dark';
+/** `sun`: light from sunrise to sunset at the house, dark the rest (SunTheme). */
+export type Theme = 'system' | 'light' | 'dark' | 'sun';
 
 /** A toast's one action (« Rétablir » a deleted meal): its words, what it does, and where the
  * focus goes when the toast leaves while holding it (the row it was about is gone). */
@@ -30,10 +31,12 @@ export const TOAST_MS = 5_000;
 export const ACTION_TOAST_MS = 10_000;
 
 // « system » is nothing kept: the page follows the system
-const keptTheme = stored<Theme>(PUBLIC_THEME_KEY, 'system', words<Theme>(['light', 'dark']));
+const keptTheme = stored<Theme>(PUBLIC_THEME_KEY, 'system', words<Theme>(['light', 'dark', 'sun']));
 
 class Ui {
 	theme = $state<Theme>(keptTheme.get());
+	/** What the house's sun says now, while something follows it (SunTheme). */
+	sun = $state<'light' | 'dark' | null>(null);
 	toasts = $state<Toast[]>([]);
 	polite = $state('');
 	assertive = $state('');

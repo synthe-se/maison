@@ -15,6 +15,7 @@
 	import Icon from '#lib/components/Icon.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
 	import ScreenPairing from '#lib/components/ScreenPairing.svelte';
+	import SunTheme from '#lib/components/SunTheme.svelte';
 
 	let { children } = $props();
 	// a removed screen, paired again (ScreenPairing says its own title)
@@ -28,10 +29,13 @@
 		void cleanupLegacyServiceWorker();
 	});
 
+	// the sun's theme: chosen, or a wall screen's own when nothing is (nobody there to choose)
+	const bySun = $derived(ui.theme === 'sun' || (ui.theme === 'system' && session.screen !== null));
 	$effect(() => {
 		const root = document.documentElement;
-		if (ui.theme === 'system') delete root.dataset.theme;
-		else root.dataset.theme = ui.theme;
+		const side = bySun ? ui.sun : ui.theme === 'system' ? null : ui.theme;
+		if (side) root.dataset.theme = side;
+		else delete root.dataset.theme;
 	});
 
 	// signed in (a passkey, an invitation): the page replaces the door under the focus, which
@@ -73,6 +77,7 @@
 
 <nav class="skip" aria-label={m.skip_to_content()}><a href="#main">{m.skip_to_content()}</a></nav>
 {#if session.status === 'signed_in'}<Header />{/if}
+{#if session.status === 'signed_in' && bySun}<SunTheme />{/if}
 <main id="main" class:page={session.status === 'signed_in'} tabindex="-1">
 	{#if session.status === 'loading'}
 		<p class="muted loading">{m.common_loading()}</p>

@@ -43,6 +43,23 @@ check(
 	`httpOnly ${cookie?.httpOnly}, sameSite ${cookie?.sameSite}`
 );
 
+// its theme follows the sun at the house once the place is set: dark when the sun rises next
+await phone.evaluate(() =>
+	fetch('/api/matter/place', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ name: 'Paris', latitude: 48.8566, longitude: 2.3522 })
+	})
+);
+await screen.reload();
+await title(screen, fr.nav_home());
+const sun = await screen.evaluate(
+	async () => (await (await fetch('/api/matter/place')).json()).sun as { sunriseMs: number; sunsetMs: number }
+);
+const side = sun.sunriseMs < sun.sunsetMs ? 'dark' : 'light';
+await screen.waitForFunction((want) => document.documentElement.dataset.theme === want, side);
+check(`the screen's theme follows the sun with nothing chosen: ${side} now`, true);
+
 await screen.getByRole('link', { name: fr.nav_tempo() }).first().click();
 await title(screen, fr.nav_tempo());
 await screen.reload();
