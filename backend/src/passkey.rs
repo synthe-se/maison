@@ -59,6 +59,12 @@ pub enum Refusal {
     ReauthNeeded,
     /// An invitation by name for a name someone already has.
     PersonExists,
+    /// No screen waits with this pairing code (mistyped, or its ten minutes are over).
+    PairingUnknown,
+    /// A screen waits with this code, but on another network than the admin's.
+    PairingElsewhere,
+    /// A screen, or an app's token, already has this name.
+    ScreenExists,
     TooManyAttempts { retry_after_s: u64 },
 }
 
@@ -82,6 +88,11 @@ impl From<Refusal> for AppError {
             Refusal::NotFound => (StatusCode::NOT_FOUND, "not_found", "Not found"),
             Refusal::ReauthNeeded => (StatusCode::FORBIDDEN, "reauth_needed", "Sign in with a passkey again first"),
             Refusal::PersonExists => (StatusCode::CONFLICT, "person_exists", "Someone already has this name"),
+            Refusal::PairingUnknown => (StatusCode::NOT_FOUND, "pairing_unknown", "No screen waits with this code"),
+            Refusal::PairingElsewhere => {
+                (StatusCode::FORBIDDEN, "pairing_elsewhere", "Pair a screen from its own network")
+            }
+            Refusal::ScreenExists => (StatusCode::CONFLICT, "screen_exists", "A screen already has this name"),
             Refusal::TooManyAttempts { retry_after_s } => {
                 return AppError::Coded {
                     status: StatusCode::TOO_MANY_REQUESTS,

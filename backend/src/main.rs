@@ -121,7 +121,7 @@ async fn token(args: &[String]) -> i32 {
                     return 2;
                 }
             };
-            maison_backend::auth::issue_service_token(&people, name, scope).await.map(|token| match token {
+            maison_backend::auth::issue_service_token(&people, name, scope, maison_backend::people::TokenKind::App).await.map(|token| match token {
                 Some(token) => {
                     println!("Service token « {} » (scope {}). Shown this once, keep it now:", name.trim(), scope.as_str());
                     println!("{token}");
@@ -142,7 +142,14 @@ async fn token(args: &[String]) -> i32 {
                     chrono::DateTime::from_timestamp_millis(ms).map_or_else(|| "?".into(), |d| d.format("%Y-%m-%d").to_string())
                 };
                 let used = t.last_used_ms.map_or_else(|| "never".into(), day);
-                println!("{}  {}  {}  created {}  last used {used}", t.id, t.name, t.scope.as_str(), day(t.created_ms));
+                println!(
+                    "{}  {}  {}  {}  created {}  last used {used}",
+                    t.id,
+                    t.name,
+                    t.kind.as_str(),
+                    t.scope.as_str(),
+                    day(t.created_ms)
+                );
             }
             0
         }),

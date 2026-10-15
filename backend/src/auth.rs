@@ -28,7 +28,7 @@ use crate::{
     config::Config,
     error::AppError,
     passkey::Refusal,
-    people::{People, Person, Role, Scope, StoredToken},
+    people::{People, Person, Role, Scope, StoredToken, TokenKind},
     store::{self, Access, Corrupt},
     util::{constant_time_eq, hash_secret, now_ms, random_id},
     AppState,
@@ -77,6 +77,11 @@ pub fn cookie_names(config: &Config) -> (String, String) {
     } else {
         (config.auth_cookie_name.clone(), "maison_refresh".into())
     }
+}
+
+/// A paired wall screen's cookie (`screens.rs`): its token, HttpOnly, `__Host-` when secure.
+pub fn screen_cookie_name(config: &Config) -> String {
+    if config.auth_cookie_secure { "__Host-maison_screen".into() } else { "maison_screen".into() }
 }
 
 #[derive(Debug, Clone)]
@@ -141,9 +146,10 @@ where
     }
 }
 
-/// Who drives the devices: someone signed in, or a service token with the `devices` scope.
-/// The device routers' layer (`lib.rs`); a handler that needs more asks `AdminUser`, which
-/// a service token never is.
+/// Who drives the devices: a service token with the `devices` scope (an app's, sent as a bearer
+/// header), someone signed in, or a paired wall screen (its token in its HttpOnly cookie), in
+/// that order: someone signing in on a screen's browser is themselves. The device routers'
+/// layer (`lib.rs`); a handler that needs more asks `AdminUser`, which a token never is.
 #[derive(Debug, Clone)]
 pub enum DeviceClient {
     Person(AuthUser),
@@ -165,12 +171,17 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        match extract_bearer_token(&parts.headers).ok().filter(|token| is_service_token(token)) {
-            Some(token) => {
-                let app_state = AppState::from_ref(state);
-                service_token(&app_state.people, token, Scope::Devices, now_ms()).await.map(Self::Service)
-            }
-            None => AuthenticatedUser::from_request_parts(parts, state).await.map(|user| Self::Person(user.0)),
+        let app_state = AppState::from_ref(state);
+        if let Some(token) = extract_bearer_token(&parts.headers).ok().filter(|token| is_service_token(token)) {
+            return service_token(&app_state.people, token, Scope::Devices, now_ms()).await.map(|t| Self::Service(t.name));
+        }
+        let refused = match AuthenticatedUser::from_request_parts(parts, state).await {
+            Ok(user) => return Ok(Self::Person(user.0)),
+            Err(refused) => refused,
+        };
+        match cookie_value(&parts.headers, &screen_cookie_name(&app_state.config)).filter(|token| is_service_token(token)) {
+            Some(token) => service_token(&app_state.people, token, Scope::Devices, now_ms()).await.map(|t| Self::Service(t.name)),
+            None => Err(refused),
         }
     }
 }
@@ -191,23 +202,36 @@ pub fn has_service_token(headers: &HeaderMap) -> bool {
     extract_bearer_token(headers).is_ok_and(is_service_token)
 }
 
-/// A new service token named `name`, for `scope`: the token, to show once (only its hash is
-/// kept); `None` when another token has the name. 256 random bits, base64url.
-pub async fn issue_service_token(people: &People, name: &str, scope: Scope) -> Result<Option<String>, AppError> {
+/// A new service token named `name`, for `scope`, carried as `kind` says: the token, to show
+/// once (only its hash is kept); `None` when another token has the name. 256 random bits,
+/// base64url.
+pub async fn issue_service_token(
+    people: &People,
+    name: &str,
+    scope: Scope,
+    kind: TokenKind,
+) -> Result<Option<String>, AppError> {
     use base64::Engine;
     let name = crate::util::name(name)?.to_string();
     let token = format!(
         "{SERVICE_TOKEN_PREFIX}{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
     );
-    let stored =
-        StoredToken { id: random_id(), name, scope, token_hash: hash_secret(&token), created_ms: now_ms(), last_used_ms: None };
+    let stored = StoredToken {
+        id: random_id(),
+        name,
+        scope,
+        kind,
+        token_hash: hash_secret(&token),
+        created_ms: now_ms(),
+        last_used_ms: None,
+    };
     Ok(people.create_token(stored).await?.then_some(token))
 }
 
-/// The name of the service token `token`, when it exists and carries `scope`; its use is
-/// recorded (`TOKEN_USE_STEP_MS`). Unknown or revoked: not signed in.
-async fn service_token(people: &People, token: &str, scope: Scope, now_ms: i64) -> Result<String, AppError> {
+/// The service token `token`, when it exists and carries `scope`; its use is recorded
+/// (`TOKEN_USE_STEP_MS`). Unknown or revoked: not signed in.
+pub(crate) async fn service_token(people: &People, token: &str, scope: Scope, now_ms: i64) -> Result<StoredToken, AppError> {
     let found = people.token_by_hash(&hash_secret(token)).await?.ok_or(Refusal::NotSignedIn)?;
     if found.scope != scope {
         return Err(Refusal::Forbidden.into());
@@ -218,7 +242,7 @@ async fn service_token(people: &People, token: &str, scope: Scope, now_ms: i64) 
             tracing::warn!(%error, token = %found.name, "service token use not recorded");
         }
     }
-    Ok(found.name)
+    Ok(found)
 }
 
 /// Extractor for machine-to-machine clients (the kird IR bridge on the STB): a raw bearer
@@ -411,15 +435,15 @@ mod tests {
     async fn a_service_token_is_random_base64url_shown_once_and_its_use_dated_hourly() {
         let dir = crate::util::test_dir();
         let people = People::new(&dir.path().join("auth.json"));
-        let token = issue_service_token(&people, " achi ", Scope::Devices).await.unwrap().unwrap();
+        let token = issue_service_token(&people, " achi ", Scope::Devices, TokenKind::App).await.unwrap().unwrap();
         let secret = token.strip_prefix(SERVICE_TOKEN_PREFIX).expect("prefixed");
         assert_eq!(secret.len(), 43, "32 bytes, base64url without padding");
         assert!(secret.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
-        assert!(issue_service_token(&people, "achi", Scope::Devices).await.unwrap().is_none(), "the name is taken");
-        assert!(issue_service_token(&people, " ", Scope::Devices).await.is_err(), "a name");
+        assert!(issue_service_token(&people, "achi", Scope::Devices, TokenKind::App).await.unwrap().is_none(), "the name is taken");
+        assert!(issue_service_token(&people, " ", Scope::Devices, TokenKind::App).await.is_err(), "a name");
         assert!(is_service_token(&token) && !is_service_token("eyJhbGciOiJIUzI1NiJ9.x.y"));
 
-        assert_eq!(service_token(&people, &token, Scope::Devices, 1_000).await.unwrap(), "achi");
+        assert_eq!(service_token(&people, &token, Scope::Devices, 1_000).await.unwrap().name, "achi");
         let used = || async { people.tokens().await.unwrap()[0].last_used_ms };
         assert_eq!(used().await, Some(1_000));
         service_token(&people, &token, Scope::Devices, 1_000 + TOKEN_USE_STEP_MS - 1).await.unwrap();

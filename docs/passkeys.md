@@ -79,3 +79,27 @@ service token, sent as `Authorization: Bearer maison_…`.
   address.
 - The last use is dated (`lastUsedMs`, written at most once an hour: the SD card). Tokens
   never reach the logs (only the path is traced).
+
+## Wall screens
+
+A wall screen (the frame, `frame/`) is a browser paired once, by an admin, as a TV signs in to
+an account (RFC 8628's device grant, in a page). No token is ever typed, copied, shown, or put
+in an address. Code: `backend/src/screens.rs` (pending pairings), `routes/screens.rs`.
+
+1. Signed out, the browser asks `POST /api/screens/pairing`: a code it shows (`ABCD-EFGH`, 8
+   letters and digits nobody misreads), and a secret it keeps in the page's memory. Ten minutes,
+   three at once per address, ten a minute.
+2. An admin, signed in with a passkey, gives the code and a name (`POST /api/screens`, « Mon
+   compte »): **from the screen's own network** (the same public address; an IPv6 one counts as
+   its /64), or `pairing_elsewhere`. A code sent from across the internet (« type this code in
+   Maison ») pairs nothing.
+3. The screen, asking every 3 s with its secret (`POST /api/screens/pairing/claim`), gets its
+   cookie once: `__Host-maison_screen`, HttpOnly, Secure, SameSite=Lax, 400 days, renewed at
+   each start of its page (`GET /api/screens/me`). A grant never claimed is revoked after the
+   ten minutes.
+
+A paired screen is a service token of kind `screen` (`auth.json` `tokens`, `kind`; tokens kept
+before kinds are `app`s): the `devices` scope, never people nor settings, its use dated, listed
+and revoked by an admin (`GET /api/screens`, `DELETE /api/screens/{id}`), or with `token revoke`.
+`DeviceClient` takes, in order: an app's bearer token, someone signed in, a screen's cookie.
+Like people's sessions, a screen comes through the tunnel only.

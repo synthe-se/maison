@@ -11,6 +11,7 @@ pub mod nabaztag;
 pub mod passkeys;
 pub mod root;
 pub mod scenes;
+pub mod screens;
 pub mod tempo;
 pub mod tv;
 pub mod zigbee;

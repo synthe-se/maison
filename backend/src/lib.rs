@@ -24,6 +24,7 @@ pub mod people;
 pub mod philips_ir;
 pub mod routes;
 pub mod scenes;
+pub mod screens;
 pub mod store;
 pub mod sun;
 pub mod tempo;
@@ -68,6 +69,8 @@ pub struct AppState {
     /// `None` without a usable `PUBLIC_URL`: nobody can sign in (said in the log).
     pub(crate) passkeys: Option<Arc<PasskeyState>>,
     pub(crate) refresh_store: RefreshTokenStore,
+    /// Wall screens waiting for an admin to pair them.
+    pub(crate) pairings: Arc<screens::Pairings>,
     pub(crate) broadlink: BroadlinkManager,
     pub(crate) hue: HueManager,
     pub(crate) ir: IrManager,
@@ -119,6 +122,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         people,
         passkeys,
         refresh_store,
+        pairings: Arc::new(screens::Pairings::default()),
         broadlink,
         hue,
         ir,
@@ -135,6 +139,19 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
 
     let startup_tuya = state.tuya.clone();
     tokio::spawn(async move { startup_tuya.connect_all_devices().await });
+
+    // A screen paired but never back for its cookie leaves no token behind.
+    let pairings = (state.pairings.clone(), state.people.clone());
+    every("unclaimed screen tokens", std::time::Duration::from_secs(60), move || {
+        let (pairings, people) = pairings.clone();
+        async move {
+            for name in pairings.expired_grants() {
+                if let Err(error) = people.revoke_token(&name).await {
+                    tracing::warn!(%error, screen = %name, "an unclaimed screen token was not revoked");
+                }
+            }
+        }
+    });
 
     // The shutters' sun schedule: a look every 30 s sends what fell due since the last one.
     let schedule = state.matter.clone();
@@ -237,6 +254,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(routes::root::api_router())
         .nest("/auth", routes::auth::router())
         .merge(routes::passkeys::router())
+        .nest("/screens", routes::screens::router())
         .nest("/ir", routes::ir::router())
         .merge(signed_in);
 

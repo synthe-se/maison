@@ -137,15 +137,40 @@ impl std::str::FromStr for Scope {
     }
 }
 
-/// A long-lived token for a machine (a companion app), made from the CLI
-/// (`maison-backend token create`).
+/// What carries a service token, and so where it comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenKind {
+    /// A companion app, its token made from the CLI and sent as `Authorization: Bearer`.
+    /// Tokens kept before kinds existed are apps.
+    #[default]
+    App,
+    /// A wall screen, paired by an admin (`screens.rs`): its token lives in an HttpOnly
+    /// cookie of the browser that asked, never in a script's reach.
+    Screen,
+}
+
+impl TokenKind {
+    /// The word the file and the CLI say.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::Screen => "screen",
+        }
+    }
+}
+
+/// A long-lived token for a machine (a companion app, made from the CLI with
+/// `maison-backend token create`; a wall screen, paired from the web app).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredToken {
     pub id: String,
-    /// Unique among the tokens: « achi ».
+    /// Unique among the tokens: « achi », « Salon ».
     pub name: String,
     pub scope: Scope,
+    #[serde(default)]
+    pub kind: TokenKind,
     /// `hash_secret` of the token: the token itself is never kept.
     pub token_hash: String,
     pub created_ms: i64,
@@ -160,6 +185,7 @@ pub struct TokenInfo {
     pub id: String,
     pub name: String,
     pub scope: Scope,
+    pub kind: TokenKind,
     pub created_ms: i64,
     pub last_used_ms: Option<i64>,
 }
@@ -487,6 +513,7 @@ impl People {
                     id: t.id.clone(),
                     name: t.name.clone(),
                     scope: t.scope,
+                    kind: t.kind,
                     created_ms: t.created_ms,
                     last_used_ms: t.last_used_ms,
                 })
@@ -673,6 +700,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             scope: Scope::Devices,
+            kind: TokenKind::App,
             token_hash: hash_secret(secret),
             created_ms: 0,
             last_used_ms: None,

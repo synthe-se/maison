@@ -13,7 +13,7 @@ use axum::{
 use maison_backend::{
     auth::issue_service_token,
     config::Config,
-    people::{People, Scope},
+    people::{People, Scope, TokenKind},
 };
 use serde_json::json;
 
@@ -21,7 +21,7 @@ use serde_json::json;
 async fn config_with_token() -> (Config, String) {
     let config = Config { public_url: Some("https://maison.example.com".into()), ..common::isolated_config("maison-tokens") };
     let people = People::new(&config.auth_path);
-    let token = issue_service_token(&people, "achi", Scope::Devices).await.unwrap().expect("a new name");
+    let token = issue_service_token(&people, "achi", Scope::Devices, TokenKind::App).await.unwrap().expect("a new name");
     (config, token)
 }
 

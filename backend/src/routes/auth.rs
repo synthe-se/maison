@@ -96,7 +96,9 @@ fn closed_session(state: &AppState) -> SessionCookies {
     ])
 }
 
-fn cookie(state: &AppState, name: String, value: String, max_age: CookieDuration) -> String {
+/// An HttpOnly, SameSite=Lax cookie on the whole site, Secure when the config says (always
+/// behind the tunnel).
+pub(crate) fn cookie(state: &AppState, name: String, value: String, max_age: CookieDuration) -> String {
     Cookie::build((name, value))
         .http_only(true)
         .secure(state.config.auth_cookie_secure)
