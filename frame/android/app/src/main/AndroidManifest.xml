@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:tools="http://schemas.android.com/tools">
+
+	<uses-permission android:name="android.permission.INTERNET" />
+	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+	<application
+		android:name=".FrameApp"
+		android:allowBackup="false"
+		android:dataExtractionRules="@xml/data_extraction_rules"
+		android:fullBackupContent="@xml/backup_rules"
+		android:icon="@mipmap/ic_launcher"
+		android:label="Maison"
+		android:supportsRtl="true"
+		android:theme="@style/Theme.Frame"
+		tools:targetApi="31">
+
+		<!-- The frame's only home: it starts at boot and nothing leads away from it. `user`: the
+		     rotation provision.sh locks (the vendor build forces a home screen to the panel's own
+		     landscape otherwise; lint's Android 16 warning does not concern Android 6). -->
+		<activity
+			android:name=".MainActivity"
+			android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density"
+			android:excludeFromRecents="true"
+			android:exported="true"
+			android:launchMode="singleTask"
+			android:screenOrientation="user"
+			tools:ignore="DiscouragedApi"
+			android:windowSoftInputMode="adjustResize">
+			<intent-filter>
+				<action android:name="android.intent.action.MAIN" />
+				<category android:name="android.intent.category.HOME" />
+				<category android:name="android.intent.category.DEFAULT" />
+				<category android:name="android.intent.category.LAUNCHER" />
+			</intent-filter>
+		</activity>
+
+		<!-- Provisioning over ADB only: DUMP is held by the shell, never by an app. -->
+		<receiver
+			android:name=".ProvisionReceiver"
+			android:exported="true"
+			android:permission="android.permission.DUMP">
+			<intent-filter>
+				<action android:name="maison.frame.PROVISION" />
+				<action android:name="maison.frame.RELEASE" />
+			</intent-filter>
+		</receiver>
+
+		<!-- Device owner (set once over ADB): no status bar, no keyguard, lock task without a prompt. -->
+		<receiver
+			android:name=".Admin"
+			android:exported="true"
+			android:permission="android.permission.BIND_DEVICE_ADMIN">
+			<meta-data
+				android:name="android.app.device_admin"
+				android:resource="@xml/device_admin" />
+			<intent-filter>
+				<action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+			</intent-filter>
+		</receiver>
+	</application>
+</manifest>

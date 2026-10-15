@@ -17,6 +17,13 @@ for size in 72 96 128 144 152 192 384 512; do png "$MARK" "$size" "$ICONS/icon-$
 for size in 192 512; do png "$MASK" "$size" "$ICONS/icon-maskable-${size}x${size}.png"; done
 png "$MASK" 180 "$ICONS/apple-touch-icon.png"
 
+# The frame's APK (frame/android): the launcher icon at every density
+RES="$REPO/frame/android/app/src/main/res"
+for density in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+	mkdir -p "$RES/mipmap-${density%%:*}"
+	png "$MARK" "${density##*:}" "$RES/mipmap-${density%%:*}/ic_launcher.png"
+done
+
 # favicon.ico: 16, 32 and 48 px PNGs in one ICO (every browser reads PNG entries)
 for size in 16 32 48; do png "$MARK" "$size" "$TMP/$size.png"; done
 python3 - "$TMP" "$REPO/web/static/favicon.ico" <<'PY'
@@ -31,4 +38,4 @@ for size, image in zip((16, 32, 48), images):
     data += image
 open(out, "wb").write(header + entries + data)
 PY
-echo "icons: $(ls "$ICONS" | wc -l | tr -d ' ') files + favicon.ico from brand.svg"
+echo "icons: $(ls "$ICONS" | wc -l | tr -d ' ') files + favicon.ico + the frame's launcher icon from brand.svg"

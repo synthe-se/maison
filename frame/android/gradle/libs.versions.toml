@@ -1,0 +1,19 @@
+[versions]
+agp = "9.4.1"
+kotlin = "2.4.21"
+core = "1.19.1"
+# The last GeckoView whose minSdk is 21: from 145 on it needs Android 8, the frame runs Android 6.
+geckoview = "144.0.20251027123126"
+junit = "6.1.3"
+
+[libraries]
+androidx-core = { module = "androidx.core:core-ktx", version.ref = "core" }
+geckoview = { module = "org.mozilla.geckoview:geckoview-armeabi-v7a", version.ref = "geckoview" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

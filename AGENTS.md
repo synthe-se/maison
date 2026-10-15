@@ -62,10 +62,14 @@ web/scripts/         i18n.check, i18n.add, css.check, imports.fix
 i18n/messages/       fr.json, en.json: the only source of texts
 e2e/                 Playwright + axe against the real backend (run.sh, house.ts: typed with the
                      app's types, built from web/src/lib/test fixtures; words from fr.json)
+frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): android/ (the
+                     GeckoView kiosk APK, Kotlin), system/ (build.py: our /system from the
+                     vendor's backup; bootimg.py), rkwrite.py (loader writes), flash.sh,
+                     provision.sh, bootanimation.sh/.ts, test_frame.py (docs/frame.md)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
 matter-trust/        CSA attestation roots (tracked)
-docs/                deploy.md, tempo.md, passkeys.md, ux.md
+docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md
 ```
 
 Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devices.json`,
@@ -145,6 +149,8 @@ cd web && bun scripts/i18n.add.ts '{"key": ["français", "English"]}'   # every 
 cd e2e && bun run all                 # after `cargo build` and `bun --cwd web run build`
 cargo check --manifest-path backend/Cargo.toml --no-default-features   # the Pi's feature set
 MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_live -- --nocapture
+python3 -m unittest discover -s frame -p 'test_*.py'   # the frame's tooling
+cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the kiosk APK
 ```
 
 ## Gotchas learned the hard way
@@ -267,6 +273,26 @@ MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_l
 garenne firmware, UDP 9998 `grn1` + `GET /status`; clapier runs on the same Pi.
 Every 15 min: belly LED = today, ears = tomorrow (both ears when RTE published, the left one
 only for a forecast ≥ 80 %). Firmware tooling lives in uplg/nabgcc, not here.
+
+### The wall frame (`frame/`, [docs/frame.md](docs/frame.md))
+
+- Our /system is the vendor's with Frameo, Adups FOTA and SuperSU gone and the kiosk APK the
+  only home and device owner; boot, uboot, recovery and userdata stay the vendor's (its U-Boot
+  checks a boot image SHA we could not reproduce: `--boot` is built, never flashed).
+- ADB: Frameo approved a computer's key for the session only, and SystemUI (the prompt) is
+  disabled on this build: without Frameo, only keys in `/data/misc/adb/adb_keys` work.
+  `flash.sh keys` puts them there while root exists; `flash.sh` refuses to start without them.
+  Once flashed there is no root (`ro.debuggable=0`): APK updates are `pm install -r`, same key.
+- No ADB at all: power off, hold the reset pinhole, plug USB-C into the Mac, then power: the
+  loader. It can drop mid-write: `rkwrite.py` writes 16 MiB chunks read back, and resumes. Its
+  sector 0 is the `parameter`'s (kernel sector − 8192), proved before every write.
+- A system app's native libraries are extracted in `lib/arm` (Android 6 reads the ABI there);
+  the vendor build forces a home screen to the panel's landscape unless the activity asks
+  `screenOrientation="user"`; the clock says 1970 until NTP, so Gecko stays hidden (the brand's
+  petrol) until a page has loaded. The boot animation draws before any rotation applies.
+- Frameo reinstalls itself into /data while its beta is on: `pm uninstall net.frameo.frame`.
+- The backup, the vendor's device tree, the release keystore and rkdeveloptool live in
+  `~/maison-frame/`, never in the repo; rkdeveloptool writes a `log/` into its working directory.
 
 ### Tempo
 
