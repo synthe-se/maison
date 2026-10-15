@@ -110,15 +110,6 @@ export function invitation(person = USER.id, name = USER.name, admin = true): st
 	return out.match(/http\S+\/invite\/\S+/)![0];
 }
 
-/** A service token for a wall screen, made as on the Pi: `maison-backend token create`. */
-export function serviceToken(name: string): string {
-	const out = execFileSync(process.env.MAISON_BIN!, ['token', 'create', name], { encoding: 'utf8' });
-	return out.match(/maison_[\w-]{43}/)![0];
-}
-
-/** Revokes it, as on the Pi: it stops at its next request. */
-export const revokeToken = (name: string) => execFileSync(process.env.MAISON_BIN!, ['token', 'revoke', name]);
-
 /** A platform authenticator with user verification, as on a phone or a Mac (WebAuthn CDP). */
 export async function authenticator(page: Page) {
 	const cdp = await page.context().newCDPSession(page);

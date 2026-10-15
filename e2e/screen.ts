@@ -1,33 +1,68 @@
-// A wall screen (the frame, frame/android and frame/linux): in by a service token given once in
-// the address's fragment, its language beside it (the frame's WPE says en-US), the house's pages
-// with nobody signed in and no account; its token revoked, it says so, and offers no passkey.
-import { BASE, check, checkNoErrors, done, fr, launch, open, revokeToken, serviceToken, title } from './lib.ts';
+// A wall screen (the frame, frame/android and frame/linux), paired as a TV signs in: signed out,
+// its browser asks for a code; an admin, signed in on their phone, gives it from « Mon compte »;
+// the screen opens by itself, its language from its address (the frame's WPE says en-US), the
+// house's pages with nobody signed in. No token in its address, its storage nor its scripts'
+// cookies. Removed by the admin, it says so and offers to pair again, never a passkey.
+import { BASE, check, checkNoErrors, done, fr, launch, open, signIn, title, toast } from './lib.ts';
 
 const browser = await launch();
-const p = await open(browser, { viewport: { width: 800, height: 1280 }, locale: 'en-US' });
-const token = serviceToken('cadre');
+const screen = await open(browser, { viewport: { width: 800, height: 1280 }, locale: 'en-US' });
+const phone = await open(browser);
 
-await p.goto(`${BASE}/#token=${token}&lang=fr`);
-await title(p, fr.nav_home());
-check('the screen is in by its token, on the dashboard, in the language its fragment names', true);
-check('the page says so', (await p.evaluate(() => document.documentElement.lang)) === 'fr');
-check('the token is gone from the address', !p.url().includes('#') && !p.url().includes(token), p.url());
-check('no passkey asked', (await p.getByRole('button', { name: fr.pk_button() }).count()) === 0);
-check('nobody signed in: no session menu', (await p.locator('header button').count()) === 0);
+await screen.goto(`${BASE}/#lang=fr`);
+await title(screen, fr.pk_signin_title());
+check('the screen speaks the language its address names', (await screen.evaluate(() => document.documentElement.lang)) === 'fr');
+await screen.getByRole('button', { name: fr.screen_pair_button() }).click();
+const shown = screen.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+await shown.waitFor();
+const code = (await shown.textContent())!;
+check('the screen shows a code to give', /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code), code);
 
-// its pages, and a reload without the fragment: still the screen
-await p.getByRole('link', { name: fr.nav_tempo() }).first().click();
-await title(p, fr.nav_tempo());
-await p.reload();
-await title(p, fr.nav_tempo());
-check('a reload keeps the screen in (the token kept, not in the address)', new URL(p.url()).hash === '');
+// the admin, on their phone, in the house: « Mon compte », Écrans, Associer un écran
+await signIn(phone, '/account');
+await phone.getByRole('button', { name: fr.screens_pair() }).click();
+const sheet = phone.getByRole('dialog', { name: fr.screens_pair() });
+await sheet.getByLabel(fr.screens_code()).fill(code.toLowerCase());
+await sheet.getByLabel(fr.screens_name()).fill('Cadre');
+await sheet.getByRole('button', { name: fr.screens_pair() }).click();
+await toast(phone, fr.screens_paired({ name: 'Cadre' }));
+check('the screen is listed', await phone.getByRole('region', { name: fr.screens_title() }).getByText('Cadre').isVisible());
 
-// revoked on the Pi: the next request says so
-revokeToken('cadre');
-await p.goto(`${BASE}/`);
-await title(p, fr.screen_revoked_title());
-check('a revoked screen says so', await p.getByText(fr.screen_revoked_body()).isVisible());
-check('and offers no passkey', (await p.getByRole('button', { name: fr.pk_button() }).count()) === 0);
+// the screen opens by itself at its next question (every 3 s)
+await title(screen, fr.nav_home());
+check('the screen is in, on the dashboard, nobody signed in', (await screen.locator('header button').count()) === 0);
+check('no passkey asked', (await screen.getByRole('button', { name: fr.pk_button() }).count()) === 0);
+check('nothing in its address', new URL(screen.url()).hash === '' && !screen.url().includes('maison_'), screen.url());
+const kept = await screen.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }) + document.cookie);
+check('no token a script could read: storage nor cookies', !kept.includes('maison_') && !kept.includes('screen'), kept);
+const cookie = (await screen.context().cookies()).find((c) => c.name.endsWith('maison_screen'));
+// its attributes only: a test never prints a secret
+check(
+	'its cookie is HttpOnly and SameSite=Lax',
+	cookie?.httpOnly === true && cookie.sameSite === 'Lax',
+	`httpOnly ${cookie?.httpOnly}, sameSite ${cookie?.sameSite}`
+);
+
+await screen.getByRole('link', { name: fr.nav_tempo() }).first().click();
+await title(screen, fr.nav_tempo());
+await screen.reload();
+await title(screen, fr.nav_tempo());
+check('a reload keeps the screen in', true);
+
+// removed by the admin: the screen's next request says so
+await phone.reload();
+await phone.getByRole('button', { name: fr.common_remove_named({ name: 'Cadre' }) }).click();
+await phone
+	.getByRole('alertdialog', { name: fr.screens_remove_title({ name: 'Cadre' }) })
+	.getByRole('button', { name: fr.screens_remove_action() })
+	.click();
+await toast(phone, fr.screens_removed({ name: 'Cadre' }));
+await screen.goto(`${BASE}/`);
+await title(screen, fr.pk_signin_title());
+check(
+	'a removed screen opening again is signed out, its pairing offered',
+	await screen.getByRole('button', { name: fr.screen_pair_button() }).isVisible()
+);
 
 checkNoErrors();
 await done(browser);

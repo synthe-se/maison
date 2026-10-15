@@ -49,7 +49,7 @@ backend/tests/       integration tests (+ `live-runtime-tests` feature for real 
 web/src/lib/         live (sources), gesture (pending, unavailable), command, draft, elapsed,
                      stored, options, session, ui (toasts), i18n (every format), focus, errors,
                      api (the fetch core: errors, renewal, upload), passkeys (session, people,
-                     invitations, passkeys), screen (a wall screen's service token), haptics
+                     invitations, passkeys), screens (wall screens: pairing, their language), haptics
 web/src/lib/components/   every shared brick, each Bits UI primitive wrapped once (Group,
                      DeviceTile + TileSettings, Loaded + Stale, ToggleGroup, Disclosure,
                      Combobox, Range, Select, Sheet, ListRow, StatusRow…)
@@ -140,7 +140,7 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
 - **Rust edition 2021**: no let-chains.
 - SvelteKit 3: imports are `#lib/...` with the file extension (`bun scripts/imports.fix.ts`);
   public build-time values come from `src/env.ts` (`defineEnvVars`) via `$app/env/public`;
-  TypeScript 6 (svelte-check fails on 7). No service worker on purpose (`legacy.ts`
+  TypeScript 6 (7 is the native port: SvelteKit's sync needs the JS API it dropped). No service worker on purpose (`legacy.ts`
   unregisters the old one). Vitest 5: `src/test-setup.ts` sets what `$app/env/public` reads outside Kit's dev server; `getByText` and `toHaveTextContent` are exact by default.
 
 ## Commands

@@ -14,8 +14,11 @@
 	import AuthShell from '#lib/components/AuthShell.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
+	import ScreenPairing from '#lib/components/ScreenPairing.svelte';
 
 	let { children } = $props();
+	// a removed screen, paired again (ScreenPairing says its own title)
+	let repairing = $state(false);
 
 	// an invitation opens signed out: it is how one gets a first passkey
 	const invitation = $derived(page.url.pathname.startsWith('/invite/'));
@@ -65,7 +68,7 @@
 <!-- the screens before a page keep a title of their own, not the asked page's -->
 <svelte:head>
 	{#if session.status === 'unreachable'}<title>{pageTitle(m.unreachable_title())}</title>{/if}
-	{#if session.status === 'revoked'}<title>{pageTitle(m.screen_revoked_title())}</title>{/if}
+	{#if session.status === 'revoked' && !repairing}<title>{pageTitle(m.screen_revoked_title())}</title>{/if}
 </svelte:head>
 
 <nav class="skip" aria-label={m.skip_to_content()}><a href="#main">{m.skip_to_content()}</a></nav>
@@ -83,10 +86,15 @@
 		</AuthShell>
 	{:else if session.status === 'revoked'}
 		<AuthShell>
-			<section class="notice" aria-labelledby="revoked-title">
-				<h1 id="revoked-title" tabindex="-1">{m.screen_revoked_title()}</h1>
-				<p class="lead">{m.screen_revoked_body()}</p>
-			</section>
+			{#if repairing}
+				<ScreenPairing />
+			{:else}
+				<section class="notice" aria-labelledby="revoked-title">
+					<h1 id="revoked-title" tabindex="-1">{m.screen_revoked_title()}</h1>
+					<p class="lead">{m.screen_revoked_body()}</p>
+					<div><button class="btn primary big" onclick={() => (repairing = true)}><Icon name="tv" />{m.screen_pair_retry()}</button></div>
+				</section>
+			{/if}
 		</AuthShell>
 	{:else if session.status === 'signed_out' && !invitation}
 		<SignIn />

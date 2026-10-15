@@ -1,19 +1,20 @@
 // Who is signed in. The session is an HttpOnly cookie the backend sets (after a passkey,
 // passkeys.ts); the page only asks whether it is still good, and forgets everything on sign-out.
-// A wall screen is in by its service token (screen.ts): no person, nothing to ask.
+// A wall screen is in by a cookie of its own, set when an admin paired it (screens.ts): no
+// person, its name only.
 
 import { ApiError, UNREACHABLE, onUnauthorized } from '#lib/api.ts';
 import { authApi, type User } from '#lib/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import * as passkeys from '#lib/passkeys.ts';
-import { claimScreen } from '#lib/screen.ts';
+import { screensApi, takeLanguage } from '#lib/screens.ts';
 
 class Session {
 	/** `unreachable`: no answer, or the tunnel's 502 while the Pi restarts. `revoked`: a screen
-	 * whose token the server refuses. */
+	 * an admin removed while it was on. */
 	status = $state<'loading' | 'signed_in' | 'signed_out' | 'unreachable' | 'revoked'>('loading');
-	/** A wall screen: in by a service token, nobody signed in. */
-	screen = false;
+	/** A wall screen's name: in by its cookie, nobody signed in. */
+	screen = $state<string | null>(null);
 	user = $state.raw<User | null>(null);
 
 	constructor() {
@@ -22,23 +23,29 @@ class Session {
 	}
 
 	async verify() {
-		this.screen = claimScreen();
-		if (this.screen) {
-			this.status = 'signed_in';
-			return;
-		}
+		takeLanguage();
+		// someone signed in, else a paired screen, else nobody: a refusal moves on to the next,
+		// anything else (no answer, a 5xx, a renewal that got no answer) is the server not being
+		// there to ask
+		const absent = (e: unknown) => !(e instanceof ApiError) || e.status >= 500 || e.code === UNREACHABLE;
 		try {
 			const r = await authApi.verify();
 			if (r.success && r.user) return this.adopt(r.user);
 		} catch (e) {
-			// refused: no usable session; anything else (no answer, a 5xx, a renewal that got no
-			// answer) is the server not being there to ask
-			if (!(e instanceof ApiError) || e.status >= 500 || e.code === UNREACHABLE) {
-				this.status = 'unreachable';
-				return;
-			}
+			if (absent(e)) return void (this.status = 'unreachable');
+		}
+		try {
+			return this.becomeScreen((await screensApi.me()).screen.name);
+		} catch (e) {
+			if (absent(e)) return void (this.status = 'unreachable');
 		}
 		this.#out();
+	}
+
+	/** In, as the screen `name`: an admin paired it, or its cookie is still good. */
+	becomeScreen(name: string) {
+		this.screen = name;
+		this.status = 'signed_in';
 	}
 
 	/** Whether the person may invite others. */

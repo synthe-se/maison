@@ -25,6 +25,9 @@ const BY_CODE: Record<string, () => string> = {
 	not_signed_in: m.error_signed_out,
 	bad_name: m.error_bad_name,
 	person_exists: m.invites_person_exists_short,
+	pairing_unknown: m.screens_pairing_unknown,
+	pairing_elsewhere: m.screens_pairing_elsewhere,
+	screen_exists: m.screens_exists,
 	nested_scene: m.scenes_nested,
 	[UNREACHABLE]: m.error_network
 };

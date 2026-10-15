@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
-import { api, useToken } from '#lib/api.ts';
+import { api } from '#lib/api.ts';
 import { live, source } from '#lib/live.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { json, scriptFetch } from '#lib/test/fetch.ts';
@@ -24,22 +24,30 @@ describe('session', () => {
 	afterEach(() => {
 		session.user = null;
 		session.status = 'loading';
-		session.screen = false;
-		localStorage.removeItem('maison-screen-token');
-		useToken(null);
+		session.screen = null;
 	});
 
-	it('a wall screen is in by its token, nobody signed in; refused, it is revoked, not signed out', async () => {
-		localStorage.setItem('maison-screen-token', `maison_${'a'.repeat(43)}`);
-		// no session to ask about: the one call is the screen's own request, refused
-		const calls = scriptFetch(json({ error: 'revoked' }, 401));
+	/** Nobody signed in: the session refused, its renewal too. */
+	const nobody = () => [json({ error: 'no session' }, 401), json({}, 401)];
+
+	it('a wall screen is in by its cookie, nobody signed in; removed, it says so, not signed out', async () => {
+		const calls = scriptFetch(...nobody(), json({ success: true, screen: { name: 'Salon' } }));
 		await session.verify();
+		expect(calls.map((c) => c.url)).toEqual(['/api/auth/verify', '/api/auth/refresh', '/api/screens/me']);
 		expect(session.status).toBe('signed_in');
+		expect(session.screen).toBe('Salon');
 		expect(session.user).toBeNull();
 		expect(session.admin).toBe(false);
-		await expect(api('/scenes')).rejects.toThrow('revoked');
-		expect(calls.map((c) => c.url)).toEqual(['/api/scenes']);
+		// an admin removed it: its next request is refused, its renewal too
+		scriptFetch(json({ error: 'removed' }, 401), json({}, 401));
+		await expect(api('/scenes')).rejects.toThrow('removed');
 		expect(session.status).toBe('revoked');
+	});
+
+	it('a screen just paired is in at once, by its name', () => {
+		session.becomeScreen('Salon');
+		expect(session.status).toBe('signed_in');
+		expect(session.screen).toBe('Salon');
 	});
 
 	it('is signed in when the cookie is still good', async () => {
@@ -49,15 +57,15 @@ describe('session', () => {
 		expect(session.user).toEqual(user);
 	});
 
-	it('is signed out when the server refuses the session (401, even after a refresh)', async () => {
-		scriptFetch(json({ error: 'no session' }, 401), json({}, 401));
+	it('is signed out when the server refuses the session (401, even after a refresh) and it is no screen', async () => {
+		scriptFetch(...nobody(), ...nobody());
 		await session.verify();
 		expect(session.status).toBe('signed_out');
 		expect(session.user).toBeNull();
 	});
 
 	it('is signed out when the server answers without a user', async () => {
-		scriptFetch(json({ success: false }));
+		scriptFetch(json({ success: false }), ...nobody());
 		await session.verify();
 		expect(session.status).toBe('signed_out');
 	});

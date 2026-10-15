@@ -17,10 +17,20 @@ const people = [
 	{ id: 'francia', name: 'Francia', role: 'member', passkeys: 1 }
 ];
 
-/** The account's backend: my passkeys, the pending invitations, and what changes them. */
+const salon = { id: 's1', name: 'Salon', createdMs: Date.UTC(2026, 9, 16), lastUsedMs: null };
+
+/** The account's backend: my passkeys, the pending invitations, the screens, and what changes them. */
 function site(more: Record<string, unknown> = {}) {
-	return stubApi({ 'GET /passkeys': [iphone, mac], 'GET /invites': [pending], 'GET /people': people, ...passkeyRoutes(), ...more });
+	return stubApi({
+		'GET /passkeys': [iphone, mac],
+		'GET /invites': [pending],
+		'GET /people': people,
+		'GET /screens': { success: true, screens: [salon] },
+		...passkeyRoutes(),
+		...more
+	});
 }
+const screensRegion = () => page.getByRole('region', { name: m.screens_title() });
 const rows = () => page.getByRole('region', { name: m.keys_title() }).getByRole('listitem');
 
 describe('account page', () => {
@@ -242,6 +252,75 @@ describe('account page', () => {
 		expect(api.sent('GET', '/invites')).toEqual([]);
 		expect(api.sent('GET', '/people')).toEqual([]);
 		await expect.element(page.getByRole('heading', { name: m.people_title() })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('heading', { name: m.screens_title() })).not.toBeInTheDocument();
+		expect(api.sent('GET', '/screens')).toEqual([]);
+	});
+
+	it('lists the wall screens: name, when paired, when last seen', async () => {
+		site();
+		await render(AccountPage);
+		const row = screensRegion().getByRole('listitem');
+		await expect.element(row).toHaveLength(1);
+		await expect.element(row.getByText('Salon')).toBeVisible();
+		await expect.element(row.getByText(new RegExp(m.screens_never_used()))).toBeVisible();
+	});
+
+	it('pairs a screen from the code it shows; the list says it, the focus back on its title', async () => {
+		const api = site({ 'POST /screens': { success: true, screen: { name: 'Cuisine' } } });
+		await render(AccountPage);
+		await screensRegion().getByRole('button', { name: m.screens_pair() }).click();
+		const sheet = page.getByRole('dialog', { name: m.screens_pair() });
+		await sheet.getByLabelText(m.screens_code()).fill('abcd-efgh');
+		await sheet.getByLabelText(m.screens_name()).fill('Cuisine');
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.poll(() => api.sent('POST', '/screens')[0]?.body).toEqual({ code: 'abcd-efgh', name: 'Cuisine' });
+		await expect.element(sheet).not.toBeInTheDocument();
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.screens_paired({ name: 'Cuisine' }));
+		await expect.poll(() => api.sent('GET', '/screens').length).toBe(2);
+		await expect.element(page.getByRole('heading', { name: m.screens_title() })).toHaveFocus();
+	});
+
+	it('a code from another network is said under the code; a name taken under the name', async () => {
+		const refusal = (code: string, status: number) => new Response(JSON.stringify({ success: false, code }), { status });
+		const api = site({ 'POST /screens': refusal('pairing_elsewhere', 403) });
+		await render(AccountPage);
+		await screensRegion().getByRole('button', { name: m.screens_pair() }).click();
+		const sheet = page.getByRole('dialog', { name: m.screens_pair() });
+		const code = sheet.getByLabelText(m.screens_code());
+		const name = sheet.getByLabelText(m.screens_name());
+		await code.fill('ABCD-EFGH');
+		await name.fill('Salon');
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.element(code).toHaveAccessibleDescription(m.screens_pairing_elsewhere());
+		await expect.element(code).toHaveAttribute('aria-invalid', 'true');
+		api.routes['POST /screens'] = refusal('screen_exists', 409);
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.element(name).toHaveAccessibleDescription(m.screens_exists());
+		await expect.element(sheet).toBeVisible();
+	});
+
+	it('asks for both fields before asking the server', async () => {
+		const api = site();
+		await render(AccountPage);
+		await screensRegion().getByRole('button', { name: m.screens_pair() }).click();
+		const sheet = page.getByRole('dialog', { name: m.screens_pair() });
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.element(sheet.getByLabelText(m.screens_code())).toHaveAccessibleDescription(m.screens_code_missing());
+		await expect.element(sheet.getByLabelText(m.screens_code())).toHaveFocus();
+		expect(api.sent('POST', '/screens')).toEqual([]);
+	});
+
+	it('removes a screen after asking: it is signed out at once', async () => {
+		const api = site({ 'DELETE /screens/s1': {} });
+		await render(AccountPage);
+		await screensRegion()
+			.getByRole('button', { name: m.common_remove_named({ name: 'Salon' }) })
+			.click();
+		const confirm = page.getByRole('alertdialog', { name: m.screens_remove_title({ name: 'Salon' }) });
+		await expect.element(confirm.getByText(m.screens_remove_description())).toBeVisible();
+		await confirm.getByRole('button', { name: m.screens_remove_action() }).click();
+		await expect.poll(() => api.sent('DELETE', '/screens/s1')).toHaveLength(1);
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.screens_removed({ name: 'Salon' }));
 	});
 
 	it('says when nobody is waiting for an invitation', async () => {

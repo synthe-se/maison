@@ -22,7 +22,8 @@ const SCREENS: [string, string][] = [
 	['/hue-lamp/hue-01', 'lamp'],
 	['/meross/plug-1', 'plug'],
 	['/tv', 'tv'],
-	['/androidtv', 'box']
+	['/androidtv', 'box'],
+	['/account', 'account']
 ];
 
 const browser = await launch();
@@ -35,6 +36,10 @@ for (const scheme of ['light', 'dark'] as const) {
 		await p.goto(BASE + '/');
 		await p.getByRole('button', { name: fr.pk_button() }).waitFor();
 		await audit(p, `${where} sign-in`);
+		// a wall screen's pairing: its code shown, read out
+		await p.getByRole('button', { name: fr.screen_pair_button() }).click();
+		await p.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/).waitFor();
+		await audit(p, `${where} screen pairing`);
 		// the invitation, in the same door (a link made for the audit, never used)
 		await p.goto(invitation('door', 'Porte', false));
 		await p.getByRole('heading', { level: 1, name: fr.invite_title({ name: 'Porte' }) }).waitFor();

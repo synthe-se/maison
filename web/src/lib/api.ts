@@ -1,6 +1,6 @@
-// The backend's API: JSON in and out with the session cookie, an expired access token renewed
+// The backend's API: JSON in and out with the session's cookies, an expired access token renewed
 // once and transparently, a refusal thrown with its name (`code`) for the app to word it. A wall
-// screen sends its service token instead (screen.ts), which has nothing to renew.
+// screen is in by a cookie too (screens.ts): the page never holds a token.
 
 const API_BASE = '/api';
 
@@ -40,13 +40,6 @@ export function onUnauthorized(handler: () => void) {
 	unauthorized = handler;
 }
 
-// A wall screen's service token (screen.ts), sent with every request.
-let token: string | null = null;
-export function useToken(value: string | null) {
-	token = value;
-}
-const authorization = (): Record<string, string> => (token ? { Authorization: `Bearer ${token}` } : {});
-
 // one renewal at a time: requests refused together wait for the same one
 let renewing: Promise<boolean> | null = null;
 
@@ -74,17 +67,17 @@ export async function api<T>(endpoint: string, options: ApiOptions = {}): Promis
 	const send = () =>
 		fetch(`${API_BASE}${endpoint}`, {
 			method: options.method ?? 'GET',
-			headers: { ...authorization(), ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+			headers: options.body === undefined ? {} : { 'Content-Type': 'application/json' },
 			body: options.body === undefined ? undefined : JSON.stringify(options.body),
 			credentials: 'same-origin'
 		});
 
 	let response = await send();
 
-	// an expired access token: renewed once, then the request again (a token has none: refused,
-	// it was revoked)
+	// an expired access token: renewed once, then the request again (a screen's cookie has none:
+	// refused, it was removed)
 	if (response.status === 401) {
-		if (!token && (await renewSession())) response = await send();
+		if (await renewSession()) response = await send();
 		// the auth routes answer for themselves (a session check, a sign-out)
 		if (response.status === 401 && !endpoint.startsWith('/auth/')) unauthorized();
 	}
@@ -125,7 +118,6 @@ function sendFile(endpoint: string, field: string, file: File, timeoutMs: number
 		const xhr = new XMLHttpRequest();
 		xhr.open('POST', `${API_BASE}${endpoint}`);
 		xhr.withCredentials = true;
-		for (const [name, value] of Object.entries(authorization())) xhr.setRequestHeader(name, value);
 		xhr.responseType = 'json';
 		xhr.timeout = timeoutMs;
 		xhr.upload.onprogress = (e) => {
@@ -152,7 +144,7 @@ export async function upload<T>(
 ): Promise<T> {
 	let r = await sendFile(endpoint, field, file, timeoutMs, onProgress);
 	if (r.status === 401) {
-		if (!token && (await renewSession())) r = await sendFile(endpoint, field, file, timeoutMs, onProgress);
+		if (await renewSession()) r = await sendFile(endpoint, field, file, timeoutMs, onProgress);
 		if (r.status === 401) unauthorized();
 	}
 	if (r.status < 200 || r.status >= 300) throw toApiError(r.status, r.data);
