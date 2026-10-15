@@ -726,6 +726,7 @@
 	"remote_incomplete_actions": "Complète toutes les actions avant de continuer",
 	"remote_key_code": "Code de touche",
 	"remote_key_free": "{key}, libre",
+	"remote_key_glyph": "{glyph} ({name})",
 	"remote_key_mapped": "{key}, configurée : {label}",
 	"remote_key_number": "n° {code}",
 	"remote_label": "Libellé",

@@ -25,7 +25,10 @@ describe('RemoteMap', () => {
 	it('shows what is printed on a key that has no icon', async () => {
 		await render(RemoteMap, { keymap: {}, onselect: () => {} });
 		await expect.element(page.getByRole('button', { name: m.remote_key_free({ key: 'OK' }) })).toHaveTextContent('OK');
-		await expect.element(page.getByRole('button', { name: m.remote_key_free({ key: m.key_guide() }) })).toHaveTextContent('EPG');
+		// what is printed comes first in its name: said aloud, « EPG » finds it (WCAG 2.5.3)
+		await expect
+			.element(page.getByRole('button', { name: m.remote_key_free({ key: m.remote_key_glyph({ glyph: 'EPG', name: m.key_guide() }) }) }))
+			.toHaveTextContent('EPG');
 	});
 
 	it('opens a key’s binding by click or keyboard', async () => {

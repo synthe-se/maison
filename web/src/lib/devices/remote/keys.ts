@@ -16,6 +16,13 @@ export interface RemoteKey {
 
 const printed = (glyph: string): Pick<RemoteKey, 'name' | 'glyph'> => ({ name: () => glyph, glyph });
 
+/** What a key is called aloud: what is printed on it first, then what it is when that differs
+ * (« EPG (Guide des programmes) »): a voice control user says what they see (WCAG 2.5.3). */
+export function spoken(key: RemoteKey): string {
+	const name = key.name();
+	return key.glyph && key.glyph !== name ? m.remote_key_glyph({ glyph: key.glyph, name }) : name;
+}
+
 export const REMOTE_ROWS: RemoteKey[][] = [
 	[{ code: 116, name: m.key_power, icon: 'power' }],
 	[

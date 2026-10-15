@@ -44,7 +44,8 @@
 		{#if session.user}
 			<Popover.Root bind:open>
 				<Popover.Trigger class="btn ghost who" aria-label={m.session_menu({ name })}>
-					<span class="initial" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
+					<!-- drawn by CSS: the button's text is the name alone, which its label holds (WCAG 2.5.3) -->
+					<span class="initial" data-initial={name.slice(0, 1).toUpperCase()} aria-hidden="true"></span>
 					<span class="who-name">{name}</span>
 				</Popover.Trigger>
 				<Popover.Portal>
@@ -123,6 +124,9 @@
 	}
 	:global(.who) {
 		gap: var(--s-2);
+	}
+	.initial::before {
+		content: attr(data-initial);
 	}
 	.initial {
 		display: inline-grid;

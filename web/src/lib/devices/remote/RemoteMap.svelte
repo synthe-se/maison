@@ -4,7 +4,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import type { IrBinding } from '#lib/devices/remote/api.ts';
 	import Icon from '#lib/components/Icon.svelte';
-	import { REMOTE_ROWS } from './keys.ts';
+	import { REMOTE_ROWS, spoken } from './keys.ts';
 
 	interface Props {
 		keymap: Record<string, IrBinding>;
@@ -23,8 +23,8 @@
 					class="key"
 					class:mapped={binding}
 					aria-label={binding
-						? m.remote_key_mapped({ key: key.name(), label: binding.label || key.name() })
-						: m.remote_key_free({ key: key.name() })}
+						? m.remote_key_mapped({ key: spoken(key), label: binding.label || key.name() })
+						: m.remote_key_free({ key: spoken(key) })}
 					onclick={() => onselect(key.code)}
 				>
 					{#if key.icon}<Icon name={key.icon} size={18} />{:else}{key.glyph}{/if}

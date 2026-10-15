@@ -726,6 +726,7 @@
 	"remote_incomplete_actions": "Complete every action before continuing",
 	"remote_key_code": "Key code",
 	"remote_key_free": "{key}, free",
+	"remote_key_glyph": "{glyph} ({name})",
 	"remote_key_mapped": "{key}, configured: {label}",
 	"remote_key_number": "#{code}",
 	"remote_label": "Label",
