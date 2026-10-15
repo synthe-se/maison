@@ -66,7 +66,9 @@ frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): 
                      GeckoView kiosk APK, Kotlin), system/ (build.py: our /system, logo and
                      rescue recovery from the vendor's backup; bootimg.py, rescue-tools.sh),
                      rkwrite.py (loader writes), flash.sh, provision.sh, rescue.sh,
-                     bootanimation.sh/.ts, test_frame.py (docs/frame.md)
+                     bootanimation.sh/.ts, test_frame.py (docs/frame.md); linux/ (mainline
+                     from the recovery slot: build.sh, rootfs.sh, initramfs.py, image.py,
+                     install.sh, try.sh, console.sh, the board's device tree)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
 matter-trust/        CSA attestation roots (tracked)

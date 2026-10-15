@@ -1,0 +1,5 @@
+#!/bin/sh
+# cog on the panel's KMS output, rotated 180° (the panel is mounted upside down), at the target;
+# drawn with GLES (Lima): cog's plain modeset renderer cannot rotate.
+set -eu
+exec cog --platform=drm --platform-params=renderer=gles,rotation=2 "$(cat "$CREDENTIALS_DIRECTORY/target")"

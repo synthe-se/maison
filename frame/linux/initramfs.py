@@ -53,6 +53,7 @@ ln -s $g/functions/acm.usb0 $g/configs/c.1/
 udc=$(ls /sys/class/udc | head -1)
 [ -n "$udc" ] && echo $udc >$g/UDC && say "USB console on $udc"
 (while :; do [ -c /dev/ttyGS0 ] && mksh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done) &
+console=$!
 
 # 3. what came up, on the panel
 sleep 8
@@ -67,6 +68,24 @@ say "sdio: $(echo $(cat /sys/bus/sdio/devices/*/vendor /sys/bus/sdio/devices/*/d
 insmod /lib/modules/aic8800_bsp.ko && insmod /lib/modules/aic8800_fdrv.ko
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d /sys/class/net/wlan0 ] && break; sleep 1; done
 say "net: $(echo $(ls /sys/class/net))"
+
+# 5. the system, when Android's userdata holds one: its squashfs, read-only, a tmpfs over it, and
+#    userdata read-only at /android-data (Android's data is never written); else this shell stays
+data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
+img=/android-data/local/tmp/maison/rootfs.squashfs
+mkdir -p /android-data /lower /rw /newroot
+if [ -n "$data" ] && mount -t ext4 -o ro,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data && [ -f $img ] &&
+	mount -t squashfs -o ro,loop $img /lower && mount -t tmpfs -o mode=755 tmpfs /rw &&
+	mkdir -p /rw/upper /rw/work && mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot; then
+	say "system: $img"
+	mkdir -p /newroot/android-data
+	mount --move /android-data /newroot/android-data
+	# the system's own getty takes the USB console
+	pkill -P $console; kill $console
+	for m in dev proc sys; do mount --move /$m /newroot/$m; done
+	exec switch_root /newroot /sbin/init
+fi
+say "no system on userdata: the bring-up shell stays"
 while :; do sleep 3600; done
 """
 

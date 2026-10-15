@@ -1,0 +1,21 @@
+# Maison on the panel: cog (WPE WebKit) on KMS, turned as the panel is mounted, once the clock is
+# right (no RTC: before NTP, TLS fails). The target (Maison's address and the screen's token, in
+# its fragment) is a credential: its file stays root's, 0600, on Android's userdata.
+[Unit]
+Description=Maison on the panel
+Wants=network-online.target systemd-time-wait-sync.service
+After=network-online.target time-sync.target systemd-user-sessions.service
+
+[Service]
+User=kiosk
+SupplementaryGroups=video render input
+LoadCredential=target:/android-data/local/tmp/maison/target
+# the page's language: WebKit takes it from the environment
+Environment=HOME=/home/kiosk XDG_RUNTIME_DIR=/run/kiosk LANG=fr_FR.UTF-8 LANGUAGE=fr
+RuntimeDirectory=kiosk
+ExecStart=/usr/local/sbin/maison-kiosk
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

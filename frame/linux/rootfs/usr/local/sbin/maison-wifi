@@ -1,0 +1,22 @@
+#!/bin/sh
+# Android's network blocks, with only the keys both supplicants read the same way (its own global
+# settings and extensions stay out), into the configuration wpa_supplicant@wlan0 reads (/etc is
+# the tmpfs over the read-only system: rebuilt at every boot, never written to the eMMC).
+set -eu
+android=/android-data/misc/wifi/wpa_supplicant.conf
+out=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+umask 077
+mkdir -p /etc/wpa_supplicant
+{
+	echo "ctrl_interface=/run/wpa_supplicant"
+	echo "country=FR"
+	awk '
+		/^network=\{/ { inside = 1; print; next }
+		inside && /^\}/ { inside = 0; print; next }
+		inside {
+			key = $0; sub(/^[ \t]*/, "", key); sub(/=.*/, "", key)
+			if (key ~ /^(ssid|psk|key_mgmt|priority|scan_ssid|proto|pairwise|group|ieee80211w)$/) print
+		}
+	' "$android"
+} >"$out"
+echo "maison-wifi: $(grep -c '^network=' "$out") network(s) from Android"
