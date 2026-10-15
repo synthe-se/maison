@@ -1,7 +1,7 @@
 """The first mainline boot's initramfs: no distribution yet, only what tells us how far the kernel
 got. Its /init (mksh) writes nothing to the eMMC (only reads, and reports); makes the USB-C port
-a serial console (CDC ACM: /dev/cu.usbmodem*
-on the Mac); and prints on the panel (the kernel's console, fbcon) what came up: the display,
+a serial console (CDC ACM: /dev/cu.usbmodem* on the Mac); blinks the backlight five times first
+(a sign with no console at all); and prints on the panel (the kernel's console, fbcon) what came up: the display,
 the touch, the eMMC, the SDIO card. Tools: rescue-tools.sh's static mksh and toybox; the touch
 firmware extracted from the vendor kernel (~/maison-frame/recon, never in the repo).
 
@@ -23,8 +23,15 @@ mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 mount -t configfs none /sys/kernel/config
+mkdir -p /tmp
 say() {{ echo "maison: $*" >/dev/kmsg; }}
 say "init up, $(uname -r)"
+
+# 0. a sign without any console: the backlight blinks 5 times as soon as init runs
+for _ in 1 2 3 4 5 6 7 8 9 10; do ls /sys/class/backlight/*/brightness >/dev/null 2>&1 && break; sleep 1; done
+for b in /sys/class/backlight/*/brightness; do
+	for _ in 1 2 3 4 5; do echo 10 >$b; sleep 1; echo 255 >$b; sleep 1; done
+done
 
 # 1. nothing is written to the eMMC: only read, to say what is there (the vendor's U-Boot
 #    does not resume a recovery from misc: a power cycle is Android's boot, proved on the frame)

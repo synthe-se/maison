@@ -28,6 +28,39 @@
 		reg = <0x60000000 0x40000000>;
 	};
 
+	/*
+	 * U-Boot's logo stays on screen until the display driver takes over: its framebuffer (the
+	 * vendor kernel's « reserve 0x02000000@0x9dc00000 for uboot logo ») is kept out of the
+	 * kernel's way and handed to simpledrm, so the kernel's console shows from the first lines.
+	 */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		uboot_logo: framebuffer@9dc00000 {
+			reg = <0x9dc00000 0x2000000>;
+			no-map;
+		};
+	};
+
+	chosen {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		framebuffer@9dc00000 {
+			compatible = "simple-framebuffer";
+			/* as U-Boot set the VOP, read on the frame: format RGB888, 600 words a line */
+			reg = <0x9dc00000 (800 * 1280 * 3)>;
+			memory-region = <&uboot_logo>;
+			width = <800>;
+			height = <1280>;
+			stride = <(800 * 3)>;
+			format = "r8g8b8";
+		};
+	};
+
 	backlight: backlight {
 		compatible = "pwm-backlight";
 		pwms = <&pwm0 0 25000 0>;
@@ -83,7 +116,11 @@
 		regulator-boot-on;
 	};
 
-	/* the panel's power (the vendor's mipi_lcd_en, active low) */
+	/*
+	 * The panel's power (the vendor's mipi_lcd_en, active low), on as U-Boot left it: without
+	 * boot-on the regulator is switched off as it registers, and the panel goes black with it
+	 * (seen on the frame). Always on while U-Boot's framebuffer is the display (bring-up).
+	 */
 	vcc_lcd: regulator-vcc-lcd {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_lcd";
@@ -92,6 +129,8 @@
 		gpio = <&gpio2 RK_PA2 GPIO_ACTIVE_LOW>;
 		vin-supply = <&vcc_io>;
 		startup-delay-us = <20000>;
+		regulator-boot-on;
+		regulator-always-on;
 	};
 };
 
@@ -157,7 +196,7 @@
 		interrupt-parent = <&gpio0>;
 		interrupts = <RK_PA2 IRQ_TYPE_LEVEL_HIGH>;
 		/* extracted from the vendor kernel (docs/frame.md) */
-		firmware-name = "silead/gsl-amaboo-gbzk-y1000.fw";
+		firmware-name = "gsl-amaboo-gbzk-y1000.fw";	/* the driver looks in silead/ */
 		touchscreen-size-x = <800>;
 		touchscreen-size-y = <1280>;
 		touchscreen-inverted-x;

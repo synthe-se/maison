@@ -298,6 +298,8 @@ only for a forecast ≥ 80 %). Firmware tooling lives in uplg/nabgcc, not here.
   petrol) until a page has loaded. The boot animation draws before any rotation applies;
   U-Boot's logo is `logo.bmp` in the resource partition, drawn on the raw panel (docs/frame.md).
 - Frameo reinstalls itself into /data while its beta is on: `pm uninstall net.frameo.frame`.
+- Powered up with the USB-C on a computer, U-Boot boots the recovery after a wait: power it with
+  the USB-C unplugged to get Android, then plug it in.
 - The backup, the vendor's device tree, the release keystore and rkdeveloptool live in
   `~/maison-frame/`, never in the repo; rkdeveloptool writes a `log/` into its working directory.
 

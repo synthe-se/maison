@@ -67,6 +67,12 @@ runs as root, and forbids its children any new privilege (a set-uid binary stays
 init's `rootsh` service, root, runs each command written to `/dev/rootsh/in` (0660, group
 shell) and answers on `/dev/rootsh/out`; mksh is restricted under a name starting with `r`.
 
+## Booting with the USB-C on a computer
+
+The vendor's U-Boot, powered up with the USB-C linked to a computer, waits for a flashing tool
+and then boots the **recovery** (« Usb Timeout, Return for boot recovery! »). To come back to
+Android after a power cut: power it with the USB-C unplugged, wait for Maison, then plug it in.
+
 ## When nothing answers
 
 No ADB, a system that does not come up: the loader is still there. Power off, hold the reset
