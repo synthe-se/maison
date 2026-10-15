@@ -3,6 +3,7 @@
 // credentials, so signing in needs no name) and the invitations. docs/passkeys.md
 
 import { ApiError, del, get, patch, path, post } from '#lib/api.ts';
+import { m } from '#lib/paraglide/messages.js';
 import { source } from '#lib/live.svelte.ts';
 
 /** Who is signed in. `role`: "admin" (may invite and configure) or "member". */
@@ -71,8 +72,13 @@ export interface Registered {
 /** The person closed the system dialog. */
 const cancelled = () => new ApiError('cancelled', 0, 'cancelled');
 
-/** WebAuthn needs a secure context: HTTPS, or http://localhost. */
-export const supported = () => typeof window !== 'undefined' && window.isSecureContext && 'PublicKeyCredential' in window;
+/** Why passkeys cannot be used here, said with what to do, or null when they can: WebAuthn needs
+ * a secure context (HTTPS, or http://localhost), and a browser that has it (a wall screen's WPE
+ * has not). */
+export function noPasskeys(): string | null {
+	if (typeof window === 'undefined' || !window.isSecureContext) return m.pk_insecure();
+	return 'PublicKeyCredential' in window ? null : m.pk_unsupported();
+}
 
 // base64url, for browsers without the Level 3 JSON helpers
 const b64 = {

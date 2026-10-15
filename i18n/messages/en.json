@@ -625,6 +625,7 @@
 	"pk_signin_title": "Welcome back",
 	"pk_too_many": "Too many attempts. Wait a minute.",
 	"pk_unknown": "This passkey is no longer known here. Choose another, or ask for an invitation.",
+	"pk_unsupported": "This browser does not support passkeys: sign in from your phone or your computer, or make this device a wall screen.",
 	"pk_waiting": "Your device is waiting for you…",
 	"place_admin": "An admin must first set the town of the house.",
 	"place_hint": "For sunrise and sunset, computed here: the internet is only used to find the town.",

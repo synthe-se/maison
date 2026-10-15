@@ -6,7 +6,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
-	import { inviteGreeting, register, supported, type Registered } from '#lib/passkeys.ts';
+	import { inviteGreeting, register, noPasskeys, type Registered } from '#lib/passkeys.ts';
 	import { errorText } from '#lib/errors.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { pageTitle } from '#lib/i18n.svelte.ts';
@@ -20,7 +20,7 @@
 	/** The invitation could not be read (used, expired, or no answer). */
 	let invalid = $state('');
 	let created = $state.raw<Registered | null>(null);
-	const secure = supported();
+	const missing = noPasskeys();
 	let doneTitle = $state<HTMLElement>();
 	const g = new Gesture();
 
@@ -70,8 +70,8 @@
 		{:else if name}
 			<h1 id="invite-title" tabindex="-1">{m.invite_title({ name })}</h1>
 			<p class="lead">{m.invite_intro()}</p>
-			{#if !secure}
-				<p class="banner warn" role="alert">{m.pk_insecure()}</p>
+			{#if missing}
+				<p class="banner warn" role="alert">{missing}</p>
 			{:else}
 				<ul class="why plain-list">
 					<li><Icon name="key" /><span>{m.invite_why_nopassword()}</span></li>

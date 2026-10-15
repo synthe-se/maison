@@ -82,4 +82,18 @@ describe('SignIn', () => {
 		await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_insecure());
 		await expect.element(button()).not.toBeInTheDocument();
 	});
+
+	it('in a browser without passkeys (a wall screen’s WPE), says so, and still offers the way for a screen', async () => {
+		const kept = Object.getOwnPropertyDescriptor(window, 'PublicKeyCredential');
+		// @ts-expect-error a browser that has none
+		delete window.PublicKeyCredential;
+		try {
+			await render(SignIn);
+			await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_unsupported());
+			await expect.element(button()).not.toBeInTheDocument();
+			await expect.element(page.getByRole('button', { name: m.screen_pair_button() })).toBeVisible();
+		} finally {
+			if (kept) Object.defineProperty(window, 'PublicKeyCredential', kept);
+		}
+	});
 });

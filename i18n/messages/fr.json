@@ -625,6 +625,7 @@
 	"pk_signin_title": "Bon retour",
 	"pk_too_many": "Trop d’essais. Attends une minute.",
 	"pk_unknown": "Cette clé n’est plus reconnue ici. Choisis-en une autre, ou demande une invitation.",
+	"pk_unsupported": "Ce navigateur ne gère pas les clés d’accès : connecte-toi depuis ton téléphone ou ton ordinateur, ou fais de cet appareil un écran mural.",
 	"pk_waiting": "Ton appareil t’attend…",
 	"place_admin": "Un administrateur doit d’abord indiquer la ville de la maison.",
 	"place_hint": "Pour le lever et le coucher du soleil, calculés sur place : internet ne sert qu’à trouver la ville.",
