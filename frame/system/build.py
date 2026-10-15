@@ -225,12 +225,8 @@ def build_resource(backup: Path, out: Path, work: Path) -> Path:
     draws it on the raw panel (800×1280), before any rotation: the panel is turned 90° from
     Android's landscape (ro.sf.hwrotation), and the frame stands at ROTATION: the still frame,
     upright, turned (1 + ROTATION) × 90°."""
-    image = bytearray((backup / "mmcblk0p3.img").read_bytes())
-    if image[:4] != b"RSCE":
-        raise SystemExit("resource: not a Rockchip resource image")
-    at = image.find(b"ENTRlogo.bmp\0")
-    block, size = struct.unpack("<II", image[at + 260 : at + 268])
-    old = image[block * 512 : block * 512 + size]
+    image = (backup / "mmcblk0p3.img").read_bytes()
+    old = bootimg.rsce_get(image, "logo.bmp")
     w, h = struct.unpack("<ii", old[18:26])
     frames = work / "frames"
     subprocess.run(["bun", REPO / "frame/bootanimation.ts", frames], check=True, capture_output=True)
@@ -240,11 +236,11 @@ def build_resource(backup: Path, out: Path, work: Path) -> Path:
     if turn:
         subprocess.run(["sips", "-r", str(turn), still], check=True, capture_output=True)
     logo = bmp24(*png_rows(still.read_bytes()))
-    if len(logo) != size or (w, h) != struct.unpack("<ii", logo[18:26]):
-        raise SystemExit(f"logo: {len(logo)} bytes for {size}, the vendor's is {w}×{h}")
-    image[block * 512 : block * 512 + size] = logo
+    if len(logo) != len(old) or (w, h) != struct.unpack("<ii", logo[18:26]):
+        raise SystemExit(f"logo: {len(logo)} bytes for {len(old)}, the vendor's is {w}×{h}")
+    image = bootimg.rsce_put(image, "logo.bmp", logo)
     path = out / "resource.img"
-    path.write_bytes(bytes(image))
+    path.write_bytes(image)
     return path
 
 

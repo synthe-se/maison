@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * AMABOO GBZK-Y1000, a 10.1" Frameo photo frame: Rockchip RK3126, 1 GB DDR3, 32 GB eMMC, an
+ * 800x1280 MIPI DSI panel (Jadard JD9365DA, 4 lanes), a Silead GSL touch controller, an AIC8800
+ * Wi-Fi + BT chip on SDIO, an HYM8563 RTC, one power button. Pins come from the vendor's device
+ * tree (Android 6, kernel 3.10; docs/frame.md).
+ *
+ * The CPU supply (PWM1, the vendor's own voltage table) is left as U-Boot set it: no cpu-supply,
+ * and the kernel is built without CPU_FREQ, so the clock never rises above what that voltage
+ * was set for. GPIO0_A0 holds the power on (the vendor's gpio-poweroff): never claimed here.
+ */
+
+/dts-v1/;
+#include <dt-bindings/input/input.h>
+#include "rk3128.dtsi"
+
+/ {
+	model = "AMABOO GBZK-Y1000 (Frameo photo frame)";
+	compatible = "amaboo,gbzk-y1000", "rockchip,rk3128";
+
+	aliases {
+		mmc0 = &emmc;
+		mmc1 = &sdio;
+	};
+
+	memory@60000000 {
+		device_type = "memory";
+		reg = <0x60000000 0x40000000>;
+	};
+
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm0 0 25000 0>;
+		brightness-levels = <0 255>;
+		num-interpolated-steps = <255>;
+		default-brightness-level = <128>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		key-power {
+			gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_POWER>;
+			label = "power";
+			wakeup-source;
+		};
+	};
+
+	/* the AIC8800's power enable (the vendor's WIFI,poweren_gpio, active high) */
+	sdio_pwrseq: sdio-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&gpio2 RK_PB2 GPIO_ACTIVE_LOW>;
+	};
+
+	vcc_sys: regulator-vcc-sys {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_sys";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	vcc_io: regulator-vcc-io {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_io";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vcc_sys>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/* the vendor's fixed vdd_logic */
+	vdd_log: regulator-vdd-log {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_log";
+		regulator-min-microvolt = <1250000>;
+		regulator-max-microvolt = <1250000>;
+		vin-supply = <&vcc_sys>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/* the panel's power (the vendor's mipi_lcd_en, active low) */
+	vcc_lcd: regulator-vcc-lcd {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_lcd";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio2 RK_PA2 GPIO_ACTIVE_LOW>;
+		vin-supply = <&vcc_io>;
+		startup-delay-us = <20000>;
+	};
+};
+
+&display_subsystem {
+	status = "okay";
+};
+
+&dphy {
+	status = "okay";
+};
+
+&dsi {
+	status = "okay";
+
+	panel@0 {
+		compatible = "amaboo,gbzk-y1000-panel";
+		reg = <0>;
+		backlight = <&backlight>;
+		vdd-supply = <&vcc_lcd>;
+		vccio-supply = <&vcc_io>;
+		/* the vendor's mipi_lcd_rst */
+		reset-gpios = <&gpio2 RK_PC3 GPIO_ACTIVE_LOW>;
+		/* the panel is mounted upside down for a frame standing in portrait */
+		rotation = <180>;
+
+		port {
+			panel_in_dsi: endpoint {
+				remote-endpoint = <&dsi_out_panel>;
+			};
+		};
+	};
+};
+
+&dsi_out {
+	dsi_out_panel: endpoint {
+		remote-endpoint = <&panel_in_dsi>;
+	};
+};
+
+&emmc {
+	bus-width = <8>;
+	vmmc-supply = <&vcc_io>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_clk &emmc_cmd &emmc_bus8>;
+	cap-mmc-highspeed;
+	non-removable;
+	no-sd;
+	no-sdio;
+	status = "okay";
+};
+
+&gpu {
+	mali-supply = <&vdd_log>;
+	status = "okay";
+};
+
+&i2c2 {
+	status = "okay";
+
+	touchscreen@40 {
+		compatible = "silead,gsl1680";
+		reg = <0x40>;
+		interrupt-parent = <&gpio0>;
+		interrupts = <RK_PA2 IRQ_TYPE_LEVEL_HIGH>;
+		/* extracted from the vendor kernel (docs/frame.md) */
+		firmware-name = "silead/gsl-amaboo-gbzk-y1000.fw";
+		touchscreen-size-x = <800>;
+		touchscreen-size-y = <1280>;
+		touchscreen-inverted-x;
+		silead,max-fingers = <10>;
+	};
+
+	rtc@51 {
+		compatible = "haoyu,hym8563";
+		reg = <0x51>;
+		#clock-cells = <0>;
+	};
+};
+
+&pwm0 {
+	status = "okay";
+};
+
+&sdio {
+	bus-width = <4>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdio_clk &sdio_cmd &sdio_bus4>;
+	cap-sd-highspeed;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	mmc-pwrseq = <&sdio_pwrseq>;
+	vmmc-supply = <&vcc_io>;
+	non-removable;
+	no-mmc;
+	no-sd;
+	status = "okay";
+};
+
+/* the USB-C port as a device: a console over USB (CDC ACM) while there is no UART */
+&usb_otg {
+	dr_mode = "peripheral";
+	status = "okay";
+};
+
+&usb2phy {
+	status = "okay";
+};
+
+&usb2phy_otg {
+	status = "okay";
+};
+
+&vop {
+	status = "okay";
+};

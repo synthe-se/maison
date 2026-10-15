@@ -156,6 +156,29 @@ class Logo(unittest.TestCase):
         self.assertEqual(build.png_rows(self.png(2, 1, sub, 1))[2], [bytes([10, 20, 30, 15, 25, 35])])
 
 
+class Resource(unittest.TestCase):
+    def rsce(self):
+        image = bytearray(512 * 12)
+        image[:4] = b"RSCE"
+        for i, (name, block, data) in enumerate([("rk-kernel.dtb", 3, b"DTB1"), ("logo.bmp", 8, b"LOGO")]):
+            at = 512 * (1 + i)
+            image[at : at + 4] = b"ENTR"
+            image[at + 4 : at + 4 + len(name)] = name.encode()
+            image[at + 260 : at + 268] = struct.pack("<II", block, len(data))
+            image[512 * block : 512 * block + len(data)] = data
+        return bytes(image)
+
+    def test_an_entry_is_replaced_in_its_slot_and_nothing_else_moves(self):
+        image = bootimg.rsce_put(self.rsce(), "rk-kernel.dtb", b"D" * 2000)
+        self.assertEqual(bootimg.rsce_get(image, "rk-kernel.dtb"), b"D" * 2000)
+        self.assertEqual(bootimg.rsce_get(image, "logo.bmp"), b"LOGO")
+        self.assertEqual(len(image), 512 * 12)
+
+    def test_an_entry_larger_than_its_slot_is_refused(self):
+        with self.assertRaises(ValueError):
+            bootimg.rsce_put(self.rsce(), "rk-kernel.dtb", b"D" * (512 * 5 + 1))
+
+
 class Rkwrite(unittest.TestCase):
     def test_partitions_come_from_the_kernels_layout(self):
         with tempfile.TemporaryDirectory() as d:

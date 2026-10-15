@@ -117,6 +117,36 @@ class Ramdisk:
         return gzip.compress(write_cpio(self.entries), compresslevel=9, mtime=0)
 
 
+# ---- Rockchip's resource image (RSCE): the device tree and U-Boot's logo, as named entries
+
+def rsce_put(image: bytes, name: str, data: bytes) -> bytes:
+    """`image` with the entry `name` holding `data` instead, in its own slot (up to the next
+    entry's first block): nothing else moves."""
+    if image[:4] != b"RSCE":
+        raise ValueError("not a Rockchip resource image")
+    out = bytearray(image)
+    at = out.find(b"ENTR" + name.encode() + b"\0")
+    if at < 0:
+        raise ValueError(f"resource: no {name}")
+    block, size = struct.unpack("<II", out[at + 260 : at + 268])
+    # the slot ends where the next entry's data begins, or at the image's end
+    starts = sorted(struct.unpack("<I", out[i + 260 : i + 264])[0] for i in range(0, len(out), 512) if out[i : i + 4] == b"ENTR")
+    end = next((b for b in starts if b > block), len(out) // 512) * 512
+    if block * 512 + len(data) > end:
+        raise ValueError(f"resource: {name} is {len(data)} bytes, its slot {end - block * 512}")
+    out[block * 512 : end] = data + b"\0" * (end - block * 512 - len(data))
+    out[at + 264 : at + 268] = struct.pack("<I", len(data))
+    return bytes(out)
+
+
+def rsce_get(image: bytes, name: str) -> bytes:
+    at = image.find(b"ENTR" + name.encode() + b"\0")
+    if image[:4] != b"RSCE" or at < 0:
+        raise ValueError(f"resource: no {name}")
+    block, size = struct.unpack("<II", image[at + 260 : at + 268])
+    return image[block * 512 : block * 512 + size]
+
+
 # ---- what Maison changes in it
 
 def drop_service(rc: str, name: str) -> str:
