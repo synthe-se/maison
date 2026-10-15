@@ -63,9 +63,10 @@ i18n/messages/       fr.json, en.json: the only source of texts
 e2e/                 Playwright + axe against the real backend (run.sh, house.ts: typed with the
                      app's types, built from web/src/lib/test fixtures; words from fr.json)
 frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): android/ (the
-                     GeckoView kiosk APK, Kotlin), system/ (build.py: our /system from the
-                     vendor's backup; bootimg.py), rkwrite.py (loader writes), flash.sh,
-                     provision.sh, bootanimation.sh/.ts, test_frame.py (docs/frame.md)
+                     GeckoView kiosk APK, Kotlin), system/ (build.py: our /system, logo and
+                     rescue recovery from the vendor's backup; bootimg.py, rescue-tools.sh),
+                     rkwrite.py (loader writes), flash.sh, provision.sh, rescue.sh,
+                     bootanimation.sh/.ts, test_frame.py (docs/frame.md)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
 matter-trust/        CSA attestation roots (tracked)
@@ -278,8 +279,12 @@ only for a forecast ≥ 80 %). Firmware tooling lives in uplg/nabgcc, not here.
 ### The wall frame (`frame/`, [docs/frame.md](docs/frame.md))
 
 - Our /system is the vendor's with Frameo, Adups FOTA and SuperSU gone and the kiosk APK the
-  only home and device owner; boot, uboot, recovery and userdata stay the vendor's (its U-Boot
-  checks a boot image SHA we could not reproduce: `--boot` is built, never flashed).
+  only home and device owner; boot, uboot and userdata stay the vendor's. U-Boot boots images we
+  pack (proved with recovery), so `--boot` is possible, never flashed so far.
+- The recovery is a rescue (`frame/rescue.sh`): its menu needs buttons the frame lacks, its
+  adbd never runs as root and lets nothing gain privileges, `/sbin` is closed to its user,
+  toybox `nc -L` is mute on this kernel: root comes from an init service over fifos
+  (/dev/rootsh), tools (mksh, toybox from source) in the ramdisk's /system/bin.
 - ADB: Frameo approved a computer's key for the session only, and SystemUI (the prompt) is
   disabled on this build: without Frameo, only keys in `/data/misc/adb/adb_keys` work.
   `flash.sh keys` puts them there while root exists; `flash.sh` refuses to start without them.

@@ -6,12 +6,16 @@ mount, no Linux): everything else stays byte for byte the vendor's.
 Its resource image too, with one change: U-Boot's logo (`logo.bmp`, shown before Android) becomes
 the boot animation's still frame, in place, same size; the device tree beside it is untouched.
 
+And a rescue recovery (bootimg.py `rescue`): the vendor's, with ADB behind --adb-keys and a root
+shell (mksh and toybox from rescue-tools.sh), the way back without buttons (frame/rescue.sh).
+U-Boot boots a recovery we packed (proved on the frame).
+
 The vendor's boot image stays as it is by default: its U-Boot checks an id we cannot reproduce,
 and everything Maison needs can be said from /system (the services whose binaries are gone simply
 fail to start). `--boot` also builds a boot image of ours (bootimg.py: `adb root`, the ADB keys in
 the ramdisk), for the day that check is understood.
 
-    python3 frame/system/build.py --apk <MaisonFrame.apk> [--boot --adb-keys ~/.android/adbkey.pub]
+    python3 frame/system/build.py --apk <MaisonFrame.apk> [--adb-keys ~/.android/adbkey.pub] [--boot]
 
 Needs e2fsprogs (brew install e2fsprogs) and, for the boot animation, frame/bootanimation.sh's tools.
 """
@@ -244,6 +248,21 @@ def build_resource(backup: Path, out: Path, work: Path) -> Path:
     return path
 
 
+def build_recovery(backup: Path, adb_keys: Path, out: Path) -> Path:
+    tools = out / "tools"
+    if not all((tools / name).exists() for name in ("mksh", "toybox", "applets.txt")):
+        subprocess.run([REPO / "frame/system/rescue-tools.sh", tools], check=True)
+    recovery = bootimg.BootImage((backup / "mmcblk0p6.img").read_bytes())
+    applets = (tools / "applets.txt").read_text().split()
+    bootimg.rescue(recovery, adb_keys.read_bytes(), (tools / "mksh").read_bytes(), (tools / "toybox").read_bytes(), applets)
+    image = out / "recovery.img"
+    image.write_bytes(recovery.pack())
+    # the recovery partition: 65536 sectors (layout.txt)
+    if image.stat().st_size > 65536 * 512:
+        raise SystemExit(f"{image}: larger than the recovery partition")
+    return image
+
+
 def build_boot(backup: Path, adb_keys: Path, out: Path) -> Path:
     boot = bootimg.BootImage((backup / "mmcblk0p5.img").read_bytes())
     bootimg.maison(boot, adb_keys.read_bytes())
@@ -267,7 +286,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as work:
         system = build_system(args.backup, args.apk, args.out, Path(work))
         resource = build_resource(args.backup, args.out, Path(work))
-    images = [system, resource]
+    images = [system, resource, build_recovery(args.backup, args.adb_keys, args.out)]
     stale = args.out / "boot.img"
     if args.boot:
         images.append(build_boot(args.backup, args.adb_keys, args.out))

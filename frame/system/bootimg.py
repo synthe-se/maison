@@ -11,6 +11,7 @@ comes out byte for byte, and its cpio rewrites byte for byte.
 
 import gzip
 import hashlib
+import re
 import struct
 import sys
 
@@ -103,12 +104,12 @@ class Ramdisk:
     def text(self, name: str) -> str:
         return self._entry(name)["data"].decode()
 
-    def put(self, name: str, data: bytes, mode: int = 0o100644):
+    def put(self, name: str, data: bytes, mode: int = 0o100644, gid: int = 0):
         """Replaces a file's content (its mode, owner and inode kept), or adds it, root's."""
         e = self._entry(name)
         if e is None:
             ino = max(x["ino"] for x in self.entries) + 1
-            self.entries.append({"name": name, "data": data, "ino": ino, "mode": mode, "uid": 0, "gid": 0, "nlink": 1, "mtime": 0})
+            self.entries.append({"name": name, "data": data, "ino": ino, "mode": mode, "uid": 0, "gid": gid, "nlink": 1, "mtime": 0})
         else:
             e["data"] = data
 
@@ -161,6 +162,63 @@ def maison(boot: BootImage, adb_keys: bytes) -> None:
     boot.ramdisk = rd.pack()
 
 
+SHELL_GID = 2000  # Android's `shell` group: adbd's user
+# init's root service: a command written to `in` runs as root, its output comes back on `out`;
+# only the shell group (adbd's user) may open either
+ROOTSH = f"""export PATH=/system/bin:/sbin
+d=/dev/rootsh
+mkdir -p $d && chown 0:{SHELL_GID} $d && chmod 0750 $d
+rm -f $d/in $d/out
+# made once and kept: recreated each turn, a client could open one before its group is set
+mkfifo $d/in $d/out && chown 0:{SHELL_GID} $d/in $d/out && chmod 0660 $d/in $d/out
+while :; do
+	cmd=$(cat $d/in)
+	/system/bin/mksh -c "$cmd" >$d/out 2>&1
+done
+"""
+
+
+def rescue(recovery: BootImage, adb_keys: bytes, mksh: bytes, toybox: bytes, applets: list[str]) -> None:
+    """The way back without a button (the frame has only power): the vendor's recovery, reachable
+    over ADB behind these keys only, with a root shell. Its menu needs volume keys the frame lacks,
+    its adbd never runs as root (a user build) and it has no shell at all: mksh and toybox, built
+    from source (rescue-tools.sh), go into its ramdisk's /system/bin (/sbin is 0750, closed to
+    adbd's `shell` user; /system stays unmounted). Nothing adbd starts can gain root (it forbids
+    new privileges: a set-uid binary stays uid 2000, seen on the frame), so root comes from init:
+    its `rootsh` service runs each command written to /dev/rootsh/in (0660, group shell) and
+    answers on /dev/rootsh/out: `adb shell` reaches it, so only these keys do (frame/rescue.sh;
+    no Wi-Fi in recovery). adbd starts on ro.debuggable=1 (its init.rc); ro.adb.secure=1 and
+    /adb_keys keep everyone else out; its --root_seclabel names an `su` domain this policy lacks,
+    on which it would die (seen on the frame), so it goes."""
+    rd = Ramdisk(recovery.ramdisk)
+    props = set_props(rd.text("default.prop"), {"ro.debuggable": "1", "ro.adb.secure": "1"})
+    rd.put("default.prop", props.encode())
+    rd.put("adb_keys", adb_keys, mode=0o100644)
+    rc = rd.text("init.rc")
+    if " --root_seclabel=" not in rc:
+        raise ValueError("recovery init.rc: no adbd --root_seclabel (a different vendor build?)")
+    rc = re.sub(r" --root_seclabel=\S+", "", rc)
+    # the frame's own serial number, which this init.rc wrote as « $ro.serialno », unexpanded
+    rc = re.sub(r"\$(ro\.[a-z.]+)", r"${\1}", rc)
+    rc += (
+        "\n# the rescue's root: one command at a time through /dev/rootsh (frame/rescue.sh)\n"
+        "service rootsh /system/bin/mksh /system/bin/rootsh\n"
+        "    class default\n    user root\n    seclabel u:r:recovery:s0\n"
+    )
+    rd.put("init.rc", rc.encode())
+    # adbd's `shell` runs /system/bin/sh: /system stays unmounted, so these answer
+    rd.put("system/bin", b"", mode=0o40755)
+    rd.put("system/bin/mksh", mksh, mode=0o100755)
+    rd.put("system/bin/toybox", toybox, mode=0o100755)
+    rd.put("system/bin/sh", b"mksh", mode=0o120777)
+    rd.put("system/bin/rootsh", ROOTSH.encode(), mode=0o100750)
+    for applet in applets:
+        # su: nothing adbd starts may gain root (see above), the root is rootsh
+        if applet not in ("sh", "mksh", "toybox", "rootsh", "su"):
+            rd.put(f"system/bin/{applet}", b"toybox", mode=0o120777)
+    recovery.ramdisk = rd.pack()
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["check"] and len(argv) == 2:
         image = open(argv[1], "rb").read()
@@ -179,7 +237,15 @@ def main(argv: list[str]) -> int:
         open(out, "wb").write(boot.pack())
         print(f"{out}: {len(boot.pack())} bytes")
         return 0
-    print("usage: bootimg.py check <boot.img> | maison <boot.img> <adb_keys> <out.img>", file=sys.stderr)
+    if argv[:1] == ["rescue"] and len(argv) == 5:
+        src, adb_keys, tools, out = argv[1:]
+        recovery = BootImage(open(src, "rb").read())
+        applets = open(f"{tools}/applets.txt").read().split()
+        rescue(recovery, open(adb_keys, "rb").read(), open(f"{tools}/mksh", "rb").read(), open(f"{tools}/toybox", "rb").read(), applets)
+        open(out, "wb").write(recovery.pack())
+        print(f"{out}: {len(recovery.pack())} bytes")
+        return 0
+    print("usage: bootimg.py check <img> | maison <boot.img> <adb_keys> <out> | rescue <recovery.img> <adb_keys> <tools dir> <out>", file=sys.stderr)
     return 2
 
 

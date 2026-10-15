@@ -74,6 +74,45 @@ class BootImage(unittest.TestCase):
             bootimg.BootImage(b"\0" * 4096)
 
 
+class Rescue(unittest.TestCase):
+    def test_adb_behind_the_keys_and_a_root_shell_on_loopback_only(self):
+        props = "ro.secure=1\nro.debuggable=0\nro.adb.secure =1\nro.debuggable=1\n"
+        rc = "service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery\n    disabled\n    write /s $ro.serialno\n    write /m ${ro.product.model}\n"
+        ramdisk = bootimg.write_cpio([entry("default.prop", props.encode(), 5), entry("init.rc", rc.encode(), 6), entry("system", ino=7, mode=0o40755)])
+        recovery = bootimg.BootImage(boot_image(gzip.compress(ramdisk, mtime=0)))
+        bootimg.rescue(recovery, b"KEY me@mac\n", b"MKSH", b"TOYBOX", ["dd", "id", "sh", "su"])
+        rd = bootimg.Ramdisk(recovery.ramdisk)
+        lines = rd.text("default.prop").splitlines()
+        # every occurrence: init keeps the first of a ro. property
+        self.assertEqual([l for l in lines if l.startswith("ro.debuggable")], ["ro.debuggable=1", "ro.debuggable=1"])
+        self.assertIn("ro.adb.secure=1", lines)
+        self.assertEqual(rd.text("adb_keys"), "KEY me@mac\n")
+        init = rd.text("init.rc")
+        # adbd without the su domain this build's policy lacks (it would die on it)
+        self.assertIn("service adbd /sbin/adbd --device_banner=recovery\n", init)
+        self.assertIn("write /s ${ro.serialno}\n    write /m ${ro.product.model}\n", init)
+        self.assertNotIn("nc -L", init)
+        names = {e["name"]: e for e in rd.entries}
+        # in /system/bin: /sbin is closed to adbd's `shell` user
+        self.assertEqual((names["system/bin/mksh"]["data"], oct(names["system/bin/mksh"]["mode"])), (b"MKSH", "0o100755"))
+        self.assertEqual((names["system/bin/dd"]["data"], oct(names["system/bin/dd"]["mode"])), (b"toybox", "0o120777"))
+        self.assertEqual(names["system/bin/sh"]["data"], b"mksh")
+        # root from init, one command at a time through fifos only the shell group opens
+        self.assertIn("service rootsh /system/bin/mksh /system/bin/rootsh\n    class default\n    user root\n", init)
+        # 0660 by chmod: mkfifo -m is cut by the umask
+        self.assertIn("chmod 0660 $d/in $d/out", names["system/bin/rootsh"]["data"].decode())
+        # init gives its services no /system/bin in PATH: the toybox links live there
+        self.assertTrue(names["system/bin/rootsh"]["data"].startswith(b"export PATH=/system/bin:/sbin\n"))
+        self.assertNotIn("system/bin/su", names)
+        self.assertFalse([n for n in names if n.startswith("sbin/")])
+        # every applet but a shell: sh is mksh
+        self.assertIn("system/bin/id", names)
+        self.assertEqual(names["system/bin/sh"]["data"], b"mksh")
+        # a directory comes before what it holds
+        order = [e["name"] for e in rd.entries]
+        self.assertLess(order.index("system/bin"), order.index("system/bin/sh"))
+
+
 class InitAndProps(unittest.TestCase):
     RC = "on boot\n    start x\n\nservice daemonsu /system/xbin/daemonsu\n   class main\n\nservice adbd /sbin/adbd\n    class core\n"
 

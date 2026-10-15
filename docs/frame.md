@@ -36,15 +36,36 @@ clockwise, the logo (1 + ROTATION) × 90°: both seen upright on the frame.
 ```bash
 export ANDROID_SERIAL=<serial> RKDEVELOPTOOL=~/maison-frame/bin/rkdeveloptool
 frame/flash.sh keys     # once, on the vendor's Android: this computer's ADB key in adb_keys
-frame/flash.sh          # adb reboot loader, then resource.img and system.img, chunk by chunk, read back
+frame/flash.sh          # adb reboot loader, then resource, recovery and system, chunk by chunk, read back
 adb shell pm uninstall net.frameo.frame    # if Frameo had updated itself into /data
 ANDROID_SERIAL=<serial> frame/provision.sh https://<Maison's address>   # asks for the token
 ```
 
 `flash.sh keys` matters: Frameo approved a computer's ADB key for the session only, and this
 build's SystemUI, which would ask, is disabled. Without the key in `/data/misc/adb/adb_keys`, ADB
-is gone with Frameo; `flash.sh` refuses to start without it. Only /system and resource are
-written: boot, recovery and userdata (Wi-Fi, ADB's keys, the kiosk's address) stay.
+is gone with Frameo; `flash.sh` refuses to start without it. Only /system, resource and
+recovery are written: boot and userdata (Wi-Fi, ADB's keys, the kiosk's address) stay. U-Boot
+boots the images we pack (a recovery repacked with a changed ramdisk came up), though the
+vendor's own boot.img id matches no SHA-1 we could reproduce.
+
+## A root shell without a button
+
+The frame has one button, so the recovery's menu is out of reach; `recovery.img` (build.py) is
+the vendor's recovery made a rescue instead: ADB behind this computer's key, mksh and toybox
+built from source (`frame/system/rescue-tools.sh`, pinned versions), and root from init.
+
+```bash
+frame/rescue.sh                       # adb reboot recovery, then a root prompt, line by line
+frame/rescue.sh 'dd if=/dev/block/mmcblk0p13 bs=1M count=1 | md5sum'   # one command
+adb -s 0123456789ABCDEF reboot        # back to Maison (the recovery says that serial)
+```
+
+Why it is built this way, each point seen on the frame: adbd there is a user build and never
+runs as root, and forbids its children any new privilege (a set-uid binary stays uid 2000);
+`/sbin` is 0750, closed to adbd's `shell` user, so the tools live in the ramdisk's
+`/system/bin` (/system is not mounted); toybox's `nc -L` answers nothing on this 3.10 kernel. So
+init's `rootsh` service, root, runs each command written to `/dev/rootsh/in` (0660, group
+shell) and answers on `/dev/rootsh/out`; mksh is restricted under a name starting with `r`.
 
 ## When nothing answers
 
