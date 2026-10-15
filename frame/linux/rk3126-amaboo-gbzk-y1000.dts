@@ -138,11 +138,18 @@
 	status = "okay";
 };
 
+/*
+ * PD_VIO (the VOP, the DSI and its PHY) stays as U-Boot left it, on: switching it off as idle,
+ * mainline's power-domain driver reads a PMU register this RK3126 faults on (an external abort
+ * at offset 0x88, seen on the frame) and the kernel dies with its interrupts off.
+ */
 &dphy {
+	/delete-property/ power-domains;
 	status = "okay";
 };
 
 &dsi {
+	/delete-property/ power-domains;
 	status = "okay";
 
 	panel@0 {
@@ -244,5 +251,6 @@
 };
 
 &vop {
+	/delete-property/ power-domains;	/* PD_VIO: see &dphy */
 	status = "okay";
 };

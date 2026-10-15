@@ -80,6 +80,12 @@ def build(tools: Path, firmware: Path) -> bytes:
             add(f"bin/{applet}", b"toybox", 0o120777)
     add("bin/sh", b"mksh", 0o120777)
     add(FIRMWARE, firmware.read_bytes())
+    # the display modules build.sh made (loaded by hand while the display driver is brought up)
+    modules = Path(__file__).resolve().parents[1] / "build/linux/modules"
+    if modules.is_dir():
+        add("lib/modules", mode=0o40755)
+        for ko in sorted(modules.glob("*.ko")):
+            add(f"lib/modules/{ko.name}", ko.read_bytes())
     return gzip.compress(bootimg.write_cpio(entries), compresslevel=9, mtime=0)
 
 

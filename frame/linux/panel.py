@@ -78,8 +78,24 @@ def main() -> int:
     print(f"\t\t.vtotal\t\t= {v} + {t['vfront-porch']} + {t['vsync-len']} + {t['vback-porch']},\n")
     # a 10.1-inch 16:10 panel
     print("\t\t.width_mm\t= 135,\n\t\t.height_mm\t= 216,")
+    # Syncs active low, as U-Boot drives them (its DSI DPI_CFG_POL 6, its VOP pin_pol 0): with no
+    # flag the VOP drives them low and the DSI reads them high.
+    print("\t\t.flags\t\t= DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,")
     print("\t\t.type\t\t= DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,\n\t},")
-    print("\t.lanes = 4,\n\t.format = MIPI_DSI_FMT_RGB888,\n\t.init = amaboo_gbzk_y1000_init_cmds,\n};")
+    print("\t.lanes = 4,\n\t.format = MIPI_DSI_FMT_RGB888,\n\t.init = amaboo_gbzk_y1000_init_cmds,")
+    # The vendor sent its init in low power, as Rockchip's 3.10 driver does: LPM. LP-11 on the
+    # lanes before the reset is let go, with kingdisplay_kd101ne3's delays (the same controller,
+    # the same 10.1-inch 800x1280 panel family). A non-continuous clock: the host's HS clock
+    # otherwise runs through the panel's reset and its init, and the panel, reset with no LP-11
+    # on its clock lane, takes the commands but never locks on the video (black, seen on the
+    # frame; the same init without the reset showed the picture).
+    print("\t.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |")
+    print("\t\t      MIPI_DSI_MODE_NO_EOT_PACKET | MIPI_DSI_MODE_LPM |")
+    print("\t\t      MIPI_DSI_CLOCK_NON_CONTINUOUS,")
+    print("\t.lp11_before_reset = true,\n\t.reset_before_power_off_vcioo = true,")
+    print("\t.vcioo_to_lp11_delay_ms = 5,\n\t.lp11_to_reset_delay_ms = 10,")
+    print("\t.backlight_off_to_display_off_delay_ms = 100,\n\t.display_off_to_enter_sleep_delay_ms = 50,")
+    print("\t.enter_sleep_to_reset_down_delay_ms = 100,\n};")
     return 0
 
 
