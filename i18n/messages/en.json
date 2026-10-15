@@ -843,6 +843,8 @@
 	"scenes_template_night": "Night",
 	"scenes_title": "Scenes",
 	"scenes_too_many": "A scene holds {count} actions at most.",
+	"screen_revoked_body": "The house no longer knows this screen: its token was revoked. Create a new one on the Pi, then give it to the frame.",
+	"screen_revoked_title": "Screen signed out",
 	"session_menu": "{name}’s session",
 	"sheet_discard": "Discard",
 	"sheet_discard_description": "What you changed here is not saved yet and will be lost.",

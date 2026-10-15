@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { json as jsonBody, scriptFetch as script, sentBody, stubFetch } from '#lib/test/fetch.ts';
-import { ApiError, UNREACHABLE, api, onUnauthorized, path, toApiError } from './api.ts';
+import { ApiError, UNREACHABLE, api, onUnauthorized, path, toApiError, useToken } from './api.ts';
 import { authApi, peopleApi } from './passkeys.ts';
 import { devicesApi, feederApi, fountainApi, litterBoxApi } from './devices/cats/api.ts';
 import { hueLampsApi, zigbeeLampsApi } from './devices/lamps/api.ts';
@@ -13,6 +13,9 @@ import { androidTvApi, tvApi } from './devices/tv/api.ts';
 import { shuttersApi } from './devices/shutters/api.ts';
 
 const json = (status: number, body: unknown) => jsonBody(body, status);
+
+/** A wall screen's service token (screen.ts). */
+const TOKEN = `maison_${'a'.repeat(43)}`;
 
 describe('api', () => {
 	beforeEach(() => onUnauthorized(() => {}));
@@ -48,6 +51,22 @@ describe('api', () => {
 		script(json(401, { error: 'expired' }), json(401, {}));
 		await expect(api('/lamps')).rejects.toThrow('expired');
 		expect(over).toHaveBeenCalledOnce();
+	});
+
+	it('a wall screen sends its token; refused, it is over at once (a token has no renewal)', async () => {
+		const over = vi.fn();
+		onUnauthorized(over);
+		useToken(TOKEN);
+		try {
+			const calls = script(json(200, {}), json(401, { error: 'revoked' }));
+			await api('/zigbee/lamps');
+			expect(new Headers(calls[0].init?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
+			await expect(api('/zigbee/lamps')).rejects.toThrow('revoked');
+			expect(calls.map((c) => c.url)).toEqual(['/api/zigbee/lamps', '/api/zigbee/lamps']);
+			expect(over).toHaveBeenCalledOnce();
+		} finally {
+			useToken(null);
+		}
 	});
 
 	it('does not sign out over a brief outage: a renewal answered 502 is « unreachable »', async () => {
@@ -289,8 +308,12 @@ class FakeXhr {
 	ontimeout?: () => void;
 	onload?: () => void;
 	timeout = 0;
+	headers: Record<string, string> = {};
 	constructor() {
 		FakeXhr.last = this;
+	}
+	setRequestHeader(name: string, value: string) {
+		this.headers[name] = value;
 	}
 	open(method: string, url: string) {
 		this.method = method;
@@ -324,6 +347,22 @@ describe('androidTvApi.installApk', () => {
 		expect(progress.mock.calls).toEqual([[0.25], [1]]);
 		xhr.answer(200, { success: true, message: 'installed' });
 		await expect(done).resolves.toEqual({ success: true, message: 'installed' });
+	});
+
+	it('a wall screen uploads with its token, and no session cookie to renew', async () => {
+		vi.stubGlobal('XMLHttpRequest', FakeXhr);
+		onUnauthorized(() => {});
+		useToken(TOKEN);
+		try {
+			const refused = androidTvApi.installApk(apk());
+			expect(FakeXhr.last.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+			const calls = stubFetch(() => jsonBody({}));
+			FakeXhr.last.answer(401, { error: 'revoked' });
+			await expect(refused).rejects.toMatchObject({ status: 401 });
+			expect(calls).toHaveLength(0);
+		} finally {
+			useToken(null);
+		}
 	});
 
 	it('fails with the server’s words and its refusal’s name, or its status', async () => {

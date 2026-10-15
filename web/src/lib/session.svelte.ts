@@ -1,14 +1,19 @@
 // Who is signed in. The session is an HttpOnly cookie the backend sets (after a passkey,
 // passkeys.ts); the page only asks whether it is still good, and forgets everything on sign-out.
+// A wall screen is in by its service token (screen.ts): no person, nothing to ask.
 
 import { ApiError, UNREACHABLE, onUnauthorized } from '#lib/api.ts';
 import { authApi, type User } from '#lib/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import * as passkeys from '#lib/passkeys.ts';
+import { claimScreen } from '#lib/screen.ts';
 
 class Session {
-	/** `unreachable`: no answer, or the tunnel's 502 while the Pi restarts. */
-	status = $state<'loading' | 'signed_in' | 'signed_out' | 'unreachable'>('loading');
+	/** `unreachable`: no answer, or the tunnel's 502 while the Pi restarts. `revoked`: a screen
+	 * whose token the server refuses. */
+	status = $state<'loading' | 'signed_in' | 'signed_out' | 'unreachable' | 'revoked'>('loading');
+	/** A wall screen: in by a service token, nobody signed in. */
+	screen = false;
 	user = $state.raw<User | null>(null);
 
 	constructor() {
@@ -17,6 +22,11 @@ class Session {
 	}
 
 	async verify() {
+		this.screen = claimScreen();
+		if (this.screen) {
+			this.status = 'signed_in';
+			return;
+		}
 		try {
 			const r = await authApi.verify();
 			if (r.success && r.user) return this.adopt(r.user);
@@ -65,7 +75,7 @@ class Session {
 
 	#out() {
 		this.user = null;
-		this.status = 'signed_out';
+		this.status = this.screen ? 'revoked' : 'signed_out';
 		forgetAll();
 	}
 }

@@ -40,37 +40,40 @@
 		<Brand />
 		{@render nav('views')}
 		<div class="grow"></div>
-		<Popover.Root bind:open>
-			<Popover.Trigger class="btn ghost who" aria-label={m.session_menu({ name })}>
-				<span class="initial" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
-				<span class="who-name">{name}</span>
-			</Popover.Trigger>
-			<Popover.Portal>
-				<Popover.Content class="panel" sideOffset={6} align="end" role="dialog" aria-labelledby="session-title">
-					<h2 id="session-title" class="who-title">{name}</h2>
-					<ToggleGroup
-						type="single"
-						label={m.language_label()}
-						options={locales.map((l) => ({ value: l, label: localeName(l), lang: l }))}
-						value={locale()}
-						onchange={(l: Locale) => switchLocale(l)}
-					/>
-					<ToggleGroup
-						type="single"
-						label={m.theme_label()}
-						options={options(THEMES, THEME_LABEL)}
-						value={ui.theme}
-						onchange={(t) => ui.setTheme(t)}
-					/>
-					<div class="row">
-						<a class="btn" href="/account" onclick={() => (open = false)}><Icon name="key" />{m.account_title()}</a>
-						<button class="btn" onclick={() => session.signOut()}>
-							<Icon name="log-out" />{m.auth_logout()}
-						</button>
-					</div>
-				</Popover.Content>
-			</Popover.Portal>
-		</Popover.Root>
+		<!-- a wall screen has nobody to name, no account, no session to end -->
+		{#if session.user}
+			<Popover.Root bind:open>
+				<Popover.Trigger class="btn ghost who" aria-label={m.session_menu({ name })}>
+					<span class="initial" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
+					<span class="who-name">{name}</span>
+				</Popover.Trigger>
+				<Popover.Portal>
+					<Popover.Content class="panel" sideOffset={6} align="end" role="dialog" aria-labelledby="session-title">
+						<h2 id="session-title" class="who-title">{name}</h2>
+						<ToggleGroup
+							type="single"
+							label={m.language_label()}
+							options={locales.map((l) => ({ value: l, label: localeName(l), lang: l }))}
+							value={locale()}
+							onchange={(l: Locale) => switchLocale(l)}
+						/>
+						<ToggleGroup
+							type="single"
+							label={m.theme_label()}
+							options={options(THEMES, THEME_LABEL)}
+							value={ui.theme}
+							onchange={(t) => ui.setTheme(t)}
+						/>
+						<div class="row">
+							<a class="btn" href="/account" onclick={() => (open = false)}><Icon name="key" />{m.account_title()}</a>
+							<button class="btn" onclick={() => session.signOut()}>
+								<Icon name="log-out" />{m.auth_logout()}
+							</button>
+						</div>
+					</Popover.Content>
+				</Popover.Portal>
+			</Popover.Root>
+		{/if}
 	</div>
 </header>
 {@render nav('bottom')}

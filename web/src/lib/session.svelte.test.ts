@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
-import { api } from '#lib/api.ts';
+import { api, useToken } from '#lib/api.ts';
 import { live, source } from '#lib/live.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { json, scriptFetch } from '#lib/test/fetch.ts';
@@ -24,6 +24,22 @@ describe('session', () => {
 	afterEach(() => {
 		session.user = null;
 		session.status = 'loading';
+		session.screen = false;
+		localStorage.removeItem('maison-screen-token');
+		useToken(null);
+	});
+
+	it('a wall screen is in by its token, nobody signed in; refused, it is revoked, not signed out', async () => {
+		localStorage.setItem('maison-screen-token', `maison_${'a'.repeat(43)}`);
+		// no session to ask about: the one call is the screen's own request, refused
+		const calls = scriptFetch(json({ error: 'revoked' }, 401));
+		await session.verify();
+		expect(session.status).toBe('signed_in');
+		expect(session.user).toBeNull();
+		expect(session.admin).toBe(false);
+		await expect(api('/scenes')).rejects.toThrow('revoked');
+		expect(calls.map((c) => c.url)).toEqual(['/api/scenes']);
+		expect(session.status).toBe('revoked');
 	});
 
 	it('is signed in when the cookie is still good', async () => {

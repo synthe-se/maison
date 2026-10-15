@@ -49,7 +49,7 @@ backend/tests/       integration tests (+ `live-runtime-tests` feature for real 
 web/src/lib/         live (sources), gesture (pending, unavailable), command, draft, elapsed,
                      stored, options, session, ui (toasts), i18n (every format), focus, errors,
                      api (the fetch core: errors, renewal, upload), passkeys (session, people,
-                     invitations, passkeys), haptics
+                     invitations, passkeys), screen (a wall screen's service token), haptics
 web/src/lib/components/   every shared brick, each Bits UI primitive wrapped once (Group,
                      DeviceTile + TileSettings, Loaded + Stale, ToggleGroup, Disclosure,
                      Combobox, Range, Select, Sheet, ListRow, StatusRow…)

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
+import { api, useToken } from '#lib/api.ts';
 import { session } from '#lib/session.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
@@ -35,6 +36,9 @@ describe('layout', () => {
 	afterEach(() => {
 		session.status = 'loading';
 		session.user = null;
+		session.screen = false;
+		localStorage.removeItem('maison-screen-token');
+		useToken(null);
 		ui.setTheme('system');
 	});
 
@@ -55,6 +59,18 @@ describe('layout', () => {
 		await expect.element(page.getByText(m.unreachable_body())).toBeVisible();
 		await expect.element(page.getByText(m.branding_promise())).toBeVisible();
 		await expect.element(page.getByRole('button', { name: m.reload() })).toBeVisible();
+	});
+
+	it('a wall screen opens on the page; its token refused, it says so with no passkey to offer', async () => {
+		localStorage.setItem('maison-screen-token', `maison_${'a'.repeat(43)}`);
+		stubApi({ '/scenes': new Response(null, { status: 401 }) });
+		await show();
+		await expect.element(page.getByRole('heading', { level: 1, name: 'Salon' })).toBeVisible();
+		await api('/scenes').catch(() => {});
+		await expect.element(page.getByRole('heading', { level: 1, name: m.screen_revoked_title() })).toBeVisible();
+		await expect.element(page.getByText(m.screen_revoked_body())).toBeVisible();
+		expect(page.getByRole('button', { name: m.pk_button() }).query()).toBeNull();
+		expect(page.getByRole('navigation', { name: m.nav_label() }).query()).toBeNull();
 	});
 
 	it('asks to sign in when the session is over', async () => {

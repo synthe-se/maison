@@ -843,6 +843,8 @@
 	"scenes_template_night": "Nuit",
 	"scenes_title": "Scènes",
 	"scenes_too_many": "Une scène tient {count} actions au plus.",
+	"screen_revoked_body": "La maison ne reconnaît plus cet écran : son jeton a été révoqué. Crée-en un nouveau sur le Pi, puis donne-le au cadre.",
+	"screen_revoked_title": "Écran déconnecté",
 	"session_menu": "Session de {name}",
 	"sheet_discard": "Abandonner",
 	"sheet_discard_description": "Ce que tu as changé ici n’est pas encore enregistré et sera perdu.",

@@ -31,6 +31,13 @@ describe('Header', () => {
 		localStorage.removeItem('maison-locale');
 	});
 
+	it('a wall screen has the navigation and no session menu', async () => {
+		session.user = null;
+		await render(Header);
+		await expect.element(nav().getByRole('link', { name: m.nav_home() })).toBeVisible();
+		expect(screen.getByRole('button').query()).toBeNull();
+	});
+
 	it('marks the current destination in the navigation', async () => {
 		at('/remote/tv');
 		await render(Header);

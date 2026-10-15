@@ -65,6 +65,7 @@
 <!-- the screens before a page keep a title of their own, not the asked page's -->
 <svelte:head>
 	{#if session.status === 'unreachable'}<title>{pageTitle(m.unreachable_title())}</title>{/if}
+	{#if session.status === 'revoked'}<title>{pageTitle(m.screen_revoked_title())}</title>{/if}
 </svelte:head>
 
 <nav class="skip" aria-label={m.skip_to_content()}><a href="#main">{m.skip_to_content()}</a></nav>
@@ -78,6 +79,13 @@
 				<h1 id="unreachable-title" tabindex="-1">{m.unreachable_title()}</h1>
 				<p class="lead">{m.unreachable_body()}</p>
 				<button class="btn primary big" onclick={() => location.reload()}><Icon name="refresh-cw" />{m.reload()}</button>
+			</section>
+		</AuthShell>
+	{:else if session.status === 'revoked'}
+		<AuthShell>
+			<section class="notice" aria-labelledby="revoked-title">
+				<h1 id="revoked-title" tabindex="-1">{m.screen_revoked_title()}</h1>
+				<p class="lead">{m.screen_revoked_body()}</p>
 			</section>
 		</AuthShell>
 	{:else if session.status === 'signed_out' && !invitation}
