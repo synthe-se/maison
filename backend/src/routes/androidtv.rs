@@ -1,18 +1,18 @@
 use axum::{
-    Json, Router,
-    extract::{DefaultBodyLimit, Multipart, State, multipart::MultipartError},
+    extract::{multipart::MultipartError, DefaultBodyLimit, Multipart, State},
     routing::{get, post, put},
+    Json, Router,
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::{
-    AppState,
     androidtv::{self, AndroidKey, AndroidTvConfig, AndroidTvStatus},
     auth::AdminUser,
     error::AppError,
     routes::{Answer, SimpleResponse},
+    AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -100,7 +100,9 @@ async fn launch(
 }
 
 async fn apps(State(state): State<AppState>) -> Result<Json<Answer<Value>>, AppError> {
-    Ok(Answer::ok(json!({ "packages": state.androidtv.apps().await? })))
+    Ok(Answer::ok(
+        json!({ "packages": state.androidtv.apps().await? }),
+    ))
 }
 
 async fn wake(State(state): State<AppState>) -> Result<Json<SimpleResponse>, AppError> {
@@ -110,7 +112,9 @@ async fn wake(State(state): State<AppState>) -> Result<Json<SimpleResponse>, App
 
 async fn sleep(State(state): State<AppState>) -> Result<Json<SimpleResponse>, AppError> {
     state.androidtv.sleep().await?;
-    Ok(SimpleResponse::ok("Box asleep (CEC should power the TV off)"))
+    Ok(SimpleResponse::ok(
+        "Box asleep (CEC should power the TV off)",
+    ))
 }
 
 /// Streams the `apk` field through to the box. One install at a time: a second one
@@ -127,7 +131,10 @@ async fn install_apk(
     };
     while let Some(field) = multipart.next_field().await.map_err(malformed)? {
         if field.name() == Some("apk") {
-            let message = state.androidtv.install_apk(field.map_err(malformed)).await?;
+            let message = state
+                .androidtv
+                .install_apk(field.map_err(malformed))
+                .await?;
             return Ok(SimpleResponse::ok(message));
         }
     }
@@ -136,7 +143,10 @@ async fn install_apk(
 
 /// Opens a pairing session. The TV shows a six hex-digit code once this
 /// returns; the caller then posts it to `/pair/finish`.
-async fn pair_start(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<SimpleResponse>, AppError> {
+async fn pair_start(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<SimpleResponse>, AppError> {
     state.androidtv.start_pairing().await?;
     Ok(SimpleResponse::ok("Enter the code shown on the TV"))
 }
@@ -147,5 +157,7 @@ async fn pair_finish(
     Json(body): Json<PairFinishRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
     state.androidtv.finish_pairing(&body.code).await?;
-    Ok(SimpleResponse::ok("Paired — keys now go over the fast channel"))
+    Ok(SimpleResponse::ok(
+        "Paired — keys now go over the fast channel",
+    ))
 }

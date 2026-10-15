@@ -50,15 +50,31 @@ impl AppError {
     }
 
     pub fn coded(status: StatusCode, code: &'static str, message: &'static str) -> Self {
-        Self::Coded { status, code, message, retry_after_s: None, detail: None }
+        Self::Coded {
+            status,
+            code,
+            message,
+            retry_after_s: None,
+            detail: None,
+        }
     }
 
     /// A coded refusal with what the app needs to act on it.
     pub fn with_detail(self, value: serde_json::Value) -> Self {
         match self {
-            Self::Coded { status, code, message, retry_after_s, .. } => {
-                Self::Coded { status, code, message, retry_after_s, detail: Some(Box::new(value)) }
-            }
+            Self::Coded {
+                status,
+                code,
+                message,
+                retry_after_s,
+                ..
+            } => Self::Coded {
+                status,
+                code,
+                message,
+                retry_after_s,
+                detail: Some(Box::new(value)),
+            },
             other => other,
         }
     }
@@ -89,7 +105,9 @@ impl AppError {
             // a service we asked did not answer (503), or answered nonsense (502): not our bug
             Self::Reqwest(e) if e.is_connect() || e.is_timeout() => StatusCode::SERVICE_UNAVAILABLE,
             Self::Reqwest(_) => StatusCode::BAD_GATEWAY,
-            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Join(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Join(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
     }
 
@@ -110,14 +128,21 @@ impl IntoResponse for AppError {
         let status = self.status();
         match status {
             // a device or a service out there: their trouble, said as a warning
-            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT => {
+            StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT => {
                 warn!(error = %self, "upstream unavailable");
             }
             s if s.is_server_error() => error!(error = %self, "request failed"),
             _ => {}
         }
         let (code, retry_after_s, detail) = match &self {
-            Self::Coded { code, retry_after_s, detail, .. } => (Some(*code), *retry_after_s, detail.clone()),
+            Self::Coded {
+                code,
+                retry_after_s,
+                detail,
+                ..
+            } => (Some(*code), *retry_after_s, detail.clone()),
             _ => (None, None, None),
         };
         let body = ErrorBody {
@@ -128,7 +153,9 @@ impl IntoResponse for AppError {
         };
         let mut response = (status, Json(body)).into_response();
         if let Some(seconds) = retry_after_s {
-            response.headers_mut().insert(axum::http::header::RETRY_AFTER, seconds.into());
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, seconds.into());
         }
         response
     }
@@ -140,7 +167,12 @@ mod tests {
 
     /// A reqwest error of each kind, from a real (local) request.
     async fn reqwest_error(url: &str) -> reqwest::Error {
-        reqwest::Client::new().get(url).send().await.and_then(|r| r.error_for_status()).expect_err("fails")
+        reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .expect_err("fails")
     }
 
     #[tokio::test]
@@ -155,7 +187,10 @@ mod tests {
         // an answer we cannot use (a 500 of theirs): a bad gateway
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let broken = format!("http://{}", listener.local_addr().unwrap());
-        let app = axum::Router::new().route("/", axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
         tokio::spawn(async move { axum::serve(listener, app).await });
         let bad = AppError::from(reqwest_error(&broken).await);
         assert_eq!(bad.status(), StatusCode::BAD_GATEWAY);

@@ -19,7 +19,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::http::{HeaderMap, StatusCode};
-use webauthn_rs::prelude::{DiscoverableAuthentication, PasskeyRegistration, Url, Uuid, Webauthn, WebauthnBuilder};
+use webauthn_rs::prelude::{
+    DiscoverableAuthentication, PasskeyRegistration, Url, Uuid, Webauthn, WebauthnBuilder,
+};
 
 use crate::{config::Config, error::AppError, util::random_secret};
 
@@ -65,7 +67,9 @@ pub enum Refusal {
     PairingElsewhere,
     /// A screen, or an app's token, already has this name.
     ScreenExists,
-    TooManyAttempts { retry_after_s: u64 },
+    TooManyAttempts {
+        retry_after_s: u64,
+    },
 }
 
 impl From<Refusal> for AppError {
@@ -73,26 +77,80 @@ impl From<Refusal> for AppError {
         // no 401 but for « not signed in »: the web app reads a 401 as a session that ended
         let (status, code, message) = match r {
             Refusal::NotSignedIn => (StatusCode::UNAUTHORIZED, "not_signed_in", "Not signed in"),
-            Refusal::Forbidden => (StatusCode::FORBIDDEN, "forbidden", "Admin privileges required"),
-            Refusal::BadName => (StatusCode::BAD_REQUEST, "bad_name", "A name, 60 characters at most"),
-            Refusal::BadPerson => {
-                (StatusCode::BAD_REQUEST, "bad_person", "A person's id: lowercase letters, digits and dashes")
+            Refusal::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Admin privileges required",
+            ),
+            Refusal::BadName => (
+                StatusCode::BAD_REQUEST,
+                "bad_name",
+                "A name, 60 characters at most",
+            ),
+            Refusal::BadPerson => (
+                StatusCode::BAD_REQUEST,
+                "bad_person",
+                "A person's id: lowercase letters, digits and dashes",
+            ),
+            Refusal::PasskeyOff => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "passkey_off",
+                "Passkeys need PUBLIC_URL (https)",
+            ),
+            Refusal::InviteInvalid => (
+                StatusCode::NOT_FOUND,
+                "invite_invalid",
+                "This invitation is no longer valid",
+            ),
+            Refusal::CeremonyExpired => (
+                StatusCode::BAD_REQUEST,
+                "ceremony_expired",
+                "Too late: start again",
+            ),
+            Refusal::PasskeyRejected => (
+                StatusCode::BAD_REQUEST,
+                "passkey_rejected",
+                "Passkey not accepted",
+            ),
+            Refusal::UnknownPasskey => {
+                (StatusCode::NOT_FOUND, "unknown_passkey", "Unknown passkey")
             }
-            Refusal::PasskeyOff => (StatusCode::SERVICE_UNAVAILABLE, "passkey_off", "Passkeys need PUBLIC_URL (https)"),
-            Refusal::InviteInvalid => (StatusCode::NOT_FOUND, "invite_invalid", "This invitation is no longer valid"),
-            Refusal::CeremonyExpired => (StatusCode::BAD_REQUEST, "ceremony_expired", "Too late: start again"),
-            Refusal::PasskeyRejected => (StatusCode::BAD_REQUEST, "passkey_rejected", "Passkey not accepted"),
-            Refusal::UnknownPasskey => (StatusCode::NOT_FOUND, "unknown_passkey", "Unknown passkey"),
-            Refusal::PasskeyExists => (StatusCode::CONFLICT, "passkey_exists", "Passkey already registered"),
-            Refusal::LastPasskey => (StatusCode::CONFLICT, "last_passkey", "The last passkey stays"),
+            Refusal::PasskeyExists => (
+                StatusCode::CONFLICT,
+                "passkey_exists",
+                "Passkey already registered",
+            ),
+            Refusal::LastPasskey => (
+                StatusCode::CONFLICT,
+                "last_passkey",
+                "The last passkey stays",
+            ),
             Refusal::NotFound => (StatusCode::NOT_FOUND, "not_found", "Not found"),
-            Refusal::ReauthNeeded => (StatusCode::FORBIDDEN, "reauth_needed", "Sign in with a passkey again first"),
-            Refusal::PersonExists => (StatusCode::CONFLICT, "person_exists", "Someone already has this name"),
-            Refusal::PairingUnknown => (StatusCode::NOT_FOUND, "pairing_unknown", "No screen waits with this code"),
-            Refusal::PairingElsewhere => {
-                (StatusCode::FORBIDDEN, "pairing_elsewhere", "Pair a screen from its own network")
-            }
-            Refusal::ScreenExists => (StatusCode::CONFLICT, "screen_exists", "A screen already has this name"),
+            Refusal::ReauthNeeded => (
+                StatusCode::FORBIDDEN,
+                "reauth_needed",
+                "Sign in with a passkey again first",
+            ),
+            Refusal::PersonExists => (
+                StatusCode::CONFLICT,
+                "person_exists",
+                "Someone already has this name",
+            ),
+            Refusal::PairingUnknown => (
+                StatusCode::NOT_FOUND,
+                "pairing_unknown",
+                "No screen waits with this code",
+            ),
+            Refusal::PairingElsewhere => (
+                StatusCode::FORBIDDEN,
+                "pairing_elsewhere",
+                "Pair a screen from its own network",
+            ),
+            Refusal::ScreenExists => (
+                StatusCode::CONFLICT,
+                "screen_exists",
+                "A screen already has this name",
+            ),
             Refusal::TooManyAttempts { retry_after_s } => {
                 return AppError::Coded {
                     status: StatusCode::TOO_MANY_REQUESTS,
@@ -119,7 +177,12 @@ pub struct Ceremonies<T> {
 
 impl<T> Ceremonies<T> {
     pub fn new(ttl: Duration, cap: usize, per_address: usize) -> Self {
-        Self { ttl, cap, per_address, map: Mutex::new(HashMap::new()) }
+        Self {
+            ttl,
+            cap,
+            per_address,
+            map: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Keeps `value`, started from `ip`; returns the id to give back with the answer.
@@ -171,14 +234,20 @@ pub struct Limiter {
 
 impl Limiter {
     pub fn new(max: u32, window: Duration) -> Self {
-        Self { max, window, map: Mutex::new(HashMap::new()) }
+        Self {
+            max,
+            window,
+            map: Mutex::new(HashMap::new()),
+        }
     }
 
     /// `Err(seconds)` when the address has failed too often and must wait.
     pub fn check(&self, ip: IpAddr) -> Result<(), u64> {
         let map = self.map.lock().expect("limiter");
         match map.get(&address_key(ip)) {
-            Some((start, n)) if *n >= self.max && start.elapsed() < self.window => Err(self.wait(*start)),
+            Some((start, n)) if *n >= self.max && start.elapsed() < self.window => {
+                Err(self.wait(*start))
+            }
             _ => Ok(()),
         }
     }
@@ -229,8 +298,15 @@ pub enum Via {
 }
 
 pub enum Ceremony {
-    Register { state: PasskeyRegistration, person: String, handle: Uuid, via: Via },
-    Login { state: DiscoverableAuthentication },
+    Register {
+        state: PasskeyRegistration,
+        person: String,
+        handle: Uuid,
+        via: Via,
+    },
+    Login {
+        state: DiscoverableAuthentication,
+    },
 }
 
 pub struct PasskeyState {
@@ -247,21 +323,30 @@ pub struct PasskeyState {
 impl PasskeyState {
     /// Passkeys at `PUBLIC_URL`; `None` (sign-in off, said in the log) without a usable one.
     pub fn new(config: &Config) -> Option<Self> {
-        let built = config.public_url.as_deref().ok_or_else(|| "PUBLIC_URL is not set".to_string()).and_then(|url| {
-            let (rp_id, origin) = relying_party(url)?;
-            let webauthn = WebauthnBuilder::new(&rp_id, &origin)
-                .and_then(|b| b.rp_name("Maison").timeout(CEREMONY_TTL).build())
-                .map_err(|e| e.to_string())?;
-            tracing::info!(%rp_id, %origin, "passkeys ready");
-            Ok(webauthn)
-        });
+        let built = config
+            .public_url
+            .as_deref()
+            .ok_or_else(|| "PUBLIC_URL is not set".to_string())
+            .and_then(|url| {
+                let (rp_id, origin) = relying_party(url)?;
+                let webauthn = WebauthnBuilder::new(&rp_id, &origin)
+                    .and_then(|b| b.rp_name("Maison").timeout(CEREMONY_TTL).build())
+                    .map_err(|e| e.to_string())?;
+                tracing::info!(%rp_id, %origin, "passkeys ready");
+                Ok(webauthn)
+            });
         match built {
             Ok(webauthn) => Some(Self {
                 webauthn,
                 ceremonies: Ceremonies::new(CEREMONY_TTL, CEREMONY_CAP, CEREMONIES_PER_ADDRESS),
                 limiter: Limiter::new(ATTEMPTS, ATTEMPT_WINDOW),
                 starts: Limiter::new(STARTS, ATTEMPT_WINDOW),
-                public_url: config.public_url.clone().unwrap_or_default().trim_end_matches('/').to_string(),
+                public_url: config
+                    .public_url
+                    .clone()
+                    .unwrap_or_default()
+                    .trim_end_matches('/')
+                    .to_string(),
             }),
             Err(error) => {
                 tracing::warn!(%error, "passkeys off: nobody can sign in");
@@ -279,7 +364,11 @@ impl PasskeyState {
     }
 
     /// Runs `f` unless the address failed too often lately; a failure counts against it.
-    pub async fn guarded<T>(&self, ip: IpAddr, f: impl Future<Output = Result<T, AppError>>) -> Result<T, AppError> {
+    pub async fn guarded<T>(
+        &self,
+        ip: IpAddr,
+        f: impl Future<Output = Result<T, AppError>>,
+    ) -> Result<T, AppError> {
         self.limiter.check(ip).map_err(|retry_after_s| {
             tracing::warn!(%ip, "passkey attempts: too many failures");
             AppError::from(Refusal::TooManyAttempts { retry_after_s })
@@ -296,7 +385,10 @@ impl PasskeyState {
 /// (http only on localhost), no path. The RP ID never changes without losing every passkey.
 pub fn relying_party(public_url: &str) -> Result<(String, Url), String> {
     let url = Url::parse(public_url).map_err(|e| format!("PUBLIC_URL: {e}"))?;
-    let host = url.domain().ok_or("PUBLIC_URL: a domain name, not an IP address")?.to_string();
+    let host = url
+        .domain()
+        .ok_or("PUBLIC_URL: a domain name, not an IP address")?
+        .to_string();
     let local = host == "localhost";
     if url.scheme() != "https" && !(local && url.scheme() == "http") {
         return Err("PUBLIC_URL: https (plain http on localhost only)".into());
@@ -319,7 +411,14 @@ pub fn client_ip(addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
             ["cf-connecting-ip", "x-real-ip"]
                 .iter()
                 .find_map(|h| header(h)?.trim().parse::<IpAddr>().ok())
-                .or_else(|| header("x-forwarded-for")?.rsplit(',').next()?.trim().parse().ok())
+                .or_else(|| {
+                    header("x-forwarded-for")?
+                        .rsplit(',')
+                        .next()?
+                        .trim()
+                        .parse()
+                        .ok()
+                })
         })
         .flatten();
     forwarded.map_or(peer, |f| f.to_canonical())
@@ -337,7 +436,10 @@ pub fn device_label(user_agent: &str) -> &'static str {
         ("Windows", "Windows"),
         ("Linux", "Linux"),
     ];
-    DEVICES.iter().find(|(needle, _)| user_agent.contains(needle)).map_or("", |(_, label)| label)
+    DEVICES
+        .iter()
+        .find(|(needle, _)| user_agent.contains(needle))
+        .map_or("", |(_, label)| label)
 }
 
 #[cfg(test)]
@@ -358,7 +460,9 @@ mod tests {
         assert_eq!(expired.take(&b), None, "older than its time limit");
 
         // full: the oldest goes
-        let ids: Vec<_> = (0..4).map(|n| c.put(IpAddr::from([10, 0, 0, n as u8]), n)).collect();
+        let ids: Vec<_> = (0..4)
+            .map(|n| c.put(IpAddr::from([10, 0, 0, n as u8]), n))
+            .collect();
         assert_eq!(c.len(), 3);
         assert_eq!(c.take(&ids[0]), None);
         assert_eq!(c.take(&ids[3]), Some(3));
@@ -383,7 +487,10 @@ mod tests {
         assert!(l.hit(same_prefix).is_ok());
         assert!(l.hit(a).is_err(), "an IPv6 /64 is one address");
         assert!(l.hit(other).is_ok());
-        assert_eq!(address_key("::ffff:192.0.2.1".parse().unwrap()), "192.0.2.1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            address_key("::ffff:192.0.2.1".parse().unwrap()),
+            "192.0.2.1".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]
@@ -406,7 +513,10 @@ mod tests {
     #[test]
     fn forwarded_address_only_from_the_local_tunnel() {
         let mut h = HeaderMap::new();
-        h.insert("x-forwarded-for", "203.0.113.9, 100.101.102.103".parse().unwrap());
+        h.insert(
+            "x-forwarded-for",
+            "203.0.113.9, 100.101.102.103".parse().unwrap(),
+        );
         let local: SocketAddr = "127.0.0.1:5000".parse().unwrap();
         let remote: SocketAddr = "192.168.1.20:5000".parse().unwrap();
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
@@ -414,16 +524,30 @@ mod tests {
         assert_eq!(client_ip(remote, &h), ip("192.168.1.20"));
         assert_eq!(client_ip(local, &HeaderMap::new()), ip("127.0.0.1"));
         h.insert("cf-connecting-ip", "198.51.100.7".parse().unwrap());
-        assert_eq!(client_ip(local, &h), ip("198.51.100.7"), "Cloudflare's word first");
-        assert_eq!(client_ip(remote, &h), ip("192.168.1.20"), "not believed from the LAN");
+        assert_eq!(
+            client_ip(local, &h),
+            ip("198.51.100.7"),
+            "Cloudflare's word first"
+        );
+        assert_eq!(
+            client_ip(remote, &h),
+            ip("192.168.1.20"),
+            "not believed from the LAN"
+        );
     }
 
     #[test]
     fn devices_name_passkeys() {
         let iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) AppleWebKit/605.1.15";
         assert_eq!(device_label(iphone), "iPhone");
-        assert_eq!(device_label("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"), "Mac");
-        assert_eq!(device_label("Mozilla/5.0 (Linux; Android 16; Pixel 10)"), "Android");
+        assert_eq!(
+            device_label("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"),
+            "Mac"
+        );
+        assert_eq!(
+            device_label("Mozilla/5.0 (Linux; Android 16; Pixel 10)"),
+            "Android"
+        );
         assert_eq!(device_label("curl/8"), "");
     }
 
@@ -433,8 +557,17 @@ mod tests {
         assert_eq!(id, "home.kahn.studio");
         assert_eq!(origin.as_str(), "https://home.kahn.studio/");
         assert!(relying_party("http://localhost:5173").is_ok());
-        assert!(relying_party("https://192.168.1.103").is_err(), "no IP address");
-        assert!(relying_party("http://home.kahn.studio").is_err(), "no plain http");
-        assert!(relying_party("https://home.kahn.studio/maison").is_err(), "an origin, no path");
+        assert!(
+            relying_party("https://192.168.1.103").is_err(),
+            "no IP address"
+        );
+        assert!(
+            relying_party("http://home.kahn.studio").is_err(),
+            "no plain http"
+        );
+        assert!(
+            relying_party("https://home.kahn.studio/maison").is_err(),
+            "an origin, no path"
+        );
     }
 }

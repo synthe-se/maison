@@ -269,15 +269,22 @@ impl AdbKey {
     /// rejects, falling back to re-sending the public key on every single connection.
     async fn sign(&self, token: Vec<u8>) -> Result<Vec<u8>, AppError> {
         let signer = self.0.clone();
-        tokio::task::spawn_blocking(move || signer.sign_prehash(&token).map(|signature| signature.to_vec()))
-            .await?
-            .map_err(|error| protocol_error(format!("could not sign the ADB token: {error}")))
+        tokio::task::spawn_blocking(move || {
+            signer
+                .sign_prehash(&token)
+                .map(|signature| signature.to_vec())
+        })
+        .await?
+        .map_err(|error| protocol_error(format!("could not sign the ADB token: {error}")))
     }
 
     /// The public key as `adbd` stores it, computed off the runtime too (once per box).
     async fn android_public_key(&self) -> Result<String, AppError> {
         let key = self.0.clone();
-        Ok(tokio::task::spawn_blocking(move || android_public_key((*key).as_ref(), "maison@maison")).await?)
+        Ok(tokio::task::spawn_blocking(move || {
+            android_public_key((*key).as_ref(), "maison@maison")
+        })
+        .await?)
     }
 }
 
@@ -294,7 +301,12 @@ impl AdbDevice {
     pub async fn connect(address: &str, key: &AdbKey) -> Result<Self, AppError> {
         let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
             .await
-            .map_err(|_| unreachable("Android TV box", format!("ADB connect to {address} timed out")))?
+            .map_err(|_| {
+                unreachable(
+                    "Android TV box",
+                    format!("ADB connect to {address} timed out"),
+                )
+            })?
             .map_err(|error| unreachable("Android TV box", error))?;
         let mut device = Self {
             stream,
@@ -386,7 +398,9 @@ impl AdbDevice {
                     return Ok(message.arg0);
                 }
                 A_CLSE if message.arg1 == local_id => {
-                    return Err(protocol_error(format!("device refused to open {destination}")))
+                    return Err(protocol_error(format!(
+                        "device refused to open {destination}"
+                    )))
                 }
                 _ => continue,
             }
@@ -463,7 +477,12 @@ impl AdbDevice {
     /// four-byte id, a little-endian length, then the payload. `SEND` names
     /// the target as `path,mode`, `DATA` carries at most 64 KiB per chunk,
     /// and `DONE` passes the mtime and asks for the verdict.
-    pub async fn push_stream<S>(&mut self, remote_path: &str, mut data: S, mode: u32) -> Result<(), AppError>
+    pub async fn push_stream<S>(
+        &mut self,
+        remote_path: &str,
+        mut data: S,
+        mode: u32,
+    ) -> Result<(), AppError>
     where
         S: Stream<Item = Result<Bytes, AppError>> + Unpin,
     {
@@ -485,7 +504,11 @@ impl AdbDevice {
             if let Some(bytes) = &next {
                 pending.extend_from_slice(bytes);
             }
-            let take = if next.is_some() { pending.len() - pending.len() % SYNC_CHUNK } else { pending.len() };
+            let take = if next.is_some() {
+                pending.len() - pending.len() % SYNC_CHUNK
+            } else {
+                pending.len()
+            };
             for chunk in pending[..take].chunks(SYNC_CHUNK) {
                 let mut frame = Vec::with_capacity(8 + chunk.len());
                 frame.extend_from_slice(b"DATA");
@@ -548,14 +571,19 @@ impl AdbDevice {
 #[cfg(test)]
 pub(crate) mod fake {
     use std::sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     };
 
     use super::*;
 
-    pub(crate) async fn serve(shells: usize, output: fn(&str) -> Vec<Vec<u8>>) -> (String, Arc<AtomicUsize>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    pub(crate) async fn serve(
+        shells: usize,
+        output: fn(&str) -> Vec<Vec<u8>>,
+    ) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let address = listener.local_addr().expect("address").to_string();
         let connections = Arc::new(AtomicUsize::new(0));
         let counted = connections.clone();
@@ -570,14 +598,25 @@ pub(crate) mod fake {
         (address, connections)
     }
 
-    async fn session(stream: &mut TcpStream, shells: usize, output: fn(&str) -> Vec<Vec<u8>>) -> Result<(), AppError> {
+    async fn session(
+        stream: &mut TcpStream,
+        shells: usize,
+        output: fn(&str) -> Vec<Vec<u8>>,
+    ) -> Result<(), AppError> {
         read_message(stream).await?;
-        write_message(stream, Message::new(A_CNXN, A_VERSION, MAX_PAYLOAD, b"device::\0".to_vec())).await?;
+        write_message(
+            stream,
+            Message::new(A_CNXN, A_VERSION, MAX_PAYLOAD, b"device::\0".to_vec()),
+        )
+        .await?;
         for remote in 100..100 + shells as u32 {
             let open = read_message(stream).await?;
             let local = open.arg0;
             let command = String::from_utf8_lossy(&open.payload);
-            let command = command.trim_end_matches('\0').trim_start_matches("shell:").to_string();
+            let command = command
+                .trim_end_matches('\0')
+                .trim_start_matches("shell:")
+                .to_string();
             write_message(stream, Message::new(A_OKAY, remote, local, Vec::new())).await?;
             for chunk in output(&command) {
                 write_message(stream, Message::new(A_WRTE, remote, local, chunk)).await?;
@@ -601,14 +640,26 @@ mod tests {
     /// A length is never truncated onto the wire, nor taken from it past the agreed max.
     #[tokio::test]
     async fn lengths_past_the_max_are_refused_both_ways() {
-        assert_eq!(wire_length(MAX_PAYLOAD as usize).expect("at the max"), MAX_PAYLOAD);
+        assert_eq!(
+            wire_length(MAX_PAYLOAD as usize).expect("at the max"),
+            MAX_PAYLOAD
+        );
         assert!(wire_length(MAX_PAYLOAD as usize + 1).is_err());
         #[cfg(target_pointer_width = "64")]
-        assert!(wire_length(u32::MAX as usize + 1).is_err(), "not wrapped to 0");
-        assert!(Message::new(A_WRTE, 1, 1, vec![0; MAX_PAYLOAD as usize + 1]).encode().is_err());
+        assert!(
+            wire_length(u32::MAX as usize + 1).is_err(),
+            "not wrapped to 0"
+        );
+        assert!(
+            Message::new(A_WRTE, 1, 1, vec![0; MAX_PAYLOAD as usize + 1])
+                .encode()
+                .is_err()
+        );
 
         // a header announcing more than the max is refused before its payload is sized
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let address = listener.local_addr().expect("address");
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept");
@@ -627,7 +678,9 @@ mod tests {
     #[tokio::test]
     async fn shell_output_is_gathered_and_capped() {
         let (address, _) = fake::serve(2, |_| vec![b"abc".to_vec(), b"def".to_vec()]).await;
-        let mut device = AdbDevice::connect(&address, &test_key()).await.expect("connect");
+        let mut device = AdbDevice::connect(&address, &test_key())
+            .await
+            .expect("connect");
         assert_eq!(device.shell("x").await.expect("shell"), "abcdef");
         let error = device.shell_capped("x", 4).await.unwrap_err();
         assert!(error.to_string().contains("too much"), "{error}");
@@ -635,7 +688,9 @@ mod tests {
 
     #[test]
     fn message_header_is_little_endian_with_summed_payload() {
-        let encoded = Message::new(A_OPEN, 7, 0, b"abc".to_vec()).encode().expect("small");
+        let encoded = Message::new(A_OPEN, 7, 0, b"abc".to_vec())
+            .encode()
+            .expect("small");
         assert_eq!(&encoded[0..4], &A_OPEN.to_le_bytes());
         assert_eq!(&encoded[4..8], &7u32.to_le_bytes());
         assert_eq!(&encoded[12..16], &3u32.to_le_bytes());
@@ -648,7 +703,9 @@ mod tests {
     #[test]
     fn magic_word_is_the_complement_of_the_command() {
         for command in [A_CNXN, A_AUTH, A_OPEN, A_OKAY, A_CLSE, A_WRTE] {
-            let encoded = Message::new(command, 0, 0, Vec::new()).encode().expect("empty");
+            let encoded = Message::new(command, 0, 0, Vec::new())
+                .encode()
+                .expect("empty");
             let magic = u32::from_le_bytes([encoded[20], encoded[21], encoded[22], encoded[23]]);
             assert_eq!(command ^ 0xffff_ffff, magic);
         }
@@ -698,8 +755,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_handshake_against_the_box() {
-        let address = std::env::var("ADB_TEST_ADDRESS")
-            .unwrap_or_else(|_| "192.168.1.153:5555".to_string());
+        let address =
+            std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.153:5555".to_string());
         let key_path = std::path::PathBuf::from("/tmp/maison-adb-test.key");
 
         let key = AdbKey::new(match std::fs::read(&key_path) {
@@ -714,7 +771,10 @@ mod tests {
         let mut device = AdbDevice::connect(&address, &key)
             .await
             .expect("handshake should complete (accept the prompt on the TV)");
-        let model = device.shell("getprop ro.product.model").await.expect("shell");
+        let model = device
+            .shell("getprop ro.product.model")
+            .await
+            .expect("shell");
         println!("model = {}", model.trim());
         assert!(!model.trim().is_empty());
     }
@@ -724,8 +784,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_push_round_trip() {
-        let address = std::env::var("ADB_TEST_ADDRESS")
-            .unwrap_or_else(|_| "192.168.1.153:5555".to_string());
+        let address =
+            std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.153:5555".to_string());
         let key = AdbKey::new(
             decode_key(&std::fs::read("/tmp/maison-adb-test.key").expect("key file")).expect("key"),
         );

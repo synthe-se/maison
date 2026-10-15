@@ -33,7 +33,10 @@ impl Values {
 
     pub fn from_history(history: &History) -> Self {
         Self {
-            values: history.iter().map(|(day, color)| (day.to_string(), color.as_str().to_string())).collect(),
+            values: history
+                .iter()
+                .map(|(day, color)| (day.to_string(), color.as_str().to_string()))
+                .collect(),
         }
     }
 }
@@ -72,7 +75,12 @@ impl Sources {
 
     /// A season's colours, tomorrow's included once published, from the first source with
     /// an answer. `current`: the season `today` is in (it has a today and a tomorrow).
-    pub async fn season(&self, client: &reqwest::Client, start_year: i32, today: NaiveDate) -> Result<History, AppError> {
+    pub async fn season(
+        &self,
+        client: &reqwest::Client,
+        start_year: i32,
+        today: NaiveDate,
+    ) -> Result<History, AppError> {
         let current = season_bounds(start_year).0 <= today && today <= season_bounds(start_year).1;
         let mut failure = AppError::service_unavailable("No Tempo source answered");
         if let Some(official) = &self.official {
@@ -104,21 +112,40 @@ impl Sources {
     }
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(request: reqwest::RequestBuilder, what: &str) -> Result<T, AppError> {
+async fn get_json<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+    what: &str,
+) -> Result<T, AppError> {
     let response = request.send().await?;
     if !response.status().is_success() {
-        return Err(AppError::service_unavailable(format!("{what}: {}", response.status())));
+        return Err(AppError::service_unavailable(format!(
+            "{what}: {}",
+            response.status()
+        )));
     }
     Ok(response.json().await?)
 }
 
 /// `/tempo?season=` (up to today), and `/tempoLight` (today and tomorrow) for the current one.
-async fn public_season(client: &reqwest::Client, url: &str, start_year: i32, current: bool) -> Result<History, AppError> {
+async fn public_season(
+    client: &reqwest::Client,
+    url: &str,
+    start_year: i32,
+    current: bool,
+) -> Result<History, AppError> {
     let season = season_name(start_year);
-    let request = client.get(format!("{url}/tempo")).query(&[("season", season.as_str())]);
-    let mut history = get_json::<Values>(request, "RTE open data").await?.history();
+    let request = client
+        .get(format!("{url}/tempo"))
+        .query(&[("season", season.as_str())]);
+    let mut history = get_json::<Values>(request, "RTE open data")
+        .await?
+        .history();
     if current {
-        history.extend(get_json::<Values>(client.get(format!("{url}/tempoLight")), "RTE open data").await?.history());
+        history.extend(
+            get_json::<Values>(client.get(format!("{url}/tempoLight")), "RTE open data")
+                .await?
+                .history(),
+        );
     }
     Ok(history)
 }
@@ -145,11 +172,26 @@ impl CouleurDay {
 }
 
 /// `/api/joursTempo?periode=` (up to today), and `/api/jourTempo/tomorrow` for the current one.
-async fn fallback_season(client: &reqwest::Client, url: &str, start_year: i32, current: bool) -> Result<History, AppError> {
-    let request = client.get(format!("{url}/api/joursTempo")).query(&[("periode", season_name(start_year))]);
-    let mut history: History = get_json::<Vec<CouleurDay>>(request, "api-couleur-tempo").await?.iter().filter_map(CouleurDay::color).collect();
+async fn fallback_season(
+    client: &reqwest::Client,
+    url: &str,
+    start_year: i32,
+    current: bool,
+) -> Result<History, AppError> {
+    let request = client
+        .get(format!("{url}/api/joursTempo"))
+        .query(&[("periode", season_name(start_year))]);
+    let mut history: History = get_json::<Vec<CouleurDay>>(request, "api-couleur-tempo")
+        .await?
+        .iter()
+        .filter_map(CouleurDay::color)
+        .collect();
     if current {
-        let tomorrow: CouleurDay = get_json(client.get(format!("{url}/api/jourTempo/tomorrow")), "api-couleur-tempo").await?;
+        let tomorrow: CouleurDay = get_json(
+            client.get(format!("{url}/api/jourTempo/tomorrow")),
+            "api-couleur-tempo",
+        )
+        .await?;
         history.extend(tomorrow.color());
     }
     Ok(history)
@@ -208,19 +250,35 @@ impl Official {
     }
 
     /// The season up to tomorrow (RTE serves at most D+1, in spans up to 366 days).
-    async fn season(&self, client: &reqwest::Client, start_year: i32, today: NaiveDate) -> Result<History, AppError> {
+    async fn season(
+        &self,
+        client: &reqwest::Client,
+        start_year: i32,
+        today: NaiveDate,
+    ) -> Result<History, AppError> {
         let (first, last) = season_bounds(start_year);
         let end = (last + Duration::days(1)).min(today + Duration::days(2));
         let request = client
-            .get(format!("{}/open_api/tempo_like_supply_contract/v1/tempo_like_calendars", self.url))
+            .get(format!(
+                "{}/open_api/tempo_like_supply_contract/v1/tempo_like_calendars",
+                self.url
+            ))
             .bearer_auth(self.token(client).await?)
-            .query(&[("start_date", paris_midnight(first)), ("end_date", paris_midnight(end))]);
+            .query(&[
+                ("start_date", paris_midnight(first)),
+                ("end_date", paris_midnight(end)),
+            ]);
         let calendars: Calendars = get_json(request, "RTE API").await?;
         Ok(calendars
             .tempo_like_calendars
             .iter()
             .flat_map(|c| &c.values)
-            .filter_map(|d| Some((d.start_date.get(..10)?.parse().ok()?, Color::parse(&d.value)?)))
+            .filter_map(|d| {
+                Some((
+                    d.start_date.get(..10)?.parse().ok()?,
+                    Color::parse(&d.value)?,
+                ))
+            })
             .collect())
     }
 }
@@ -239,18 +297,34 @@ struct EdfSeason {
 }
 
 /// EDF's season on `day`: the quotas and the days it counts as used `[blue, white, red]`.
-pub async fn edf_season(client: &reqwest::Client, url: &str, day: NaiveDate) -> Result<(Quotas, [u32; 3]), AppError> {
+pub async fn edf_season(
+    client: &reqwest::Client,
+    url: &str,
+    day: NaiveDate,
+) -> Result<(Quotas, [u32; 3]), AppError> {
     let request = client
         .get(format!("{}/saisons/search", url.trim_end_matches('/')))
-        .query(&[("option", "TEMPO".to_string()), ("dateReference", day.to_string())]);
+        .query(&[
+            ("option", "TEMPO".to_string()),
+            ("dateReference", day.to_string()),
+        ]);
     let seasons: EdfSeasons = get_json(request, "EDF").await?;
     let find = |kind: &str| seasons.content.iter().find(|s| s.type_jour_eff == kind);
     match (find("TEMPO_BLEU"), find("TEMPO_BLANC"), find("TEMPO_ROUGE")) {
         (Some(blue), Some(white), Some(red)) => Ok((
-            Quotas { red: red.nombre_jours, white: white.nombre_jours },
-            [blue.nombre_jours_tires, white.nombre_jours_tires, red.nombre_jours_tires],
+            Quotas {
+                red: red.nombre_jours,
+                white: white.nombre_jours,
+            },
+            [
+                blue.nombre_jours_tires,
+                white.nombre_jours_tires,
+                red.nombre_jours_tires,
+            ],
         )),
-        _ => Err(AppError::service_unavailable("EDF answered without the three colours")),
+        _ => Err(AppError::service_unavailable(
+            "EDF answered without the three colours",
+        )),
     }
 }
 
@@ -274,14 +348,18 @@ mod tests {
     #[test]
     fn rte_s_bounds_are_paris_midnights() {
         assert_eq!(paris_midnight(day(2026, 9, 1)), "2026-09-01T00:00:00+02:00");
-        assert_eq!(paris_midnight(day(2027, 1, 15)), "2027-01-15T00:00:00+01:00");
+        assert_eq!(
+            paris_midnight(day(2027, 1, 15)),
+            "2027-01-15T00:00:00+01:00"
+        );
     }
 
     #[test]
     fn unknown_days_are_not_colours() {
         let unknown: CouleurDay = serde_json::from_str(r#"{"dateJour":"2026-10-04","codeJour":0,"periode":"2026-2027","libCouleur":"Inconnu"}"#).unwrap();
         assert!(unknown.color().is_none());
-        let red: CouleurDay = serde_json::from_str(r#"{"dateJour":"2026-01-29","codeJour":3}"#).unwrap();
+        let red: CouleurDay =
+            serde_json::from_str(r#"{"dateJour":"2026-01-29","codeJour":3}"#).unwrap();
         assert_eq!(red.color(), Some((day(2026, 1, 29), Color::Red)));
     }
 }

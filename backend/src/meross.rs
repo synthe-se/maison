@@ -253,7 +253,10 @@ impl MerossManager {
             .into_iter()
             .map(|config| {
                 let id = config.ip.clone();
-                let device = MerossManagedDevice { config, state: Arc::new(RwLock::new(MerossCachedState::default())) };
+                let device = MerossManagedDevice {
+                    config,
+                    state: Arc::new(RwLock::new(MerossCachedState::default())),
+                };
                 (id, device)
             })
             .collect::<HashMap<_, _>>();
@@ -319,11 +322,15 @@ impl MerossManager {
                 return Ok((device.reference(), status));
             }
         };
-        let electricity = self.get_electricity_raw(device).await.ok().map(|raw| MerossStatusElectricity {
-            voltage: f64::from(raw.voltage) / 10.0,
-            current: f64::from(raw.current) / 1000.0,
-            power: f64::from(raw.power) / 1000.0,
-        });
+        let electricity =
+            self.get_electricity_raw(device)
+                .await
+                .ok()
+                .map(|raw| MerossStatusElectricity {
+                    voltage: f64::from(raw.voltage) / 10.0,
+                    current: f64::from(raw.current) / 1000.0,
+                    power: f64::from(raw.power) / 1000.0,
+                });
         let signal = self.get_runtime_signal(device).await.ok().flatten();
 
         let is_on = extract_on_state(&system.all);
@@ -352,7 +359,10 @@ impl MerossManager {
         Ok((device.reference(), status))
     }
 
-    pub async fn get_electricity(&self, device_id: &str) -> Result<(DeviceRef, MerossElectricityFormatted), AppError> {
+    pub async fn get_electricity(
+        &self,
+        device_id: &str,
+    ) -> Result<(DeviceRef, MerossElectricityFormatted), AppError> {
         let device = self.get_device(device_id)?;
         let raw = self.get_electricity_raw(device).await?;
         device.seen(None).await;
@@ -362,10 +372,22 @@ impl MerossManager {
     pub async fn get_consumption(
         &self,
         device_id: &str,
-    ) -> Result<(DeviceRef, Vec<MerossConsumptionEntry>, MerossConsumptionSummary), AppError> {
+    ) -> Result<
+        (
+            DeviceRef,
+            Vec<MerossConsumptionEntry>,
+            MerossConsumptionSummary,
+        ),
+        AppError,
+    > {
         let device = self.get_device(device_id)?;
         let payload: MerossConsumptionPayload = self
-            .exchange(device, "GET", "Appliance.Control.ConsumptionX", serde_json::json!({}))
+            .exchange(
+                device,
+                "GET",
+                "Appliance.Control.ConsumptionX",
+                serde_json::json!({}),
+            )
             .await?;
         device.seen(None).await;
         let consumption = payload.consumptionx.unwrap_or_default();
@@ -379,8 +401,13 @@ impl MerossManager {
     pub async fn toggle(&self, device_id: &str, on: bool) -> Result<DeviceRef, AppError> {
         let device = self.get_device(device_id)?;
         let (toggle_x, toggle) = toggle_payloads(on);
-        if let Reply::Refused = self.request(device, "SET", "Appliance.Control.ToggleX", toggle_x).await? {
-            let _: serde_json::Value = self.exchange(device, "SET", "Appliance.Control.Toggle", toggle).await?;
+        if let Reply::Refused = self
+            .request(device, "SET", "Appliance.Control.ToggleX", toggle_x)
+            .await?
+        {
+            let _: serde_json::Value = self
+                .exchange(device, "SET", "Appliance.Control.Toggle", toggle)
+                .await?;
         }
         device.seen(Some(on)).await;
         Ok(device.reference())
@@ -389,7 +416,9 @@ impl MerossManager {
     pub async fn set_dnd(&self, device_id: &str, enabled: bool) -> Result<DeviceRef, AppError> {
         let device = self.get_device(device_id)?;
         let payload = serde_json::json!({ "DNDMode": { "mode": u8::from(enabled) } });
-        let _: serde_json::Value = self.exchange(device, "SET", "Appliance.System.DNDMode", payload).await?;
+        let _: serde_json::Value = self
+            .exchange(device, "SET", "Appliance.System.DNDMode", payload)
+            .await?;
         device.seen(None).await;
         Ok(device.reference())
     }
@@ -400,18 +429,33 @@ impl MerossManager {
             .ok_or_else(|| AppError::not_found("Device not found"))
     }
 
-    async fn get_system_all(&self, device: &MerossManagedDevice) -> Result<MerossSystemAllPayload, AppError> {
-        self.exchange(device, "GET", "Appliance.System.All", serde_json::json!({})).await
+    async fn get_system_all(
+        &self,
+        device: &MerossManagedDevice,
+    ) -> Result<MerossSystemAllPayload, AppError> {
+        self.exchange(device, "GET", "Appliance.System.All", serde_json::json!({}))
+            .await
     }
 
-    async fn get_runtime_signal(&self, device: &MerossManagedDevice) -> Result<Option<i32>, AppError> {
+    async fn get_runtime_signal(
+        &self,
+        device: &MerossManagedDevice,
+    ) -> Result<Option<i32>, AppError> {
         let payload: MerossRuntimePayload = self
-            .exchange(device, "GET", "Appliance.System.Runtime", serde_json::json!({}))
+            .exchange(
+                device,
+                "GET",
+                "Appliance.System.Runtime",
+                serde_json::json!({}),
+            )
             .await?;
         Ok(payload.runtime.signal)
     }
 
-    async fn get_electricity_raw(&self, device: &MerossManagedDevice) -> Result<MerossElectricityRaw, AppError> {
+    async fn get_electricity_raw(
+        &self,
+        device: &MerossManagedDevice,
+    ) -> Result<MerossElectricityRaw, AppError> {
         let payload: MerossElectricityPayload = self
             .exchange(
                 device,
@@ -433,8 +477,12 @@ impl MerossManager {
         payload: serde_json::Value,
     ) -> Result<T, AppError> {
         match self.request(device, method, namespace, payload).await? {
-            Reply::Payload(payload) => serde_json::from_value(payload).map_err(|error| net::unreachable(PLUG, error)),
-            Reply::Refused => Err(AppError::service_unavailable(format!("{PLUG} refused {namespace}"))),
+            Reply::Payload(payload) => {
+                serde_json::from_value(payload).map_err(|error| net::unreachable(PLUG, error))
+            }
+            Reply::Refused => Err(AppError::service_unavailable(format!(
+                "{PLUG} refused {namespace}"
+            ))),
         }
     }
 
@@ -470,11 +518,19 @@ impl MerossManager {
             .await
             .map_err(|error| net::unreachable(PLUG, error))?;
         if !response.status().is_success() {
-            return Err(net::unreachable(PLUG, format!("HTTP {}", response.status())));
+            return Err(net::unreachable(
+                PLUG,
+                format!("HTTP {}", response.status()),
+            ));
         }
         let body = net::read_capped(response, MAX_ANSWER_BYTES, PLUG).await?;
-        let packet: MerossPacket = serde_json::from_slice(&body).map_err(|error| net::unreachable(PLUG, error))?;
-        Ok(if packet.header.method == "ERROR" { Reply::Refused } else { Reply::Payload(packet.payload) })
+        let packet: MerossPacket =
+            serde_json::from_slice(&body).map_err(|error| net::unreachable(PLUG, error))?;
+        Ok(if packet.header.method == "ERROR" {
+            Reply::Refused
+        } else {
+            Reply::Payload(packet.payload)
+        })
     }
 }
 
@@ -486,7 +542,10 @@ enum Reply {
 
 impl MerossManagedDevice {
     fn reference(&self) -> DeviceRef {
-        DeviceRef { id: self.config.ip.clone(), name: self.config.name.clone() }
+        DeviceRef {
+            id: self.config.ip.clone(),
+            name: self.config.name.clone(),
+        }
     }
 
     /// The plug answered: online now, and `on` when the answer told its state. The time.
@@ -570,7 +629,11 @@ fn extract_on_state(system: &MerossSystemAll) -> bool {
         return togglex.onoff == 1;
     }
 
-    if let Some(toggle) = system.control.as_ref().and_then(|control| control.toggle.as_ref()) {
+    if let Some(toggle) = system
+        .control
+        .as_ref()
+        .and_then(|control| control.toggle.as_ref())
+    {
         return toggle.onoff == 1;
     }
 
@@ -631,19 +694,30 @@ mod tests {
                 "firmware": { "version": "6", "compileTime": "t", "innerIp": "10.0.0.9" },
             }
         });
-        all.as_object_mut().unwrap().extend(value.as_object().cloned().unwrap());
+        all.as_object_mut()
+            .unwrap()
+            .extend(value.as_object().cloned().unwrap());
         serde_json::from_value(all).unwrap()
     }
 
     #[test]
     fn the_sign_is_md5_of_id_key_and_time() {
         assert_eq!(compute_sign("", "", 0), format!("{:x}", md5::compute("0")));
-        assert_eq!(compute_sign("abc", "key", 12), format!("{:x}", md5::compute("abckey12")));
+        assert_eq!(
+            compute_sign("abc", "key", 12),
+            format!("{:x}", md5::compute("abckey12"))
+        );
     }
 
     #[test]
     fn a_packet_carries_a_signed_header() {
-        let packet = serde_json::to_value(build_packet(&config(), "Appliance.System.All", "GET", json!({}))).unwrap();
+        let packet = serde_json::to_value(build_packet(
+            &config(),
+            "Appliance.System.All",
+            "GET",
+            json!({}),
+        ))
+        .unwrap();
         let header = &packet["header"];
         assert_eq!(header["method"], "GET");
         assert_eq!(header["namespace"], "Appliance.System.All");
@@ -659,8 +733,12 @@ mod tests {
     #[test]
     fn the_on_state_prefers_control_then_digest_and_togglex() {
         let on = |value| extract_on_state(&system(value));
-        assert!(on(json!({ "control": { "togglex": [{ "onoff": 1 }] }, "digest": { "togglex": [{ "onoff": 0 }] } })));
-        assert!(!on(json!({ "control": { "toggle": { "onoff": 0 } }, "digest": { "togglex": [{ "onoff": 1 }] } })));
+        assert!(on(
+            json!({ "control": { "togglex": [{ "onoff": 1 }] }, "digest": { "togglex": [{ "onoff": 0 }] } })
+        ));
+        assert!(!on(
+            json!({ "control": { "toggle": { "onoff": 0 } }, "digest": { "togglex": [{ "onoff": 1 }] } })
+        ));
         assert!(on(json!({ "digest": { "togglex": [{ "onoff": 1 }] } })));
         assert!(on(json!({ "digest": { "toggle": { "onoff": 1 } } })));
         assert!(!on(json!({})));
@@ -690,10 +768,16 @@ mod tests {
 
     #[test]
     fn consumption_sums_to_rounded_kwh() {
-        let entries = [1234, 1000]
-            .map(|value| MerossConsumptionEntry { date: "2026-10-01".into(), time: 0, value });
+        let entries = [1234, 1000].map(|value| MerossConsumptionEntry {
+            date: "2026-10-01".into(),
+            time: 0,
+            value,
+        });
         let summary = summarize_consumption(&entries);
-        assert_eq!((summary.days, summary.total_wh, summary.total_kwh), (2, 2234, 2.23));
+        assert_eq!(
+            (summary.days, summary.total_wh, summary.total_kwh),
+            (2, 2234, 2.23)
+        );
         assert_eq!(summarize_consumption(&[]).total_kwh, 0.0);
     }
 
@@ -707,10 +791,21 @@ mod tests {
         let manager = MerossManager::new(&path).unwrap();
 
         let (device, status) = manager.get_status("127.0.0.1:1").await.unwrap();
-        assert_eq!(device, DeviceRef { id: "127.0.0.1:1".into(), name: "Plug".into() });
+        assert_eq!(
+            device,
+            DeviceRef {
+                id: "127.0.0.1:1".into(),
+                name: "Plug".into()
+            }
+        );
         assert!(!status.online);
         assert!(manager.toggle("127.0.0.1:1", true).await.is_err());
-        assert!(manager.toggle("nope", true).await.unwrap_err().to_string().contains("not found"));
+        assert!(manager
+            .toggle("nope", true)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
         assert!(!manager.list_devices().await[0].is_online);
         assert!(manager.is_on("127.0.0.1:1").await.is_err());
     }

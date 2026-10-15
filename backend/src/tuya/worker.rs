@@ -8,22 +8,22 @@ use std::{
     net::IpAddr,
     str::FromStr,
     sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     },
     time::Duration,
 };
 
-use rust_async_tuyapi::{DpId, Payload, PayloadStruct, mesparse::Message, tuyadevice::TuyaDevice};
-use serde_json::{Map, Value, json};
+use rust_async_tuyapi::{mesparse::Message, tuyadevice::TuyaDevice, DpId, Payload, PayloadStruct};
+use serde_json::{json, Map, Value};
 use tokio::{
-    sync::{Notify, mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch, Notify},
     task::JoinHandle,
 };
 
 use super::{
-    ManagedTuyaDevice, TuyaDeviceConfig, TuyaManager,
     parse::{merge_messages_into_dps, parse_device_data},
+    ManagedTuyaDevice, TuyaDeviceConfig, TuyaManager,
 };
 use crate::{error::AppError, net};
 
@@ -95,7 +95,12 @@ impl Drop for WorkerExit {
             if link.worker != Some(self.id) {
                 return false;
             }
-            *link = Link { worker: None, connected: false, connecting: false, ..*link };
+            *link = Link {
+                worker: None,
+                connected: false,
+                connecting: false,
+                ..*link
+            };
             true
         });
     }
@@ -103,8 +108,13 @@ impl Drop for WorkerExit {
 
 #[derive(Debug)]
 pub(super) enum WorkerCommand {
-    FetchStatus { reply: oneshot::Sender<Result<Map<String, Value>, AppError>> },
-    SetValues { updates: Vec<(String, Value)>, reply: oneshot::Sender<Result<(), AppError>> },
+    FetchStatus {
+        reply: oneshot::Sender<Result<Map<String, Value>, AppError>>,
+    },
+    SetValues {
+        updates: Vec<(String, Value)>,
+        reply: oneshot::Sender<Result<(), AppError>>,
+    },
 }
 
 impl TuyaManager {
@@ -116,10 +126,27 @@ impl TuyaManager {
         let (exited_tx, exited_rx) = oneshot::channel();
         let wake = Arc::new(Notify::new());
         self.live_workers.fetch_add(1, Ordering::SeqCst);
-        let exit = WorkerExit { id, link: device.link.clone(), live: self.live_workers.clone(), _exited: exited_tx };
+        let exit = WorkerExit {
+            id,
+            link: device.link.clone(),
+            live: self.live_workers.clone(),
+            _exited: exited_tx,
+        };
         (
-            WorkerHandle { id, commands: commands_tx, wake: wake.clone(), stop: stop_tx, exited: exited_rx },
-            WorkerParts { id, commands: commands_rx, wake, stop: StopSignal(stop_rx), _exit: exit },
+            WorkerHandle {
+                id,
+                commands: commands_tx,
+                wake: wake.clone(),
+                stop: stop_tx,
+                exited: exited_rx,
+            },
+            WorkerParts {
+                id,
+                commands: commands_rx,
+                wake,
+                stop: StopSignal(stop_rx),
+                _exit: exit,
+            },
         )
     }
 
@@ -139,11 +166,19 @@ impl TuyaManager {
             return;
         }
         tracing::error!(%device_id, %error, "tuya worker panicked; a new one takes over");
-        let Ok(attempts) = self.device(&device_id).map(|device| device.link.borrow().reconnect_attempts) else { return };
+        let Ok(attempts) = self
+            .device(&device_id)
+            .map(|device| device.link.borrow().reconnect_attempts)
+        else {
+            return;
+        };
         tokio::time::sleep(reconnect_delay(attempts)).await;
-        let still_dead = self.runtime.read().await.get(&device_id).is_some_and(|state| {
-            state.worker.as_ref().is_some_and(|handle| handle.id == id)
-        });
+        let still_dead = self
+            .runtime
+            .read()
+            .await
+            .get(&device_id)
+            .is_some_and(|state| state.worker.as_ref().is_some_and(|handle| handle.id == id));
         if still_dead {
             if let Err(error) = self.connect_device(&device_id).await {
                 tracing::warn!(%device_id, %error, "tuya device not connected after a worker panic");
@@ -173,7 +208,13 @@ impl TuyaManager {
     }
 
     async fn run_device_worker(self, config: TuyaDeviceConfig, parts: WorkerParts) {
-        let WorkerParts { id, mut commands, wake, mut stop, _exit } = parts;
+        let WorkerParts {
+            id,
+            mut commands,
+            wake,
+            mut stop,
+            _exit,
+        } = parts;
         loop {
             // Dropping the session on stop drops the device, which closes its socket.
             tokio::select! {
@@ -181,7 +222,9 @@ impl TuyaManager {
                 _ = self.run_device_worker_session(&config, id, &mut commands) => {}
             }
 
-            let attempts = self.device(&config.id).map_or(1, |device| device.link.borrow().reconnect_attempts);
+            let attempts = self
+                .device(&config.id)
+                .map_or(1, |device| device.link.borrow().reconnect_attempts);
             let nudged = tokio::select! {
                 _ = stop.wait() => return,
                 _ = tokio::time::sleep(reconnect_delay(attempts)) => false,
@@ -205,12 +248,15 @@ impl TuyaManager {
         worker: u64,
         commands: &mut mpsc::Receiver<WorkerCommand>,
     ) {
-        let Ok(device_type) = self.device(&config.id).map(|device| device.device_type) else { return };
+        let Ok(device_type) = self.device(&config.id).map(|device| device.device_type) else {
+            return;
+        };
         let Ok(ip) = IpAddr::from_str(&config.ip) else {
             tracing::warn!(device = %config.name, ip = %config.ip, "tuya device has an invalid IP address");
             return self.mark_failed(&config.id, worker);
         };
-        let Ok(mut device) = TuyaDevice::new(&config.version, &config.id, Some(&config.key), ip) else {
+        let Ok(mut device) = TuyaDevice::new(&config.version, &config.id, Some(&config.key), ip)
+        else {
             return self.mark_failed(&config.id, worker);
         };
         let Ok(Ok(mut rx)) = tokio::time::timeout(STATUS_TIMEOUT, device.connect()).await else {
@@ -223,7 +269,8 @@ impl TuyaManager {
             link.reconnect_attempts = 0;
         });
         if let Ok(dps) = worker_fetch_status(&mut device, &mut rx, config).await {
-            self.store_cacheable_dps(&config.id, device_type, &dps).await;
+            self.store_cacheable_dps(&config.id, device_type, &dps)
+                .await;
             self.record_dps(&config.id, device_type, &dps).await;
         }
 
@@ -264,7 +311,12 @@ impl TuyaManager {
     }
 
     /// The device's latest values, as the list shows them.
-    pub(super) async fn record_dps(&self, device_id: &str, device_type: super::TuyaDeviceType, dps: &Map<String, Value>) {
+    pub(super) async fn record_dps(
+        &self,
+        device_id: &str,
+        device_type: super::TuyaDeviceType,
+        dps: &Map<String, Value>,
+    ) {
         let mut runtime = self.runtime.write().await;
         if let Some(state) = runtime.get_mut(device_id) {
             state.last_data = dps.clone();
@@ -286,7 +338,8 @@ async fn worker_fetch_status(
     rx: &mut mpsc::Receiver<rust_async_tuyapi::Result<Vec<Message>>>,
     config: &TuyaDeviceConfig,
 ) -> Result<Map<String, Value>, AppError> {
-    let timeout = || AppError::service_unavailable(format!("Status request timeout for {}", config.name));
+    let timeout =
+        || AppError::service_unavailable(format!("Status request timeout for {}", config.name));
     // the protocol's `t` is a u32 of seconds: a clock past 2106 sends none
     let now = u32::try_from(chrono::Utc::now().timestamp()).ok();
 
@@ -310,19 +363,30 @@ async fn worker_fetch_status(
         .ok_or_else(|| AppError::service_unavailable(format!("No response from {}", config.name)))?
         .map_err(|error| net::unreachable(DEVICE, error))?;
 
-    let refresh_payload =
-        Payload::new(config.id.clone(), Some(config.id.clone()), Some(config.id.clone()), now, Some(DpId::Higher), None);
+    let refresh_payload = Payload::new(
+        config.id.clone(),
+        Some(config.id.clone()),
+        Some(config.id.clone()),
+        now,
+        Some(DpId::Higher),
+        None,
+    );
     // Best effort: a device that ignores the refresh still answered the status.
-    if let Ok(Err(error)) = tokio::time::timeout(STATUS_TIMEOUT, device.refresh(refresh_payload)).await {
+    if let Ok(Err(error)) =
+        tokio::time::timeout(STATUS_TIMEOUT, device.refresh(refresh_payload)).await
+    {
         tracing::debug!(device = %config.name, %error, "tuya refresh refused");
     }
-    let maybe_refresh = tokio::time::timeout(MESSAGE_DRAIN_TIMEOUT, rx.recv()).await.ok();
+    let maybe_refresh = tokio::time::timeout(MESSAGE_DRAIN_TIMEOUT, rx.recv())
+        .await
+        .ok();
 
     let mut merged = merge_messages_into_dps(Map::new(), received);
     if let Some(Some(Ok(messages))) = maybe_refresh {
         merged = merge_messages_into_dps(merged, messages);
     }
-    while let Ok(Some(Ok(messages))) = tokio::time::timeout(COMMAND_SETTLE_TIMEOUT, rx.recv()).await {
+    while let Ok(Some(Ok(messages))) = tokio::time::timeout(COMMAND_SETTLE_TIMEOUT, rx.recv()).await
+    {
         merged = merge_messages_into_dps(merged, messages);
     }
 
@@ -336,13 +400,18 @@ async fn worker_send_commands(
     updates: &[(String, Value)],
 ) -> Result<(), AppError> {
     for (dps, value) in updates {
-        tokio::time::timeout(STATUS_TIMEOUT, device.set_values(command_payload(dps, value)))
-            .await
-            .map_err(|_| AppError::service_unavailable(format!("Command timeout for {}", config.name)))?
-            .map_err(|error| net::unreachable(DEVICE, error))?;
+        tokio::time::timeout(
+            STATUS_TIMEOUT,
+            device.set_values(command_payload(dps, value)),
+        )
+        .await
+        .map_err(|_| AppError::service_unavailable(format!("Command timeout for {}", config.name)))?
+        .map_err(|error| net::unreachable(DEVICE, error))?;
 
         // the device's echo, if any, is read by the session afterwards
-        tokio::time::timeout(COMMAND_SETTLE_TIMEOUT, rx.recv()).await.ok();
+        tokio::time::timeout(COMMAND_SETTLE_TIMEOUT, rx.recv())
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -361,8 +430,14 @@ mod tests {
 
     #[test]
     fn a_command_sets_one_data_point() {
-        assert_eq!(command_payload(dps::litter::CHILD_LOCK, &json!(true)), json!({ "110": true }));
-        assert_eq!(command_payload(dps::feeder::MANUAL_FEED, &json!(2)), json!({ "3": 2 }));
+        assert_eq!(
+            command_payload(dps::litter::CHILD_LOCK, &json!(true)),
+            json!({ "110": true })
+        );
+        assert_eq!(
+            command_payload(dps::feeder::MANUAL_FEED, &json!(2)),
+            json!({ "3": 2 })
+        );
     }
 
     #[test]

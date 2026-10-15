@@ -74,7 +74,11 @@ struct Row {
 /// written.
 pub fn start_date(text: &str) -> Option<NaiveDate> {
     let mut parts = text.trim().splitn(3, '-').map(str::parse::<u32>);
-    let (year, second, third) = (parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?);
+    let (year, second, third) = (
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+    );
     if second == 1 {
         if let Some(date) = NaiveDate::from_ymd_opt(year as i32, third, 1) {
             return Some(date);
@@ -87,9 +91,20 @@ pub fn start_date(text: &str) -> Option<NaiveDate> {
 /// incomplete).
 pub fn parse(body: &str, today: NaiveDate) -> Result<Option<Tariffs>, AppError> {
     let page: Page = serde_json::from_str(body)?;
-    let Some(row) = page.data.first() else { return Ok(None) };
-    let ended = row.DATE_FIN.as_deref().and_then(|d| d.parse::<NaiveDate>().ok()).is_some_and(|end| end < today);
-    let price = |off_peak: Option<f64>, peak: Option<f64>| Some(Price { off_peak: off_peak?, peak: peak? });
+    let Some(row) = page.data.first() else {
+        return Ok(None);
+    };
+    let ended = row
+        .DATE_FIN
+        .as_deref()
+        .and_then(|d| d.parse::<NaiveDate>().ok())
+        .is_some_and(|end| end < today);
+    let price = |off_peak: Option<f64>, peak: Option<f64>| {
+        Some(Price {
+            off_peak: off_peak?,
+            peak: peak?,
+        })
+    };
     let tariffs = (|| {
         Some(Tariffs {
             blue: price(row.PART_VARIABLE_HCBleu_TTC, row.PART_VARIABLE_HPBleu_TTC)?,
@@ -102,10 +117,21 @@ pub fn parse(body: &str, today: NaiveDate) -> Result<Option<Tariffs>, AppError> 
     Ok(tariffs.filter(|_| !ended))
 }
 
-pub async fn fetch(client: &reqwest::Client, url: &str, today: NaiveDate) -> Result<Option<Tariffs>, AppError> {
-    let response = client.get(url).header("Accept", "application/json").send().await?;
+pub async fn fetch(
+    client: &reqwest::Client,
+    url: &str,
+    today: NaiveDate,
+) -> Result<Option<Tariffs>, AppError> {
+    let response = client
+        .get(url)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
     if !response.status().is_success() {
-        return Err(AppError::service_unavailable(format!("data.gouv: {}", response.status())));
+        return Err(AppError::service_unavailable(format!(
+            "data.gouv: {}",
+            response.status()
+        )));
     }
     parse(&response.text().await?, today)
 }
@@ -123,7 +149,11 @@ mod tests {
         assert_eq!(start_date("2026-01-08"), Some(day(2026, 8, 1)));
         assert_eq!(start_date("2026-01-02"), Some(day(2026, 2, 1)));
         assert_eq!(start_date("2019-01-06"), Some(day(2019, 6, 1)));
-        assert_eq!(start_date("2026-08-01"), Some(day(2026, 8, 1)), "a plain date stays");
+        assert_eq!(
+            start_date("2026-08-01"),
+            Some(day(2026, 8, 1)),
+            "a plain date stays"
+        );
         assert_eq!(start_date("2026-01-01"), Some(day(2026, 1, 1)));
         assert_eq!(start_date("garbage"), None);
     }
@@ -132,17 +162,26 @@ mod tests {
     fn august_2026_prices() {
         let t = parse(AUGUST_2026, day(2026, 10, 3)).unwrap().unwrap();
         assert_eq!(t.starts_on, day(2026, 8, 1));
-        assert_eq!((t.blue.off_peak, t.blue.peak, t.white.peak, t.red.peak), (0.1356, 0.1654, 0.1921, 0.7295));
+        assert_eq!(
+            (t.blue.off_peak, t.blue.peak, t.white.peak, t.red.peak),
+            (0.1356, 0.1654, 0.1921, 0.7295)
+        );
         assert_eq!(t.subscription, Some(189.9802924));
     }
 
     #[test]
     fn prices_as_text_or_over() {
         let text = AUGUST_2026.replace("0.7295", "\"0.7295\"");
-        assert_eq!(parse(&text, day(2026, 10, 3)).unwrap().unwrap().red.peak, 0.7295);
+        assert_eq!(
+            parse(&text, day(2026, 10, 3)).unwrap().unwrap().red.peak,
+            0.7295
+        );
         let over = AUGUST_2026.replace("\"DATE_FIN\":null", "\"DATE_FIN\":\"2026-09-30\"");
         assert_eq!(parse(&over, day(2026, 10, 3)).unwrap(), None);
-        let missing = AUGUST_2026.replace("\"PART_VARIABLE_HPRouge_TTC\":0.7295", "\"PART_VARIABLE_HPRouge_TTC\":null");
+        let missing = AUGUST_2026.replace(
+            "\"PART_VARIABLE_HPRouge_TTC\":0.7295",
+            "\"PART_VARIABLE_HPRouge_TTC\":null",
+        );
         assert_eq!(parse(&missing, day(2026, 10, 3)).unwrap(), None);
         assert_eq!(parse(r#"{"data":[]}"#, day(2026, 10, 3)).unwrap(), None);
     }

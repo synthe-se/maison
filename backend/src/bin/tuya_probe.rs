@@ -1,6 +1,6 @@
 use std::{env, net::IpAddr, str::FromStr, time::Duration};
 
-use rust_async_tuyapi::{DpId, Payload, PayloadStruct, tuyadevice::TuyaDevice};
+use rust_async_tuyapi::{tuyadevice::TuyaDevice, DpId, Payload, PayloadStruct};
 use serde_json::json;
 
 #[tokio::main]

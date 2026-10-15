@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use tokio::time::{Instant, timeout};
+use tokio::time::{timeout, Instant};
 use tracing::{debug, info, warn};
 
 use super::{
@@ -16,8 +16,9 @@ use super::{
     device::{DiscoveredDevice, ZigbeeDeviceType},
     driver::EZSP_COMMAND_TIMEOUT,
     zcl::{
-        COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID, build_brightness_command_payload,
-        build_color_temperature_command_payload, build_color_xy_command_payload,
+        build_brightness_command_payload, build_color_temperature_command_payload,
+        build_color_xy_command_payload, COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID,
+        ON_OFF_CLUSTER_ID,
     },
 };
 
@@ -58,7 +59,9 @@ enum AvailabilityState {
     #[default]
     Idle,
     WaitingForResponse(Ping),
-    CoolDown { resume_at: Instant },
+    CoolDown {
+        resume_at: Instant,
+    },
 }
 
 #[derive(Debug)]
@@ -75,10 +78,16 @@ struct Ping {
 /// devices are shared.
 pub async fn check_availability(context: &mut EzspContext) {
     // the only blocking work is one read request, bounded like any command
-    if !timeout(EZSP_COMMAND_TIMEOUT, tick_device_availability(context)).await.unwrap_or(false) {
+    if !timeout(EZSP_COMMAND_TIMEOUT, tick_device_availability(context))
+        .await
+        .unwrap_or(false)
+    {
         return;
     }
-    if timeout(RESTORE_SWEEP_TIMEOUT, restore_desired_state(context)).await.is_err() {
+    if timeout(RESTORE_SWEEP_TIMEOUT, restore_desired_state(context))
+        .await
+        .is_err()
+    {
         warn!("desired-state restore sweep exceeded its budget — will resume next tick");
     }
     context.publish();
@@ -114,7 +123,11 @@ async fn tick_device_availability(context: &mut EzspContext) -> bool {
 
 async fn start_next_ping(context: &mut EzspContext, now: Instant) -> bool {
     if context.availability.queue.is_empty() {
-        let due = context.joined_devices.iter().filter_map(|device| due_for_ping(device, now)).collect();
+        let due = context
+            .joined_devices
+            .iter()
+            .filter_map(|device| due_for_ping(device, now))
+            .collect();
         context.availability.queue = due;
     }
     let Some(target) = context.availability.queue.first().cloned() else {
@@ -133,7 +146,9 @@ fn due_for_ping(device: &DiscoveredDevice, now: Instant) -> Option<AvailabilityT
         && device.info.has_input(ON_OFF_CLUSTER_ID)
         && device.info.device_type != ZigbeeDeviceType::Remote;
     let limit = AVAILABILITY_TIMEOUT.mul_f64(backoff_multiplier(device.failed_ping_cycles));
-    let silent = device.last_seen.is_none_or(|seen| now.duration_since(seen) > limit);
+    let silent = device
+        .last_seen
+        .is_none_or(|seen| now.duration_since(seen) > limit);
     (lamp && silent).then(|| AvailabilityTarget {
         node_id: device.node_id,
         endpoint,
@@ -142,14 +157,35 @@ fn due_for_ping(device: &DiscoveredDevice, now: Instant) -> Option<AvailabilityT
     })
 }
 
-async fn send_ping(context: &mut EzspContext, target: AvailabilityTarget, attempt: u32, max_attempts: u32) -> bool {
+async fn send_ping(
+    context: &mut EzspContext,
+    target: AvailabilityTarget,
+    attempt: u32,
+    max_attempts: u32,
+) -> bool {
     let before_ping = Instant::now();
-    match context.send_read_attributes(target.node_id, target.endpoint, ON_OFF_CLUSTER_ID, &[0x0000]).await {
+    match context
+        .send_read_attributes(
+            target.node_id,
+            target.endpoint,
+            ON_OFF_CLUSTER_ID,
+            &[0x0000],
+        )
+        .await
+    {
         Ok(()) => {
-            debug!(node_id = format_args!("0x{:04x}", target.node_id), attempt, "availability ping sent");
+            debug!(
+                node_id = format_args!("0x{:04x}", target.node_id),
+                attempt, "availability ping sent"
+            );
             let check_at = Instant::now() + PING_RETRY_DELAY;
-            context.availability.state =
-                AvailabilityState::WaitingForResponse(Ping { target, attempt, max_attempts, before_ping, check_at });
+            context.availability.state = AvailabilityState::WaitingForResponse(Ping {
+                target,
+                attempt,
+                max_attempts,
+                before_ping,
+                check_at,
+            });
             false
         }
         Err(error) => {
@@ -165,16 +201,24 @@ async fn check_ping(context: &mut EzspContext, ping: Ping, now: Instant) -> bool
         return false;
     }
     let node_id = ping.target.node_id;
-    let answered = context.device(node_id).and_then(|device| device.last_seen).is_some_and(|seen| seen > ping.before_ping);
+    let answered = context
+        .device(node_id)
+        .and_then(|device| device.last_seen)
+        .is_some_and(|seen| seen > ping.before_ping);
     if answered {
-        debug!(node_id = format_args!("0x{node_id:04x}"), attempt = ping.attempt, "availability ping got response — device is online");
+        debug!(
+            node_id = format_args!("0x{node_id:04x}"),
+            attempt = ping.attempt,
+            "availability ping got response — device is online"
+        );
         done_with(context, node_id);
         return true;
     }
     if ping.attempt < ping.max_attempts {
         // unreachable at once for quick feedback; the retry confirms it before the backoff grows
         let changed = mark_lost(context, &ping.target, "after first failed ping (retrying)");
-        return send_ping(context, ping.target, ping.attempt + 1, ping.max_attempts).await || changed;
+        return send_ping(context, ping.target, ping.attempt + 1, ping.max_attempts).await
+            || changed;
     }
     give_up(context, &ping.target, "after failed availability pings")
 }
@@ -191,7 +235,9 @@ fn give_up(context: &mut EzspContext, target: &AvailabilityTarget, why: &str) ->
 
 /// Says whether that is news (it was reachable).
 fn mark_lost(context: &mut EzspContext, target: &AvailabilityTarget, why: &str) -> bool {
-    let lost = context.device_mut(target.node_id).is_some_and(DiscoveredDevice::lost);
+    let lost = context
+        .device_mut(target.node_id)
+        .is_some_and(DiscoveredDevice::lost);
     if lost {
         info!(node_id = format_args!("0x{:04x}", target.node_id), eui64 = %target.eui64, why, "device marked unreachable");
     }
@@ -201,11 +247,15 @@ fn mark_lost(context: &mut EzspContext, target: &AvailabilityTarget, why: &str) 
 /// Off the queue; a pause before the next lamp, if there is one.
 fn done_with(context: &mut EzspContext, node_id: u16) {
     let availability = &mut context.availability;
-    availability.queue.retain(|target| target.node_id != node_id);
+    availability
+        .queue
+        .retain(|target| target.node_id != node_id);
     availability.state = if availability.queue.is_empty() {
         AvailabilityState::Idle
     } else {
-        AvailabilityState::CoolDown { resume_at: Instant::now() + COOL_DOWN }
+        AvailabilityState::CoolDown {
+            resume_at: Instant::now() + COOL_DOWN,
+        }
     };
 }
 
@@ -216,7 +266,9 @@ async fn restore_desired_state(context: &mut EzspContext) {
     let targets = context
         .joined_devices
         .iter()
-        .filter(|device| device.reachable && !device.desired.applied && device.info.endpoint.is_some())
+        .filter(|device| {
+            device.reachable && !device.desired.applied && device.info.endpoint.is_some()
+        })
         .filter(|device| !device.desired.is_empty())
         .cloned()
         .collect::<Vec<_>>();
@@ -239,13 +291,22 @@ async fn restore_desired_state(context: &mut EzspContext) {
 /// Says whether every part went through.
 async fn restore(context: &mut EzspContext, target: &DiscoveredDevice) -> bool {
     let (node_id, info, desired) = (target.node_id, &target.info, &target.desired);
-    let Some(endpoint) = info.endpoint else { return false };
+    let Some(endpoint) = info.endpoint else {
+        return false;
+    };
     // never a brightness of 0: a lamp switched off (dimmer, wall) and switched back on must
     // not go off again
-    if let Some(brightness) = desired.brightness.filter(|level| info.supports_brightness && target.light.is_on && *level > 0) {
-        let sent = context.send_zcl(node_id, endpoint, LEVEL_CONTROL_CLUSTER_ID, "unicast restored brightness", |sequence| {
-            build_brightness_command_payload(brightness, sequence)
-        });
+    if let Some(brightness) = desired
+        .brightness
+        .filter(|level| info.supports_brightness && target.light.is_on && *level > 0)
+    {
+        let sent = context.send_zcl(
+            node_id,
+            endpoint,
+            LEVEL_CONTROL_CLUSTER_ID,
+            "unicast restored brightness",
+            |sequence| build_brightness_command_payload(brightness, sequence),
+        );
         if !restored(sent.await, node_id, "brightness") {
             return false;
         }
@@ -255,9 +316,13 @@ async fn restore(context: &mut EzspContext, target: &DiscoveredDevice) -> bool {
         }
     }
     if let Some(temperature) = desired.temperature.filter(|_| info.supports_temperature) {
-        let sent = context.send_zcl(node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, "unicast restored colour temperature", |sequence| {
-            build_color_temperature_command_payload(temperature, sequence)
-        });
+        let sent = context.send_zcl(
+            node_id,
+            endpoint,
+            COLOR_CONTROL_CLUSTER_ID,
+            "unicast restored colour temperature",
+            |sequence| build_color_temperature_command_payload(temperature, sequence),
+        );
         if !restored(sent.await, node_id, "colour temperature") {
             return false;
         }
@@ -266,9 +331,13 @@ async fn restore(context: &mut EzspContext, target: &DiscoveredDevice) -> bool {
         }
     }
     if let Some((x, y)) = desired.color.filter(|_| info.supports_color) {
-        let sent = context.send_zcl(node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, "unicast restored colour xy", |sequence| {
-            build_color_xy_command_payload(x, y, sequence)
-        });
+        let sent = context.send_zcl(
+            node_id,
+            endpoint,
+            COLOR_CONTROL_CLUSTER_ID,
+            "unicast restored colour xy",
+            |sequence| build_color_xy_command_payload(x, y, sequence),
+        );
         if !restored(sent.await, node_id, "colour XY") {
             return false;
         }
@@ -283,7 +352,10 @@ async fn restore(context: &mut EzspContext, target: &DiscoveredDevice) -> bool {
 fn restored(sent: Result<(), super::error::DriverError>, node_id: u16, what: &str) -> bool {
     match sent {
         Ok(()) => {
-            info!(node_id = format_args!("0x{node_id:04x}"), what, "restored desired state after reconnect");
+            info!(
+                node_id = format_args!("0x{node_id:04x}"),
+                what, "restored desired state after reconnect"
+            );
             true
         }
         Err(error) => {
@@ -311,14 +383,18 @@ mod tests {
         let now = Instant::now();
         let mut lamp = DiscoveredDevice::test_lamp();
         lamp.last_seen = None;
-        assert!(due_for_ping(&lamp, now).is_some_and(|target| target.endpoint == 11 && target.was_reachable));
+        assert!(due_for_ping(&lamp, now)
+            .is_some_and(|target| target.endpoint == 11 && target.was_reachable));
 
         lamp.last_seen = Some(now);
         assert!(due_for_ping(&lamp, now).is_none(), "heard just now");
 
         let mut remote = DiscoveredDevice::test_lamp();
         remote.info.device_type = ZigbeeDeviceType::Remote;
-        assert!(due_for_ping(&remote, now).is_none(), "a sleepy remote is never pinged");
+        assert!(
+            due_for_ping(&remote, now).is_none(),
+            "a sleepy remote is never pinged"
+        );
 
         let mut uninterviewed = DiscoveredDevice::test_lamp();
         uninterviewed.info.endpoint = None;

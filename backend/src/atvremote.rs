@@ -28,11 +28,7 @@
 //! rather than dragging in `prost` and a `protoc` build dependency — the same
 //! call made for the ADB client next door.
 
-use std::{
-    path::Path,
-    sync::Arc,
-    time::Duration,
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -404,10 +400,7 @@ async fn connect_tls(
     let config = ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptTelevisionCert))
-        .with_client_auth_cert(
-            vec![identity.certificate.clone()],
-            identity.key.clone_key(),
-        )
+        .with_client_auth_cert(vec![identity.certificate.clone()], identity.key.clone_key())
         .map_err(|error| {
             AppError::service_unavailable(format!("TLS client setup failed: {error}"))
         })?;
@@ -423,10 +416,13 @@ async fn connect_tls(
 
     // Bounded too: a TV that accepts the connection and then stalls would otherwise hold
     // the caller (and the manager's session lock) as long as it likes.
-    timeout(IO_TIMEOUT, TlsConnector::from(Arc::new(config)).connect(server_name, stream))
-        .await
-        .map_err(|_| unreachable("Android TV", "TLS handshake timed out"))?
-        .map_err(|error| unreachable("Android TV", format!("TLS handshake failed: {error}")))
+    timeout(
+        IO_TIMEOUT,
+        TlsConnector::from(Arc::new(config)).connect(server_name, stream),
+    )
+    .await
+    .map_err(|_| unreachable("Android TV", "TLS handshake timed out"))?
+    .map_err(|error| unreachable("Android TV", format!("TLS handshake failed: {error}")))
 }
 
 // --------------------------------------------------------------- framing ---
@@ -458,7 +454,9 @@ where
         match decoder.push(byte[0]) {
             Ok(Some(length)) => break length,
             Ok(None) => {}
-            Err(VarintOverflow) => return Err(AppError::service_unavailable("malformed message length")),
+            Err(VarintOverflow) => {
+                return Err(AppError::service_unavailable("malformed message length"))
+            }
         }
     };
 
@@ -532,9 +530,7 @@ impl Pairing {
             .1
             .peer_certificates()
             .and_then(|chain| chain.first().cloned())
-            .ok_or_else(|| {
-                AppError::service_unavailable("the TV presented no certificate")
-            })?;
+            .ok_or_else(|| AppError::service_unavailable("the TV presented no certificate"))?;
         let server = server_public_numbers(&server_cert)?;
 
         let mut pairing = Self {
@@ -600,11 +596,12 @@ impl Pairing {
     pub async fn finish(mut self, code: &str) -> Result<(), AppError> {
         let code = code.trim();
         if code.len() != 6 || !code.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(AppError::bad_request("the pairing code is six hexadecimal digits"));
+            return Err(AppError::bad_request(
+                "the pairing code is six hexadecimal digits",
+            ));
         }
-        let code_bytes = decode_hex(code).ok_or_else(|| {
-            AppError::bad_request("the pairing code is not valid hexadecimal")
-        })?;
+        let code_bytes = decode_hex(code)
+            .ok_or_else(|| AppError::bad_request("the pairing code is not valid hexadecimal"))?;
 
         let mut hasher = Sha256::new();
         hasher.update(&self.client.0);
@@ -629,7 +626,9 @@ impl Pairing {
 }
 
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
-    value.len().is_multiple_of(2)
+    value
+        .len()
+        .is_multiple_of(2)
         .then(|| {
             (0..value.len())
                 .step_by(2)
@@ -807,9 +806,10 @@ impl Session {
     }
 
     async fn send(&self, payload: Vec<u8>) -> Result<(), AppError> {
-        self.commands.send(payload).await.map_err(|_| {
-            AppError::service_unavailable("the remote session is closed")
-        })
+        self.commands
+            .send(payload)
+            .await
+            .map_err(|_| AppError::service_unavailable("the remote session is closed"))
     }
 
     /// Taps a key. Codes are the standard Android ones, shared with ADB.
@@ -869,7 +869,16 @@ mod tests {
     /// more than 64 bits is refused, never wrapped.
     #[tokio::test]
     async fn the_varint_decoder_round_trips_and_refuses_overflow() {
-        for value in [0, 1, 127, 128, 300, u64::from(u32::MAX), u64::MAX - 1, u64::MAX] {
+        for value in [
+            0,
+            1,
+            127,
+            128,
+            300,
+            u64::from(u32::MAX),
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
             let bytes = varint(value);
             assert_eq!(ProtoReader::new(&bytes).varint(), Some(value), "{value}");
         }
@@ -880,7 +889,9 @@ mod tests {
         let mut past_64 = vec![0xff; 9];
         past_64.push(0x02);
         assert_eq!(ProtoReader::new(&past_64).varint(), None);
-        assert!(read_framed(&mut past_64.as_slice(), Duration::from_secs(1)).await.is_err());
+        assert!(read_framed(&mut past_64.as_slice(), Duration::from_secs(1))
+            .await
+            .is_err());
         // a field number past u32 is malformed, not truncated
         let key = varint((u64::from(u32::MAX) + 1) << 3);
         assert!(ProtoReader::new(&key).next_field().is_none());
@@ -895,11 +906,21 @@ mod tests {
         for length in [MAX_MESSAGE_BYTES as u64 + 1, 1 << 32, u64::MAX >> 1] {
             let bytes = varint(length);
             let mut reader = bytes.as_slice();
-            assert!(read_framed(&mut reader, Duration::from_secs(1)).await.is_err(), "{length}");
+            assert!(
+                read_framed(&mut reader, Duration::from_secs(1))
+                    .await
+                    .is_err(),
+                "{length}"
+            );
         }
         let mut frame = varint(3);
         frame.extend_from_slice(b"abc");
-        assert_eq!(read_framed(&mut frame.as_slice(), Duration::from_secs(1)).await.unwrap(), b"abc");
+        assert_eq!(
+            read_framed(&mut frame.as_slice(), Duration::from_secs(1))
+                .await
+                .unwrap(),
+            b"abc"
+        );
     }
 
     #[tokio::test]
@@ -918,7 +939,12 @@ mod tests {
             tv.write_all(&tail[100..]).await.unwrap();
             tv
         });
-        assert_eq!(read_framed(&mut client, Duration::from_secs(2)).await.unwrap(), payload);
+        assert_eq!(
+            read_framed(&mut client, Duration::from_secs(2))
+                .await
+                .unwrap(),
+            payload
+        );
         writer.await.unwrap();
     }
 
@@ -967,7 +993,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 }

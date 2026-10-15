@@ -5,9 +5,9 @@ use std::{
     time::Duration,
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use rbroadlink::{Device, network::WirelessConnection, traits::DeviceTrait};
+use rbroadlink::{network::WirelessConnection, traits::DeviceTrait, Device};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -217,7 +217,12 @@ impl BroadlinkManager {
         let local_ip = parse_optional_ipv4(local_ip.as_deref())?;
         let discover_result = tokio::task::spawn_blocking(move || {
             Device::list(local_ip)
-                .map(|devices| devices.into_iter().map(map_discovered_device).collect::<Vec<_>>())
+                .map(|devices| {
+                    devices
+                        .into_iter()
+                        .map(map_discovered_device)
+                        .collect::<Vec<_>>()
+                })
                 .map_err(|error| error.to_string())
         })
         .await?;
@@ -286,7 +291,9 @@ impl BroadlinkManager {
                     let _ = join.await;
                     drop(guard);
                 });
-                return Err(AppError::service_unavailable("Timed out while waiting for an IR code"));
+                return Err(AppError::service_unavailable(
+                    "Timed out while waiting for an IR code",
+                ));
             }
         };
         drop(guard);
@@ -335,7 +342,9 @@ impl BroadlinkManager {
         Ok(SendResult {
             host,
             code_id,
-            settings: command.as_deref().and_then(mitsubishi_ir::parse_climate_settings),
+            settings: command
+                .as_deref()
+                .and_then(mitsubishi_ir::parse_climate_settings),
             command,
             packet_length,
         })
@@ -343,7 +352,11 @@ impl BroadlinkManager {
 
     pub async fn list_codes(&self) -> Vec<BroadlinkCodeEntry> {
         let mut codes = self.codes.read(|stored| stored.codes.clone()).await;
-        codes.sort_by(|left, right| left.name.cmp(&right.name).then(left.command.cmp(&right.command)));
+        codes.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then(left.command.cmp(&right.command))
+        });
         codes
     }
 
@@ -358,18 +371,30 @@ impl BroadlinkManager {
                     .filter(|entry| is_mitsubishi_entry(entry))
                     .filter(|entry| {
                         requested_model.as_deref().is_none_or(|model| {
-                            entry.model.as_deref().map(normalize_lookup_value).as_deref() == Some(model)
+                            entry
+                                .model
+                                .as_deref()
+                                .map(normalize_lookup_value)
+                                .as_deref()
+                                == Some(model)
                         })
                     })
                     .cloned()
                     .collect::<Vec<_>>()
             })
             .await;
-        codes.sort_by(|left, right| left.command.cmp(&right.command).then(left.name.cmp(&right.name)));
+        codes.sort_by(|left, right| {
+            left.command
+                .cmp(&right.command)
+                .then(left.name.cmp(&right.name))
+        });
         codes
     }
 
-    pub async fn save_code(&self, request: SaveCodeRequest) -> Result<BroadlinkCodeEntry, AppError> {
+    pub async fn save_code(
+        &self,
+        request: SaveCodeRequest,
+    ) -> Result<BroadlinkCodeEntry, AppError> {
         let packet = decode_packet(&request.packet_base64)?;
         let now = Utc::now();
         let normalized_command = normalize_lookup_value(&request.command);
@@ -426,7 +451,13 @@ impl BroadlinkManager {
     ) -> Result<SendResult, AppError> {
         let code = self
             .codes
-            .read(|stored| stored.codes.iter().find(|entry| entry.id == code_id).cloned())
+            .read(|stored| {
+                stored
+                    .codes
+                    .iter()
+                    .find(|entry| entry.id == code_id)
+                    .cloned()
+            })
             .await
             .ok_or_else(|| AppError::not_found("Broadlink code not found"))?;
 
@@ -450,7 +481,8 @@ impl BroadlinkManager {
         model: Option<String>,
     ) -> Result<SendResult, AppError> {
         let command = settings.command().map_err(AppError::bad_request)?;
-        self.send_mitsubishi_command(host, local_ip, command, model).await
+        self.send_mitsubishi_command(host, local_ip, command, model)
+            .await
     }
 
     pub async fn send_mitsubishi_command(
@@ -468,7 +500,13 @@ impl BroadlinkManager {
         {
             let packet_base64 = STANDARD.encode(&packet);
             let result = self
-                .send_packet(host, local_ip, packet_base64, None, Some(normalized_command.clone()))
+                .send_packet(
+                    host,
+                    local_ip,
+                    packet_base64,
+                    None,
+                    Some(normalized_command.clone()),
+                )
                 .await?;
             self.record_climate_state(&normalized_command, &result.host, model.as_deref())
                 .await;
@@ -482,15 +520,19 @@ impl BroadlinkManager {
             .codes
             .read(|stored| {
                 let candidates = || {
-                    stored
-                        .codes
-                        .iter()
-                        .filter(|entry| is_mitsubishi_entry(entry) && entry.command == normalized_command)
+                    stored.codes.iter().filter(|entry| {
+                        is_mitsubishi_entry(entry) && entry.command == normalized_command
+                    })
                 };
                 candidates()
                     .find(|entry| {
                         normalized_model.as_deref().is_some_and(|model| {
-                            entry.model.as_deref().map(normalize_lookup_value).as_deref() == Some(model)
+                            entry
+                                .model
+                                .as_deref()
+                                .map(normalize_lookup_value)
+                                .as_deref()
+                                == Some(model)
                         })
                     })
                     .or_else(|| candidates().next())
@@ -608,9 +650,12 @@ fn is_address_in_use_discovery_error(error: &str) -> bool {
 }
 
 fn learn_ir_blocking(host: Ipv4Addr, local_ip: Option<Ipv4Addr>) -> Result<Vec<u8>, AppError> {
-    let device = Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
+    let device =
+        Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
     match device {
-        Device::Remote { remote } => remote.learn_ir().map_err(|error| net::unreachable(BLASTER, error)),
+        Device::Remote { remote } => remote
+            .learn_ir()
+            .map_err(|error| net::unreachable(BLASTER, error)),
         Device::Hvac { .. } => Err(AppError::bad_request(
             "The selected Broadlink device does not support IR learning",
         )),
@@ -622,9 +667,12 @@ fn send_packet_blocking(
     local_ip: Option<Ipv4Addr>,
     packet: Vec<u8>,
 ) -> Result<(), AppError> {
-    let device = Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
+    let device =
+        Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
     match device {
-        Device::Remote { remote } => remote.send_code(&packet).map_err(|error| net::unreachable(BLASTER, error)),
+        Device::Remote { remote } => remote
+            .send_code(&packet)
+            .map_err(|error| net::unreachable(BLASTER, error)),
         Device::Hvac { .. } => Err(AppError::bad_request(
             "The selected Broadlink device does not support IR code sending",
         )),
@@ -653,7 +701,12 @@ fn normalize_lookup_value(value: &str) -> String {
 }
 
 fn is_mitsubishi_entry(entry: &BroadlinkCodeEntry) -> bool {
-    entry.brand.as_deref().map(normalize_lookup_value).as_deref() == Some("mitsubishi")
+    entry
+        .brand
+        .as_deref()
+        .map(normalize_lookup_value)
+        .as_deref()
+        == Some("mitsubishi")
 }
 
 #[cfg(test)]
@@ -722,7 +775,8 @@ mod tests {
     async fn concurrent_saves_lose_no_code() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("broadlink-codes.json");
-        let manager = BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
+        let manager =
+            BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
         let saves: Vec<_> = (0..16)
             .map(|n| {
                 let manager = manager.clone();
@@ -733,7 +787,11 @@ mod tests {
             save.await.expect("joined").expect("saved");
         }
         assert_eq!(manager.list_codes().await.len(), 16);
-        assert_eq!(read_codes(&path).expect("readable").len(), 16, "the disk holds every code");
+        assert_eq!(
+            read_codes(&path).expect("readable").len(),
+            16,
+            "the disk holds every code"
+        );
     }
 
     /// A save that cannot be written is not kept: memory never runs ahead of the disk.
@@ -741,12 +799,18 @@ mod tests {
     async fn a_failed_save_is_not_kept() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("broadlink-codes.json");
-        let manager = BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
+        let manager =
+            BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
         manager.save_code(code("first")).await.expect("saved");
         std::fs::remove_file(&path).expect("removed");
         std::fs::create_dir(&path).expect("a directory where the file goes");
         assert!(manager.save_code(code("second")).await.is_err());
-        let names: Vec<_> = manager.list_codes().await.into_iter().map(|c| c.name).collect();
+        let names: Vec<_> = manager
+            .list_codes()
+            .await
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
         assert_eq!(names, vec!["first"]);
     }
 
@@ -803,7 +867,10 @@ mod tests {
         // A fresh manager reloads the persisted state from disk.
         let reloaded =
             BroadlinkManager::new(&codes_path, &climate_path).expect("manager should build");
-        let state = reloaded.climate_state().await.expect("state should persist");
+        let state = reloaded
+            .climate_state()
+            .await
+            .expect("state should persist");
         assert_eq!(state.last_on_command.as_deref(), Some(on_command));
     }
 }

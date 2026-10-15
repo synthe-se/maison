@@ -1,19 +1,19 @@
 use axum::{
-    Json, Router,
     extract::{Path, State},
     routing::post,
+    Json, Router,
 };
 
 use crate::{
-    AppState,
     auth::AdminUser,
     error::AppError,
     hue::HueManager,
     lamps::{HueLampView, LampState, LampStats},
     routes::{
-        SimpleResponse,
         lamps::{self, LampBackend},
+        SimpleResponse,
     },
+    AppState,
 };
 
 impl LampBackend for HueManager {
@@ -54,7 +54,10 @@ pub fn router() -> Router<AppState> {
         .route("/{lamp_id}/blacklist", post(blacklist_lamp))
 }
 
-async fn scan(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<SimpleResponse>, AppError> {
+async fn scan(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<SimpleResponse>, AppError> {
     state.hue.trigger_scan().await?;
     Ok(SimpleResponse::ok("Hue lamp scan started"))
 }

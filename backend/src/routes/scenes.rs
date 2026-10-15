@@ -40,7 +40,9 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list(State(state): State<AppState>) -> Json<Answer<Scenes>> {
-    Answer::ok(Scenes { scenes: state.scenes.list().await })
+    Answer::ok(Scenes {
+        scenes: state.scenes.list().await,
+    })
 }
 
 async fn save(
@@ -49,7 +51,10 @@ async fn save(
     Path(id): Path<String>,
     Json(body): Json<SceneRequest>,
 ) -> Result<Json<Answer<One>>, AppError> {
-    let scene = state.scenes.put(&id, &body.name, &body.icon, body.actions).await?;
+    let scene = state
+        .scenes
+        .put(&id, &body.name, &body.icon, body.actions)
+        .await?;
     Ok(Answer::ok(One { scene }))
 }
 
@@ -65,9 +70,14 @@ async fn remove(
 }
 
 /// Run inside the request: the person waits on it and sees each action's result.
-async fn run(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<KeyResponse>, AppError> {
+async fn run(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<KeyResponse>, AppError> {
     let scene = state.scenes.get(&id).await.ok_or_else(unknown_scene)?;
-    Ok(KeyResponse::ran(ir::run_actions(&state, &scene.actions).await))
+    Ok(KeyResponse::ran(
+        ir::run_actions(&state, &scene.actions).await,
+    ))
 }
 
 fn unknown_scene() -> AppError {

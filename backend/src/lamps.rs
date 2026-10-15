@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::{
@@ -68,7 +68,9 @@ pub struct LampStats {
 }
 
 /// A lamp record kept in a lamps file.
-pub trait LampRecord: Serialize + DeserializeOwned + Clone + PartialEq + Send + Sync + 'static {
+pub trait LampRecord:
+    Serialize + DeserializeOwned + Clone + PartialEq + Send + Sync + 'static
+{
     /// Its stable id: the file is written in this order, so an unchanged set is an
     /// unchanged file whatever order the in-memory map gives.
     fn id(&self) -> &str;
@@ -103,14 +105,20 @@ impl<T: LampRecord> LampStore<T> {
         Self {
             lamps_path: lamps_path.to_path_buf(),
             blacklist_path: blacklist_path.to_path_buf(),
-            written: Mutex::new(Written { lamps: None, blacklist: None }),
+            written: Mutex::new(Written {
+                lamps: None,
+                blacklist: None,
+            }),
         }
     }
 
     /// The kept lamps; they count as written (saving them unchanged writes nothing).
     pub fn load_lamps(&self) -> Result<Vec<T>, AppError> {
         let lamps = sorted(store::read_json::<Vec<T>>(&self.lamps_path, Corrupt::Fail)?);
-        self.written.try_lock().expect("a store is loaded before it is shared").lamps = Some(lamps.clone());
+        self.written
+            .try_lock()
+            .expect("a store is loaded before it is shared")
+            .lamps = Some(lamps.clone());
         Ok(lamps)
     }
 
@@ -119,13 +127,19 @@ impl<T: LampRecord> LampStore<T> {
         let blacklist = store::read_json::<Vec<String>>(&self.blacklist_path, Corrupt::Fail)?;
         let mut kept = blacklist.clone();
         kept.sort();
-        self.written.try_lock().expect("a store is loaded before it is shared").blacklist = Some(kept);
+        self.written
+            .try_lock()
+            .expect("a store is loaded before it is shared")
+            .blacklist = Some(kept);
         Ok(blacklist.into_iter().collect())
     }
 
     /// Takes the write lock: snapshot the state after this, then save it.
     pub async fn lock(&self) -> LampStoreGuard<'_, T> {
-        LampStoreGuard { store: self, written: self.written.lock().await }
+        LampStoreGuard {
+            store: self,
+            written: self.written.lock().await,
+        }
     }
 }
 
@@ -177,35 +191,66 @@ mod tests {
     }
 
     fn lamp(id: &str, name: &str) -> Lamp {
-        Lamp { id: id.into(), name: name.into() }
+        Lamp {
+            id: id.into(),
+            name: name.into(),
+        }
     }
 
     fn paths() -> (PathBuf, PathBuf, tempfile::TempDir) {
         let dir = crate::util::test_dir();
-        (dir.path().join("lamps.json"), dir.path().join("blacklist.json"), dir)
+        (
+            dir.path().join("lamps.json"),
+            dir.path().join("blacklist.json"),
+            dir,
+        )
     }
 
     #[tokio::test]
     async fn only_a_change_is_written_whatever_the_order() {
         let (lamps_path, blacklist_path, _dir) = paths();
         let store = LampStore::<Lamp>::new(&lamps_path, &blacklist_path);
-        assert!(store.load_lamps().unwrap().is_empty(), "a missing file is no lamp");
+        assert!(
+            store.load_lamps().unwrap().is_empty(),
+            "a missing file is no lamp"
+        );
         assert!(store.load_blacklist().unwrap().is_empty());
 
         let mut guard = store.lock().await;
-        assert!(guard.save_lamps(vec![lamp("b", "B"), lamp("a", "A")]).await.unwrap());
-        assert!(!guard.save_lamps(vec![lamp("a", "A"), lamp("b", "B")]).await.unwrap(), "same set, other order");
-        assert!(guard.save_lamps(vec![lamp("a", "A2"), lamp("b", "B")]).await.unwrap());
+        assert!(guard
+            .save_lamps(vec![lamp("b", "B"), lamp("a", "A")])
+            .await
+            .unwrap());
+        assert!(
+            !guard
+                .save_lamps(vec![lamp("a", "A"), lamp("b", "B")])
+                .await
+                .unwrap(),
+            "same set, other order"
+        );
+        assert!(guard
+            .save_lamps(vec![lamp("a", "A2"), lamp("b", "B")])
+            .await
+            .unwrap());
         let blacklist = HashSet::from(["y".to_string(), "x".to_string()]);
         assert!(guard.save_blacklist(&blacklist).await.unwrap());
         assert!(!guard.save_blacklist(&blacklist).await.unwrap());
         drop(guard);
 
         let again = LampStore::<Lamp>::new(&lamps_path, &blacklist_path);
-        assert_eq!(again.load_lamps().unwrap(), vec![lamp("a", "A2"), lamp("b", "B")]);
+        assert_eq!(
+            again.load_lamps().unwrap(),
+            vec![lamp("a", "A2"), lamp("b", "B")]
+        );
         assert_eq!(again.load_blacklist().unwrap(), blacklist);
         let mut guard = again.lock().await;
-        assert!(!guard.save_lamps(vec![lamp("b", "B"), lamp("a", "A2")]).await.unwrap(), "loaded counts as written");
+        assert!(
+            !guard
+                .save_lamps(vec![lamp("b", "B"), lamp("a", "A2")])
+                .await
+                .unwrap(),
+            "loaded counts as written"
+        );
     }
 
     #[test]
@@ -217,7 +262,10 @@ mod tests {
         let store = LampStore::<Lamp>::new(&lamps_path, &blacklist_path);
         assert!(store.load_lamps().is_err());
         assert!(store.load_blacklist().is_err());
-        assert!(lamps_path.exists(), "the names are left for a human to rescue");
+        assert!(
+            lamps_path.exists(),
+            "the names are left for a human to rescue"
+        );
     }
 
     #[test]
@@ -235,7 +283,11 @@ mod tests {
             hue,
             serde_json::json!({"isOn": true, "brightness": 40, "temperature": null, "temperatureMin": 0, "temperatureMax": 100})
         );
-        state.colour = Some(LampColour { color_x: Some(0.5), color_y: None, color_mode: Some(1) });
+        state.colour = Some(LampColour {
+            color_x: Some(0.5),
+            color_y: None,
+            color_mode: Some(1),
+        });
         let zigbee = serde_json::to_value(&state).unwrap();
         assert_eq!(zigbee["colorX"], 0.5);
         assert!(zigbee["colorY"].is_null() && zigbee.as_object().unwrap().contains_key("colorY"));

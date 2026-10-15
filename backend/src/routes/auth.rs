@@ -2,26 +2,26 @@
 //! token and a rotating refresh token, both HttpOnly cookies (`auth.rs` says what they hold).
 
 use axum::{
-    Json, Router,
     extract::State,
-    http::{HeaderMap, header::SET_COOKIE},
+    http::{header::SET_COOKIE, HeaderMap},
     response::{AppendHeaders, IntoResponse},
     routing::post,
+    Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use chrono::{Duration, Utc};
-use jsonwebtoken::{EncodingKey, Header, encode};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::Serialize;
 use time::Duration as CookieDuration;
 
 use crate::{
-    AppState,
-    auth::{AuthUser, AuthenticatedUser, Claims, RefreshEntry, Taken, cookie_names, cookie_value},
+    auth::{cookie_names, cookie_value, AuthUser, AuthenticatedUser, Claims, RefreshEntry, Taken},
     error::AppError,
     passkey::Refusal,
     people::Person,
     routes::{Answer, SimpleResponse},
     util::{now_ms, random_secret},
+    AppState,
 };
 
 /// Access token lifetime in minutes.
@@ -63,9 +63,14 @@ pub(crate) async fn open_session(
         user_id: person.id.clone(),
         issued_ms: now_ms(),
         auth_ms,
-        exp: u64::try_from((Utc::now() + Duration::minutes(ACCESS_TOKEN_MINUTES)).timestamp()).unwrap_or_default(),
+        exp: u64::try_from((Utc::now() + Duration::minutes(ACCESS_TOKEN_MINUTES)).timestamp())
+            .unwrap_or_default(),
     };
-    let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()))?;
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+    )?;
     let refresh_token = random_secret();
     state
         .refresh_store
@@ -81,8 +86,24 @@ pub(crate) async fn open_session(
         .await;
     let (access, refresh) = cookie_names(&state.config);
     let cookies = AppendHeaders([
-        (SET_COOKIE, cookie(state, access, token, CookieDuration::minutes(ACCESS_TOKEN_MINUTES))),
-        (SET_COOKIE, cookie(state, refresh, refresh_token, CookieDuration::days(REFRESH_TOKEN_DAYS))),
+        (
+            SET_COOKIE,
+            cookie(
+                state,
+                access,
+                token,
+                CookieDuration::minutes(ACCESS_TOKEN_MINUTES),
+            ),
+        ),
+        (
+            SET_COOKIE,
+            cookie(
+                state,
+                refresh,
+                refresh_token,
+                CookieDuration::days(REFRESH_TOKEN_DAYS),
+            ),
+        ),
     ]);
     Ok((cookies, session(AuthUser::of(person, auth_ms))))
 }
@@ -91,14 +112,25 @@ pub(crate) async fn open_session(
 fn closed_session(state: &AppState) -> SessionCookies {
     let (access, refresh) = cookie_names(&state.config);
     AppendHeaders([
-        (SET_COOKIE, cookie(state, access, String::new(), CookieDuration::ZERO)),
-        (SET_COOKIE, cookie(state, refresh, String::new(), CookieDuration::ZERO)),
+        (
+            SET_COOKIE,
+            cookie(state, access, String::new(), CookieDuration::ZERO),
+        ),
+        (
+            SET_COOKIE,
+            cookie(state, refresh, String::new(), CookieDuration::ZERO),
+        ),
     ])
 }
 
 /// An HttpOnly, SameSite=Lax cookie on the whole site, Secure when the config says (always
 /// behind the tunnel).
-pub(crate) fn cookie(state: &AppState, name: String, value: String, max_age: CookieDuration) -> String {
+pub(crate) fn cookie(
+    state: &AppState,
+    name: String,
+    value: String,
+    max_age: CookieDuration,
+) -> String {
     Cookie::build((name, value))
         .http_only(true)
         .secure(state.config.auth_cookie_secure)
@@ -113,7 +145,10 @@ async fn verify_handler(user: AuthenticatedUser) -> Json<Answer<Session>> {
     session(user.0)
 }
 
-async fn refresh_handler(State(state): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse, AppError> {
+async fn refresh_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
     let token = refresh_cookie(&state, &headers).ok_or(Refusal::NotSignedIn)?;
     let entry = match state.refresh_store.take(token).await {
         Taken::Valid(entry) => entry,
@@ -123,7 +158,11 @@ async fn refresh_handler(State(state): State<AppState>, headers: HeaderMap) -> R
         }
         Taken::Unknown => return Err(Refusal::NotSignedIn.into()),
     };
-    let person = state.people.person(&entry.user_id).await?.ok_or(Refusal::NotSignedIn)?;
+    let person = state
+        .people
+        .person(&entry.user_id)
+        .await?
+        .ok_or(Refusal::NotSignedIn)?;
     open_session(&state, &person, entry.auth_ms, Some(entry.family)).await
 }
 
@@ -131,13 +170,22 @@ async fn logout_handler(State(state): State<AppState>, headers: HeaderMap) -> im
     if let Some(token) = refresh_cookie(&state, &headers) {
         state.refresh_store.remove(token).await;
     }
-    (closed_session(&state), SimpleResponse::ok("Logged out successfully"))
+    (
+        closed_session(&state),
+        SimpleResponse::ok("Logged out successfully"),
+    )
 }
 
 /// A lost phone: every session of this person ends at once, access tokens included.
-async fn logout_everywhere_handler(State(state): State<AppState>, user: AuthenticatedUser) -> Result<impl IntoResponse, AppError> {
+async fn logout_everywhere_handler(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<impl IntoResponse, AppError> {
     end_sessions(&state, &user.0.id).await?;
-    Ok((closed_session(&state), SimpleResponse::ok("Logged out everywhere")))
+    Ok((
+        closed_session(&state),
+        SimpleResponse::ok("Logged out everywhere"),
+    ))
 }
 
 /// Every session of `person` over, now: their refresh tokens go, their access tokens are void.

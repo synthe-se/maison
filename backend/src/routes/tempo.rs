@@ -33,7 +33,9 @@ fn unavailable(error: AppError) -> AppError {
 }
 
 async fn get_today(State(state): State<AppState>) -> Result<Json<Answer<Today>>, AppError> {
-    Ok(Answer::ok(state.tempo.today(false).await.map_err(unavailable)?))
+    Ok(Answer::ok(
+        state.tempo.today(false).await.map_err(unavailable)?,
+    ))
 }
 
 /// Asks every source again (harmless: members may).
@@ -44,7 +46,9 @@ async fn refresh(State(state): State<AppState>) -> Result<Json<Answer<Today>>, A
 }
 
 async fn get_forecast(State(state): State<AppState>) -> Result<Json<Answer<Forecast>>, AppError> {
-    Ok(Answer::ok(state.tempo.forecast(false).await.map_err(unavailable)?))
+    Ok(Answer::ok(
+        state.tempo.forecast(false).await.map_err(unavailable)?,
+    ))
 }
 
 async fn get_calendar(
@@ -52,5 +56,7 @@ async fn get_calendar(
     Query(query): Query<SeasonQuery>,
 ) -> Result<Json<Answer<Calendar>>, AppError> {
     // a bad season is the asker's error, not the sources'
-    Ok(Answer::ok(state.tempo.calendar(query.season.as_deref()).await?))
+    Ok(Answer::ok(
+        state.tempo.calendar(query.season.as_deref()).await?,
+    ))
 }

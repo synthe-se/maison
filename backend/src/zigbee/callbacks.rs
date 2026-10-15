@@ -3,25 +3,28 @@
 //! scan, the availability check): a network going down is never lost in a side drain.
 
 use ezsp::{
-    Callback,
     ember::{device::Update as EmberDeviceUpdate, node::Type as EmberNodeType},
-    parameters,
+    parameters, Callback,
 };
-use tokio::time::{Instant, timeout};
+use tokio::time::{timeout, Instant};
 use tracing::{debug, info};
 
 use super::{
     context::EzspContext,
     device::{DiscoveredDevice, ZigbeeDeviceType},
-    discovery::{intercept_uninterviewed, on_active_endpoints, on_device_announce, on_simple_descriptor, request_known_device_discovery},
+    discovery::{
+        intercept_uninterviewed, on_active_endpoints, on_device_announce, on_simple_descriptor,
+        request_known_device_discovery,
+    },
     driver::EZSP_COMMAND_TIMEOUT,
     error::DriverError,
-    network::{NetworkState, network_state_of},
+    network::{network_state_of, NetworkState},
     remotes::handle_remote_command,
     touchlink::handle_zll_callback,
     zcl::{
-        ACTIVE_EP_RSP_CLUSTER_ID, BASIC_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID, DEVICE_ANNCE_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID,
-        ON_OFF_CLUSTER_ID, SIMPLE_DESC_RSP_CLUSTER_ID, ZDO_PROFILE_ID, apply_lamp_frame, format_eui64, hex_bytes,
+        apply_lamp_frame, format_eui64, hex_bytes, ACTIVE_EP_RSP_CLUSTER_ID, BASIC_CLUSTER_ID,
+        COLOR_CONTROL_CLUSTER_ID, DEVICE_ANNCE_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID,
+        ON_OFF_CLUSTER_ID, SIMPLE_DESC_RSP_CLUSTER_ID, ZDO_PROFILE_ID,
     },
 };
 
@@ -72,9 +75,13 @@ pub async fn apply_event(context: &mut EzspContext, event: DriverEvent) {
 }
 
 async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Option<DriverEvent> {
-    use parameters::{messaging::handler::Handler as Messaging, networking::handler::Handler as Networking};
+    use parameters::{
+        messaging::handler::Handler as Messaging, networking::handler::Handler as Networking,
+    };
     match callback {
-        Callback::Networking(Networking::StackStatus(status)) => network_state_of(status.result()).map(DriverEvent::Network),
+        Callback::Networking(Networking::StackStatus(status)) => {
+            network_state_of(status.result()).map(DriverEvent::Network)
+        }
         Callback::Networking(Networking::ChildJoin(join)) => {
             let eui64 = format_eui64(join.child_eui64().into_array());
             let sleepy = join.child_type() == Ok(EmberNodeType::SleepyEndDevice);
@@ -84,17 +91,26 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
             }
             on_child_join(context, join.child_id(), eui64, sleepy).await
         }
-        Callback::TrustCenter(parameters::trust_center::handler::Handler::TrustCenterJoin(join)) => {
-            handle_trust_center_join(context, *join).await
-        }
+        Callback::TrustCenter(parameters::trust_center::handler::Handler::TrustCenterJoin(
+            join,
+        )) => handle_trust_center_join(context, *join).await,
         Callback::Messaging(Messaging::IncomingMessage(message)) => {
             let (node_id, frame) = (message.sender(), message.aps_frame());
             let payload = message.message();
             debug!(node_id, cluster_id = frame.cluster_id(), payload = %hex_bytes(payload), "native zigbee incoming message");
-            handle_incoming_cluster(context, node_id, frame.cluster_id(), frame.profile_id(), payload).await
+            handle_incoming_cluster(
+                context,
+                node_id,
+                frame.cluster_id(),
+                frame.profile_id(),
+                payload,
+            )
+            .await
         }
         // no MAC acknowledgement after every retry: unreachable now, for fast feedback
-        Callback::Messaging(Messaging::MessageSent(sent)) if matches!(sent.ack_received(), Ok(false)) => {
+        Callback::Messaging(Messaging::MessageSent(sent))
+            if matches!(sent.ack_received(), Ok(false)) =>
+        {
             let node_id = sent.index_or_destination();
             if let Some(device) = context.device_mut(node_id) {
                 if device.lost() {
@@ -114,9 +130,16 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
 /// A child joined. A sleepy one is usually a remote that never answers ZDO requests, but a
 /// ZLL lamp touchlinked (the Hue Lightstrip) may say « sleepy » too: it is interviewed all
 /// the same (unless done already), and a remote is recognised by its first command anyway.
-async fn on_child_join(context: &mut EzspContext, node_id: u16, eui64: String, sleepy: bool) -> Option<DriverEvent> {
+async fn on_child_join(
+    context: &mut EzspContext,
+    node_id: u16,
+    eui64: String,
+    sleepy: bool,
+) -> Option<DriverEvent> {
     ensure_joined_device(context, node_id, eui64.clone());
-    let interviewed = context.device(node_id).is_some_and(|device| device.interview_completed);
+    let interviewed = context
+        .device(node_id)
+        .is_some_and(|device| device.interview_completed);
     if sleepy && interviewed {
         debug!(node_id = format_args!("0x{node_id:04x}"), %eui64, "sleepy end device already interviewed — skipping re-discovery");
     } else {
@@ -163,10 +186,17 @@ pub fn ensure_joined_device(context: &mut EzspContext, node_id: u16, eui64: Stri
         .joined_devices
         .iter()
         .position(|device| device.info.eui64 == eui64)
-        .or_else(|| context.joined_devices.iter().position(|device| device.node_id == node_id));
+        .or_else(|| {
+            context
+                .joined_devices
+                .iter()
+                .position(|device| device.node_id == node_id)
+        });
     let Some(device) = index.map(|index| &mut context.joined_devices[index]) else {
         info!(node_id = format_args!("0x{node_id:04x}"), %eui64, "new device added to joined list — awaiting interview");
-        context.joined_devices.push(DiscoveredDevice::joined(node_id, eui64));
+        context
+            .joined_devices
+            .push(DiscoveredDevice::joined(node_id, eui64));
         return;
     };
     let was_reachable = device.reachable;
@@ -199,19 +229,32 @@ async fn handle_incoming_cluster(
             device_type = ?device.info.device_type, endpoint = ?device.info.endpoint, interview_completed = device.interview_completed,
             "incoming message: device state at dispatch time");
     }
-    if context.device(node_id).is_some_and(|device| device.info.endpoint.is_none()) {
+    if context
+        .device(node_id)
+        .is_some_and(|device| device.info.endpoint.is_none())
+    {
         intercept_uninterviewed(context, node_id, cluster_id, profile_id, payload).await;
     }
 
-    let from_remote = context.device(node_id).is_some_and(|device| device.info.device_type == ZigbeeDeviceType::Remote);
+    let from_remote = context
+        .device(node_id)
+        .is_some_and(|device| device.info.device_type == ZigbeeDeviceType::Remote);
     // ZDO and ZCL cluster ids overlap (ZDO 0x0006 is not On/Off): the profile tells them
     // apart. A remote's Device_annce goes on below: it may have been reset into something
     // else, and is interviewed again.
     if from_remote && cluster_id != DEVICE_ANNCE_CLUSTER_ID {
         if profile_id == ZDO_PROFILE_ID {
-            debug!(node_id = format_args!("0x{node_id:04x}"), cluster_id = format_args!("0x{cluster_id:04x}"), "ignoring ZDO frame from remote (not a ZCL command)");
+            debug!(
+                node_id = format_args!("0x{node_id:04x}"),
+                cluster_id = format_args!("0x{cluster_id:04x}"),
+                "ignoring ZDO frame from remote (not a ZCL command)"
+            );
         } else {
-            info!(node_id = format_args!("0x{node_id:04x}"), cluster_id = format_args!("0x{cluster_id:04x}"), "routing incoming message to remote command handler");
+            info!(
+                node_id = format_args!("0x{node_id:04x}"),
+                cluster_id = format_args!("0x{cluster_id:04x}"),
+                "routing incoming message to remote command handler"
+            );
             handle_remote_command(context, node_id, cluster_id, payload).await;
         }
         return None;
@@ -227,7 +270,10 @@ async fn handle_incoming_cluster(
             on_simple_descriptor(context, node_id, payload).await;
             None
         }
-        ON_OFF_CLUSTER_ID | LEVEL_CONTROL_CLUSTER_ID | COLOR_CONTROL_CLUSTER_ID | BASIC_CLUSTER_ID => {
+        ON_OFF_CLUSTER_ID
+        | LEVEL_CONTROL_CLUSTER_ID
+        | COLOR_CONTROL_CLUSTER_ID
+        | BASIC_CLUSTER_ID => {
             debug!(node_id = format_args!("0x{node_id:04x}"), cluster_id = format_args!("0x{cluster_id:04x}"), payload = %hex_bytes(payload), "native zigbee lamp frame");
             if let Some(device) = context.device_mut(node_id) {
                 if apply_lamp_frame(device, cluster_id, payload) {

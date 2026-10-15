@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 #[tokio::test]
 async fn broadlink_codes_can_be_saved_and_listed() {
@@ -24,12 +24,18 @@ async fn broadlink_codes_can_be_saved_and_listed() {
 
     assert_eq!(save.0, StatusCode::OK);
     assert_eq!(save.1.get("success").and_then(Value::as_bool), Some(true));
-    assert_eq!(save.1.pointer("/code/command").and_then(Value::as_str), Some("cool_22_auto"));
+    assert_eq!(
+        save.1.pointer("/code/command").and_then(Value::as_str),
+        Some("cool_22_auto")
+    );
 
     let list = common::send_authed(&app, Method::GET, "/api/broadlink/codes", None).await;
     assert_eq!(list.0, StatusCode::OK);
     assert_eq!(list.1.get("total").and_then(Value::as_u64), Some(1));
-    assert_eq!(list.1.pointer("/codes/0/brand").and_then(Value::as_str), Some("mitsubishi"));
+    assert_eq!(
+        list.1.pointer("/codes/0/brand").and_then(Value::as_str),
+        Some("mitsubishi")
+    );
 }
 
 #[tokio::test]
@@ -62,10 +68,14 @@ async fn broadlink_mitsubishi_filter_returns_only_matching_brand() {
     )
     .await;
 
-    let response = common::send_authed(&app, Method::GET, "/api/broadlink/mitsubishi/codes", None).await;
+    let response =
+        common::send_authed(&app, Method::GET, "/api/broadlink/mitsubishi/codes", None).await;
     assert_eq!(response.0, StatusCode::OK);
     assert_eq!(response.1.get("total").and_then(Value::as_u64), Some(1));
-    assert_eq!(response.1.pointer("/codes/0/brand").and_then(Value::as_str), Some("mitsubishi"));
+    assert_eq!(
+        response.1.pointer("/codes/0/brand").and_then(Value::as_str),
+        Some("mitsubishi")
+    );
 }
 
 fn test_app() -> axum::Router {
@@ -79,20 +89,58 @@ async fn setting_up_blasters_is_admin_only() {
     let app = test_app();
     let member = common::member_token();
     for (method, path, body) in [
-        (Method::GET, "/api/broadlink/discover?forceRefresh=true", None),
-        (Method::GET, "/api/broadlink/discover?localIp=192.168.1.10", None),
-        (Method::POST, "/api/broadlink/provision", Some(json!({"ssid": "x", "securityMode": "wpa2"}))),
-        (Method::POST, "/api/broadlink/learn/ir", Some(json!({"host": "192.168.1.73"}))),
-        (Method::POST, "/api/broadlink/send", Some(json!({"host": "192.168.1.73", "packetBase64": "AQ=="}))),
-        (Method::POST, "/api/broadlink/codes", Some(json!({"name": "n", "command": "c", "packetBase64": "AQ=="}))),
+        (
+            Method::GET,
+            "/api/broadlink/discover?forceRefresh=true",
+            None,
+        ),
+        (
+            Method::GET,
+            "/api/broadlink/discover?localIp=192.168.1.10",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/broadlink/provision",
+            Some(json!({"ssid": "x", "securityMode": "wpa2"})),
+        ),
+        (
+            Method::POST,
+            "/api/broadlink/learn/ir",
+            Some(json!({"host": "192.168.1.73"})),
+        ),
+        (
+            Method::POST,
+            "/api/broadlink/send",
+            Some(json!({"host": "192.168.1.73", "packetBase64": "AQ=="})),
+        ),
+        (
+            Method::POST,
+            "/api/broadlink/codes",
+            Some(json!({"name": "n", "command": "c", "packetBase64": "AQ=="})),
+        ),
     ] {
         let (status, answer) = common::send(&app, method.clone(), path, Some(&member), body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {answer}");
         assert_eq!(answer["code"], json!("forbidden"));
     }
-    let (status, _) = common::send(&app, Method::GET, "/api/broadlink/codes", Some(&member), None).await;
+    let (status, _) = common::send(
+        &app,
+        Method::GET,
+        "/api/broadlink/codes",
+        Some(&member),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = common::send(&app, Method::GET, "/api/broadlink/mitsubishi/state", Some(&member), None).await;
+    let (status, _) = common::send(
+        &app,
+        Method::GET,
+        "/api/broadlink/mitsubishi/state",
+        Some(&member),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -100,7 +148,13 @@ async fn setting_up_blasters_is_admin_only() {
 #[tokio::test]
 async fn blaster_addresses_outside_the_lan_are_refused() {
     let app = test_app();
-    for host in ["127.0.0.1", "8.8.8.8", "169.254.169.254", "blaster.local", "192.168.1.73:80"] {
+    for host in [
+        "127.0.0.1",
+        "8.8.8.8",
+        "169.254.169.254",
+        "blaster.local",
+        "192.168.1.73:80",
+    ] {
         let (status, body) = common::send_authed(
             &app,
             Method::POST,
@@ -118,10 +172,17 @@ async fn answers_keep_their_envelope() {
     let app = test_app();
     let (status, list) = common::send_authed(&app, Method::GET, "/api/broadlink/codes", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list, json!({"success": true, "total": 0, "codes": [], "message": "Broadlink codes retrieved"}));
-    let (status, state) = common::send_authed(&app, Method::GET, "/api/broadlink/mitsubishi/state", None).await;
+    assert_eq!(
+        list,
+        json!({"success": true, "total": 0, "codes": [], "message": "Broadlink codes retrieved"})
+    );
+    let (status, state) =
+        common::send_authed(&app, Method::GET, "/api/broadlink/mitsubishi/state", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state, json!({"success": true, "state": null, "message": "Last commanded Mitsubishi state"}));
+    assert_eq!(
+        state,
+        json!({"success": true, "state": null, "message": "Last commanded Mitsubishi state"})
+    );
 }
 
 /// The climate is sent as a command or as settings, never both or neither; settings the
@@ -136,8 +197,17 @@ async fn mitsubishi_takes_a_command_or_settings() {
         json!({"host": "192.168.1.73", "settings": settings}),
         json!({"host": "192.168.1.73", "settings": {"mode": "turbo", "temperature": 20, "fan": "auto", "vane": "swing"}}),
     ] {
-        let (status, answer) = common::send_authed(&app, Method::POST, "/api/broadlink/mitsubishi/send", Some(body.clone())).await;
-        assert!(status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY, "{body}: {status} {answer}");
+        let (status, answer) = common::send_authed(
+            &app,
+            Method::POST,
+            "/api/broadlink/mitsubishi/send",
+            Some(body.clone()),
+        )
+        .await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {status} {answer}"
+        );
     }
     // settings that are fine reach the address check, which refuses a public host
     let ok = json!({"mode": "cool", "temperature": 21, "fan": "auto", "vane": "swing"});

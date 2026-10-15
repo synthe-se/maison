@@ -9,18 +9,18 @@
 use std::{cell::RefCell, net::SocketAddr, path::PathBuf, sync::Arc, sync::OnceLock};
 
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::{to_bytes, Body},
     extract::connect_info::MockConnectInfo,
     http::{HeaderMap, Method, Request, StatusCode},
+    Router,
 };
-use jsonwebtoken::{EncodingKey, Header, encode};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use maison_backend::{
     auth::Claims,
     build_app_parts_from_config,
     config::{self, Config},
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 /// The machine token the test config accepts on `/api/ir`.
@@ -70,7 +70,8 @@ pub fn jwt_secret() -> String {
 /// repository is read or rewritten.
 pub fn isolated_config(name: &str) -> Config {
     let defaults = Config::defaults(temp_root(name));
-    std::fs::create_dir_all(defaults.auth_path.parent().expect("auth/")).expect("auth dir should be created");
+    std::fs::create_dir_all(defaults.auth_path.parent().expect("auth/"))
+        .expect("auth dir should be created");
     std::fs::write(&defaults.auth_path, TEST_PEOPLE).expect("people file should be written");
     Config {
         host: "127.0.0.1".into(),
@@ -92,9 +93,18 @@ pub fn token_for(person: &str) -> String {
 /// A token for `person` whose last passkey sign-in was `age_ms` ago.
 pub fn token_signed_in_ago(person: &str, age_ms: i64) -> String {
     let now = chrono::Utc::now().timestamp_millis();
-    let claims = Claims { user_id: person.to_string(), issued_ms: now, auth_ms: now - age_ms, exp: 4_102_444_800 };
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(jwt_secret().as_bytes()))
-        .expect("test token should encode")
+    let claims = Claims {
+        user_id: person.to_string(),
+        issued_ms: now,
+        auth_ms: now - age_ms,
+        exp: 4_102_444_800,
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(jwt_secret().as_bytes()),
+    )
+    .expect("test token should encode")
 }
 
 /// A never-expiring admin token for `leonard`.
@@ -122,7 +132,12 @@ pub fn app(config: Config) -> Router {
 }
 
 /// A request, with a bearer `token` and a JSON `body` when given.
-pub fn request(method: Method, path: &str, token: Option<&str>, body: Option<Value>) -> Request<Body> {
+pub fn request(
+    method: Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(path);
     if let Some(token) = token {
         builder = builder.header("Authorization", format!("Bearer {token}"));
@@ -143,14 +158,23 @@ pub fn request(method: Method, path: &str, token: Option<&str>, body: Option<Val
 /// English keys, whatever the test is about.
 pub async fn respond(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, Value) {
     let path = request.uri().path().to_string();
-    let response = app.clone().oneshot(request).await.expect("request should succeed");
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("request should succeed");
     let status = response.status();
     let headers = response.headers().clone();
-    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body should be readable");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
     let json = serde_json::from_slice(&body).unwrap_or(Value::Null);
     if path.starts_with("/api") {
         let offences = maison_backend::util::casing_offences(&json);
-        assert!(offences.is_empty(), "{path} answers keys that are not camelCase: {offences:?}");
+        assert!(
+            offences.is_empty(),
+            "{path} answers keys that are not camelCase: {offences:?}"
+        );
     }
     (status, headers, json)
 }
@@ -168,7 +192,12 @@ pub async fn send(
 }
 
 /// One round trip as the test admin.
-pub async fn send_authed(app: &Router, method: Method, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+pub async fn send_authed(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     send(app, method, path, Some(&test_token()), body).await
 }
 
@@ -198,6 +227,13 @@ pub fn normalize_numbers(value: Value) -> Value {
 
 /// `assert_eq!` on JSON, printing both sides pretty on failure.
 pub fn assert_json_eq(left: &Value, right: &Value) {
-    let pretty = |value: &Value| serde_json::to_string_pretty(value).expect("json should pretty print");
-    assert_eq!(left, right, "left:\n{}\n\nright:\n{}", pretty(left), pretty(right));
+    let pretty =
+        |value: &Value| serde_json::to_string_pretty(value).expect("json should pretty print");
+    assert_eq!(
+        left,
+        right,
+        "left:\n{}\n\nright:\n{}",
+        pretty(left),
+        pretty(right)
+    );
 }

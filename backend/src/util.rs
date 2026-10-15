@@ -13,7 +13,11 @@ pub fn house_today() -> chrono::NaiveDate {
 
 /// Bytes in lowercase hex, `sep` between them (« "" », « ":" » for a MAC, « " " » for a dump).
 pub fn hex(bytes: &[u8], sep: &str) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(sep)
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
 /// 256 random bits, in hex: tokens, ceremony and record ids.
@@ -23,7 +27,13 @@ pub fn random_secret() -> String {
 
 /// What is kept of a secret (an invitation or refresh token): SHA-256 with a domain prefix.
 pub fn hash_secret(secret: &str) -> String {
-    hex(&Sha256::new().chain_update(b"maison/secret/v1\0").chain_update(secret.as_bytes()).finalize(), "")
+    hex(
+        &Sha256::new()
+            .chain_update(b"maison/secret/v1\0")
+            .chain_update(secret.as_bytes())
+            .finalize(),
+        "",
+    )
 }
 
 /// Byte-wise comparison without a data-dependent early exit; a length mismatch only says
@@ -55,7 +65,9 @@ pub fn name(value: &str) -> Result<&str, crate::error::AppError> {
 
 /// A text field as kept: trimmed, and blank means absent.
 pub fn non_blank(value: Option<String>) -> Option<String> {
-    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// The keys of `value` that break the HTTP API's casing, with their path: every key is
@@ -64,10 +76,12 @@ pub fn non_blank(value: Option<String>) -> Option<String> {
 /// (`BLUE`, `WHITE`, `RED`). The tests run every API answer through it.
 pub fn casing_offences(value: &serde_json::Value) -> Vec<String> {
     fn camel(key: &str) -> bool {
-        key.starts_with(|c: char| c.is_ascii_lowercase()) && key.chars().all(|c| c.is_ascii_alphanumeric())
+        key.starts_with(|c: char| c.is_ascii_lowercase())
+            && key.chars().all(|c| c.is_ascii_alphanumeric())
     }
     fn data(key: &str) -> bool {
-        (!key.is_empty() && key.chars().all(|c| c.is_ascii_digit())) || matches!(key, "BLUE" | "WHITE" | "RED")
+        (!key.is_empty() && key.chars().all(|c| c.is_ascii_digit()))
+            || matches!(key, "BLUE" | "WHITE" | "RED")
     }
     fn walk(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
         match value {
@@ -96,7 +110,10 @@ pub fn casing_offences(value: &serde_json::Value) -> Vec<String> {
 /// A fresh directory for a unit test, removed when dropped: keep it alive while it is used.
 #[cfg(test)]
 pub fn test_dir() -> tempfile::TempDir {
-    tempfile::Builder::new().prefix("maison-").tempdir().expect("a temp dir")
+    tempfile::Builder::new()
+        .prefix("maison-")
+        .tempdir()
+        .expect("a temp dir")
 }
 
 #[cfg(test)]
@@ -128,6 +145,14 @@ mod tests {
         let bad = serde_json::json!({ "peak_start": 1, "days": [{ "dateDébut": 1, "Name": 2 }], "ok": { "raw_dps": {} } });
         let mut offences = casing_offences(&bad);
         offences.sort();
-        assert_eq!(offences, [".days[0].Name", ".days[0].dateDébut", ".ok.raw_dps", ".peak_start"]);
+        assert_eq!(
+            offences,
+            [
+                ".days[0].Name",
+                ".days[0].dateDébut",
+                ".ok.raw_dps",
+                ".peak_start"
+            ]
+        );
     }
 }

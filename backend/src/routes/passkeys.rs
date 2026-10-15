@@ -11,27 +11,33 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    Json, Router,
     extract::{ConnectInfo, Path, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, CredentialID, DiscoverableKey, Passkey, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse, Uuid,
+    CreationChallengeResponse, CredentialID, DiscoverableKey, Passkey, PublicKeyCredential,
+    RegisterPublicKeyCredential, RequestChallengeResponse, Uuid,
 };
 
 use crate::{
-    AppState,
     auth::{AdminUser, AuthenticatedUser},
-    error::AppError,
-    passkey::{Ceremony, INVITE_DAYS, PasskeyState, Refusal, Via, client_ip, device_label},
-    people::{Invite, PasskeyInfo, PersonInfo, Removed, Role, StoredInvite, StoredPasskey, People, clean_name, slug},
-    util::{hash_secret, now_ms, random_id, random_secret},
     auth::{AuthUser, REAUTH_MS},
-    routes::{Answer, auth::{end_sessions, open_session}},
+    error::AppError,
+    passkey::{client_ip, device_label, Ceremony, PasskeyState, Refusal, Via, INVITE_DAYS},
+    people::{
+        clean_name, slug, Invite, PasskeyInfo, People, PersonInfo, Removed, Role, StoredInvite,
+        StoredPasskey,
+    },
+    routes::{
+        auth::{end_sessions, open_session},
+        Answer,
+    },
+    util::{hash_secret, now_ms, random_id, random_secret},
+    AppState,
 };
 
 pub fn router() -> Router<AppState> {
@@ -49,7 +55,10 @@ pub fn router() -> Router<AppState> {
 }
 
 fn passkeys(state: &AppState) -> Result<&Arc<PasskeyState>, AppError> {
-    state.passkeys.as_ref().ok_or_else(|| Refusal::PasskeyOff.into())
+    state
+        .passkeys
+        .as_ref()
+        .ok_or_else(|| Refusal::PasskeyOff.into())
 }
 
 // ---------- credentials as stored ----------
@@ -58,7 +67,10 @@ fn passkeys(state: &AppState) -> Result<&Arc<PasskeyState>, AppError> {
 fn credential_text(id: &CredentialID) -> Result<String, AppError> {
     match serde_json::to_value(id)? {
         serde_json::Value::String(s) => Ok(s),
-        _ => Err(AppError::http(StatusCode::INTERNAL_SERVER_ERROR, "credential id")),
+        _ => Err(AppError::http(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "credential id",
+        )),
     }
 }
 
@@ -76,7 +88,9 @@ fn stored(pk: &Passkey) -> Result<(serde_json::Value, bool), AppError> {
 fn optional_name(name: Option<&str>) -> Result<Option<String>, AppError> {
     match name.map(str::trim) {
         None | Some("") => Ok(None),
-        Some(n) => clean_name(n).map(|n| Some(n.to_string())).ok_or_else(|| Refusal::BadName.into()),
+        Some(n) => clean_name(n)
+            .map(|n| Some(n.to_string()))
+            .ok_or_else(|| Refusal::BadName.into()),
     }
 }
 
@@ -122,12 +136,20 @@ pub async fn new_invite(
             used_ms: None,
         })
         .await?;
-    Ok(CreatedInvite { id, url: format!("{}/invite/{token}", public_url.trim_end_matches('/')), expires_ms })
+    Ok(CreatedInvite {
+        id,
+        url: format!("{}/invite/{token}", public_url.trim_end_matches('/')),
+        expires_ms,
+    })
 }
 
 /// A pending invitation by its token.
 async fn invite_by_token(state: &AppState, token: &str) -> Result<StoredInvite, AppError> {
-    state.people.invite_by_hash(&hash_secret(token), now_ms()).await?.ok_or_else(|| Refusal::InviteInvalid.into())
+    state
+        .people
+        .invite_by_hash(&hash_secret(token), now_ms())
+        .await?
+        .ok_or_else(|| Refusal::InviteInvalid.into())
 }
 
 #[derive(Deserialize)]
@@ -143,7 +165,11 @@ struct InviteRequest {
 /// A new person's invitation, or someone's way back in when `person` names them. A name
 /// that is already someone's id is refused: an invitation must never hand over an existing
 /// account by accident (« Léonard » the guest is not Léonard).
-async fn create_invite(State(state): State<AppState>, admin: AdminUser, Json(req): Json<InviteRequest>) -> Result<Json<CreatedInvite>, AppError> {
+async fn create_invite(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Json(req): Json<InviteRequest>,
+) -> Result<Json<CreatedInvite>, AppError> {
     let p = passkeys(&state)?;
     let (person, recovery) = match req.person {
         Some(person) => (person, true),
@@ -151,13 +177,22 @@ async fn create_invite(State(state): State<AppState>, admin: AdminUser, Json(req
             let person = slug(&req.name);
             if let Some(existing) = state.people.person(&person).await? {
                 // who has it: the admin may mean them (their access back) or someone else
-                let who = serde_json::json!({ "person": { "id": existing.id, "name": existing.name } });
+                let who =
+                    serde_json::json!({ "person": { "id": existing.id, "name": existing.name } });
                 return Err(AppError::from(Refusal::PersonExists).with_detail(who));
             }
             (person, false)
         }
     };
-    let created = new_invite(&state.people, &p.public_url, &person, &req.name, req.admin, Some(&admin.0.id)).await?;
+    let created = new_invite(
+        &state.people,
+        &p.public_url,
+        &person,
+        &req.name,
+        req.admin,
+        Some(&admin.0.id),
+    )
+    .await?;
     if recovery {
         tracing::warn!(by = %admin.0.id, %person, "invitation to recover an account");
     } else {
@@ -167,13 +202,20 @@ async fn create_invite(State(state): State<AppState>, admin: AdminUser, Json(req
 }
 
 /// Everyone, for the admins.
-async fn list_people(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<Vec<PersonInfo>>, AppError> {
+async fn list_people(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<Vec<PersonInfo>>, AppError> {
     Ok(Json(state.people.people().await?))
 }
 
 /// Someone goes: their passkeys, invitations and sessions with them. Never oneself (the
 /// last admin cannot lock the house).
-async fn remove_person(State(state): State<AppState>, admin: AdminUser, Path(id): Path<String>) -> Result<StatusCode, AppError> {
+async fn remove_person(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
     if id == admin.0.id {
         return Err(Refusal::Forbidden.into());
     }
@@ -185,14 +227,25 @@ async fn remove_person(State(state): State<AppState>, admin: AdminUser, Path(id)
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn list_invites(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<Vec<Invite>>, AppError> {
+async fn list_invites(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<Vec<Invite>>, AppError> {
     passkeys(&state)?;
     Ok(Json(state.people.invites(now_ms()).await?))
 }
 
-async fn delete_invite(State(state): State<AppState>, _admin: AdminUser, Path(id): Path<String>) -> Result<StatusCode, AppError> {
+async fn delete_invite(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
     passkeys(&state)?;
-    if state.people.delete_invite(&id).await? { Ok(StatusCode::NO_CONTENT) } else { Err(Refusal::NotFound.into()) }
+    if state.people.delete_invite(&id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(Refusal::NotFound.into())
+    }
 }
 
 #[derive(Serialize)]
@@ -208,7 +261,9 @@ async fn greet(
     Path(token): Path<String>,
 ) -> Result<Json<Greeting>, AppError> {
     let p = passkeys(&state)?;
-    let invite = p.guarded(client_ip(addr, &headers), invite_by_token(&state, &token)).await?;
+    let invite = p
+        .guarded(client_ip(addr, &headers), invite_by_token(&state, &token))
+        .await?;
     Ok(Json(Greeting { name: invite.name }))
 }
 
@@ -247,7 +302,12 @@ async fn register_start(
             let existing = state.people.person(&invite.person).await?;
             let handle = state.people.user_handle(&invite.person, &fresh).await?;
             let display = existing.map_or_else(|| invite.name.clone(), |x| x.name);
-            (invite.person, display, handle, Via::Invite { id: invite.id })
+            (
+                invite.person,
+                display,
+                handle,
+                Via::Invite { id: invite.id },
+            )
         }
         None => {
             let user = user.ok_or(Refusal::NotSignedIn)?.0;
@@ -255,24 +315,48 @@ async fn register_start(
             if now_ms() - user.auth_ms > REAUTH_MS {
                 return Err(Refusal::ReauthNeeded.into());
             }
-            let me = state.people.person(&user.id).await?.ok_or(Refusal::NotSignedIn)?;
+            let me = state
+                .people
+                .person(&user.id)
+                .await?
+                .ok_or(Refusal::NotSignedIn)?;
             (me.id, me.name, me.user_handle, Via::Session)
         }
     };
-    let handle = Uuid::parse_str(&handle).map_err(|_| AppError::http(StatusCode::INTERNAL_SERVER_ERROR, "user handle"))?;
-    let exclude: Vec<CredentialID> =
-        state.people.credential_ids_of(&person).await?.iter().filter_map(|c| credential_id(c)).collect();
-    let (mut options, reg) = p.webauthn.start_passkey_registration(handle, &person, &display, Some(exclude)).map_err(|e| {
-        tracing::error!(error = %e, "passkey registration could not start");
-        AppError::http(StatusCode::INTERNAL_SERVER_ERROR, "passkey registration could not start")
-    })?;
+    let handle = Uuid::parse_str(&handle)
+        .map_err(|_| AppError::http(StatusCode::INTERNAL_SERVER_ERROR, "user handle"))?;
+    let exclude: Vec<CredentialID> = state
+        .people
+        .credential_ids_of(&person)
+        .await?
+        .iter()
+        .filter_map(|c| credential_id(c))
+        .collect();
+    let (mut options, reg) = p
+        .webauthn
+        .start_passkey_registration(handle, &person, &display, Some(exclude))
+        .map_err(|e| {
+            tracing::error!(error = %e, "passkey registration could not start");
+            AppError::http(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "passkey registration could not start",
+            )
+        })?;
     // a discoverable credential, so that sign-in needs no name (webauthn-rs asks for
     // "discouraged"; its registration check does not depend on it)
     if let Some(sel) = options.public_key.authenticator_selection.as_mut() {
         sel.resident_key = Some(webauthn_rs_proto::ResidentKeyRequirement::Required);
         sel.require_resident_key = true;
     }
-    let ceremony = p.ceremonies.put(ip, Ceremony::Register { state: reg, person, handle, via });
+    let ceremony = p.ceremonies.put(
+        ip,
+        Ceremony::Register {
+            state: reg,
+            person,
+            handle,
+            via,
+        },
+    );
     Ok(Json(CreationOptions { ceremony, options }))
 }
 
@@ -300,7 +384,11 @@ async fn register_finish(
     Json(req): Json<RegisterFinish>,
 ) -> Result<Response, AppError> {
     let p = passkeys(&state)?;
-    p.guarded(client_ip(addr, &headers), finish_registration(&state, p, &headers, user, req)).await
+    p.guarded(
+        client_ip(addr, &headers),
+        finish_registration(&state, p, &headers, user, req),
+    )
+    .await
 }
 
 async fn finish_registration(
@@ -310,18 +398,33 @@ async fn finish_registration(
     user: Option<AuthenticatedUser>,
     req: RegisterFinish,
 ) -> Result<Response, AppError> {
-    let Some(Ceremony::Register { state: reg, person, handle, via }) = p.ceremonies.take(&req.ceremony) else {
+    let Some(Ceremony::Register {
+        state: reg,
+        person,
+        handle,
+        via,
+    }) = p.ceremonies.take(&req.ceremony)
+    else {
         return Err(Refusal::CeremonyExpired.into());
     };
     if matches!(via, Via::Session) && user.as_ref().is_none_or(|u| u.0.id != person) {
         return Err(Refusal::Forbidden.into());
     }
-    let pk = p.webauthn.finish_passkey_registration(&req.credential, &reg).map_err(|e| {
-        tracing::warn!(error = %e, %person, "passkey registration refused");
-        AppError::from(Refusal::PasskeyRejected)
-    })?;
+    let pk = p
+        .webauthn
+        .finish_passkey_registration(&req.credential, &reg)
+        .map_err(|e| {
+            tracing::warn!(error = %e, %person, "passkey registration refused");
+            AppError::from(Refusal::PasskeyRejected)
+        })?;
     let name = optional_name(req.name.as_deref())?.unwrap_or_else(|| {
-        device_label(headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("")).to_string()
+        device_label(
+            headers
+                .get(header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(""),
+        )
+        .to_string()
     });
     let (json, backed_up) = stored(&pk)?;
     let key = StoredPasskey {
@@ -338,24 +441,49 @@ async fn finish_registration(
     let info = |person: &str| {
         let person = person.to_string();
         async move {
-            let found = state.people.passkeys_of(&person).await?.into_iter().find(|k| k.id == key_id);
+            let found = state
+                .people
+                .passkeys_of(&person)
+                .await?
+                .into_iter()
+                .find(|k| k.id == key_id);
             found.ok_or_else(|| AppError::from(Refusal::NotFound))
         }
     };
     match via {
         Via::Invite { id } => {
-            let redeemed = state.people.redeem_invite(&id, &handle.to_string(), key, now_ms()).await?;
-            let person = redeemed.ok_or(Refusal::InviteInvalid)?.map_err(|_| Refusal::PasskeyExists)?;
+            let redeemed = state
+                .people
+                .redeem_invite(&id, &handle.to_string(), key, now_ms())
+                .await?;
+            let person = redeemed
+                .ok_or(Refusal::InviteInvalid)?
+                .map_err(|_| Refusal::PasskeyExists)?;
             tracing::info!(person = %person.id, "invitation redeemed: passkey registered");
             let (cookies, Json(opened)) = open_session(state, &person, now_ms(), None).await?;
             let user = opened.body.user;
-            Ok((cookies, Answer::ok(Registered { passkey: info(&person.id).await?, user })).into_response())
+            Ok((
+                cookies,
+                Answer::ok(Registered {
+                    passkey: info(&person.id).await?,
+                    user,
+                }),
+            )
+                .into_response())
         }
         Via::Session => {
-            state.people.add_passkey(key).await?.map_err(|_| Refusal::PasskeyExists)?;
+            state
+                .people
+                .add_passkey(key)
+                .await?
+                .map_err(|_| Refusal::PasskeyExists)?;
             tracing::warn!(%person, "passkey added");
             let user = user.ok_or(Refusal::NotSignedIn)?.0;
-            Ok(Answer::ok(Registered { passkey: info(&person).await?, user }).into_response())
+            Ok(Answer::ok(Registered {
+                passkey: info(&person).await?,
+                user,
+            })
+            .into_response())
         }
     }
 }
@@ -379,10 +507,16 @@ async fn login_start(
     let p = passkeys(&state)?;
     let ip = client_ip(addr, &headers);
     p.start_allowed(ip)?;
-    let (mut options, auth) = p.webauthn.start_discoverable_authentication().map_err(|e| {
-        tracing::error!(error = %e, "passkey sign-in could not start");
-        AppError::http(StatusCode::INTERNAL_SERVER_ERROR, "passkey sign-in could not start")
-    })?;
+    let (mut options, auth) = p
+        .webauthn
+        .start_discoverable_authentication()
+        .map_err(|e| {
+            tracing::error!(error = %e, "passkey sign-in could not start");
+            AppError::http(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "passkey sign-in could not start",
+            )
+        })?;
     options.mediation = None;
     let ceremony = p.ceremonies.put(ip, Ceremony::Login { state: auth });
     Ok(Json(RequestOptions { ceremony, options }))
@@ -402,39 +536,62 @@ async fn login_finish(
     Json(req): Json<LoginFinish>,
 ) -> Result<Response, AppError> {
     let p = passkeys(&state)?;
-    p.guarded(client_ip(addr, &headers), finish_login(&state, p, req)).await
+    p.guarded(client_ip(addr, &headers), finish_login(&state, p, req))
+        .await
 }
 
-async fn finish_login(state: &AppState, p: &PasskeyState, req: LoginFinish) -> Result<Response, AppError> {
+async fn finish_login(
+    state: &AppState,
+    p: &PasskeyState,
+    req: LoginFinish,
+) -> Result<Response, AppError> {
     let Some(Ceremony::Login { state: auth }) = p.ceremonies.take(&req.ceremony) else {
         return Err(Refusal::CeremonyExpired.into());
     };
-    let (handle, raw_id) =
-        p.webauthn.identify_discoverable_authentication(&req.credential).map_err(|_| Refusal::PasskeyRejected)?;
+    let (handle, raw_id) = p
+        .webauthn
+        .identify_discoverable_authentication(&req.credential)
+        .map_err(|_| Refusal::PasskeyRejected)?;
     let cred_id = credential_text(&CredentialID::from(raw_id.to_vec()))?;
     // unknown here: the app may tell the device to forget it (signalUnknownCredential)
-    let (row, person) = state.people.passkey_by_credential(&cred_id).await?.ok_or(Refusal::UnknownPasskey)?;
+    let (row, person) = state
+        .people
+        .passkey_by_credential(&cred_id)
+        .await?
+        .ok_or(Refusal::UnknownPasskey)?;
     if person.user_handle != handle.to_string() {
         tracing::warn!(person = %person.id, "passkey sign-in refused: not this person's");
         return Err(Refusal::PasskeyRejected.into());
     }
     let mut pk: Passkey = serde_json::from_value(row.passkey)?;
-    let result = p.webauthn.finish_discoverable_authentication(&req.credential, auth, &[DiscoverableKey::from(&pk)]).map_err(|e| {
-        tracing::warn!(error = %e, person = %person.id, "passkey sign-in refused");
-        AppError::from(Refusal::PasskeyRejected)
-    })?;
+    let result = p
+        .webauthn
+        .finish_discoverable_authentication(&req.credential, auth, &[DiscoverableKey::from(&pk)])
+        .map_err(|e| {
+            tracing::warn!(error = %e, person = %person.id, "passkey sign-in refused");
+            AppError::from(Refusal::PasskeyRejected)
+        })?;
     if !result.user_verified() {
         return Err(Refusal::PasskeyRejected.into());
     }
-    let update = if pk.update_credential(&result) == Some(true) { Some(stored(&pk)?) } else { None };
+    let update = if pk.update_credential(&result) == Some(true) {
+        Some(stored(&pk)?)
+    } else {
+        None
+    };
     state.people.passkey_used(&row.id, update, now_ms()).await?;
     tracing::info!(person = %person.id, "signed in with a passkey");
-    Ok(open_session(state, &person, now_ms(), None).await?.into_response())
+    Ok(open_session(state, &person, now_ms(), None)
+        .await?
+        .into_response())
 }
 
 // ---------- my passkeys ----------
 
-async fn list(State(state): State<AppState>, user: AuthenticatedUser) -> Result<Json<Vec<PasskeyInfo>>, AppError> {
+async fn list(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<Vec<PasskeyInfo>>, AppError> {
     passkeys(&state)?;
     Ok(Json(state.people.passkeys_of(&user.0.id).await?))
 }
@@ -452,17 +609,30 @@ async fn rename(
 ) -> Result<Json<PasskeyInfo>, AppError> {
     passkeys(&state)?;
     let name = clean_name(&req.name).ok_or(Refusal::BadName)?;
-    state.people.rename_passkey(&user.0.id, &id, name).await?.map(Json).ok_or_else(|| Refusal::NotFound.into())
+    state
+        .people
+        .rename_passkey(&user.0.id, &id, name)
+        .await?
+        .map(Json)
+        .ok_or_else(|| Refusal::NotFound.into())
 }
 
 /// Never the last one. Every session it may have opened ends; this browser gets a fresh one.
-async fn remove(State(state): State<AppState>, user: AuthenticatedUser, Path(id): Path<String>) -> Result<Response, AppError> {
+async fn remove(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
     passkeys(&state)?;
     let user = user.0;
     match state.people.delete_passkey(&user.id, &id).await? {
         Removed::Yes => {
             end_sessions(&state, &user.id).await?;
-            let person = state.people.person(&user.id).await?.ok_or(Refusal::NotSignedIn)?;
+            let person = state
+                .people
+                .person(&user.id)
+                .await?
+                .ok_or(Refusal::NotSignedIn)?;
             let (cookies, _) = open_session(&state, &person, user.auth_ms, None).await?;
             tracing::warn!(person = %user.id, "passkey removed");
             Ok((StatusCode::NO_CONTENT, cookies).into_response())

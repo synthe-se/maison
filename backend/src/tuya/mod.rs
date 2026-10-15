@@ -15,14 +15,14 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicU64, AtomicUsize},
+        Arc,
     },
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::sync::{RwLock, oneshot, watch};
+use tokio::sync::{oneshot, watch, RwLock};
 
 use crate::{
     error::AppError,
@@ -30,10 +30,10 @@ use crate::{
     routes::DeviceRef,
     store::{self, Corrupt},
 };
-use cache::{DeviceCache, cacheable_dps_keys};
-pub use parse::parse_hhmm;
+use cache::{cacheable_dps_keys, DeviceCache};
 use parse::parse_device_data;
-use worker::{COMMAND_REPLY_TIMEOUT, Link, STATUS_TIMEOUT, WorkerCommand, WorkerHandle};
+pub use parse::parse_hhmm;
+use worker::{Link, WorkerCommand, WorkerHandle, COMMAND_REPLY_TIMEOUT, STATUS_TIMEOUT};
 
 /// The data points (DPS) of each device type, said once: the status parsers read them and
 /// the routes write them.
@@ -96,7 +96,6 @@ pub mod dps {
         pub const MAC_ADDRESS: &str = "130";
     }
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TuyaDeviceConfig {
@@ -191,7 +190,10 @@ struct ManagedTuyaDevice {
 
 impl ManagedTuyaDevice {
     fn reference(&self) -> DeviceRef {
-        DeviceRef { id: self.config.id.clone(), name: self.config.name.clone() }
+        DeviceRef {
+            id: self.config.id.clone(),
+            name: self.config.name.clone(),
+        }
     }
 }
 
@@ -214,7 +216,14 @@ impl TuyaManager {
             .map(|config| {
                 let device_type = TuyaDeviceType::of(&config);
                 let link = Arc::new(watch::Sender::new(Link::default()));
-                (config.id.clone(), ManagedTuyaDevice { config, device_type, link })
+                (
+                    config.id.clone(),
+                    ManagedTuyaDevice {
+                        config,
+                        device_type,
+                        link,
+                    },
+                )
             })
             .collect::<HashMap<_, _>>();
 
@@ -259,7 +268,9 @@ impl TuyaManager {
                     connected: link.connected,
                     connecting: link.connecting,
                     reconnect_attempts: link.reconnect_attempts,
-                    last_data: TuyaStatusPayload { dps: state.last_data.clone() },
+                    last_data: TuyaStatusPayload {
+                        dps: state.last_data.clone(),
+                    },
                     parsed_data: state.parsed_data.clone(),
                 })
             })
@@ -267,7 +278,10 @@ impl TuyaManager {
     }
 
     /// A device's live data points (the cached ones filling the gaps) and their reading.
-    pub async fn get_status(&self, device_id: &str) -> Result<(DeviceRef, Map<String, Value>, Value), AppError> {
+    pub async fn get_status(
+        &self,
+        device_id: &str,
+    ) -> Result<(DeviceRef, Map<String, Value>, Value), AppError> {
         let device = self.device(device_id)?;
         let dps = self.fetch_device_dps(device).await?;
         let parsed = parse_device_data(device.device_type, &dps);
@@ -290,7 +304,8 @@ impl TuyaManager {
         dps: &str,
         value: Value,
     ) -> Result<DeviceRef, AppError> {
-        self.send_typed_commands(device_id, expected, vec![(dps.to_string(), value)]).await
+        self.send_typed_commands(device_id, expected, vec![(dps.to_string(), value)])
+            .await
     }
 
     pub fn get_device_ref(&self, device_id: &str) -> Result<DeviceRef, AppError> {
@@ -315,18 +330,30 @@ impl TuyaManager {
     }
 
     /// The feeder's meal plan as it keeps it (base64), if it said it yet.
-    pub async fn feeder_meal_plan(&self, device_id: &str) -> Result<(DeviceRef, Option<String>), AppError> {
+    pub async fn feeder_meal_plan(
+        &self,
+        device_id: &str,
+    ) -> Result<(DeviceRef, Option<String>), AppError> {
         let device = self.typed_device(device_id, TuyaDeviceType::Feeder)?;
         let dps = self.fetch_device_dps(device).await?;
-        let plan = dps.get(dps::feeder::MEAL_PLAN).and_then(Value::as_str).map(ToOwned::to_owned);
+        let plan = dps
+            .get(dps::feeder::MEAL_PLAN)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
         Ok((device.reference(), plan))
     }
 
     fn device(&self, device_id: &str) -> Result<&ManagedTuyaDevice, AppError> {
-        self.devices.get(device_id).ok_or_else(|| AppError::not_found("Device not found"))
+        self.devices
+            .get(device_id)
+            .ok_or_else(|| AppError::not_found("Device not found"))
     }
 
-    fn typed_device(&self, device_id: &str, expected: TuyaDeviceType) -> Result<&ManagedTuyaDevice, AppError> {
+    fn typed_device(
+        &self,
+        device_id: &str,
+        expected: TuyaDeviceType,
+    ) -> Result<&ManagedTuyaDevice, AppError> {
         let device = self.device(device_id)?;
         if device.device_type != expected {
             return Err(AppError::bad_request(expected.mismatch()));
@@ -347,7 +374,11 @@ impl TuyaManager {
                 return Err(AppError::not_found("Device not found"));
             };
             let link = *device.link.borrow();
-            if state.worker.as_ref().is_some_and(|handle| link.worker != Some(handle.id)) {
+            if state
+                .worker
+                .as_ref()
+                .is_some_and(|handle| link.worker != Some(handle.id))
+            {
                 state.worker = None;
             }
             match &state.worker {
@@ -380,13 +411,19 @@ impl TuyaManager {
         }
 
         let mut link = device.link.subscribe();
-        let connected = tokio::time::timeout(STATUS_TIMEOUT, link.wait_for(|link| link.connected || !link.connecting))
-            .await
-            .is_ok_and(|seen| seen.is_ok_and(|link| link.connected));
+        let connected = tokio::time::timeout(
+            STATUS_TIMEOUT,
+            link.wait_for(|link| link.connected || !link.connecting),
+        )
+        .await
+        .is_ok_and(|seen| seen.is_ok_and(|link| link.connected));
         if connected {
             Ok(())
         } else {
-            Err(AppError::service_unavailable(format!("Failed to connect to {}", device.config.name)))
+            Err(AppError::service_unavailable(format!(
+                "Failed to connect to {}",
+                device.config.name
+            )))
         }
     }
 
@@ -396,8 +433,15 @@ impl TuyaManager {
         let device = self.device(device_id)?;
         let worker = {
             let mut runtime = self.runtime.write().await;
-            device.link.send_modify(|link| *link = Link { reconnect_attempts: link.reconnect_attempts, ..Link::default() });
-            runtime.get_mut(device_id).and_then(|state| state.worker.take())
+            device.link.send_modify(|link| {
+                *link = Link {
+                    reconnect_attempts: link.reconnect_attempts,
+                    ..Link::default()
+                }
+            });
+            runtime
+                .get_mut(device_id)
+                .and_then(|state| state.worker.take())
         };
         if let Some(WorkerHandle { exited, stop, .. }) = worker {
             drop(stop);
@@ -419,27 +463,47 @@ impl TuyaManager {
 
     pub async fn disconnect_all_devices(&self) {
         // only an unknown id fails, and these are the known ones
-        let disconnects = self.devices.keys().map(|device_id| self.disconnect_device(device_id));
+        let disconnects = self
+            .devices
+            .keys()
+            .map(|device_id| self.disconnect_device(device_id));
         futures::future::join_all(disconnects).await;
     }
 
-    async fn fetch_device_dps(&self, device: &ManagedTuyaDevice) -> Result<Map<String, Value>, AppError> {
+    async fn fetch_device_dps(
+        &self,
+        device: &ManagedTuyaDevice,
+    ) -> Result<Map<String, Value>, AppError> {
         let config = &device.config;
         self.connect_device(&config.id).await?;
 
         let (reply, answer) = oneshot::channel();
-        self.send_to_worker(device, WorkerCommand::FetchStatus { reply }).await?;
+        self.send_to_worker(device, WorkerCommand::FetchStatus { reply })
+            .await?;
         let mut dps = await_reply(answer, &config.name, "Status request").await?;
 
         self.record_dps(&config.id, device.device_type, &dps).await;
-        self.store_cacheable_dps(&config.id, device.device_type, &dps).await;
-        self.merge_cached_dps(&mut dps, device.device_type, &config.id).await;
+        self.store_cacheable_dps(&config.id, device.device_type, &dps)
+            .await;
+        self.merge_cached_dps(&mut dps, device.device_type, &config.id)
+            .await;
         Ok(dps)
     }
 
-    async fn send_device_commands(&self, device: &ManagedTuyaDevice, updates: &[(String, Value)]) -> Result<(), AppError> {
+    async fn send_device_commands(
+        &self,
+        device: &ManagedTuyaDevice,
+        updates: &[(String, Value)],
+    ) -> Result<(), AppError> {
         let (reply, answer) = oneshot::channel();
-        self.send_to_worker(device, WorkerCommand::SetValues { updates: updates.to_vec(), reply }).await?;
+        self.send_to_worker(
+            device,
+            WorkerCommand::SetValues {
+                updates: updates.to_vec(),
+                reply,
+            },
+        )
+        .await?;
         await_reply(answer, &device.config.name, "Command").await?;
 
         let mut runtime = self.runtime.write().await;
@@ -454,7 +518,11 @@ impl TuyaManager {
 
     /// Hands `command` to the device's worker; a device without a connected session fails
     /// at once (a worker waiting to retry reads no command).
-    async fn send_to_worker(&self, device: &ManagedTuyaDevice, command: WorkerCommand) -> Result<(), AppError> {
+    async fn send_to_worker(
+        &self,
+        device: &ManagedTuyaDevice,
+        command: WorkerCommand,
+    ) -> Result<(), AppError> {
         let name = &device.config.name;
         let sender = {
             let runtime = self.runtime.read().await;
@@ -465,8 +533,12 @@ impl TuyaManager {
                 .filter(|worker| link.connected && link.worker == Some(worker.id))
                 .map(|worker| worker.commands.clone())
         };
-        let sender = sender.ok_or_else(|| AppError::service_unavailable(format!("{name} is not connected")))?;
-        sender.send(command).await.map_err(|_| AppError::service_unavailable(format!("{name} worker is unavailable")))
+        let sender = sender
+            .ok_or_else(|| AppError::service_unavailable(format!("{name} is not connected")))?;
+        sender
+            .send(command)
+            .await
+            .map_err(|_| AppError::service_unavailable(format!("{name} worker is unavailable")))
     }
 }
 
@@ -511,7 +583,8 @@ pub(crate) mod tests {
         if let Some(cache) = cache {
             std::fs::write(root.join("device-cache.json"), cache).unwrap();
         }
-        let manager = TuyaManager::new(&root.join("devices.json"), &root.join("device-cache.json")).unwrap();
+        let manager =
+            TuyaManager::new(&root.join("devices.json"), &root.join("device-cache.json")).unwrap();
         (manager, dir)
     }
 
@@ -525,10 +598,15 @@ pub(crate) mod tests {
 
     #[test]
     fn device_type_comes_from_the_product_name_or_category() {
-        let parse = |name: &str, category: &str| TuyaDeviceType::of(&serde_json::from_value(config("x", name, category)).unwrap());
+        let parse = |name: &str, category: &str| {
+            TuyaDeviceType::of(&serde_json::from_value(config("x", name, category)).unwrap())
+        };
         assert_eq!(parse("Smart Pet Feeder", ""), TuyaDeviceType::Feeder);
         assert_eq!(parse("box", "cwwsq"), TuyaDeviceType::Feeder);
-        assert_eq!(parse("Self-cleaning LITTER box", ""), TuyaDeviceType::LitterBox);
+        assert_eq!(
+            parse("Self-cleaning LITTER box", ""),
+            TuyaDeviceType::LitterBox
+        );
         assert_eq!(parse("box", "msp"), TuyaDeviceType::LitterBox);
         assert_eq!(parse("Pet Fountain", ""), TuyaDeviceType::Fountain);
         assert_eq!(parse("box", "cwysj"), TuyaDeviceType::Fountain);
@@ -545,7 +623,10 @@ pub(crate) mod tests {
             (TuyaDeviceType::Unknown, "unknown"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
-            assert_eq!(serde_json::from_value::<TuyaDeviceType>(json!(name)).unwrap(), kind);
+            assert_eq!(
+                serde_json::from_value::<TuyaDeviceType>(json!(name)).unwrap(),
+                kind
+            );
         }
     }
 
@@ -577,7 +658,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn disconnect_all_then_connect_all_keeps_one_worker_per_device() {
-        let (manager, _dir) = make(json!([config("a", "Feeder", ""), config("b", "Pet Fountain", "")]), None);
+        let (manager, _dir) = make(
+            json!([config("a", "Feeder", ""), config("b", "Pet Fountain", "")]),
+            None,
+        );
         manager.connect_all_devices().await;
         assert_eq!(live(&manager), 2);
         manager.disconnect_all_devices().await;
@@ -590,8 +674,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn concurrent_connects_claim_the_device_once() {
         let (manager, _dir) = make(json!([config("f", "Feeder", "")]), None);
-        let (first, second, third) =
-            tokio::join!(manager.connect_device("f"), manager.connect_device("f"), manager.connect_device("f"));
+        let (first, second, third) = tokio::join!(
+            manager.connect_device("f"),
+            manager.connect_device("f"),
+            manager.connect_device("f")
+        );
         assert!(first.is_err() && second.is_err() && third.is_err());
         assert_eq!(live(&manager), 1);
     }
@@ -634,12 +721,18 @@ pub(crate) mod tests {
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
         let cleared = link(&manager, "f");
-        assert_eq!((cleared.worker, cleared.connected, cleared.connecting), (None, false, false));
+        assert_eq!(
+            (cleared.worker, cleared.connected, cleared.connecting),
+            (None, false, false)
+        );
         assert_eq!(live(&manager), 0);
 
         supervisor.await.unwrap();
         let fresh = link(&manager, "f").worker;
-        assert!(fresh.is_some_and(|id| id != dead), "a new worker owns the device: {fresh:?}");
+        assert!(
+            fresh.is_some_and(|id| id != dead),
+            "a new worker owns the device: {fresh:?}"
+        );
         assert_eq!(live(&manager), 1);
     }
 
@@ -651,8 +744,14 @@ pub(crate) mod tests {
         let (dead, task) = panicking_worker(&manager).await;
         assert!(task.await.unwrap_err().is_panic());
         let started = tokio::time::Instant::now();
-        assert!(manager.connect_device("f").await.is_err(), "the test device has no address");
-        assert!(started.elapsed() < STATUS_TIMEOUT, "it did not wait on the dead worker");
+        assert!(
+            manager.connect_device("f").await.is_err(),
+            "the test device has no address"
+        );
+        assert!(
+            started.elapsed() < STATUS_TIMEOUT,
+            "it did not wait on the dead worker"
+        );
         assert!(link(&manager, "f").worker.is_some_and(|id| id != dead));
         assert_eq!(live(&manager), 1);
     }
@@ -671,14 +770,25 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn commands_to_an_offline_device_fail_at_once() {
-        let (manager, _dir) = make(json!([config("f", "Feeder", ""), config("l", "Litter", "")]), None);
+        let (manager, _dir) = make(
+            json!([config("f", "Feeder", ""), config("l", "Litter", "")]),
+            None,
+        );
         let error = manager
-            .send_typed_command("f", TuyaDeviceType::Feeder, dps::feeder::MANUAL_FEED, json!(1))
+            .send_typed_command(
+                "f",
+                TuyaDeviceType::Feeder,
+                dps::feeder::MANUAL_FEED,
+                json!(1),
+            )
             .await
             .unwrap_err();
         assert!(error.to_string().contains("is not connected"));
 
-        let error = manager.get_typed_status("l", TuyaDeviceType::Feeder).await.unwrap_err();
+        let error = manager
+            .get_typed_status("l", TuyaDeviceType::Feeder)
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Device is not a feeder");
         let error = manager.get_status("nope").await.unwrap_err();
         assert_eq!(error.to_string(), "Device not found");

@@ -25,7 +25,7 @@ mod touchlink;
 mod zcl;
 
 pub use config::{Adapter, ZigbeeConfig};
-pub use zcl::{MIRED_COOL, MIRED_WARM, ZigbeeEffect};
+pub use zcl::{ZigbeeEffect, MIRED_COOL, MIRED_WARM};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -35,7 +35,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{Mutex, RwLock, watch},
+    sync::{watch, Mutex, RwLock},
     task::JoinHandle,
     time::Duration,
 };
@@ -129,7 +129,8 @@ impl ZigbeeLampRuntime {
     /// A lamp the driver found: named after its address until renamed.
     fn discovered(device: &ZigbeeDevice) -> Self {
         let mut info = device.info.clone();
-        info.manufacturer.get_or_insert_with(|| "Native EZSP".to_string());
+        info.manufacturer
+            .get_or_insert_with(|| "Native EZSP".to_string());
         let stored = StoredZigbeeLamp {
             id: device.id.clone(),
             name: device.info.eui64.clone(),
@@ -200,7 +201,10 @@ impl From<&ZigbeeLampRuntime> for ZigbeeLampView {
             friendly_name: stored.friendly_name.clone(),
             interview_completed: lamp.interview_completed,
             model: info.model.clone(),
-            manufacturer: info.manufacturer.clone().unwrap_or_else(|| "Unknown".to_string()),
+            manufacturer: info
+                .manufacturer
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string()),
             connected: lamp.connected,
             reachable: lamp.reachable,
             supports_brightness: info.supports_brightness,
@@ -252,7 +256,10 @@ impl ZigbeeManager {
         config: &Config,
         driver: impl FnOnce(Vec<(u16, ZigbeeDeviceInfo)>) -> Driver,
     ) -> Result<Self, AppError> {
-        let store: LampStore<StoredZigbeeLamp> = LampStore::new(&config.zigbee_lamps_path, &config.zigbee_lamps_blacklist_path);
+        let store: LampStore<StoredZigbeeLamp> = LampStore::new(
+            &config.zigbee_lamps_path,
+            &config.zigbee_lamps_blacklist_path,
+        );
         let blacklisted_addresses = store.load_blacklist()?;
         let lamps: HashMap<String, ZigbeeLampRuntime> = store
             .load_lamps()?
@@ -271,7 +278,10 @@ impl ZigbeeManager {
         if !unseedable.is_empty() {
             warn!(addresses = ?unseedable, "zigbee lamps without a node_id cannot be driven natively; re-pair them (or remove them from zigbee-lamps.json)");
         }
-        let known = lamps.values().filter_map(|lamp| Some((lamp.stored.node_id?, lamp.stored.info.clone()))).collect();
+        let known = lamps
+            .values()
+            .filter_map(|lamp| Some((lamp.stored.node_id?, lamp.stored.info.clone())))
+            .collect();
         let driver = driver(known);
         let devices = Mutex::new(driver.subscribe());
 
@@ -297,7 +307,11 @@ impl ZigbeeManager {
     pub async fn listing(&self) -> (Vec<ZigbeeLampView>, LampStats) {
         self.sync_logged("", "listing").await;
         let lamps = self.inner.lamps.read().await;
-        let mut views = lamps.values().filter(|lamp| lamp.is_visible()).map(ZigbeeLampView::from).collect::<Vec<_>>();
+        let mut views = lamps
+            .values()
+            .filter(|lamp| lamp.is_visible())
+            .map(ZigbeeLampView::from)
+            .collect::<Vec<_>>();
         views.sort_by(|left, right| left.name.cmp(&right.name));
         let stats = self.stats_of(&lamps).await;
         (views, stats)
@@ -305,7 +319,12 @@ impl ZigbeeManager {
 
     pub async fn get_lamp(&self, lamp_id: &str) -> Option<ZigbeeLampView> {
         self.sync_logged(lamp_id, "loading a lamp").await;
-        self.inner.lamps.read().await.get(lamp_id).map(ZigbeeLampView::from)
+        self.inner
+            .lamps
+            .read()
+            .await
+            .get(lamp_id)
+            .map(ZigbeeLampView::from)
     }
 
     pub async fn stats(&self) -> LampStats {
@@ -339,7 +358,10 @@ impl ZigbeeManager {
 
     pub async fn start_pairing(&self) -> Result<ZigbeePairingStatus, AppError> {
         let seconds = self.inner.permit_join_seconds;
-        self.inner.driver.send(DriverCommand::PermitJoin { seconds }).await?;
+        self.inner
+            .driver
+            .send(DriverCommand::PermitJoin { seconds })
+            .await?;
         let mut pairing = self.inner.pairing.write().await;
         pairing.active = true;
         pairing.deadline = Some(Instant::now() + Duration::from_secs(u64::from(seconds)));
@@ -354,7 +376,10 @@ impl ZigbeeManager {
     }
 
     pub async fn stop_pairing(&self) -> Result<ZigbeePairingStatus, AppError> {
-        self.inner.driver.send(DriverCommand::PermitJoin { seconds: 0 }).await?;
+        self.inner
+            .driver
+            .send(DriverCommand::PermitJoin { seconds: 0 })
+            .await?;
         let mut pairing = self.inner.pairing.write().await;
         pairing.active = false;
         pairing.deadline = None;
@@ -373,30 +398,78 @@ impl ZigbeeManager {
     }
 
     pub async fn set_power(&self, lamp_id: &str, enabled: bool) -> Result<LampState, AppError> {
-        self.apply_command(lamp_id, DriverCommand::SetPower { lamp_id: lamp_id.to_string(), enabled }).await
+        self.apply_command(
+            lamp_id,
+            DriverCommand::SetPower {
+                lamp_id: lamp_id.to_string(),
+                enabled,
+            },
+        )
+        .await
     }
 
-    pub async fn set_brightness(&self, lamp_id: &str, brightness: u8) -> Result<LampState, AppError> {
-        self.apply_command(lamp_id, DriverCommand::SetBrightness { lamp_id: lamp_id.to_string(), brightness }).await
+    pub async fn set_brightness(
+        &self,
+        lamp_id: &str,
+        brightness: u8,
+    ) -> Result<LampState, AppError> {
+        self.apply_command(
+            lamp_id,
+            DriverCommand::SetBrightness {
+                lamp_id: lamp_id.to_string(),
+                brightness,
+            },
+        )
+        .await
     }
 
-    pub async fn set_temperature(&self, lamp_id: &str, temperature: u8) -> Result<LampState, AppError> {
-        self.apply_command(lamp_id, DriverCommand::SetTemperature { lamp_id: lamp_id.to_string(), temperature }).await
+    pub async fn set_temperature(
+        &self,
+        lamp_id: &str,
+        temperature: u8,
+    ) -> Result<LampState, AppError> {
+        self.apply_command(
+            lamp_id,
+            DriverCommand::SetTemperature {
+                lamp_id: lamp_id.to_string(),
+                temperature,
+            },
+        )
+        .await
     }
 
     pub async fn set_color(&self, lamp_id: &str, x: f32, y: f32) -> Result<LampState, AppError> {
-        self.apply_command(lamp_id, DriverCommand::SetColor { lamp_id: lamp_id.to_string(), x, y }).await
+        self.apply_command(
+            lamp_id,
+            DriverCommand::SetColor {
+                lamp_id: lamp_id.to_string(),
+                x,
+                y,
+            },
+        )
+        .await
     }
 
     /// `effect` by its API name (any case); an unknown one is a 400 listing the known ones.
     pub async fn set_effect(&self, lamp_id: &str, effect: &str) -> Result<LampState, AppError> {
         let effect = effect.parse::<ZigbeeEffect>()?;
-        self.apply_command(lamp_id, DriverCommand::SetEffect { lamp_id: lamp_id.to_string(), effect }).await
+        self.apply_command(
+            lamp_id,
+            DriverCommand::SetEffect {
+                lamp_id: lamp_id.to_string(),
+                effect,
+            },
+        )
+        .await
     }
 
     /// Sends a command for a known lamp (404 otherwise: an unknown id never reaches the
     /// radio), then returns the lamp's state once it had the time to apply it.
-    async fn apply_command(&self, lamp_id: &str, command: DriverCommand) -> Result<LampState, AppError> {
+    async fn apply_command(
+        &self,
+        lamp_id: &str,
+        command: DriverCommand,
+    ) -> Result<LampState, AppError> {
         self.sync_logged(lamp_id, "before a command").await;
         if !self.inner.lamps.read().await.contains_key(lamp_id) {
             return Err(lamp_not_found());
@@ -423,13 +496,26 @@ impl ZigbeeManager {
     /// store's lock, so a slower save can never write an older copy over a rename.
     async fn persist(&self) -> Result<(), AppError> {
         let mut store = self.inner.store.lock().await;
-        let lamps = self.inner.lamps.read().await.values().map(|lamp| lamp.stored.clone()).collect();
+        let lamps = self
+            .inner
+            .lamps
+            .read()
+            .await
+            .values()
+            .map(|lamp| lamp.stored.clone())
+            .collect();
         store.save_lamps(lamps).await?;
         Ok(())
     }
 
     pub async fn shutdown(&self) {
-        if let Some(handle) = self.inner.save_loop.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+        if let Some(handle) = self
+            .inner
+            .save_loop
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
             handle.abort();
         }
         self.inner.driver.shutdown();
@@ -463,9 +549,13 @@ impl ZigbeeManager {
         let mut seen = HashSet::new();
         // remotes are kept too (so they survive a coordinator reboot), only never shown;
         // a device without an endpoint is not known yet (perhaps a sleepy remote)
-        let known = devices
-            .iter()
-            .filter(|device| device.info.endpoint.is_some() && !self.inner.blacklisted_addresses.contains(&device.info.eui64));
+        let known = devices.iter().filter(|device| {
+            device.info.endpoint.is_some()
+                && !self
+                    .inner
+                    .blacklisted_addresses
+                    .contains(&device.info.eui64)
+        });
         for device in known {
             lamps
                 .entry(device.id.clone())
@@ -474,14 +564,21 @@ impl ZigbeeManager {
             seen.insert(device.id.as_str());
         }
         // a remote is a sleepy end device: missing from a snapshot is not being gone
-        for lamp in lamps.values_mut().filter(|lamp| !seen.contains(lamp.stored.id.as_str()) && !lamp.is_remote()) {
+        for lamp in lamps
+            .values_mut()
+            .filter(|lamp| !seen.contains(lamp.stored.id.as_str()) && !lamp.is_remote())
+        {
             lamp.connected = false;
             lamp.reachable = false;
         }
     }
 
     fn spawn_save_loop(&self) {
-        let mut save_loop = self.inner.save_loop.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut save_loop = self
+            .inner
+            .save_loop
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if save_loop.is_some() {
             return;
         }
@@ -504,8 +601,14 @@ impl ZigbeeManager {
 
 fn remaining_seconds(pairing: &mut PairingRuntime) -> u16 {
     let now = Instant::now();
-    match pairing.deadline.filter(|deadline| pairing.active && *deadline > now) {
-        Some(deadline) => deadline.saturating_duration_since(now).as_secs().min(u64::from(u16::MAX)) as u16,
+    match pairing
+        .deadline
+        .filter(|deadline| pairing.active && *deadline > now)
+    {
+        Some(deadline) => deadline
+            .saturating_duration_since(now)
+            .as_secs()
+            .min(u64::from(u16::MAX)) as u16,
         None => {
             pairing.active = false;
             pairing.deadline = None;
@@ -541,7 +644,11 @@ mod tests {
                 device_type: ZigbeeDeviceType::Lamp,
                 ..ZigbeeDeviceInfo::default()
             },
-            light: Light { is_on: true, brightness: 100, ..Light::default() },
+            light: Light {
+                is_on: true,
+                brightness: 100,
+                ..Light::default()
+            },
             connected: true,
             reachable: true,
             last_seen: None,
@@ -551,13 +658,17 @@ mod tests {
     /// A manager on `root` whose driver never starts: no serial port, no save loop.
     fn manager(root: &Path) -> ZigbeeManager {
         let config = Config::defaults(root.to_path_buf());
-        let manager = ZigbeeManager::with_driver(&config, |known| Driver::new(ZigbeeConfig::default(), known)).expect("native manager");
+        let manager = ZigbeeManager::with_driver(&config, |known| {
+            Driver::new(ZigbeeConfig::default(), known)
+        })
+        .expect("native manager");
         manager.inner.driver.test_detach();
         manager
     }
 
     fn kept(root: &Path) -> Vec<StoredZigbeeLamp> {
-        crate::store::read_json(&root.join("zigbee-lamps.json"), crate::store::Corrupt::Fail).unwrap()
+        crate::store::read_json(&root.join("zigbee-lamps.json"), crate::store::Corrupt::Fail)
+            .unwrap()
     }
 
     fn seed(manager: &ZigbeeManager, devices: Vec<ZigbeeDevice>) {
@@ -569,9 +680,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager = manager(dir.path());
         seed(&manager, vec![device()]);
-        manager.inner.driver.test_set_lifecycle(DriverLifecycle::Failed("boom")).await;
-        let error = manager.set_power(ID, false).await.expect_err("the driver's refusal comes back");
-        assert!(error.to_string().contains("boom"), "unexpected error: {error}");
+        manager
+            .inner
+            .driver
+            .test_set_lifecycle(DriverLifecycle::Failed("boom"))
+            .await;
+        let error = manager
+            .set_power(ID, false)
+            .await
+            .expect_err("the driver's refusal comes back");
+        assert!(
+            error.to_string().contains("boom"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
@@ -579,14 +700,23 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager = manager(dir.path());
         // a driver that would refuse with « boom »: a 404 proves it was never asked
-        manager.inner.driver.test_set_lifecycle(DriverLifecycle::Failed("boom")).await;
+        manager
+            .inner
+            .driver
+            .test_set_lifecycle(DriverLifecycle::Failed("boom"))
+            .await;
         for _ in 0..6 {
             let error = manager.set_power("nope", true).await.unwrap_err();
             assert_eq!(error.to_string(), "Zigbee lamp not found");
         }
         let error = manager.set_effect(ID, "disco").await.unwrap_err();
         assert!(error.to_string().starts_with("Unknown effect"), "{error}");
-        assert!(manager.set_effect("nope", "candle").await.unwrap_err().to_string().contains("not found"));
+        assert!(manager
+            .set_effect("nope", "candle")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
     }
 
     #[tokio::test]
@@ -602,7 +732,11 @@ mod tests {
         // light, reachability, last seen: live state, never written
         std::fs::remove_file(&file).unwrap();
         let mut live = device();
-        live.light = Light { is_on: false, brightness: 20, ..Light::default() };
+        live.light = Light {
+            is_on: false,
+            brightness: 20,
+            ..Light::default()
+        };
         live.reachable = false;
         live.connected = false;
         live.last_seen = Some("2026-10-03T08:00:00+00:00".to_string());
@@ -613,7 +747,11 @@ mod tests {
         live.info.model = Some("LTG003".to_string());
         seed(&manager, vec![live]);
         manager.sync_from_runtime().await.unwrap();
-        assert_eq!(kept(root)[0].info.model.as_deref(), Some("LTG003"), "a kept field is written");
+        assert_eq!(
+            kept(root)[0].info.model.as_deref(),
+            Some("LTG003"),
+            "a kept field is written"
+        );
     }
 
     #[tokio::test]
@@ -625,18 +763,38 @@ mod tests {
         assert!(manager.inner.lamps.read().await[ID].connected);
 
         // the manager's copy is left alone while the driver says nothing new
-        manager.inner.lamps.write().await.get_mut(ID).unwrap().connected = false;
+        manager
+            .inner
+            .lamps
+            .write()
+            .await
+            .get_mut(ID)
+            .unwrap()
+            .connected = false;
         manager.sync_from_runtime().await.unwrap();
         let (lamps, stats) = manager.listing().await;
-        assert!(!lamps[0].connected, "an unchanged snapshot was applied again");
-        assert_eq!(stats.connected, 0, "the list and its counts come from one sync");
+        assert!(
+            !lamps[0].connected,
+            "an unchanged snapshot was applied again"
+        );
+        assert_eq!(
+            stats.connected, 0,
+            "the list and its counts come from one sync"
+        );
 
         // a change is taken in at once
         let mut dimmed = device();
         dimmed.light.brightness = 40;
         seed(&manager, vec![dimmed]);
         let (lamps, stats) = manager.listing().await;
-        assert_eq!((lamps[0].state.brightness, lamps[0].connected, stats.connected), (40, true, 1));
+        assert_eq!(
+            (
+                lamps[0].state.brightness,
+                lamps[0].connected,
+                stats.connected
+            ),
+            (40, true, 1)
+        );
     }
 
     #[tokio::test]
@@ -672,7 +830,10 @@ mod tests {
         seed(&manager, vec![device()]);
         let long = "x".repeat(61);
         for bad in ["   ", "a\u{7}b", long.as_str()] {
-            assert!(manager.rename_lamp(ID, bad).await.is_err(), "{bad:?} accepted");
+            assert!(
+                manager.rename_lamp(ID, bad).await.is_err(),
+                "{bad:?} accepted"
+            );
         }
         assert!(manager.rename_lamp("unknown", "Salon").await.is_err());
     }
@@ -691,7 +852,13 @@ mod tests {
         uninterviewed.info.endpoint = None;
         seed(&manager, vec![device(), remote, uninterviewed]);
         let (lamps, stats) = manager.listing().await;
-        assert_eq!(lamps.iter().map(|lamp| lamp.id.as_str()).collect::<Vec<_>>(), vec![ID]);
+        assert_eq!(
+            lamps
+                .iter()
+                .map(|lamp| lamp.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![ID]
+        );
         assert_eq!((stats.total, stats.connected, stats.reachable), (1, 1, 1));
         assert_eq!(manager.list_lamps().await.len(), 1);
     }
@@ -705,27 +872,56 @@ mod tests {
             name: "Salon".into(),
             friendly_name: id.into(),
             node_id,
-            info: ZigbeeDeviceInfo { eui64: eui64.into(), endpoint: Some(11), ..device().info },
+            info: ZigbeeDeviceInfo {
+                eui64: eui64.into(),
+                endpoint: Some(11),
+                ..device().info
+            },
         };
-        let lamps = vec![lamp("a", "aa", Some(1)), lamp("b", "bb", None), lamp("c", "cc", Some(3))];
-        crate::store::write_json(&root.join("zigbee-lamps.json"), &lamps, crate::store::Access::Shared).unwrap();
-        crate::store::write_json(&root.join("zigbee-lamps-blacklist.json"), &["cc"], crate::store::Access::Shared).unwrap();
+        let lamps = vec![
+            lamp("a", "aa", Some(1)),
+            lamp("b", "bb", None),
+            lamp("c", "cc", Some(3)),
+        ];
+        crate::store::write_json(
+            &root.join("zigbee-lamps.json"),
+            &lamps,
+            crate::store::Access::Shared,
+        )
+        .unwrap();
+        crate::store::write_json(
+            &root.join("zigbee-lamps-blacklist.json"),
+            &["cc"],
+            crate::store::Access::Shared,
+        )
+        .unwrap();
 
         let config = Config::defaults(root.to_path_buf());
         let mut seeded = Vec::new();
         let manager = ZigbeeManager::with_driver(&config, |known| {
-            seeded = known.iter().map(|(node_id, info)| (*node_id, info.eui64.clone())).collect();
+            seeded = known
+                .iter()
+                .map(|(node_id, info)| (*node_id, info.eui64.clone()))
+                .collect();
             Driver::new(ZigbeeConfig::default(), known)
         })
         .unwrap();
         manager.inner.driver.test_detach();
-        assert_eq!(seeded, vec![(1, "aa".to_string())], "no node id, no seed; blacklisted, no lamp");
+        assert_eq!(
+            seeded,
+            vec![(1, "aa".to_string())],
+            "no node id, no seed; blacklisted, no lamp"
+        );
         assert_eq!(manager.inner.lamps.read().await.len(), 2);
     }
 
     #[test]
     fn a_pairing_window_counts_down_then_closes() {
-        let mut pairing = PairingRuntime { active: true, deadline: Some(Instant::now() + Duration::from_secs(30)), message: None };
+        let mut pairing = PairingRuntime {
+            active: true,
+            deadline: Some(Instant::now() + Duration::from_secs(30)),
+            message: None,
+        };
         assert!((29..=30).contains(&remaining_seconds(&mut pairing)));
         pairing.deadline = Some(Instant::now());
         assert_eq!(remaining_seconds(&mut pairing), 0);

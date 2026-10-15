@@ -113,7 +113,11 @@ impl SwitchState {
 /// keymap and scenes written before kept snake_case fields: each renamed one reads its old
 /// name too.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum IrAction {
     Nabaztag {
         command: String,
@@ -247,12 +251,17 @@ pub fn validate_actions(actions: &[IrAction]) -> Result<(), String> {
                 return Err(format!("invalid scene id {scene:?}"));
             }
         }
-        if let IrAction::Cover { command, position, .. } = action {
+        if let IrAction::Cover {
+            command, position, ..
+        } = action
+        {
             cover_command(*command, *position)?;
         }
         if let IrAction::HueBrightness { brightness, .. } = action {
             if !(1..=100).contains(brightness) {
-                return Err(format!("invalid Hue brightness {brightness} (expected 1 to 100)"));
+                return Err(format!(
+                    "invalid Hue brightness {brightness} (expected 1 to 100)"
+                ));
             }
         }
     }
@@ -273,7 +282,9 @@ pub async fn run_actions(state: &AppState, actions: &[IrAction]) -> Vec<String> 
                         results.push(outcome(execute(state, inner).await));
                     }
                 }
-                None => results.push(outcome(Err(AppError::not_found(format!("Unknown scene {scene}"))))),
+                None => results.push(outcome(Err(AppError::not_found(format!(
+                    "Unknown scene {scene}"
+                ))))),
             },
             action => results.push(outcome(execute(state, action).await)),
         }
@@ -292,8 +303,12 @@ fn outcome(result: Result<String, AppError>) -> String {
 fn cover_command(order: CoverOrder, position: Option<u8>) -> Result<CoverCommand, String> {
     match (order, position) {
         (CoverOrder::Position, Some(percent @ 0..=100)) => Ok(CoverCommand::OpenPercent(percent)),
-        (CoverOrder::Position, Some(percent)) => Err(format!("invalid cover position {percent} (expected 0 to 100)")),
-        (CoverOrder::Position, None) => Err("a cover position needs its position (0 to 100)".to_string()),
+        (CoverOrder::Position, Some(percent)) => Err(format!(
+            "invalid cover position {percent} (expected 0 to 100)"
+        )),
+        (CoverOrder::Position, None) => {
+            Err("a cover position needs its position (0 to 100)".to_string())
+        }
         (_, Some(_)) => Err("only a cover position takes a position".to_string()),
         (CoverOrder::Open, None) => Ok(CoverCommand::Open),
         (CoverOrder::Close, None) => Ok(CoverCommand::Close),
@@ -327,31 +342,57 @@ where
     let on = switch
         .resolve(|| async {
             let view = lamps.get(lamp).await;
-            Ok(view.ok_or_else(|| AppError::not_found(format!("Unknown {} {lamp}", B::NAME)))?.is_on())
+            Ok(view
+                .ok_or_else(|| AppError::not_found(format!("Unknown {} {lamp}", B::NAME)))?
+                .is_on())
         })
         .await?;
     lamps.set_power(lamp, on).await?;
-    Ok(format!("{} {lamp}: power {}", B::NAME, if on { "on" } else { "off" }))
+    Ok(format!(
+        "{} {lamp}: power {}",
+        B::NAME,
+        if on { "on" } else { "off" }
+    ))
 }
 
 /// `zigbee_brightness` and `hue_brightness`.
-async fn lamp_brightness<B: LampBackend>(lamps: &B, lamp: &str, brightness: u8) -> Result<String, AppError> {
+async fn lamp_brightness<B: LampBackend>(
+    lamps: &B,
+    lamp: &str,
+    brightness: u8,
+) -> Result<String, AppError> {
     lamps.set_brightness(lamp, brightness).await?;
     Ok(format!("{} {lamp}: brightness {brightness}", B::NAME))
 }
 
 /// The settings `climate_on` sends: the last ones given, without their sleep timer.
 fn resumed(last: Option<ClimateSettings>) -> Result<ClimateSettings, AppError> {
-    let last = last.ok_or_else(|| AppError::not_found("No climate settings yet: set the air conditioner once from its page"))?;
-    Ok(ClimateSettings { stop_in_minutes: None, ..last })
+    let last = last.ok_or_else(|| {
+        AppError::not_found("No climate settings yet: set the air conditioner once from its page")
+    })?;
+    Ok(ClimateSettings {
+        stop_in_minutes: None,
+        ..last
+    })
 }
 
 /// Sends one Mitsubishi command once the remote's own frames are over; the Broadlink
 /// manager records the AC's new state (on with these settings, or off).
-async fn climate(state: &AppState, host: &str, command: String, model: &Option<String>) -> Result<String, AppError> {
+async fn climate(
+    state: &AppState,
+    host: &str,
+    command: String,
+    model: &Option<String>,
+) -> Result<String, AppError> {
     tokio::time::sleep(CLIMATE_KEY_RELEASE).await;
-    let sent = state.broadlink.send_mitsubishi_command(host.to_string(), None, command, model.clone()).await?;
-    Ok(format!("Climate {host}: {}", sent.command.unwrap_or_default()))
+    let sent = state
+        .broadlink
+        .send_mitsubishi_command(host.to_string(), None, command, model.clone())
+        .await?;
+    Ok(format!(
+        "Climate {host}: {}",
+        sent.command.unwrap_or_default()
+    ))
 }
 
 /// One device action.
@@ -361,11 +402,25 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             state.nabaztag.send_command(command).await?;
             Ok(format!("Nabaztag: {command}"))
         }
-        IrAction::ZigbeePower { lamp, state: switch } => lamp_power(&state.zigbee, lamp, *switch).await,
-        IrAction::ZigbeeBrightness { lamp, brightness } => lamp_brightness(&state.zigbee, lamp, *brightness).await,
-        IrAction::HuePower { lamp, state: switch } => lamp_power(&state.hue, lamp, *switch).await,
-        IrAction::HueBrightness { lamp, brightness } => lamp_brightness(&state.hue, lamp, *brightness).await,
-        IrAction::Cover { cover, command, position } => {
+        IrAction::ZigbeePower {
+            lamp,
+            state: switch,
+        } => lamp_power(&state.zigbee, lamp, *switch).await,
+        IrAction::ZigbeeBrightness { lamp, brightness } => {
+            lamp_brightness(&state.zigbee, lamp, *brightness).await
+        }
+        IrAction::HuePower {
+            lamp,
+            state: switch,
+        } => lamp_power(&state.hue, lamp, *switch).await,
+        IrAction::HueBrightness { lamp, brightness } => {
+            lamp_brightness(&state.hue, lamp, *brightness).await
+        }
+        IrAction::Cover {
+            cover,
+            command,
+            position,
+        } => {
             let order = cover_command(*command, *position).map_err(AppError::bad_request)?;
             state.matter.command(cover, order).await?;
             let done = match order {
@@ -383,10 +438,16 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
                 .await?;
             Ok(format!("Broadlink {host}: {code_id}"))
         }
-        IrAction::MerossPower { device, state: switch } => {
+        IrAction::MerossPower {
+            device,
+            state: switch,
+        } => {
             let on = switch.resolve(|| state.meross.is_on(device)).await?;
             state.meross.toggle(device, on).await?;
-            Ok(format!("Meross {device}: {}", if on { "on" } else { "off" }))
+            Ok(format!(
+                "Meross {device}: {}",
+                if on { "on" } else { "off" }
+            ))
         }
         IrAction::TvPower {
             state: switch,
@@ -404,7 +465,9 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             Ok(format!("TV volume: {}", volume.current))
         }
         IrAction::TvAmbilight { state: switch } => {
-            let on = switch.resolve(|| async { Ok(state.tv.ambilight().await?.power) }).await?;
+            let on = switch
+                .resolve(|| async { Ok(state.tv.ambilight().await?.power) })
+                .await?;
             state.tv.set_ambilight_power(on).await?;
             Ok(format!("TV Ambilight: {}", if on { "on" } else { "off" }))
         }
@@ -431,15 +494,35 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
                 .await
                 .map(|s| s.power)
                 .unwrap_or(false);
-            let command = if is_on { mitsubishi_ir::OFF_COMMAND } else { on_command.as_str() };
+            let command = if is_on {
+                mitsubishi_ir::OFF_COMMAND
+            } else {
+                on_command.as_str()
+            };
             climate(state, host, command.to_string(), model).await
         }
-        IrAction::ClimateOff { host, model } => climate(state, host, mitsubishi_ir::OFF_COMMAND.to_string(), model).await,
-        IrAction::ClimateOn { host, model } => {
-            let settings = resumed(state.broadlink.climate_state().await.and_then(|s| s.settings))?;
-            climate(state, host, settings.command().map_err(AppError::bad_request)?, model).await
+        IrAction::ClimateOff { host, model } => {
+            climate(state, host, mitsubishi_ir::OFF_COMMAND.to_string(), model).await
         }
-        IrAction::Scene { scene } => Err(AppError::bad_request(format!("Scene {scene} is inside a scene"))),
+        IrAction::ClimateOn { host, model } => {
+            let settings = resumed(
+                state
+                    .broadlink
+                    .climate_state()
+                    .await
+                    .and_then(|s| s.settings),
+            )?;
+            climate(
+                state,
+                host,
+                settings.command().map_err(AppError::bad_request)?,
+                model,
+            )
+            .await
+        }
+        IrAction::Scene { scene } => Err(AppError::bad_request(format!(
+            "Scene {scene} is inside a scene"
+        ))),
     }
 }
 
@@ -458,7 +541,11 @@ pub struct IrBinding {
     /// Phantom-double window for this key, in milliseconds. Defaults to
     /// [`PRESS_DEBOUNCE`], which is right for toggles; navigation keys want
     /// something far shorter so quick repeated presses get through.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "debounce_ms")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "debounce_ms"
+    )]
     pub debounce_ms: Option<u64>,
 }
 
@@ -527,7 +614,10 @@ impl IrManager {
     /// key never interleave. Other keys run alongside. `false`: dropped, the key already
     /// has [`KEY_QUEUE`] presses waiting.
     pub fn run_in_order(&self, code: u16, job: impl Future<Output = ()> + Send + 'static) -> bool {
-        let mut queues = self.queues.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut queues = self
+            .queues
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut job: KeyJob = Box::pin(job);
         if let Some(queue) = queues.get(&code) {
             match queue.try_send(job) {
@@ -638,7 +728,9 @@ impl IrManager {
 /// (its `onCommand` read back), so the web needs no parser of its own.
 pub fn described(binding: &IrBinding) -> serde_json::Value {
     let mut value = serde_json::to_value(binding).unwrap_or_default();
-    let actions = value.get_mut("actions").and_then(serde_json::Value::as_array_mut);
+    let actions = value
+        .get_mut("actions")
+        .and_then(serde_json::Value::as_array_mut);
     for (json, action) in actions.into_iter().flatten().zip(&binding.actions) {
         if let IrAction::ClimateToggle { on_command, .. } = action {
             let settings = crate::mitsubishi_ir::parse_climate_settings(on_command);
@@ -675,8 +767,17 @@ mod tests {
         for code in [10, 11, 12] {
             manager.record_event(code, 1, false).await;
         }
-        let seqs: Vec<(u64, u16)> = manager.recent_events().await.iter().map(|e| (e.seq, e.code)).collect();
-        assert_eq!(seqs, [(3, 12), (2, 11), (1, 10)], "newest first, one more each time");
+        let seqs: Vec<(u64, u16)> = manager
+            .recent_events()
+            .await
+            .iter()
+            .map(|e| (e.seq, e.code))
+            .collect();
+        assert_eq!(
+            seqs,
+            [(3, 12), (2, 11), (1, 10)],
+            "newest first, one more each time"
+        );
     }
 
     #[test]
@@ -865,32 +966,110 @@ mod tests {
         )
         .expect("parses");
         let actions = &keymap[&5].actions;
-        assert_eq!(actions[0], IrAction::Cover { cover: "12".into(), command: CoverOrder::Close, position: None });
-        assert_eq!(actions[1], IrAction::Cover { cover: "12".into(), command: CoverOrder::Position, position: Some(40) });
-        assert_eq!(actions[2], IrAction::HuePower { lamp: "aa".into(), state: SwitchState::Off });
-        assert_eq!(actions[3], IrAction::HuePower { lamp: "aa".into(), state: SwitchState::Toggle }, "toggle by default");
-        assert_eq!(actions[4], IrAction::HueBrightness { lamp: "aa".into(), brightness: 30 });
-        assert_eq!(actions[5], IrAction::ClimateOff { host: "192.168.1.60".into(), model: None });
-        assert_eq!(actions[6], IrAction::ClimateOn { host: "192.168.1.60".into(), model: Some("msz".into()) });
+        assert_eq!(
+            actions[0],
+            IrAction::Cover {
+                cover: "12".into(),
+                command: CoverOrder::Close,
+                position: None
+            }
+        );
+        assert_eq!(
+            actions[1],
+            IrAction::Cover {
+                cover: "12".into(),
+                command: CoverOrder::Position,
+                position: Some(40)
+            }
+        );
+        assert_eq!(
+            actions[2],
+            IrAction::HuePower {
+                lamp: "aa".into(),
+                state: SwitchState::Off
+            }
+        );
+        assert_eq!(
+            actions[3],
+            IrAction::HuePower {
+                lamp: "aa".into(),
+                state: SwitchState::Toggle
+            },
+            "toggle by default"
+        );
+        assert_eq!(
+            actions[4],
+            IrAction::HueBrightness {
+                lamp: "aa".into(),
+                brightness: 30
+            }
+        );
+        assert_eq!(
+            actions[5],
+            IrAction::ClimateOff {
+                host: "192.168.1.60".into(),
+                model: None
+            }
+        );
+        assert_eq!(
+            actions[6],
+            IrAction::ClimateOn {
+                host: "192.168.1.60".into(),
+                model: Some("msz".into())
+            }
+        );
         assert!(validate_actions(actions).is_ok());
         let json = serde_json::to_value(&actions[0]).unwrap();
-        assert_eq!(json, serde_json::json!({ "action": "cover", "cover": "12", "command": "close" }), "no null position");
+        assert_eq!(
+            json,
+            serde_json::json!({ "action": "cover", "cover": "12", "command": "close" }),
+            "no null position"
+        );
     }
 
     #[test]
     fn a_cover_position_goes_with_its_command_only() {
-        assert_eq!(cover_command(CoverOrder::Open, None), Ok(CoverCommand::Open));
-        assert_eq!(cover_command(CoverOrder::Close, None), Ok(CoverCommand::Close));
-        assert_eq!(cover_command(CoverOrder::Stop, None), Ok(CoverCommand::Stop));
-        assert_eq!(cover_command(CoverOrder::Position, Some(0)), Ok(CoverCommand::OpenPercent(0)));
-        assert_eq!(cover_command(CoverOrder::Position, Some(100)), Ok(CoverCommand::OpenPercent(100)));
+        assert_eq!(
+            cover_command(CoverOrder::Open, None),
+            Ok(CoverCommand::Open)
+        );
+        assert_eq!(
+            cover_command(CoverOrder::Close, None),
+            Ok(CoverCommand::Close)
+        );
+        assert_eq!(
+            cover_command(CoverOrder::Stop, None),
+            Ok(CoverCommand::Stop)
+        );
+        assert_eq!(
+            cover_command(CoverOrder::Position, Some(0)),
+            Ok(CoverCommand::OpenPercent(0))
+        );
+        assert_eq!(
+            cover_command(CoverOrder::Position, Some(100)),
+            Ok(CoverCommand::OpenPercent(100))
+        );
         assert!(cover_command(CoverOrder::Position, Some(101)).is_err());
         assert!(cover_command(CoverOrder::Position, None).is_err());
         assert!(cover_command(CoverOrder::Close, Some(30)).is_err());
-        let wrong = |position| vec![IrAction::Cover { cover: "1".into(), command: CoverOrder::Position, position }];
-        assert!(validate_actions(&wrong(Some(101))).is_err(), "refused at save");
+        let wrong = |position| {
+            vec![IrAction::Cover {
+                cover: "1".into(),
+                command: CoverOrder::Position,
+                position,
+            }]
+        };
+        assert!(
+            validate_actions(&wrong(Some(101))).is_err(),
+            "refused at save"
+        );
         assert!(validate_actions(&wrong(None)).is_err());
-        let hue = |brightness| vec![IrAction::HueBrightness { lamp: "aa".into(), brightness }];
+        let hue = |brightness| {
+            vec![IrAction::HueBrightness {
+                lamp: "aa".into(),
+                brightness,
+            }]
+        };
         assert!(validate_actions(&hue(0)).is_err() && validate_actions(&hue(101)).is_err());
         assert!(validate_actions(&hue(1)).is_ok() && validate_actions(&hue(100)).is_ok());
     }
@@ -898,22 +1077,39 @@ mod tests {
     /// The AC comes back as it was last set, but a sleep timer armed then is not armed again.
     #[test]
     fn climate_on_resumes_the_last_settings_without_their_timer() {
-        let last = mitsubishi_ir::parse_climate_settings("state-heat-21-fan-auto-vane-auto-stopin-60").unwrap();
+        let last =
+            mitsubishi_ir::parse_climate_settings("state-heat-21-fan-auto-vane-auto-stopin-60")
+                .unwrap();
         let again = resumed(Some(last.clone())).expect("settings");
-        assert_eq!(again, ClimateSettings { stop_in_minutes: None, ..last });
-        assert_eq!(again.command().unwrap(), "state-heat-21-fan-auto-vane-auto-wide-center");
+        assert_eq!(
+            again,
+            ClimateSettings {
+                stop_in_minutes: None,
+                ..last
+            }
+        );
+        assert_eq!(
+            again.command().unwrap(),
+            "state-heat-21-fan-auto-vane-auto-wide-center"
+        );
         assert!(
-            matches!(resumed(None), Err(AppError::Http { status: axum::http::StatusCode::NOT_FOUND, .. })),
+            matches!(
+                resumed(None),
+                Err(AppError::Http {
+                    status: axum::http::StatusCode::NOT_FOUND,
+                    ..
+                })
+            ),
             "nothing to resume: said so"
         );
     }
 
     #[test]
     fn rejects_unknown_action() {
-        assert!(
-            parse_keymap(r#"{ "1": { "actions": [{ "action": "teleport", "target": "moon" }] } }"#)
-                .is_err()
-        );
+        assert!(parse_keymap(
+            r#"{ "1": { "actions": [{ "action": "teleport", "target": "moon" }] } }"#
+        )
+        .is_err());
     }
 
     /// A short window is what makes the D-pad usable; the clamp is what
@@ -954,7 +1150,10 @@ mod tests {
             !manager.accept_press(116).await,
             "immediate second press is a phantom"
         );
-        assert!(manager.accept_press(117).await, "other keys are independent");
+        assert!(
+            manager.accept_press(117).await,
+            "other keys are independent"
+        );
     }
 
     #[tokio::test]
@@ -962,9 +1161,18 @@ mod tests {
         let never = || async { panic!("not asked for a forced state") };
         assert!(SwitchState::On.resolve(never).await.unwrap());
         assert!(!SwitchState::Off.resolve(never).await.unwrap());
-        assert!(!SwitchState::Toggle.resolve(|| async { Ok(true) }).await.unwrap());
-        assert!(SwitchState::Toggle.resolve(|| async { Ok(false) }).await.unwrap());
-        assert!(SwitchState::Toggle.resolve(|| async { Err(AppError::not_found("x")) }).await.is_err());
+        assert!(!SwitchState::Toggle
+            .resolve(|| async { Ok(true) })
+            .await
+            .unwrap());
+        assert!(SwitchState::Toggle
+            .resolve(|| async { Ok(false) })
+            .await
+            .unwrap());
+        assert!(SwitchState::Toggle
+            .resolve(|| async { Err(AppError::not_found("x")) })
+            .await
+            .is_err());
     }
 
     /// A failed save must not leave a binding that exists in memory only (and vanishes on
@@ -976,7 +1184,9 @@ mod tests {
         let manager = IrManager::new(&path).expect("empty manager");
         std::fs::create_dir(&path).expect("a directory where the file goes");
         let binding = IrBinding {
-            actions: vec![IrAction::Nabaztag { command: "ping".into() }],
+            actions: vec![IrAction::Nabaztag {
+                command: "ping".into(),
+            }],
             label: None,
             repeat: false,
             debounce_ms: None,
@@ -1005,7 +1215,11 @@ mod tests {
             finished.recv().await.expect("every job runs");
         }
         let log = log.lock().unwrap().clone();
-        assert_eq!(log.first(), Some(&"2a"), "key 2 did not wait for key 1: {log:?}");
+        assert_eq!(
+            log.first(),
+            Some(&"2a"),
+            "key 2 did not wait for key 1: {log:?}"
+        );
         let key_one: Vec<_> = log.iter().filter(|l| l.starts_with('1')).copied().collect();
         assert_eq!(key_one, ["1a", "1b", "1c"]);
     }
@@ -1056,24 +1270,38 @@ mod tests {
                 ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         };
-        assert!(manager.run_in_order(1, job()), "the first runs (and blocks)");
+        assert!(
+            manager.run_in_order(1, job()),
+            "the first runs (and blocks)"
+        );
         tokio::task::yield_now().await;
-        let queued = (0..KEY_QUEUE + 3).filter(|_| manager.run_in_order(1, job())).count();
+        let queued = (0..KEY_QUEUE + 3)
+            .filter(|_| manager.run_in_order(1, job()))
+            .count();
         assert_eq!(queued, KEY_QUEUE, "the rest dropped");
         assert!(manager.run_in_order(2, job()), "another key is not held up");
         release.send(true).unwrap();
         while ran.load(std::sync::atomic::Ordering::SeqCst) < KEY_QUEUE + 2 {
             tokio::task::yield_now().await;
         }
-        assert!(manager.run_in_order(1, job()), "drained: presses go through again");
+        assert!(
+            manager.run_in_order(1, job()),
+            "drained: presses go through again"
+        );
     }
 
     #[test]
     fn a_climate_toggle_is_described_with_its_settings() {
         let binding = IrBinding {
             actions: vec![
-                IrAction::Nabaztag { command: "ping".into() },
-                IrAction::ClimateToggle { host: "h".into(), on_command: "state-cool-16-fan-4-vane-swing".into(), model: None },
+                IrAction::Nabaztag {
+                    command: "ping".into(),
+                },
+                IrAction::ClimateToggle {
+                    host: "h".into(),
+                    on_command: "state-cool-16-fan-4-vane-swing".into(),
+                    model: None,
+                },
             ],
             label: None,
             repeat: false,
@@ -1082,9 +1310,13 @@ mod tests {
         let json = described(&binding);
         assert!(json["actions"][0].get("settings").is_none());
         let settings = &json["actions"][1]["settings"];
-        let expected = crate::mitsubishi_ir::parse_climate_settings("state-cool-16-fan-4-vane-swing").unwrap();
+        let expected =
+            crate::mitsubishi_ir::parse_climate_settings("state-cool-16-fan-4-vane-swing").unwrap();
         assert_eq!(settings, &serde_json::to_value(expected).unwrap());
-        assert_eq!(json["actions"][1]["onCommand"], "state-cool-16-fan-4-vane-swing", "the rest as kept");
+        assert_eq!(
+            json["actions"][1]["onCommand"], "state-cool-16-fan-4-vane-swing",
+            "the rest as kept"
+        );
     }
 
     /// An old snake_case keymap reads whole and is written back camelCase.
@@ -1101,14 +1333,29 @@ mod tests {
         .expect("the old shape parses");
         let binding = &old[&2];
         assert_eq!(binding.debounce_ms, Some(150));
-        assert_eq!(binding.actions[0], IrAction::BroadlinkCode { host: "h".into(), code_id: "tv-power".into() });
+        assert_eq!(
+            binding.actions[0],
+            IrAction::BroadlinkCode {
+                host: "h".into(),
+                code_id: "tv-power".into()
+            }
+        );
         let written = serde_json::to_value(binding).unwrap();
         assert_eq!(written["debounceMs"], 150);
         assert_eq!(written["actions"][0]["codeId"], "tv-power");
-        assert_eq!(written["actions"][1]["onCommand"], "state-cool-16-fan-4-vane-swing");
+        assert_eq!(
+            written["actions"][1]["onCommand"],
+            "state-cool-16-fan-4-vane-swing"
+        );
         assert_eq!(written["actions"][2]["switchToBox"], false);
         assert_eq!(written["actions"][3]["ensureTvOn"], false);
-        assert_eq!(written["actions"][3]["action"], "androidtv_app", "values stay snake_case");
-        assert_eq!(&serde_json::from_value::<IrBinding>(written).unwrap(), binding);
+        assert_eq!(
+            written["actions"][3]["action"], "androidtv_app",
+            "values stay snake_case"
+        );
+        assert_eq!(
+            &serde_json::from_value::<IrBinding>(written).unwrap(),
+            binding
+        );
     }
 }

@@ -120,7 +120,9 @@ async fn skip(
 }
 
 async fn place(State(state): State<AppState>) -> Json<Answer<Where>> {
-    Answer::ok(Where { place: state.matter.place().await })
+    Answer::ok(Where {
+        place: state.matter.place().await,
+    })
 }
 
 async fn set_place(
@@ -141,13 +143,12 @@ async fn search_places(
 }
 
 async fn list(State(state): State<AppState>) -> Json<Answer<Covers>> {
-    Answer::ok(Covers { covers: state.matter.list().await })
+    Answer::ok(Covers {
+        covers: state.matter.list().await,
+    })
 }
 
-async fn get_cover(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> CoverAnswer {
+async fn get_cover(State(state): State<AppState>, Path(id): Path<String>) -> CoverAnswer {
     cover(state.matter.get(&id).await?)
 }
 
@@ -194,7 +195,9 @@ async fn position(
     Json(body): Json<PositionRequest>,
 ) -> CoverAnswer {
     if body.open_percent > 100 {
-        return Err(AppError::bad_request("openPercent must be between 0 and 100"));
+        return Err(AppError::bad_request(
+            "openPercent must be between 0 and 100",
+        ));
     }
     run(state, id, CoverCommand::OpenPercent(body.open_percent)).await
 }

@@ -34,9 +34,16 @@ pub fn router() -> Router<AppState> {
 /// Who answers, nothing more: the routes themselves are the list (`lib.rs`), and a list here
 /// would drift (it once still offered a password login).
 async fn root_handler() -> Json<RootResponse> {
-    Json(RootResponse { message: "Home API", version: env!("CARGO_PKG_VERSION"), description: "Maison backend" })
+    Json(RootResponse {
+        message: "Home API",
+        version: env!("CARGO_PKG_VERSION"),
+        description: "Maison backend",
+    })
 }
 
 async fn health_handler() -> Json<Answer<Health>> {
-    Answer::ok(Health { status: "healthy", service: "maison-backend" })
+    Answer::ok(Health {
+        status: "healthy",
+        service: "maison-backend",
+    })
 }

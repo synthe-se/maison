@@ -12,7 +12,9 @@ use maison_backend::broadlink::BroadlinkManager;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let host = args.next().ok_or("usage: send_ir <blaster-ip> <packet-base64> [local-ip]")?;
+    let host = args
+        .next()
+        .ok_or("usage: send_ir <blaster-ip> <packet-base64> [local-ip]")?;
     let packet = args.next().ok_or("missing packet-base64")?;
     let local_ip = args.next();
 

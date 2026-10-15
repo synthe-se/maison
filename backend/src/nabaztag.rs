@@ -14,12 +14,12 @@ use tokio::net::UdpSocket;
 use tracing::{debug, info};
 
 use crate::{
-    TempoService,
     error::AppError,
     json_config::{Checked, JsonConfig},
     net::{device_client, device_host, unreachable},
     tempo::Color,
     util::non_blank,
+    TempoService,
 };
 
 /// Garenne control port on the rabbit.
@@ -47,7 +47,9 @@ pub struct NabaztagConfig {
 /// The host must be a LAN device address (see `net::device_host`).
 impl Checked for NabaztagConfig {
     fn checked(mut self) -> Result<Self, AppError> {
-        self.host = non_blank(self.host).map(|host| device_host(&host)).transpose()?;
+        self.host = non_blank(self.host)
+            .map(|host| device_host(&host))
+            .transpose()?;
         Ok(self)
     }
 }
@@ -91,7 +93,9 @@ impl NabaztagManager {
             inner: Arc::new(Inner {
                 config: JsonConfig::load(config_path)?,
                 // checked like the file: a bad address refuses to start, it is not tried
-                env_host: non_blank(env_host.map(str::to_string)).map(|host| device_host(&host)).transpose()?,
+                env_host: non_blank(env_host.map(str::to_string))
+                    .map(|host| device_host(&host))
+                    .transpose()?,
                 http: device_client(STATUS_TIMEOUT)?,
             }),
         })
@@ -112,7 +116,9 @@ impl NabaztagManager {
     /// Checked where it came in (the file by `Checked`, the environment by `new`).
     async fn host(&self) -> Result<String, AppError> {
         self.config().await.host.ok_or_else(|| {
-            AppError::service_unavailable("No Nabaztag host configured (set NABAZTAG_HOST or the nabaztag config)")
+            AppError::service_unavailable(
+                "No Nabaztag host configured (set NABAZTAG_HOST or the nabaztag config)",
+            )
         })
     }
 
@@ -121,7 +127,9 @@ impl NabaztagManager {
     pub async fn send_command(&self, command: &str) -> Result<(), AppError> {
         let command = command.trim();
         if !command_is_allowed(command) {
-            return Err(AppError::bad_request(format!("Command not allowed: {command}")));
+            return Err(AppError::bad_request(format!(
+                "Command not allowed: {command}"
+            )));
         }
 
         let host = self.host().await?;
@@ -138,8 +146,16 @@ impl NabaztagManager {
     /// Whether the rabbit answers its `/status` page (its only HTTP route). Only that
     /// yes or no leaves here: the page itself is not passed on.
     pub async fn reachable(&self) -> bool {
-        let Ok(host) = self.host().await else { return false };
-        match self.inner.http.get(format!("http://{host}/status")).send().await {
+        let Ok(host) = self.host().await else {
+            return false;
+        };
+        match self
+            .inner
+            .http
+            .get(format!("http://{host}/status"))
+            .send()
+            .await
+        {
             Ok(response) => response.status().is_success(),
             Err(error) => {
                 debug!(%error, "rabbit unreachable");
@@ -172,13 +188,13 @@ impl NabaztagManager {
         tomorrow: Option<(Color, bool)>,
     ) -> Result<TempoPushResult, AppError> {
         let led_hex = today.led_hex();
-        self.send_command(&format!("led {BELLY_LED} {led_hex}")).await?;
+        self.send_command(&format!("led {BELLY_LED} {led_hex}"))
+            .await?;
 
         let ears = tomorrow.map(|(color, forecast)| tempo_ears(color, forecast));
         if let Some((left, right)) = ears {
             tokio::time::sleep(PUSH_STEP_DELAY).await;
-            self.send_command(&format!("ears {left} {right}"))
-                .await?;
+            self.send_command(&format!("ears {left} {right}")).await?;
         }
         let ear_position = ears.map(|(left, _)| left);
         let tomorrow_forecast = tomorrow.is_some_and(|(_, forecast)| forecast);
@@ -254,7 +270,10 @@ mod tests {
         assert_eq!(Color::White.ear_position(), 8);
         assert_eq!(tempo_ears(Color::Red, false), (16, 16));
         assert_eq!(tempo_ears(Color::Blue, true), (0, FORECAST_EAR));
-        assert!(Color::ALL.iter().all(|c| c.ear_position() != FORECAST_EAR), "« not sure » is no colour");
+        assert!(
+            Color::ALL.iter().all(|c| c.ear_position() != FORECAST_EAR),
+            "« not sure » is no colour"
+        );
     }
 
     #[tokio::test]
@@ -262,11 +281,23 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nabaztag.json");
         let manager = NabaztagManager::new(&path, None).expect("manager");
-        for bad in ["127.0.0.1", "8.8.8.8", "192.168.1.2/status", "evil.example", "192.168.1.2:80"] {
-            let config = NabaztagConfig { host: Some(bad.into()), tempo_enabled: true };
+        for bad in [
+            "127.0.0.1",
+            "8.8.8.8",
+            "192.168.1.2/status",
+            "evil.example",
+            "192.168.1.2:80",
+        ] {
+            let config = NabaztagConfig {
+                host: Some(bad.into()),
+                tempo_enabled: true,
+            };
             assert!(manager.set_config(config).await.is_err(), "{bad} accepted");
         }
-        let config = NabaztagConfig { host: Some(" 192.168.1.40 ".into()), tempo_enabled: false };
+        let config = NabaztagConfig {
+            host: Some(" 192.168.1.40 ".into()),
+            tempo_enabled: false,
+        };
         manager.set_config(config).await.expect("a LAN address");
         let blank = NabaztagManager::new(&path, Some("  ")).expect("reload");
         assert_eq!(blank.config().await.host.as_deref(), Some("192.168.1.40"));
@@ -275,7 +306,10 @@ mod tests {
         // the environment wins, and is checked like the file
         assert!(NabaztagManager::new(&path, Some("127.0.0.1")).is_err());
         let from_env = NabaztagManager::new(&path, Some("rabbit.local")).expect("env");
-        assert_eq!(from_env.config().await.host.as_deref(), Some("rabbit.local"));
+        assert_eq!(
+            from_env.config().await.host.as_deref(),
+            Some("rabbit.local")
+        );
 
         // a hand-edited file is checked on load
         std::fs::write(&path, r#"{"host": "8.8.8.8"}"#).expect("written");

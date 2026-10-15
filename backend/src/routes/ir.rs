@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 
 use axum::{
-    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{get, post, put},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState,
     auth::{AdminUser, AuthenticatedUser, MachineClient},
     error::AppError,
     ir::{self, IrAction, IrBinding, IrEventLog},
     routes::{Answer, SimpleResponse},
+    AppState,
 };
 
 /// One evdev key event as forwarded by kird from the STB:
@@ -36,7 +36,11 @@ pub(crate) struct KeyResponse {
 
 impl KeyResponse {
     fn nothing(message: String) -> Json<Self> {
-        Json(Self { success: true, message, results: Vec::new() })
+        Json(Self {
+            success: true,
+            message,
+            results: Vec::new(),
+        })
     }
 
     /// What a run said, action by action: the answer of `/test` and of a scene's `/run`.
@@ -87,7 +91,10 @@ async fn key_event(
         // an unmapped key is not an error. The event lands in /recent, which
         // is how the configurator captures new keys.
         tracing::info!(code = event.code, value = event.value, "unmapped IR key");
-        return Ok((StatusCode::OK, KeyResponse::nothing(format!("Key {} is not mapped", event.code))));
+        return Ok((
+            StatusCode::OK,
+            KeyResponse::nothing(format!("Key {} is not mapped", event.code)),
+        ));
     };
 
     let fire = event.value == 1 || (event.value == 2 && binding.repeat);
@@ -100,7 +107,10 @@ async fn key_event(
     // into several presses — fatal for toggles, which cancel themselves).
     if event.value == 1 && !state.ir.accept_press(event.code).await {
         tracing::info!(code = event.code, "IR press debounced (phantom double)");
-        return Ok((StatusCode::OK, KeyResponse::nothing(format!("Key {} debounced", event.code))));
+        return Ok((
+            StatusCode::OK,
+            KeyResponse::nothing(format!("Key {} debounced", event.code)),
+        ));
     }
 
     // Accepted, then run: a TV power-on takes ~16 s, and kird hanging up must not stop
@@ -110,17 +120,35 @@ async fn key_event(
     let worker = state.clone();
     let queued = state.ir.run_in_order(code, async move {
         let results = ir::run_actions(&worker, &binding.actions).await;
-        tracing::info!(code, value, label = binding.label.as_deref().unwrap_or(""), ?results, "IR key fired");
+        tracing::info!(
+            code,
+            value,
+            label = binding.label.as_deref().unwrap_or(""),
+            ?results,
+            "IR key fired"
+        );
     });
     if !queued {
         // 200 like a debounced press: a held key outrunning its actions is no error
-        return Ok((StatusCode::OK, KeyResponse::nothing(format!("Key {code} dropped: still busy"))));
+        return Ok((
+            StatusCode::OK,
+            KeyResponse::nothing(format!("Key {code} dropped: still busy")),
+        ));
     }
-    Ok((StatusCode::ACCEPTED, KeyResponse::nothing(format!("Key {code} accepted"))))
+    Ok((
+        StatusCode::ACCEPTED,
+        KeyResponse::nothing(format!("Key {code} accepted")),
+    ))
 }
 
 async fn keymap(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<Answer<Keymap>> {
-    let keymap = state.ir.keymap().await.into_iter().map(|(code, binding)| (code, ir::described(&binding))).collect();
+    let keymap = state
+        .ir
+        .keymap()
+        .await
+        .into_iter()
+        .map(|(code, binding)| (code, ir::described(&binding)))
+        .collect();
     Answer::ok(Keymap { keymap })
 }
 
@@ -152,7 +180,9 @@ async fn remove_binding(
 /// Last received key events, most recent first — the configurator polls this
 /// while asking the user to press the button they want to map.
 async fn recent(State(state): State<AppState>, _admin: AdminUser) -> Json<Answer<Recent>> {
-    Answer::ok(Recent { events: state.ir.recent_events().await })
+    Answer::ok(Recent {
+        events: state.ir.recent_events().await,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,5 +202,7 @@ async fn test_actions(
         return Err(AppError::bad_request("Nothing to test"));
     }
     ir::validate_actions(&body.actions).map_err(AppError::bad_request)?;
-    Ok(KeyResponse::ran(ir::run_actions(&state, &body.actions).await))
+    Ok(KeyResponse::ran(
+        ir::run_actions(&state, &body.actions).await,
+    ))
 }

@@ -42,7 +42,10 @@ async fn every_answer_is_camel_case() {
         let method = Method::from_bytes(method.as_bytes()).unwrap();
         // the casing itself is asserted inside `respond`
         let (status, body) = common::send_authed(&app, method, path, None).await;
-        assert!(status.is_success() || status == StatusCode::SERVICE_UNAVAILABLE, "{path}: {status} {body}");
+        assert!(
+            status.is_success() || status == StatusCode::SERVICE_UNAVAILABLE,
+            "{path}: {status} {body}"
+        );
     }
 }
 
@@ -76,5 +79,11 @@ async fn old_snake_case_keymap_and_scenes_still_load() {
     let (status, body) = common::send_authed(&app, Method::GET, "/api/scenes", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let answered = &body["scenes"][0]["actions"];
-    assert_eq!((answered[0]["codeId"].as_str(), answered[3]["ensureTvOn"].as_bool()), (Some("tv-power"), Some(false)));
+    assert_eq!(
+        (
+            answered[0]["codeId"].as_str(),
+            answered[3]["ensureTvOn"].as_bool()
+        ),
+        (Some("tv-power"), Some(false))
+    );
 }

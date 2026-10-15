@@ -126,7 +126,9 @@ pub fn parse_season(season: &str, today: NaiveDate) -> Result<i32, AppError> {
     };
     let (start, end) = season.split_once('-').ok_or_else(invalid)?;
     match (year(start), year(end)) {
-        (Some(start), Some(end)) if end == start + 1 && (FIRST_SEASON..=season_start_year(today)).contains(&start) => {
+        (Some(start), Some(end))
+            if end == start + 1 && (FIRST_SEASON..=season_start_year(today)).contains(&start) =>
+        {
             Ok(start)
         }
         _ => Err(invalid()),
@@ -166,12 +168,23 @@ fn easter(year: i32) -> NaiveDate {
 
 /// A national public holiday in France (Alsace-Moselle's own are not: RTE reds them).
 pub fn is_holiday(date: NaiveDate) -> bool {
-    let fixed = [(1, 1), (5, 1), (5, 8), (7, 14), (8, 15), (11, 1), (11, 11), (12, 25)];
+    let fixed = [
+        (1, 1),
+        (5, 1),
+        (5, 8),
+        (7, 14),
+        (8, 15),
+        (11, 1),
+        (11, 11),
+        (12, 25),
+    ];
     if fixed.contains(&(date.month(), date.day())) {
         return true;
     }
     let easter = easter(date.year());
-    [1, 39, 50].iter().any(|days| easter + Duration::days(*days) == date)
+    [1, 39, 50]
+        .iter()
+        .any(|days| easter + Duration::days(*days) == date)
 }
 
 /// November to March: the red days' period, the winter the colours are decided in.
@@ -181,9 +194,7 @@ pub fn is_winter(date: NaiveDate) -> bool {
 
 /// Whether the calendar lets the day be red.
 pub fn red_allowed(date: NaiveDate) -> bool {
-    is_winter(date)
-        && !matches!(date.weekday(), Weekday::Sat | Weekday::Sun)
-        && !is_holiday(date)
+    is_winter(date) && !matches!(date.weekday(), Weekday::Sat | Weekday::Sun) && !is_holiday(date)
 }
 
 /// Whether the calendar lets the day be white.
@@ -200,7 +211,10 @@ pub struct Quotas {
 
 impl Default for Quotas {
     fn default() -> Self {
-        Self { red: RED_DAYS, white: WHITE_DAYS }
+        Self {
+            red: RED_DAYS,
+            white: WHITE_DAYS,
+        }
     }
 }
 
@@ -217,7 +231,11 @@ impl Stock {
     /// day counts as blue).
     pub fn before(history: &History, quotas: Quotas, day: NaiveDate) -> Self {
         let first = season_bounds(season_start_year(day)).0;
-        let mut stock = Self { red: quotas.red, white: quotas.white, red_run: 0 };
+        let mut stock = Self {
+            red: quotas.red,
+            white: quotas.white,
+            red_run: 0,
+        };
         for (_, color) in history.range(first..day) {
             stock.take(*color);
         }
@@ -261,14 +279,21 @@ impl DayRules {
     pub fn new(date: NaiveDate) -> Self {
         let start = season_start_year(date);
         let left = |last: NaiveDate, allowed: fn(NaiveDate) -> bool| {
-            date.iter_days().take_while(|d| *d <= last).filter(|d| allowed(*d)).count() as u32
+            date.iter_days()
+                .take_while(|d| *d <= last)
+                .filter(|d| allowed(*d))
+                .count() as u32
         };
         Self {
             date,
             red_ok: red_allowed(date),
             white_ok: white_allowed(date),
             day: f64::from(tempo_day(date)),
-            red_left: if red_allowed(date) { left(ymd(start + 1, 3, 31), red_allowed) } else { 0 },
+            red_left: if red_allowed(date) {
+                left(ymd(start + 1, 3, 31), red_allowed)
+            } else {
+                0
+            },
             white_left: left(season_bounds(start).1, white_allowed),
         }
     }
@@ -314,7 +339,11 @@ pub(crate) mod tests {
 
     /// A season as RTE gave it (the repository's file).
     pub(crate) fn season(start_year: i32) -> History {
-        let path = format!("{}/../cache/tempo/tempo_history_{}.json", env!("CARGO_MANIFEST_DIR"), season_name(start_year));
+        let path = format!(
+            "{}/../cache/tempo/tempo_history_{}.json",
+            env!("CARGO_MANIFEST_DIR"),
+            season_name(start_year)
+        );
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let file: serde_json::Value = serde_json::from_str(&text).unwrap();
         file["values"]
@@ -340,17 +369,34 @@ pub(crate) mod tests {
         let today = day(2026, 10, 3);
         assert_eq!(parse_season("2014-2015", today).unwrap(), 2014);
         assert_eq!(parse_season("2026-2027", today).unwrap(), 2026);
-        for bad in ["2013-2014", "2027-2028", "2024-2026", "../../x", "20a4-2025", "2024", "+202-2025"] {
+        for bad in [
+            "2013-2014",
+            "2027-2028",
+            "2024-2026",
+            "../../x",
+            "20a4-2025",
+            "2024",
+            "+202-2025",
+        ] {
             assert!(parse_season(bad, today).is_err(), "{bad}");
         }
     }
 
     #[test]
     fn holidays_include_the_moving_ones() {
-        for holiday in [day(2025, 11, 11), day(2026, 1, 1), day(2026, 4, 6), day(2026, 5, 14), day(2026, 5, 25)] {
+        for holiday in [
+            day(2025, 11, 11),
+            day(2026, 1, 1),
+            day(2026, 4, 6),
+            day(2026, 5, 14),
+            day(2026, 5, 25),
+        ] {
             assert!(is_holiday(holiday), "{holiday}");
         }
-        assert!(!is_holiday(day(2024, 3, 29)), "Good Friday is Alsace-Moselle's only");
+        assert!(
+            !is_holiday(day(2024, 3, 29)),
+            "Good Friday is Alsace-Moselle's only"
+        );
         assert!(!red_allowed(day(2025, 11, 11)));
         assert!(red_allowed(day(2024, 3, 29)));
         assert!(!red_allowed(day(2026, 1, 3)), "a Saturday");
@@ -363,7 +409,11 @@ pub(crate) mod tests {
         for start in [2018, 2020, 2022, 2024, 2025] {
             let history = season(start);
             let count = |c: Color| history.values().filter(|v| **v == c).count() as u32;
-            assert_eq!((count(Color::Red), count(Color::White)), (RED_DAYS, WHITE_DAYS), "{start}");
+            assert_eq!(
+                (count(Color::Red), count(Color::White)),
+                (RED_DAYS, WHITE_DAYS),
+                "{start}"
+            );
             for (date, color) in &history {
                 match color {
                     Color::Red => assert!(red_allowed(*date), "{date} red"),
@@ -381,13 +431,24 @@ pub(crate) mod tests {
         // reds on 29 and 31 December, 5, 6 and 7 January: five used, and a run of three
         assert_eq!(stock.red, 17);
         assert_eq!(stock.red_run, 3);
-        assert_eq!(Stock::before(&history, Quotas::default(), day(2025, 9, 1)), Stock { red: 22, white: 43, red_run: 0 });
+        assert_eq!(
+            Stock::before(&history, Quotas::default(), day(2025, 9, 1)),
+            Stock {
+                red: 22,
+                white: 43,
+                red_run: 0
+            }
+        );
     }
 
     #[test]
     fn the_thresholds_are_rte_s() {
         let rules = DayRules::new(day(2025, 1, 13));
-        let stock = Stock { red: 11, white: 22, red_run: 0 };
+        let stock = Stock {
+            red: 11,
+            white: 22,
+            red_run: 0,
+        };
         // day 135: 3.15 − 1.35 − 0.341 and 4.00 − 2.025 − 0.858
         assert!((rules.red_threshold(&stock) - 1.459).abs() < 1e-9);
         assert!((rules.white_threshold(&stock) - 1.117).abs() < 1e-9);
@@ -395,12 +456,37 @@ pub(crate) mod tests {
         assert_eq!(rules.decide(1.45, &stock), Color::White);
         assert_eq!(rules.decide(1.11, &stock), Color::Blue);
         // no red on a Saturday, even very cold; no white on a Sunday
-        assert_eq!(DayRules::new(day(2025, 1, 18)).decide(3.0, &stock), Color::White);
-        assert_eq!(DayRules::new(day(2025, 1, 19)).decide(3.0, &stock), Color::Blue);
+        assert_eq!(
+            DayRules::new(day(2025, 1, 18)).decide(3.0, &stock),
+            Color::White
+        );
+        assert_eq!(
+            DayRules::new(day(2025, 1, 19)).decide(3.0, &stock),
+            Color::Blue
+        );
         // a sixth red in a row is white at most
-        assert_eq!(rules.decide(3.0, &Stock { red_run: 5, ..stock }), Color::White);
+        assert_eq!(
+            rules.decide(
+                3.0,
+                &Stock {
+                    red_run: 5,
+                    ..stock
+                }
+            ),
+            Color::White
+        );
         // nothing left
-        assert_eq!(rules.decide(3.0, &Stock { red: 0, white: 0, red_run: 0 }), Color::Blue);
+        assert_eq!(
+            rules.decide(
+                3.0,
+                &Stock {
+                    red: 0,
+                    white: 0,
+                    red_run: 0
+                }
+            ),
+            Color::Blue
+        );
     }
 
     #[test]
@@ -408,7 +494,10 @@ pub(crate) mod tests {
         // RTE placed its 13 last reds on the 13 weekdays from 13 March: the stock, not the cold
         let history = season(2025);
         let mut reds = 0;
-        for date in day(2026, 3, 13).iter_days().take_while(|d| *d <= day(2026, 3, 31)) {
+        for date in day(2026, 3, 13)
+            .iter_days()
+            .take_while(|d| *d <= day(2026, 3, 31))
+        {
             let stock = Stock::before(&history, Quotas::default(), date);
             let decided = DayRules::new(date).decide(-10.0, &stock);
             if red_allowed(date) {
@@ -422,6 +511,10 @@ pub(crate) mod tests {
         assert_eq!(reds, 13);
         // the day before, the stock still waits for the cold
         let before = day(2026, 3, 12);
-        assert_eq!(DayRules::new(before).decide(-10.0, &Stock::before(&history, Quotas::default(), before)), Color::Blue);
+        assert_eq!(
+            DayRules::new(before)
+                .decide(-10.0, &Stock::before(&history, Quotas::default(), before)),
+            Color::Blue
+        );
     }
 }

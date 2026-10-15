@@ -7,7 +7,7 @@ use btleplug::{
     api::{Characteristic, Peripheral as _, PeripheralProperties},
     platform::Peripheral,
 };
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use crate::{error::AppError, net};
@@ -97,9 +97,11 @@ pub(super) fn is_hue_lamp(properties: &PeripheralProperties) -> bool {
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    ["hue", "philips", "signify", "lwa", "lwv", "ltg", "lct", "lwb", "lca"]
-        .iter()
-        .any(|needle| name.contains(needle))
+    [
+        "hue", "philips", "signify", "lwa", "lwv", "ltg", "lct", "lwb", "lca",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
 }
 
 pub(super) fn parse_brightness(raw_value: u8) -> u8 {
@@ -123,7 +125,11 @@ pub(super) fn to_temperature(percentage: u8) -> u8 {
 }
 
 /// The combined control characteristic's command: one segment per field set.
-pub(super) fn build_control_command(power: Option<bool>, brightness: Option<u8>, temperature: Option<u8>) -> Vec<u8> {
+pub(super) fn build_control_command(
+    power: Option<bool>,
+    brightness: Option<u8>,
+    temperature: Option<u8>,
+) -> Vec<u8> {
     let mut commands = Vec::new();
     if let Some(power) = power {
         commands.extend_from_slice(&[0x01, 0x01, u8::from(power)]);
@@ -174,7 +180,10 @@ mod tests {
     #[test]
     fn uuids_compare_whatever_their_spelling() {
         let uuid = Uuid::parse_str(POWER_UUID).unwrap();
-        assert_eq!(uuid_key(uuid), uuid_str_key(&POWER_UUID.to_ascii_uppercase()));
+        assert_eq!(
+            uuid_key(uuid),
+            uuid_str_key(&POWER_UUID.to_ascii_uppercase())
+        );
     }
 
     #[test]
@@ -184,24 +193,36 @@ mod tests {
         properties.local_name = Some("Hue ambiance lamp".into());
         assert!(is_hue_lamp(&properties));
         let mut by_maker = PeripheralProperties::default();
-        by_maker.manufacturer_data.insert(SIGNIFY_MANUFACTURER_ID, vec![]);
+        by_maker
+            .manufacturer_data
+            .insert(SIGNIFY_MANUFACTURER_ID, vec![]);
         assert!(is_hue_lamp(&by_maker));
         let mut by_service = PeripheralProperties::default();
-        by_service.services.push(Uuid::parse_str(LIGHT_CONTROL_SERVICE).unwrap());
+        by_service
+            .services
+            .push(Uuid::parse_str(LIGHT_CONTROL_SERVICE).unwrap());
         assert!(is_hue_lamp(&by_service));
     }
 
     /// The client hears that the lamp is unavailable, never the stack's message.
     #[tokio::test]
     async fn a_bluetooth_error_says_nothing_of_the_stack() {
-        let failing = async { Err::<(), _>(btleplug::Error::Other("org.bluez.Error.Failed: hci0 busy".into())) };
-        let error = ble(failing, "write", Duration::from_secs(1)).await.unwrap_err();
+        let failing = async {
+            Err::<(), _>(btleplug::Error::Other(
+                "org.bluez.Error.Failed: hci0 busy".into(),
+            ))
+        };
+        let error = ble(failing, "write", Duration::from_secs(1))
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Hue lamp unreachable");
         let slow = async {
             tokio::time::sleep(Duration::from_secs(5)).await;
             Ok(())
         };
-        let error = ble(slow, "write", Duration::from_millis(10)).await.unwrap_err();
+        let error = ble(slow, "write", Duration::from_millis(10))
+            .await
+            .unwrap_err();
         assert_eq!(error.to_string(), "Hue lamp write timed out");
     }
 }

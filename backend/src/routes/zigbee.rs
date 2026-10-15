@@ -1,20 +1,20 @@
 use axum::{
-    Json, Router,
     extract::{Path, State},
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState,
     auth::AdminUser,
     error::AppError,
     lamps::{LampState, LampStats},
     routes::{
-        SimpleResponse,
         lamps::{self, ActionResponse, LampBackend},
+        SimpleResponse,
     },
     zigbee::{self, ZigbeeManager},
+    AppState,
 };
 
 impl LampBackend for ZigbeeManager {
@@ -83,24 +83,47 @@ pub fn router() -> Router<AppState> {
 }
 
 fn pairing_response(pairing: zigbee::ZigbeePairingStatus, message: &str) -> Json<PairingResponse> {
-    Json(PairingResponse { success: true, pairing, message: message.to_string() })
+    Json(PairingResponse {
+        success: true,
+        pairing,
+        message: message.to_string(),
+    })
 }
 
 async fn pairing_status(State(state): State<AppState>) -> Json<PairingResponse> {
     let pairing = state.zigbee.pairing_status().await;
-    let message = if pairing.active { "Zigbee pairing is active" } else { "Zigbee pairing is inactive" };
+    let message = if pairing.active {
+        "Zigbee pairing is active"
+    } else {
+        "Zigbee pairing is inactive"
+    };
     pairing_response(pairing, message)
 }
 
-async fn start_pairing(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<PairingResponse>, AppError> {
-    Ok(pairing_response(state.zigbee.start_pairing().await?, "Zigbee pairing started"))
+async fn start_pairing(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<PairingResponse>, AppError> {
+    Ok(pairing_response(
+        state.zigbee.start_pairing().await?,
+        "Zigbee pairing started",
+    ))
 }
 
-async fn stop_pairing(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<PairingResponse>, AppError> {
-    Ok(pairing_response(state.zigbee.stop_pairing().await?, "Zigbee pairing stopped"))
+async fn stop_pairing(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<PairingResponse>, AppError> {
+    Ok(pairing_response(
+        state.zigbee.stop_pairing().await?,
+        "Zigbee pairing stopped",
+    ))
 }
 
-async fn touchlink_scan(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<SimpleResponse>, AppError> {
+async fn touchlink_scan(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<SimpleResponse>, AppError> {
     state.zigbee.touchlink_scan().await?;
     Ok(SimpleResponse::ok("Touchlink scan initiated"))
 }
@@ -111,7 +134,10 @@ async fn set_color(
     Json(body): Json<ColorBody>,
 ) -> Result<Json<ActionResponse>, AppError> {
     let lamp_state = state.zigbee.set_color(&lamp_id, body.x, body.y).await?;
-    Ok(ActionResponse::ok(lamp_state, "Zigbee lamp color updated".to_string()))
+    Ok(ActionResponse::ok(
+        lamp_state,
+        "Zigbee lamp color updated".to_string(),
+    ))
 }
 
 async fn set_effect(
@@ -120,5 +146,8 @@ async fn set_effect(
     Json(body): Json<EffectBody>,
 ) -> Result<Json<ActionResponse>, AppError> {
     let lamp_state = state.zigbee.set_effect(&lamp_id, &body.effect).await?;
-    Ok(ActionResponse::ok(lamp_state, "Zigbee lamp effect applied".to_string()))
+    Ok(ActionResponse::ok(
+        lamp_state,
+        "Zigbee lamp effect applied".to_string(),
+    ))
 }

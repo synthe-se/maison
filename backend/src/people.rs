@@ -133,7 +133,12 @@ impl std::str::FromStr for Scope {
         Self::ALL
             .into_iter()
             .find(|s| s.as_str() == value)
-            .ok_or_else(|| format!("unknown scope « {value} » (known: {})", Self::ALL.map(Self::as_str).join(", ")))
+            .ok_or_else(|| {
+                format!(
+                    "unknown scope « {value} » (known: {})",
+                    Self::ALL.map(Self::as_str).join(", ")
+                )
+            })
     }
 }
 
@@ -231,7 +236,10 @@ fn stamp(path: &Path) -> Stamp {
 
 impl People {
     pub fn new(path: &Path) -> Self {
-        Self { path: path.to_path_buf(), cache: Mutex::new(None) }
+        Self {
+            path: path.to_path_buf(),
+            cache: Mutex::new(None),
+        }
     }
 
     async fn read<T>(&self, f: impl FnOnce(&Book) -> T) -> Result<T, AppError> {
@@ -315,23 +323,43 @@ impl People {
     }
 
     pub async fn person(&self, id: &str) -> Result<Option<Person>, AppError> {
-        self.read(|b| b.people.iter().find(|p| p.id == id).cloned()).await
+        self.read(|b| b.people.iter().find(|p| p.id == id).cloned())
+            .await
     }
 
     /// The credential ids a person already has (not to register twice on one device).
     pub async fn credential_ids_of(&self, person: &str) -> Result<Vec<String>, AppError> {
-        self.read(|b| b.passkeys.iter().filter(|k| k.person == person).map(|k| k.credential_id.clone()).collect())
-            .await
+        self.read(|b| {
+            b.passkeys
+                .iter()
+                .filter(|k| k.person == person)
+                .map(|k| k.credential_id.clone())
+                .collect()
+        })
+        .await
     }
 
     pub async fn passkeys_of(&self, person: &str) -> Result<Vec<PasskeyInfo>, AppError> {
-        self.read(|b| b.passkeys.iter().filter(|k| k.person == person).map(info).collect()).await
+        self.read(|b| {
+            b.passkeys
+                .iter()
+                .filter(|k| k.person == person)
+                .map(info)
+                .collect()
+        })
+        .await
     }
 
     /// The passkey with this credential id, and whose it is.
-    pub async fn passkey_by_credential(&self, credential_id: &str) -> Result<Option<(StoredPasskey, Person)>, AppError> {
+    pub async fn passkey_by_credential(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<(StoredPasskey, Person)>, AppError> {
         self.read(|b| {
-            let key = b.passkeys.iter().find(|k| k.credential_id == credential_id)?;
+            let key = b
+                .passkeys
+                .iter()
+                .find(|k| k.credential_id == credential_id)?;
             let person = b.people.iter().find(|p| p.id == key.person)?;
             Some((key.clone(), person.clone()))
         })
@@ -339,10 +367,17 @@ impl People {
     }
 
     /// After a sign-in: when, and the credential's new counter and backup state if they moved.
-    pub async fn passkey_used(&self, id: &str, passkey: Option<(serde_json::Value, bool)>, now_ms: i64) -> Result<(), AppError> {
+    pub async fn passkey_used(
+        &self,
+        id: &str,
+        passkey: Option<(serde_json::Value, bool)>,
+        now_ms: i64,
+    ) -> Result<(), AppError> {
         let id = id.to_string();
         self.edit(move |b| {
-            let Some(key) = b.passkeys.iter_mut().find(|k| k.id == id) else { return ((), false) };
+            let Some(key) = b.passkeys.iter_mut().find(|k| k.id == id) else {
+                return ((), false);
+            };
             key.last_used_ms = Some(now_ms);
             if let Some((json, backed_up)) = passkey {
                 key.passkey = json;
@@ -354,9 +389,15 @@ impl People {
     }
 
     /// Another passkey for someone who has one already.
-    pub async fn add_passkey(&self, key: StoredPasskey) -> Result<Result<(), PasskeyTaken>, AppError> {
+    pub async fn add_passkey(
+        &self,
+        key: StoredPasskey,
+    ) -> Result<Result<(), PasskeyTaken>, AppError> {
         self.edit(move |b| {
-            if b.passkeys.iter().any(|k| k.credential_id == key.credential_id) {
+            if b.passkeys
+                .iter()
+                .any(|k| k.credential_id == key.credential_id)
+            {
                 return (Err(PasskeyTaken), false);
             }
             b.passkeys.push(key);
@@ -365,14 +406,25 @@ impl People {
         .await
     }
 
-    pub async fn rename_passkey(&self, person: &str, id: &str, name: &str) -> Result<Option<PasskeyInfo>, AppError> {
+    pub async fn rename_passkey(
+        &self,
+        person: &str,
+        id: &str,
+        name: &str,
+    ) -> Result<Option<PasskeyInfo>, AppError> {
         let (person, id, name) = (person.to_string(), id.to_string(), name.to_string());
-        self.edit(move |b| match b.passkeys.iter_mut().find(|k| k.person == person && k.id == id) {
-            Some(key) => {
-                key.name = name;
-                (Some(info(key)), true)
+        self.edit(move |b| {
+            match b
+                .passkeys
+                .iter_mut()
+                .find(|k| k.person == person && k.id == id)
+            {
+                Some(key) => {
+                    key.name = name;
+                    (Some(info(key)), true)
+                }
+                None => (None, false),
             }
-            None => (None, false),
         })
         .await
     }
@@ -381,7 +433,11 @@ impl People {
         let (person, id) = (person.to_string(), id.to_string());
         self.edit(move |b| {
             let mine = b.passkeys.iter().filter(|k| k.person == person).count();
-            match b.passkeys.iter().position(|k| k.person == person && k.id == id) {
+            match b
+                .passkeys
+                .iter()
+                .position(|k| k.person == person && k.id == id)
+            {
                 None => (Removed::NotFound, false),
                 Some(_) if mine <= 1 => (Removed::Last, false),
                 Some(i) => {
@@ -397,15 +453,21 @@ impl People {
 
     /// A person's user handle: theirs if they exist, else `fresh` (kept at redemption).
     pub async fn user_handle(&self, person: &str, fresh: &str) -> Result<String, AppError> {
-        self.read(|b| b.people.iter().find(|p| p.id == person).map_or_else(|| fresh.to_string(), |p| p.user_handle.clone()))
-            .await
+        self.read(|b| {
+            b.people
+                .iter()
+                .find(|p| p.id == person)
+                .map_or_else(|| fresh.to_string(), |p| p.user_handle.clone())
+        })
+        .await
     }
 
     pub async fn create_invite(&self, invite: StoredInvite) -> Result<(), AppError> {
         self.edit(move |b| {
             let now = invite.created_ms;
             // the spent and the expired go; a new link for someone replaces their pending one
-            b.invites.retain(|i| i.used_ms.is_none() && i.expires_ms > now && i.person != invite.person);
+            b.invites
+                .retain(|i| i.used_ms.is_none() && i.expires_ms > now && i.person != invite.person);
             b.invites.push(invite);
             ((), true)
         })
@@ -413,9 +475,18 @@ impl People {
     }
 
     /// The pending invitation whose token hashes to `token_hash`.
-    pub async fn invite_by_hash(&self, token_hash: &str, now_ms: i64) -> Result<Option<StoredInvite>, AppError> {
-        self.read(|b| b.invites.iter().find(|i| pending(i, now_ms) && same_hash(&i.token_hash, token_hash)).cloned())
-            .await
+    pub async fn invite_by_hash(
+        &self,
+        token_hash: &str,
+        now_ms: i64,
+    ) -> Result<Option<StoredInvite>, AppError> {
+        self.read(|b| {
+            b.invites
+                .iter()
+                .find(|i| pending(i, now_ms) && same_hash(&i.token_hash, token_hash))
+                .cloned()
+        })
+        .await
     }
 
     pub async fn invites(&self, now_ms: i64) -> Result<Vec<Invite>, AppError> {
@@ -458,10 +529,17 @@ impl People {
     ) -> Result<Option<Result<Person, PasskeyTaken>>, AppError> {
         let (invite_id, user_handle) = (invite_id.to_string(), user_handle.to_string());
         self.edit(move |b| {
-            let Some(invite) = b.invites.iter_mut().find(|i| i.id == invite_id && pending(i, now_ms)) else {
+            let Some(invite) = b
+                .invites
+                .iter_mut()
+                .find(|i| i.id == invite_id && pending(i, now_ms))
+            else {
                 return (None, false);
             };
-            if b.passkeys.iter().any(|k| k.credential_id == key.credential_id) {
+            if b.passkeys
+                .iter()
+                .any(|k| k.credential_id == key.credential_id)
+            {
                 return (Some(Err(PasskeyTaken)), false);
             }
             invite.used_ms = Some(now_ms);
@@ -524,7 +602,13 @@ impl People {
 
     /// The token whose secret hashes to `token_hash`.
     pub async fn token_by_hash(&self, token_hash: &str) -> Result<Option<StoredToken>, AppError> {
-        self.read(|b| b.tokens.iter().find(|t| same_hash(&t.token_hash, token_hash)).cloned()).await
+        self.read(|b| {
+            b.tokens
+                .iter()
+                .find(|t| same_hash(&t.token_hash, token_hash))
+                .cloned()
+        })
+        .await
     }
 
     /// The token named `name_or_id` (by its name or its id) goes, at once. False when unknown.
@@ -600,7 +684,8 @@ pub fn slug(name: &str) -> String {
 /// A name as kept: trimmed, not empty, `MAX_NAME` characters at most, no control characters.
 pub fn clean_name(name: &str) -> Option<&str> {
     let name = name.trim();
-    let ok = !name.is_empty() && name.chars().count() <= MAX_NAME && !name.chars().any(char::is_control);
+    let ok =
+        !name.is_empty() && name.chars().count() <= MAX_NAME && !name.chars().any(char::is_control);
     ok.then_some(name)
 }
 
@@ -645,24 +730,70 @@ mod tests {
     #[tokio::test]
     async fn an_invitation_is_spent_once_and_creates_the_person() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "leonard", Role::Admin, "t")).await.unwrap();
-        assert!(p.invite_by_hash(&hash_secret("t"), 10).await.unwrap().is_some());
-        assert!(p.invite_by_hash(&hash_secret("t"), 1_000).await.unwrap().is_none(), "expired");
-        let person = p.redeem_invite("i1", "h", key("k1", "leonard", "c1"), 10).await.unwrap().unwrap().unwrap();
-        assert_eq!((person.id.as_str(), person.role, person.user_handle.as_str()), ("leonard", Role::Admin, "h"));
-        assert!(p.redeem_invite("i1", "h", key("k2", "leonard", "c2"), 11).await.unwrap().is_none(), "single use");
-        assert!(p.invite_by_hash(&hash_secret("t"), 10).await.unwrap().is_none());
+        p.create_invite(invite("i1", "leonard", Role::Admin, "t"))
+            .await
+            .unwrap();
+        assert!(p
+            .invite_by_hash(&hash_secret("t"), 10)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            p.invite_by_hash(&hash_secret("t"), 1_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "expired"
+        );
+        let person = p
+            .redeem_invite("i1", "h", key("k1", "leonard", "c1"), 10)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (person.id.as_str(), person.role, person.user_handle.as_str()),
+            ("leonard", Role::Admin, "h")
+        );
+        assert!(
+            p.redeem_invite("i1", "h", key("k2", "leonard", "c2"), 11)
+                .await
+                .unwrap()
+                .is_none(),
+            "single use"
+        );
+        assert!(p
+            .invite_by_hash(&hash_secret("t"), 10)
+            .await
+            .unwrap()
+            .is_none());
         assert_eq!(p.passkeys_of("leonard").await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn coming_back_keeps_the_person_and_an_admin_stays_one() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "leonard", Role::Admin, "a")).await.unwrap();
-        p.redeem_invite("i1", "h1", key("k1", "leonard", "c1"), 1).await.unwrap().unwrap().unwrap();
-        p.create_invite(invite("i2", "leonard", Role::Member, "b")).await.unwrap();
-        let again = p.redeem_invite("i2", "h2", key("k2", "leonard", "c2"), 2).await.unwrap().unwrap().unwrap();
-        assert_eq!((again.role, again.user_handle.as_str()), (Role::Admin, "h1"));
+        p.create_invite(invite("i1", "leonard", Role::Admin, "a"))
+            .await
+            .unwrap();
+        p.redeem_invite("i1", "h1", key("k1", "leonard", "c1"), 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        p.create_invite(invite("i2", "leonard", Role::Member, "b"))
+            .await
+            .unwrap();
+        let again = p
+            .redeem_invite("i2", "h2", key("k2", "leonard", "c2"), 2)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (again.role, again.user_handle.as_str()),
+            (Role::Admin, "h1")
+        );
         assert_eq!(p.user_handle("leonard", "fresh").await.unwrap(), "h1");
         assert_eq!(p.user_handle("alex", "fresh").await.unwrap(), "fresh");
     }
@@ -670,26 +801,58 @@ mod tests {
     #[tokio::test]
     async fn a_credential_registers_once_and_the_last_passkey_stays() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "leonard", Role::Admin, "a")).await.unwrap();
-        p.redeem_invite("i1", "h", key("k1", "leonard", "c1"), 1).await.unwrap().unwrap().unwrap();
-        assert_eq!(p.add_passkey(key("k2", "leonard", "c1")).await.unwrap(), Err(PasskeyTaken));
-        p.add_passkey(key("k2", "leonard", "c2")).await.unwrap().unwrap();
-        assert_eq!(p.delete_passkey("someone", "k1").await.unwrap(), Removed::NotFound);
-        assert_eq!(p.delete_passkey("leonard", "k1").await.unwrap(), Removed::Yes);
-        assert_eq!(p.delete_passkey("leonard", "k2").await.unwrap(), Removed::Last);
+        p.create_invite(invite("i1", "leonard", Role::Admin, "a"))
+            .await
+            .unwrap();
+        p.redeem_invite("i1", "h", key("k1", "leonard", "c1"), 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            p.add_passkey(key("k2", "leonard", "c1")).await.unwrap(),
+            Err(PasskeyTaken)
+        );
+        p.add_passkey(key("k2", "leonard", "c2"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            p.delete_passkey("someone", "k1").await.unwrap(),
+            Removed::NotFound
+        );
+        assert_eq!(
+            p.delete_passkey("leonard", "k1").await.unwrap(),
+            Removed::Yes
+        );
+        assert_eq!(
+            p.delete_passkey("leonard", "k2").await.unwrap(),
+            Removed::Last
+        );
         let (found, owner) = p.passkey_by_credential("c2").await.unwrap().unwrap();
         assert_eq!((found.id.as_str(), owner.id.as_str()), ("k2", "leonard"));
-        assert!(p.rename_passkey("leonard", "k2", "iPhone").await.unwrap().is_some());
+        assert!(p
+            .rename_passkey("leonard", "k2", "iPhone")
+            .await
+            .unwrap()
+            .is_some());
         assert_eq!(p.passkeys_of("leonard").await.unwrap()[0].name, "iPhone");
     }
 
     #[tokio::test]
     async fn a_new_link_replaces_the_pending_one_and_can_be_revoked() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "alex", Role::Member, "a")).await.unwrap();
-        p.create_invite(invite("i2", "alex", Role::Member, "b")).await.unwrap();
+        p.create_invite(invite("i1", "alex", Role::Member, "a"))
+            .await
+            .unwrap();
+        p.create_invite(invite("i2", "alex", Role::Member, "b"))
+            .await
+            .unwrap();
         let pending = p.invites(10).await.unwrap();
-        assert_eq!(pending.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["i2"]);
+        assert_eq!(
+            pending.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["i2"]
+        );
         assert!(p.delete_invite("i2").await.unwrap());
         assert!(!p.delete_invite("i2").await.unwrap());
         assert!(p.invites(10).await.unwrap().is_empty());
@@ -711,17 +874,34 @@ mod tests {
     async fn a_token_is_found_by_its_hash_named_once_and_revoked() {
         let (dir, p) = people();
         assert!(p.create_token(token("t1", "achi", "secret")).await.unwrap());
-        assert!(!p.create_token(token("t2", "achi", "other")).await.unwrap(), "one name, one token");
-        let found = p.token_by_hash(&hash_secret("secret")).await.unwrap().unwrap();
+        assert!(
+            !p.create_token(token("t2", "achi", "other")).await.unwrap(),
+            "one name, one token"
+        );
+        let found = p
+            .token_by_hash(&hash_secret("secret"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((found.id.as_str(), found.scope), ("t1", Scope::Devices));
-        assert!(p.token_by_hash(&hash_secret("other")).await.unwrap().is_none());
+        assert!(p
+            .token_by_hash(&hash_secret("other"))
+            .await
+            .unwrap()
+            .is_none());
         p.token_used("t1", 42).await.unwrap();
         assert_eq!(p.tokens().await.unwrap()[0].last_used_ms, Some(42));
         let text = std::fs::read_to_string(dir.path().join("auth").join("auth.json")).unwrap();
         assert!(!text.contains("\"secret\""), "only the hash on disk");
         assert!(p.revoke_token("achi").await.unwrap(), "by name");
         assert!(!p.revoke_token("t1").await.unwrap());
-        assert!(p.token_by_hash(&hash_secret("secret")).await.unwrap().is_none(), "gone at once");
+        assert!(
+            p.token_by_hash(&hash_secret("secret"))
+                .await
+                .unwrap()
+                .is_none(),
+            "gone at once"
+        );
         assert!(p.create_token(token("t3", "achi", "again")).await.unwrap());
         assert!(p.revoke_token("t3").await.unwrap(), "by id");
     }
@@ -731,7 +911,11 @@ mod tests {
         assert_eq!(serde_json::to_value(Scope::Devices).unwrap(), "devices");
         assert_eq!("devices".parse::<Scope>(), Ok(Scope::Devices));
         for scope in Scope::ALL {
-            assert_eq!(serde_json::to_value(scope).unwrap(), scope.as_str(), "one word for the file and the CLI");
+            assert_eq!(
+                serde_json::to_value(scope).unwrap(),
+                scope.as_str(),
+                "one word for the file and the CLI"
+            );
         }
         assert!("admin".parse::<Scope>().is_err());
     }
@@ -740,7 +924,10 @@ mod tests {
     #[test]
     fn roles_are_written_as_words() {
         assert_eq!(serde_json::to_value(Role::Admin).unwrap(), "admin");
-        assert_eq!(serde_json::from_value::<Role>("member".into()).unwrap(), Role::Member);
+        assert_eq!(
+            serde_json::from_value::<Role>("member".into()).unwrap(),
+            Role::Member
+        );
         assert!(serde_json::from_value::<Role>("owner".into()).is_err());
     }
 

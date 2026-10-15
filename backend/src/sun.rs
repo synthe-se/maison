@@ -48,14 +48,23 @@ struct GeocodingResult {
 }
 
 /// Places matching a name (« Lyon » → Lyon, Auvergne-Rhône-Alpes, France), best first.
-pub async fn search(client: &reqwest::Client, query: &str, language: &str) -> Result<Vec<Place>, AppError> {
+pub async fn search(
+    client: &reqwest::Client,
+    query: &str,
+    language: &str,
+) -> Result<Vec<Place>, AppError> {
     let query = query.trim();
     if query.chars().count() < 2 {
         return Ok(Vec::new());
     }
     let response: GeocodingResponse = client
         .get(GEOCODING_API)
-        .query(&[("name", query), ("count", "6"), ("language", language), ("format", "json")])
+        .query(&[
+            ("name", query),
+            ("count", "6"),
+            ("language", language),
+            ("format", "json"),
+        ])
         .timeout(std::time::Duration::from_secs(8))
         .send()
         .await?
@@ -71,7 +80,11 @@ fn place_of(r: GeocodingResult) -> Place {
         .flatten()
         .collect::<Vec<_>>()
         .join(", ");
-    Place { name, latitude: r.latitude, longitude: r.longitude }
+    Place {
+        name,
+        latitude: r.latitude,
+        longitude: r.longitude,
+    }
 }
 
 #[cfg(test)]
@@ -80,7 +93,11 @@ mod tests {
     use chrono::Timelike;
 
     fn paris() -> Place {
-        Place { name: "Paris".into(), latitude: 48.8566, longitude: 2.3522 }
+        Place {
+            name: "Paris".into(),
+            latitude: 48.8566,
+            longitude: 2.3522,
+        }
     }
 
     #[test]
@@ -103,15 +120,26 @@ mod tests {
 
     #[test]
     fn no_sunset_in_a_polar_day() {
-        let tromso = Place { name: "Tromsø".into(), latitude: 69.65, longitude: 18.96 };
+        let tromso = Place {
+            name: "Tromsø".into(),
+            latitude: 69.65,
+            longitude: 18.96,
+        };
         let (rise, set) = sun_times(&tromso, NaiveDate::from_ymd_opt(2026, 6, 21).unwrap());
         assert!(rise.is_none() && set.is_none());
     }
 
     #[test]
     fn invalid_coordinates_give_no_times() {
-        let nowhere = Place { name: "x".into(), latitude: 123.0, longitude: 0.0 };
-        assert_eq!(sun_times(&nowhere, NaiveDate::from_ymd_opt(2026, 6, 21).unwrap()), (None, None));
+        let nowhere = Place {
+            name: "x".into(),
+            latitude: 123.0,
+            longitude: 0.0,
+        };
+        assert_eq!(
+            sun_times(&nowhere, NaiveDate::from_ymd_opt(2026, 6, 21).unwrap()),
+            (None, None)
+        );
     }
 
     #[test]

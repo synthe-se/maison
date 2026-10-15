@@ -37,29 +37,29 @@ pub use tempo::TempoService;
 
 use std::sync::Arc;
 
-use axum::Router;
-use axum::middleware::{self, Next};
-use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use androidtv::AndroidTvManager;
 use auth::RefreshTokenStore;
+use axum::http::header;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::Router;
 use broadlink::BroadlinkManager;
 use config::Config;
 use error::AppError;
 use hue::HueManager;
 use ir::IrManager;
 use matter::MatterManager;
-use nabaztag::NabaztagManager;
-use tower_http::cors::CorsLayer;
-use tower_http::timeout::TimeoutLayer;
-use tower_http::services::{ServeDir, ServeFile};
-use passkey::PasskeyState;
-use scenes::ScenesManager;
-use people::People;
 use meross::MerossManager;
+use nabaztag::NabaztagManager;
+use passkey::PasskeyState;
+use people::People;
+use scenes::ScenesManager;
+use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::TraceLayer;
 use tuya::TuyaManager;
 use tv::TvManager;
-use androidtv::AndroidTvManager;
-use tower_http::trace::TraceLayer;
 use zigbee::ZigbeeManager;
 
 #[derive(Clone)]
@@ -109,8 +109,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
     let tempo = TempoService::from_config(&config)?;
     let tuya = TuyaManager::new(&config.devices_path, &config.device_cache_path)?;
     let tv = TvManager::new(&config.tv_config_path, broadlink.clone())?;
-    let androidtv =
-        AndroidTvManager::new(
+    let androidtv = AndroidTvManager::new(
         &config.androidtv_config_path,
         &config.adb_key_path,
         &config.atv_identity_path,
@@ -142,40 +141,52 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
 
     // A screen paired but never back for its cookie leaves no token behind.
     let pairings = (state.pairings.clone(), state.people.clone());
-    every("unclaimed screen tokens", std::time::Duration::from_secs(60), move || {
-        let (pairings, people) = pairings.clone();
-        async move {
-            for name in pairings.expired_grants() {
-                if let Err(error) = people.revoke_token(&name).await {
-                    tracing::warn!(%error, screen = %name, "an unclaimed screen token was not revoked");
+    every(
+        "unclaimed screen tokens",
+        std::time::Duration::from_secs(60),
+        move || {
+            let (pairings, people) = pairings.clone();
+            async move {
+                for name in pairings.expired_grants() {
+                    if let Err(error) = people.revoke_token(&name).await {
+                        tracing::warn!(%error, screen = %name, "an unclaimed screen token was not revoked");
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 
     // The shutters' sun schedule: a look every 30 s sends what fell due since the last one.
     let schedule = state.matter.clone();
-    every("sun schedule", std::time::Duration::from_secs(30), move || {
-        let schedule = schedule.clone();
-        async move { schedule.run_schedule().await }
-    });
+    every(
+        "sun schedule",
+        std::time::Duration::from_secs(30),
+        move || {
+            let schedule = schedule.clone();
+            async move { schedule.run_schedule().await }
+        },
+    );
 
     // Mirror the daily Tempo colors on the Nabaztag. The push is two UDP datagrams and
     // idempotent, so it simply repeats every 15 minutes: that also re-applies the colors
     // after a rabbit reboot.
     let tempo_rabbit = state.clone();
-    every("tempo on the rabbit", std::time::Duration::from_secs(900), move || {
-        let state = tempo_rabbit.clone();
-        async move {
-            let config = state.nabaztag.config().await;
-            if !config.tempo_enabled || config.host.is_none() {
-                return;
+    every(
+        "tempo on the rabbit",
+        std::time::Duration::from_secs(900),
+        move || {
+            let state = tempo_rabbit.clone();
+            async move {
+                let config = state.nabaztag.config().await;
+                if !config.tempo_enabled || config.host.is_none() {
+                    return;
+                }
+                if let Err(error) = state.nabaztag.push_tempo_from(&state.tempo, false).await {
+                    tracing::debug!(%error, "tempo push to the rabbit failed");
+                }
             }
-            if let Err(error) = state.nabaztag.push_tempo_from(&state.tempo, false).await {
-                tracing::debug!(%error, "tempo push to the rabbit failed");
-            }
-        }
-    });
+        },
+    );
 
     let app = build_app(state.clone());
     Ok((app, state))
@@ -185,10 +196,17 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
 /// stops it.
 // only the Bluetooth (Hue) loops use it today
 #[cfg_attr(not(feature = "bluetooth"), allow(dead_code))]
-pub(crate) fn supervised(name: &'static str, task: impl std::future::Future<Output = ()> + Send + 'static) -> tokio::task::JoinHandle<()> {
+pub(crate) fn supervised(
+    name: &'static str,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
     use futures::FutureExt;
     tokio::spawn(async move {
-        if std::panic::AssertUnwindSafe(task).catch_unwind().await.is_err() {
+        if std::panic::AssertUnwindSafe(task)
+            .catch_unwind()
+            .await
+            .is_err()
+        {
             tracing::error!(task = name, "background task panicked");
         }
     })
@@ -197,7 +215,11 @@ pub(crate) fn supervised(name: &'static str, task: impl std::future::Future<Outp
 /// A background job run every `period` until its handle is aborted (or for the life of the
 /// process): a panic in one run is logged and the next run happens anyway (a bare loop would
 /// die silently). Aborting the handle also stops a run in flight.
-pub(crate) fn every<F, Fut>(name: &'static str, period: std::time::Duration, job: F) -> tokio::task::JoinHandle<()>
+pub(crate) fn every<F, Fut>(
+    name: &'static str,
+    period: std::time::Duration,
+    job: F,
+) -> tokio::task::JoinHandle<()>
 where
     F: Fn() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -208,8 +230,15 @@ where
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            if std::panic::AssertUnwindSafe(job()).catch_unwind().await.is_err() {
-                tracing::error!(job = name, "background job panicked; it runs again next time");
+            if std::panic::AssertUnwindSafe(job())
+                .catch_unwind()
+                .await
+                .is_err()
+            {
+                tracing::error!(
+                    job = name,
+                    "background job panicked; it runs again next time"
+                );
             }
         }
     })
@@ -237,7 +266,10 @@ type DeviceRouter = fn() -> Router<AppState>;
 /// Whether `path` is one of `DEVICE_ROUTES`.
 fn is_device_path(path: &str) -> bool {
     path.strip_prefix("/api").is_some_and(|rest| {
-        DEVICE_ROUTES.iter().any(|(prefix, _)| rest.strip_prefix(prefix).is_some_and(|r| r.is_empty() || r.starts_with('/')))
+        DEVICE_ROUTES.iter().any(|(prefix, _)| {
+            rest.strip_prefix(prefix)
+                .is_some_and(|r| r.is_empty() || r.starts_with('/'))
+        })
     })
 }
 
@@ -248,8 +280,13 @@ pub fn build_app(state: AppState) -> Router {
     // (`ir`, whose handlers name their own extractor) stay outside.
     let signed_in = DEVICE_ROUTES
         .into_iter()
-        .fold(Router::<AppState>::new(), |router, (prefix, routes)| router.nest(prefix, routes()))
-        .route_layer(middleware::from_extractor_with_state::<auth::DeviceClient, AppState>(state.clone()));
+        .fold(Router::<AppState>::new(), |router, (prefix, routes)| {
+            router.nest(prefix, routes())
+        })
+        .route_layer(middleware::from_extractor_with_state::<
+            auth::DeviceClient,
+            AppState,
+        >(state.clone()));
     let api_router = Router::<AppState>::new()
         .merge(routes::root::api_router())
         .nest("/auth", routes::auth::router())
@@ -265,8 +302,9 @@ pub fn build_app(state: AppState) -> Router {
     let csp = content_security_policy(&state.config.frontend_dist_dir);
     let app = if state.config.frontend_dist_dir.join("index.html").is_file() {
         app.fallback_service(
-            ServeDir::new(state.config.frontend_dist_dir.clone())
-                .not_found_service(ServeFile::new(state.config.frontend_dist_dir.join("index.html"))),
+            ServeDir::new(state.config.frontend_dist_dir.clone()).not_found_service(
+                ServeFile::new(state.config.frontend_dist_dir.join("index.html")),
+            ),
         )
     } else {
         app.merge(routes::root::router())
@@ -277,39 +315,47 @@ pub fn build_app(state: AppState) -> Router {
     app.layer(middleware::from_fn(move |request, next| {
         security_headers(request, next, csp.clone())
     }))
-        .layer(middleware::from_fn(guard_request))
-        .layer(CorsLayer::new())
-        // Last-resort guard so no request can hang a connection forever; the
-        // limit sits above every legitimate long operation (IR learning,
-        // device discovery, Zigbee command reply timeout of 120s).
-        .layer(TimeoutLayer::with_status_code(
-            axum::http::StatusCode::GATEWAY_TIMEOUT,
-            std::time::Duration::from_secs(180),
-        ))
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|request: &axum::extract::Request| {
-                    tracing::info_span!(
-                        "http",
-                        method = %request.method(),
-                        uri = %loggable_path(request.uri().path()),
-                    )
-                }),
-        )
-        .with_state(state)
+    .layer(middleware::from_fn(guard_request))
+    .layer(CorsLayer::new())
+    // Last-resort guard so no request can hang a connection forever; the
+    // limit sits above every legitimate long operation (IR learning,
+    // device discovery, Zigbee command reply timeout of 120s).
+    .layer(TimeoutLayer::with_status_code(
+        axum::http::StatusCode::GATEWAY_TIMEOUT,
+        std::time::Duration::from_secs(180),
+    ))
+    .layer(
+        TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+            tracing::info_span!(
+                "http",
+                method = %request.method(),
+                uri = %loggable_path(request.uri().path()),
+            )
+        }),
+    )
+    .with_state(state)
 }
 
 /// What a request may do before any route sees it (`request_allowed`).
 async fn guard_request(request: axum::extract::Request, next: Next) -> Response {
-    use axum::extract::{ConnectInfo, connect_info::MockConnectInfo};
+    use axum::extract::{connect_info::MockConnectInfo, ConnectInfo};
     // the server's peer address, or the one a test mocks (as axum's ConnectInfo reads it)
     let extensions = request.extensions();
     let peer = extensions
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|c| c.0)
-        .or_else(|| extensions.get::<MockConnectInfo<std::net::SocketAddr>>().map(|m| m.0))
+        .or_else(|| {
+            extensions
+                .get::<MockConnectInfo<std::net::SocketAddr>>()
+                .map(|m| m.0)
+        })
         .map(|addr| addr.ip());
-    match request_allowed(peer, request.method(), request.uri().path(), request.headers()) {
+    match request_allowed(
+        peer,
+        request.method(),
+        request.uri().path(),
+        request.headers(),
+    ) {
         Ok(()) => next.run(request).await,
         Err(why) => {
             tracing::warn!(?peer, path = %loggable_path(request.uri().path()), why, "request refused");
@@ -338,7 +384,10 @@ fn request_allowed(
     if !local && !matches!(path, "/health" | "/api/ir/key") && !machine() {
         return Err("Use the public address");
     }
-    if matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS) {
+    if matches!(
+        *method,
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    ) {
         return Ok(());
     }
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
@@ -346,7 +395,9 @@ fn request_allowed(
         Some("same-origin" | "none") => Ok(()),
         Some(_) => Err("Cross-site request refused"),
         None => match (header("origin"), header("host")) {
-            (Some(origin), Some(host)) if origin.split_once("://").map(|(_, h)| h) != Some(host) => {
+            (Some(origin), Some(host))
+                if origin.split_once("://").map(|(_, h)| h) != Some(host) =>
+            {
                 Err("Cross-origin request refused")
             }
             _ => Ok(()),
@@ -387,15 +438,27 @@ async fn security_headers(
     let cache = cache_policy(request.uri().path());
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static(cache));
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static(cache),
+    );
     let fixed = header::HeaderValue::from_static;
     headers.insert("cross-origin-opener-policy", fixed("same-origin"));
-    headers.insert("permissions-policy", fixed("camera=(), microphone=(), geolocation=(), payment=(), usb=()"));
+    headers.insert(
+        "permissions-policy",
+        fixed("camera=(), microphone=(), geolocation=(), payment=(), usb=()"),
+    );
     headers.insert(header::X_FRAME_OPTIONS, fixed("DENY"));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, fixed("nosniff"));
-    headers.insert(header::STRICT_TRANSPORT_SECURITY, fixed("max-age=63072000; includeSubDomains"));
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        fixed("max-age=63072000; includeSubDomains"),
+    );
     headers.insert(header::CONTENT_SECURITY_POLICY, csp);
-    headers.insert(header::REFERRER_POLICY, fixed("strict-origin-when-cross-origin"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        fixed("strict-origin-when-cross-origin"),
+    );
     response
 }
 
@@ -410,7 +473,10 @@ fn content_security_policy(dist_dir: &std::path::Path) -> header::HeaderValue {
             use base64::Engine;
             use sha2::Digest;
             let digest = sha2::Sha256::digest(script.as_bytes());
-            format!(" 'sha256-{}'", base64::engine::general_purpose::STANDARD.encode(digest))
+            format!(
+                " 'sha256-{}'",
+                base64::engine::general_purpose::STANDARD.encode(digest)
+            )
         })
         .collect();
     format!(
@@ -432,7 +498,10 @@ fn inline_scripts(page: &str) -> impl Iterator<Item = &str> {
 impl AppState {
     pub fn validate_runtime_security(&self) -> Result<(), AppError> {
         jwt_secret_problem(&self.config.jwt_secret).map_or(Ok(()), |why| {
-            Err(AppError::http(axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Refusing to start: {why}")))
+            Err(AppError::http(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Refusing to start: {why}"),
+            ))
         })
     }
 
@@ -447,7 +516,12 @@ impl AppState {
 /// Why `secret` cannot sign sessions: anyone who guesses it forges an admin's token from
 /// the internet. At least 32 bytes, and none of the placeholders the examples ship.
 fn jwt_secret_problem(secret: &str) -> Option<&'static str> {
-    const PLACEHOLDERS: &[&str] = &[config::DEFAULT_JWT_SECRET, "change-me", "changeme", "secret"];
+    const PLACEHOLDERS: &[&str] = &[
+        config::DEFAULT_JWT_SECRET,
+        "change-me",
+        "changeme",
+        "secret",
+    ];
     if PLACEHOLDERS.iter().any(|p| secret.eq_ignore_ascii_case(p)) {
         Some("JWT_SECRET is a placeholder; set a random one in .env (openssl rand -hex 32)")
     } else if secret.len() < 32 {
@@ -480,7 +554,13 @@ mod guard_tests {
         assert!(request_allowed(lan, &Method::GET, "/api/meross", &none).is_err());
         assert!(request_allowed(lan, &Method::GET, "/", &none).is_err());
         assert!(request_allowed(tunnel, &Method::GET, "/api/meross", &none).is_ok());
-        assert!(request_allowed(Some("::ffff:127.0.0.1".parse().unwrap()), &Method::GET, "/x", &none).is_ok());
+        assert!(request_allowed(
+            Some("::ffff:127.0.0.1".parse().unwrap()),
+            &Method::GET,
+            "/x",
+            &none
+        )
+        .is_ok());
     }
 
     #[test]
@@ -488,40 +568,99 @@ mod guard_tests {
         let lan = Some("100.64.0.7".parse().unwrap());
         let service = headers(&[("authorization", "Bearer maison_abc")]);
         let session = headers(&[("authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.x.y")]);
-        for path in ["/api/zigbee/lamps", "/api/zigbee/lamps/1/power", "/api/matter/covers", "/api/tv", "/api/scenes/x/run"] {
-            assert!(request_allowed(lan, &Method::POST, path, &service).is_ok(), "{path}");
-            assert!(request_allowed(lan, &Method::POST, path, &session).is_err(), "{path}: a session goes through the tunnel");
+        for path in [
+            "/api/zigbee/lamps",
+            "/api/zigbee/lamps/1/power",
+            "/api/matter/covers",
+            "/api/tv",
+            "/api/scenes/x/run",
+        ] {
+            assert!(
+                request_allowed(lan, &Method::POST, path, &service).is_ok(),
+                "{path}"
+            );
+            assert!(
+                request_allowed(lan, &Method::POST, path, &session).is_err(),
+                "{path}: a session goes through the tunnel"
+            );
         }
-        for path in ["/api/people", "/api/invites", "/api/passkeys", "/api/auth/verify", "/api/ir/keymap", "/api/zigbeex", "/"] {
-            assert!(request_allowed(lan, &Method::GET, path, &service).is_err(), "{path}");
+        for path in [
+            "/api/people",
+            "/api/invites",
+            "/api/passkeys",
+            "/api/auth/verify",
+            "/api/ir/keymap",
+            "/api/zigbeex",
+            "/",
+        ] {
+            assert!(
+                request_allowed(lan, &Method::GET, path, &service).is_err(),
+                "{path}"
+            );
         }
     }
 
     #[test]
     fn a_change_must_come_from_this_site() {
         let local = Some("127.0.0.1".parse().unwrap());
-        let post = |h: &[(&'static str, &str)]| request_allowed(local, &Method::POST, "/api/meross/x/toggle", &headers(h));
+        let post = |h: &[(&'static str, &str)]| {
+            request_allowed(local, &Method::POST, "/api/meross/x/toggle", &headers(h))
+        };
         assert!(post(&[("sec-fetch-site", "same-origin")]).is_ok());
         assert!(post(&[("sec-fetch-site", "cross-site")]).is_err());
-        assert!(post(&[("sec-fetch-site", "same-site")]).is_err(), "a sibling subdomain is not this site");
-        assert!(post(&[("origin", "https://evil.example"), ("host", "home.kahn.studio")]).is_err());
-        assert!(post(&[("origin", "https://home.kahn.studio"), ("host", "home.kahn.studio")]).is_ok());
+        assert!(
+            post(&[("sec-fetch-site", "same-site")]).is_err(),
+            "a sibling subdomain is not this site"
+        );
+        assert!(post(&[
+            ("origin", "https://evil.example"),
+            ("host", "home.kahn.studio")
+        ])
+        .is_err());
+        assert!(post(&[
+            ("origin", "https://home.kahn.studio"),
+            ("host", "home.kahn.studio")
+        ])
+        .is_ok());
         assert!(post(&[]).is_ok(), "kird and curl say nothing");
-        assert!(request_allowed(local, &Method::GET, "/api/x", &headers(&[("sec-fetch-site", "cross-site")])).is_ok(), "reads are harmless");
+        assert!(
+            request_allowed(
+                local,
+                &Method::GET,
+                "/api/x",
+                &headers(&[("sec-fetch-site", "cross-site")])
+            )
+            .is_ok(),
+            "reads are harmless"
+        );
     }
 
     #[test]
     fn every_path_says_how_long_it_may_be_kept() {
         assert_eq!(cache_policy("/api/tempo"), "no-store");
-        assert_eq!(cache_policy("/_app/immutable/chunks/app.4f2a.js"), "public, max-age=31536000, immutable");
-        assert_eq!(cache_policy("/brand.svg"), "no-cache", "a new logo shows at the next visit");
+        assert_eq!(
+            cache_policy("/_app/immutable/chunks/app.4f2a.js"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_policy("/brand.svg"),
+            "no-cache",
+            "a new logo shows at the next visit"
+        );
         assert_eq!(cache_policy("/"), "no-cache");
     }
 
     #[test]
     fn invitation_tokens_stay_out_of_the_logs() {
-        assert_eq!(loggable_path(&format!("/api/invites/{}", "a".repeat(64))), "/api/invites/…");
-        assert_eq!(loggable_path("/api/invites/0123456789abcdef"), "/api/invites/0123456789abcdef", "an invitation's id is not secret");
+        assert_eq!(
+            loggable_path(&format!("/api/invites/{}", "a".repeat(64))),
+            "/api/invites/…"
+        );
+        assert_eq!(
+            loggable_path("/api/invites/0123456789abcdef"),
+            "/api/invites/0123456789abcdef",
+            "an invitation's id is not secret"
+        );
         assert_eq!(loggable_path("/api/meross"), "/api/meross");
     }
 
@@ -536,7 +675,10 @@ mod guard_tests {
 
 #[cfg(test)]
 mod every_tests {
-    use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
 
     #[tokio::test(start_paused = true)]
     async fn a_panicking_run_is_followed_by_the_next_and_abort_stops_it() {
@@ -547,7 +689,11 @@ mod every_tests {
             async move { assert!(n != 1, "the second run panics") }
         });
         tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
-        assert_eq!(runs.load(Ordering::SeqCst), 4, "runs at 0, 1 (panics), 2 and 3 s");
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            4,
+            "runs at 0, 1 (panics), 2 and 3 s"
+        );
         handle.abort();
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         assert_eq!(runs.load(Ordering::SeqCst), 4, "nothing after the abort");
@@ -580,8 +726,14 @@ b()
         std::fs::write(dir.path().join("index.html"), "<script>a()</script>").unwrap();
         let csp = content_security_policy(dir.path());
         let csp = csp.to_str().unwrap();
-        assert!(csp.contains("script-src 'self' 'sha256-qVpDBgj7bpq5hMAcGp3AOc79J3Y1Z4HvySTwKrWDoy4='"), "{csp}");
-        let scripts = csp.split(';').find(|d| d.trim_start().starts_with("script-src")).unwrap();
+        assert!(
+            csp.contains("script-src 'self' 'sha256-qVpDBgj7bpq5hMAcGp3AOc79J3Y1Z4HvySTwKrWDoy4='"),
+            "{csp}"
+        );
+        let scripts = csp
+            .split(';')
+            .find(|d| d.trim_start().starts_with("script-src"))
+            .unwrap();
         assert!(!scripts.contains("unsafe-inline"), "{scripts}");
     }
 

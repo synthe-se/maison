@@ -1,16 +1,16 @@
 use axum::{
-    Json, Router,
     extract::State,
     routing::{get, post, put},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState,
     auth::AdminUser,
     error::AppError,
     nabaztag::{NabaztagConfig, TempoPushResult},
     routes::{Answer, SimpleResponse},
+    AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -69,7 +69,10 @@ async fn send_command(
     Json(body): Json<CommandRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
     state.nabaztag.send_command(&body.command).await?;
-    Ok(SimpleResponse::ok(format!("Command sent: {}", body.command.trim())))
+    Ok(SimpleResponse::ok(format!(
+        "Command sent: {}",
+        body.command.trim()
+    )))
 }
 
 async fn push_tempo(
@@ -77,7 +80,10 @@ async fn push_tempo(
     body: Option<Json<TempoPushRequest>>,
 ) -> Result<Json<Answer<TempoPushed>>, AppError> {
     let force_refresh = body.map(|b| b.force_refresh).unwrap_or(false);
-    let result = state.nabaztag.push_tempo_from(&state.tempo, force_refresh).await?;
+    let result = state
+        .nabaztag
+        .push_tempo_from(&state.tempo, force_refresh)
+        .await?;
     Ok(Answer::ok(TempoPushed {
         message: format!(
             "Tempo pushed: today={}, tomorrow={}",

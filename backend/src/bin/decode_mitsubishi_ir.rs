@@ -10,8 +10,9 @@ use maison_backend::{
     broadlink::{self, BroadlinkCodeEntry},
     broadlink_ir,
     mitsubishi_ir::{
-        self, MitsubishiFrame, Setting, Vane, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US, MITSUBISHI_HDR_SPACE_US,
-        MITSUBISHI_ONE_SPACE_US, MITSUBISHI_REPEAT_GAP_US, MITSUBISHI_STATE_LEN, MITSUBISHI_ZERO_SPACE_US,
+        self, MitsubishiFrame, Setting, Vane, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US,
+        MITSUBISHI_HDR_SPACE_US, MITSUBISHI_ONE_SPACE_US, MITSUBISHI_REPEAT_GAP_US,
+        MITSUBISHI_STATE_LEN, MITSUBISHI_ZERO_SPACE_US,
     },
     util,
 };
@@ -35,7 +36,8 @@ fn run() -> Result<(), String> {
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(default_codes_path);
-    let codes = broadlink::read_codes(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let codes =
+        broadlink::read_codes(&path).map_err(|error| format!("{}: {error}", path.display()))?;
 
     println!("File: {}", path.display());
     println!("Codes: {}", codes.len());
@@ -69,7 +71,11 @@ fn decode_packet(packet_base64: &str) -> Result<DecodedPacket, String> {
         .map_err(|error| format!("invalid base64: {error}"))?;
     let durations_us = broadlink_ir::decode(&bytes)?;
     let (frames, repeat_gaps_us) = mitsubishi_ir::decode_frames(&durations_us)?;
-    Ok(DecodedPacket { durations_us, repeat_gaps_us, frames })
+    Ok(DecodedPacket {
+        durations_us,
+        repeat_gaps_us,
+        frames,
+    })
 }
 
 fn print_code_report(code: &BroadlinkCodeEntry, packet: &DecodedPacket) {
@@ -120,11 +126,26 @@ fn print_code_report(code: &BroadlinkCodeEntry, packet: &DecodedPacket) {
     let state = mitsubishi_ir::read_state(bytes);
     let extras = read_extras(bytes);
     println!("  power: {}", on_off(state.power));
-    println!("  mode: {} (0b{:03b})", name(state.mode), (bytes[6] >> 3) & 0x07);
-    println!("  temperature: {} C", format_temperature(state.temperature_half_degrees));
+    println!(
+        "  mode: {} (0b{:03b})",
+        name(state.mode),
+        (bytes[6] >> 3) & 0x07
+    );
+    println!(
+        "  temperature: {} C",
+        format_temperature(state.temperature_half_degrees)
+    );
     println!("  fan: {} (byte 9 = {:02X})", name(state.fan), bytes[9]);
-    println!("  vane vertical: {} (bit={})", name(state.vane), on_off(bytes[9] & 0x40 != 0));
-    println!("  vane horizontal: {} (code={})", name(state.wide_vane), bytes[8] >> 4);
+    println!(
+        "  vane vertical: {} (bit={})",
+        name(state.vane),
+        on_off(bytes[9] & 0x40 != 0)
+    );
+    println!(
+        "  vane horizontal: {} (code={})",
+        name(state.wide_vane),
+        bytes[8] >> 4
+    );
     println!(
         "  timers: current={}, clock={}, start={}, stop={}, weekly={}",
         name(state.timer),

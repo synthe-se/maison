@@ -82,7 +82,12 @@ impl Config {
         };
         let flag = |name: &str, default: bool| {
             var(name).map_or(default, |v| {
-                if !is_truthy(&v) && !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off") {
+                if !is_truthy(&v)
+                    && !matches!(
+                        v.to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no" | "off"
+                    )
+                {
                     tracing::warn!(setting = name, value = %v, "not a yes or a no: read as no");
                 }
                 is_truthy(&v)
@@ -174,13 +179,22 @@ pub fn env_text(name: &str) -> Option<String> {
 
 /// `1`, `true`, `yes`, `on` (any case) are true; anything else is false.
 fn is_truthy(value: &str) -> bool {
-    matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 /// The setting `name` parsed, else `default`; a value that does not parse is said in the
 /// log (a typo must not pass for the default without a word).
-fn parsed<T: std::str::FromStr>(var: &impl Fn(&str) -> Option<String>, name: &str, default: T) -> T {
-    let Some(value) = var(name) else { return default };
+fn parsed<T: std::str::FromStr>(
+    var: &impl Fn(&str) -> Option<String>,
+    name: &str,
+    default: T,
+) -> T {
+    let Some(value) = var(name) else {
+        return default;
+    };
     value.parse().unwrap_or_else(|_| {
         tracing::warn!(setting = name, %value, "unparsable setting: using its default");
         default
@@ -217,7 +231,12 @@ mod tests {
     use super::*;
 
     fn with(pairs: &'static [(&'static str, &'static str)]) -> Config {
-        Config::load(PathBuf::from("/x"), |name| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
+        Config::load(PathBuf::from("/x"), |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        })
     }
 
     #[test]
@@ -225,9 +244,28 @@ mod tests {
         assert_eq!(with(&[]).port, 3033);
         assert_eq!(with(&[("PORT", "8080")]).port, 8080);
         assert_eq!(with(&[("API_PORT", "8081")]).port, 8081);
-        assert_eq!(with(&[("PORT", "8080"), ("API_PORT", "8081")]).port, 8080, "PORT first");
-        assert_eq!(with(&[("PORT", "eighty")]).port, 3033, "garbage: the default (and a warning)");
-        assert_eq!(with(&[("ZIGBEE_PERMIT_JOIN_SECONDS", "-1")]).zigbee.permit_join_seconds, 120, "out of range: the default");
-        assert_eq!(with(&[("ZIGBEE_PERMIT_JOIN_SECONDS", "60")]).zigbee.permit_join_seconds, 60);
+        assert_eq!(
+            with(&[("PORT", "8080"), ("API_PORT", "8081")]).port,
+            8080,
+            "PORT first"
+        );
+        assert_eq!(
+            with(&[("PORT", "eighty")]).port,
+            3033,
+            "garbage: the default (and a warning)"
+        );
+        assert_eq!(
+            with(&[("ZIGBEE_PERMIT_JOIN_SECONDS", "-1")])
+                .zigbee
+                .permit_join_seconds,
+            120,
+            "out of range: the default"
+        );
+        assert_eq!(
+            with(&[("ZIGBEE_PERMIT_JOIN_SECONDS", "60")])
+                .zigbee
+                .permit_join_seconds,
+            60
+        );
     }
 }

@@ -6,13 +6,13 @@
 use std::time::Duration;
 
 use ezsp::{
-    Zll,
     ember::{
         node::Type as EmberNodeType,
         zll::{self, InitialSecurityState as ZllInitialSecurityState, Network as ZllNetwork},
     },
     ezsp::zll::NetworkOperation as ZllNetworkOperation,
     parameters::zll::handler::Handler as ZllHandler,
+    Zll,
 };
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
@@ -30,7 +30,9 @@ const ZLL_PRIMARY_CHANNEL_MASK: u32 = (1 << 11) | (1 << 15) | (1 << 20) | (1 << 
 const ZLL_ALL_CHANNELS_MASK: u32 = 0x07FF_F800;
 /// The well-known « ZigBee Light Link Master Key », shared by every certified ZLL device:
 /// it encrypts the network key during commissioning.
-const ZLL_MASTER_KEY: [u8; 16] = [0x9F, 0x55, 0x95, 0xF1, 0x02, 0x57, 0xC8, 0xA4, 0x69, 0xCB, 0xF4, 0x2B, 0xC9, 0x3F, 0xEE, 0x31];
+const ZLL_MASTER_KEY: [u8; 16] = [
+    0x9F, 0x55, 0x95, 0xF1, 0x02, 0x57, 0xC8, 0xA4, 0x69, 0xCB, 0xF4, 0x2B, 0xC9, 0x3F, 0xEE, 0x31,
+];
 /// ZLL InitialSecurityState bitmask: reserved per the EZSP documentation.
 const ZLL_SECURITY_KEY_BITMASK: u32 = 0;
 const TOUCHLINK_SCAN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -63,7 +65,10 @@ pub async fn touchlink_scan(context: &mut EzspContext) -> Result<(), DriverError
     for (index, lamp) in found.iter().enumerate() {
         commission(context, index, lamp).await;
     }
-    info!(commissioned = found.len(), "touchlink: commissioning complete");
+    info!(
+        commissioned = found.len(),
+        "touchlink: commissioning complete"
+    );
     Ok(())
 }
 
@@ -71,7 +76,12 @@ pub async fn touchlink_scan(context: &mut EzspContext) -> Result<(), DriverError
 /// without a network key: `set_initial_security_state` only works before a network is
 /// formed, and ours runs; the NCP knows its own network key.
 async fn configure_zll(context: &mut EzspContext) -> Result<(), DriverError> {
-    let security = ZllInitialSecurityState::new(ZLL_SECURITY_KEY_BITMASK, zll::KeyIndex::Master, ZLL_MASTER_KEY, [0u8; 16]);
+    let security = ZllInitialSecurityState::new(
+        ZLL_SECURITY_KEY_BITMASK,
+        zll::KeyIndex::Master,
+        ZLL_MASTER_KEY,
+        [0u8; 16],
+    );
     Zll::set_security_state_without_key(&mut context.connection, security)
         .await
         .map_err(DriverError::ezsp("set ZLL security state"))?;
@@ -81,19 +91,38 @@ async fn configure_zll(context: &mut EzspContext) -> Result<(), DriverError> {
         .set_primary_channel_mask(ZLL_PRIMARY_CHANNEL_MASK)
         .await
         .map_err(DriverError::ezsp("set ZLL primary channel mask"))?;
-    info!(channel_mask = format_args!("0x{ZLL_PRIMARY_CHANNEL_MASK:08x}"), "touchlink: primary channel mask set");
+    info!(
+        channel_mask = format_args!("0x{ZLL_PRIMARY_CHANNEL_MASK:08x}"),
+        "touchlink: primary channel mask set"
+    );
     Ok(())
 }
 
 /// The primary channels, then every channel if they found nothing.
 async fn scan(context: &mut EzspContext) -> Result<Vec<TouchlinkFoundNetwork>, DriverError> {
-    let passes = [("primary ZLL (11,15,20,25)", ZLL_PRIMARY_CHANNEL_MASK), ("all Zigbee (11-26)", ZLL_ALL_CHANNELS_MASK)];
+    let passes = [
+        ("primary ZLL (11,15,20,25)", ZLL_PRIMARY_CHANNEL_MASK),
+        ("all Zigbee (11-26)", ZLL_ALL_CHANNELS_MASK),
+    ];
     for (label, channel_mask) in passes {
-        context.touchlink = TouchlinkScan { found: Vec::new(), in_progress: true };
-        info!(channels = label, channel_mask = format_args!("0x{channel_mask:08x}"), tx_power = TOUCHLINK_TX_POWER, "touchlink: starting scan pass");
-        Zll::start_scan(&mut context.connection, channel_mask, TOUCHLINK_TX_POWER, EmberNodeType::Coordinator)
-            .await
-            .map_err(DriverError::ezsp("start ZLL Touchlink scan"))?;
+        context.touchlink = TouchlinkScan {
+            found: Vec::new(),
+            in_progress: true,
+        };
+        info!(
+            channels = label,
+            channel_mask = format_args!("0x{channel_mask:08x}"),
+            tx_power = TOUCHLINK_TX_POWER,
+            "touchlink: starting scan pass"
+        );
+        Zll::start_scan(
+            &mut context.connection,
+            channel_mask,
+            TOUCHLINK_TX_POWER,
+            EmberNodeType::Coordinator,
+        )
+        .await
+        .map_err(DriverError::ezsp("start ZLL Touchlink scan"))?;
         // until ScanComplete, or the timeout
         let deadline = Instant::now() + TOUCHLINK_SCAN_TIMEOUT;
         while context.touchlink.in_progress {
@@ -103,10 +132,17 @@ async fn scan(context: &mut EzspContext) -> Result<Vec<TouchlinkFoundNetwork>, D
             }
         }
         if context.touchlink.in_progress {
-            warn!(channels = label, "touchlink: scan timed out after {TOUCHLINK_SCAN_TIMEOUT:?}");
+            warn!(
+                channels = label,
+                "touchlink: scan timed out after {TOUCHLINK_SCAN_TIMEOUT:?}"
+            );
             context.touchlink.in_progress = false;
         }
-        info!(found_count = context.touchlink.found.len(), channels = label, "touchlink: scan pass complete");
+        info!(
+            found_count = context.touchlink.found.len(),
+            channels = label,
+            "touchlink: scan pass complete"
+        );
         if !context.touchlink.found.is_empty() {
             break;
         }
@@ -119,7 +155,15 @@ async fn scan(context: &mut EzspContext) -> Result<Vec<TouchlinkFoundNetwork>, D
 async fn commission(context: &mut EzspContext, index: usize, lamp: &TouchlinkFoundNetwork) {
     let eui64 = format_eui64(lamp.network_info.eui64().into_array());
     info!(index, %eui64, rssi = lamp.rssi, device_id = ?lamp.device_id, endpoint = ?lamp.device_endpoint, "touchlink: commissioning ZLL device (JoinTarget)");
-    match context.connection.network_ops(lamp.network_info.clone(), ZllNetworkOperation::JoinTarget, TOUCHLINK_TX_POWER).await {
+    match context
+        .connection
+        .network_ops(
+            lamp.network_info.clone(),
+            ZllNetworkOperation::JoinTarget,
+            TOUCHLINK_TX_POWER,
+        )
+        .await
+    {
         Ok(()) => {
             info!(%eui64, "touchlink: JoinTarget command sent successfully — device should join the network");
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -162,7 +206,10 @@ pub fn handle_zll_callback(context: &mut EzspContext, handler: ZllHandler) {
             context.touchlink.in_progress = false;
         }
         ZllHandler::AddressAssignment(assignment) => {
-            info!(node_id = format_args!("0x{:04x}", assignment.address_info().node_id_()), "touchlink: address assignment received");
+            info!(
+                node_id = format_args!("0x{:04x}", assignment.address_info().node_id_()),
+                "touchlink: address assignment received"
+            );
         }
         ZllHandler::TouchLinkTarget(target) => {
             info!(eui64 = %format_eui64(target.network_info().eui64().into_array()),

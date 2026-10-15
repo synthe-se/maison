@@ -39,7 +39,7 @@ use std::{
     time::Duration,
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -50,7 +50,6 @@ use tokio::{
 };
 
 use crate::{
-    AppState,
     broadlink::BroadlinkManager,
     error::AppError,
     ir::SwitchState,
@@ -58,6 +57,7 @@ use crate::{
     net::{self, device_host, device_ipv4, unreachable},
     philips_ir,
     util::non_blank,
+    AppState,
 };
 
 const API_PORT: u16 = 1925;
@@ -253,13 +253,19 @@ pub struct TvConfig {
 impl Checked for TvConfig {
     fn checked(self) -> Result<Self, AppError> {
         let host = |value: Option<String>| non_blank(value).map(|v| device_host(&v)).transpose();
-        let ir_blaster_host =
-            non_blank(self.ir_blaster_host).map(|v| device_ipv4(&v).map(|ip| ip.to_string())).transpose()?;
+        let ir_blaster_host = non_blank(self.ir_blaster_host)
+            .map(|v| device_ipv4(&v).map(|ip| ip.to_string()))
+            .transpose()?;
         let box_wake_app = non_blank(self.box_wake_app);
         if let Some(app) = &box_wake_app {
             crate::androidtv::validate_package(app)?;
         }
-        Ok(Self { host: host(self.host)?, ir_blaster_host, box_host: host(self.box_host)?, box_wake_app })
+        Ok(Self {
+            host: host(self.host)?,
+            ir_blaster_host,
+            box_host: host(self.box_host)?,
+            box_wake_app,
+        })
     }
 }
 
@@ -286,7 +292,10 @@ impl TvVolume {
             current: level("current", 0),
             min: level("min", 0),
             max: level("max", 60),
-            muted: value.get("muted").and_then(|v| v.as_bool()).unwrap_or(false),
+            muted: value
+                .get("muted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         }
     }
 
@@ -357,7 +366,10 @@ impl TvManager {
 
     /// Checked where it came in (`Checked`), not again here.
     async fn host(&self) -> Result<String, AppError> {
-        self.config().await.host.ok_or_else(|| AppError::service_unavailable("No TV configured"))
+        self.config()
+            .await
+            .host
+            .ok_or_else(|| AppError::service_unavailable("No TV configured"))
     }
 
     /// Waits out the inter-request gap, then reports the moment the caller may
@@ -378,7 +390,12 @@ impl TvManager {
         let host = self.host().await?;
         let _guard = self.acquire().await;
         let url = format!("http://{host}:{API_PORT}/6/{}", endpoint.path());
-        let response = self.client.get(&url).send().await.map_err(|error| unreachable("TV", error))?;
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|error| unreachable("TV", error))?;
         if !response.status().is_success() {
             return Err(AppError::service_unavailable(format!(
                 "TV refused GET {} ({})",
@@ -394,8 +411,13 @@ impl TvManager {
         let host = self.host().await?;
         let _guard = self.acquire().await;
         let url = format!("http://{host}:{API_PORT}/6/{}", endpoint.path());
-        let response =
-            self.client.post(&url).json(&body).send().await.map_err(|error| unreachable("TV", error))?;
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| unreachable("TV", error))?;
         if !response.status().is_success() {
             return Err(AppError::service_unavailable(format!(
                 "TV refused POST {} ({})",
@@ -607,11 +629,8 @@ impl TvManager {
 
     /// Fires one Philips RC5 power code through the configured blaster.
     async fn send_power_code(&self, command: u8) -> Result<(), AppError> {
-        let host = self
-            .config()
-            .await
-            .ir_blaster_host
-            .ok_or_else(|| {
+        let host =
+            self.config().await.ir_blaster_host.ok_or_else(|| {
                 AppError::service_unavailable("No IR blaster configured for the TV")
             })?;
 
@@ -654,7 +673,9 @@ impl TvManager {
         let host = config
             .box_host
             .ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))?;
-        let app = config.box_wake_app.unwrap_or_else(|| DEFAULT_WAKE_APP.to_string());
+        let app = config
+            .box_wake_app
+            .unwrap_or_else(|| DEFAULT_WAKE_APP.to_string());
         let url = format!("http://{host}:{BOX_DIAL_PORT}/apps/{app}");
 
         let response = self
@@ -693,8 +714,14 @@ fn power_from_answer(answer: Result<serde_json::Value, AppError>) -> TvPower {
 
 /// Switches the set on or off, or flips it; on, it is routed to the box when asked. The
 /// one way both the dashboard and the IR remote power the set.
-pub async fn tv_power(state: &AppState, switch: SwitchState, to_box: bool) -> Result<TvPower, AppError> {
-    let on = switch.resolve(|| async { Ok(state.tv.power().await == TvPower::On) }).await?;
+pub async fn tv_power(
+    state: &AppState,
+    switch: SwitchState,
+    to_box: bool,
+) -> Result<TvPower, AppError> {
+    let on = switch
+        .resolve(|| async { Ok(state.tv.power().await == TvPower::On) })
+        .await?;
     if on {
         power_on_and_route(state, to_box).await
     } else {
@@ -751,8 +778,11 @@ mod tests {
     /// The manager needs a blaster to hold, but no test here sends a code, so
     /// it only has to exist and point at scratch paths.
     fn test_broadlink(dir: &tempfile::TempDir) -> BroadlinkManager {
-        BroadlinkManager::new(&dir.path().join("codes.json"), &dir.path().join("climate.json"))
-            .expect("broadlink")
+        BroadlinkManager::new(
+            &dir.path().join("codes.json"),
+            &dir.path().join("climate.json"),
+        )
+        .expect("broadlink")
     }
 
     /// A deep-sleeping set fails the connect quickly, not slowly: ARP gives up
@@ -766,16 +796,31 @@ mod tests {
             probe_from_error(ErrorKind::ConnectionRefused),
             Probe::HostUpApiDown
         );
-        assert_eq!(probe_from_error(ErrorKind::HostUnreachable), Probe::Unreachable);
-        assert_eq!(probe_from_error(ErrorKind::NetworkUnreachable), Probe::Unreachable);
+        assert_eq!(
+            probe_from_error(ErrorKind::HostUnreachable),
+            Probe::Unreachable
+        );
+        assert_eq!(
+            probe_from_error(ErrorKind::NetworkUnreachable),
+            Probe::Unreachable
+        );
         assert_eq!(probe_from_error(ErrorKind::TimedOut), Probe::Unreachable);
     }
 
     #[test]
     fn a_failed_powerstate_after_a_connect_is_on() {
-        assert_eq!(power_from_answer(Err(AppError::service_unavailable("TV unreachable"))), TvPower::On);
-        assert_eq!(power_from_answer(Ok(json!({ "powerstate": "On" }))), TvPower::On);
-        assert_eq!(power_from_answer(Ok(json!({ "powerstate": "Standby" }))), TvPower::Standby);
+        assert_eq!(
+            power_from_answer(Err(AppError::service_unavailable("TV unreachable"))),
+            TvPower::On
+        );
+        assert_eq!(
+            power_from_answer(Ok(json!({ "powerstate": "On" }))),
+            TvPower::On
+        );
+        assert_eq!(
+            power_from_answer(Ok(json!({ "powerstate": "Standby" }))),
+            TvPower::Standby
+        );
         assert_eq!(power_from_answer(Ok(json!({}))), TvPower::Standby);
     }
 
@@ -877,19 +922,47 @@ mod tests {
     #[tokio::test]
     async fn every_address_and_the_wake_app_are_checked() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let manager = TvManager::new(&dir.path().join("tv.json"), test_broadlink(&dir)).expect("manager");
-        let base = TvConfig { host: Some("192.168.1.52".into()), ..TvConfig::default() };
+        let manager =
+            TvManager::new(&dir.path().join("tv.json"), test_broadlink(&dir)).expect("manager");
+        let base = TvConfig {
+            host: Some("192.168.1.52".into()),
+            ..TvConfig::default()
+        };
         let bad = [
-            TvConfig { host: Some("127.0.0.1".into()), ..base.clone() },
-            TvConfig { host: Some("192.168.1.52/6/system#".into()), ..base.clone() },
-            TvConfig { box_host: Some("169.254.169.254".into()), ..base.clone() },
-            TvConfig { box_host: Some("box.example.com".into()), ..base.clone() },
-            TvConfig { ir_blaster_host: Some("blaster.local".into()), ..base.clone() },
-            TvConfig { box_wake_app: Some("../../admin".into()), ..base.clone() },
-            TvConfig { box_wake_app: Some("YouTube?x=1".into()), ..base.clone() },
+            TvConfig {
+                host: Some("127.0.0.1".into()),
+                ..base.clone()
+            },
+            TvConfig {
+                host: Some("192.168.1.52/6/system#".into()),
+                ..base.clone()
+            },
+            TvConfig {
+                box_host: Some("169.254.169.254".into()),
+                ..base.clone()
+            },
+            TvConfig {
+                box_host: Some("box.example.com".into()),
+                ..base.clone()
+            },
+            TvConfig {
+                ir_blaster_host: Some("blaster.local".into()),
+                ..base.clone()
+            },
+            TvConfig {
+                box_wake_app: Some("../../admin".into()),
+                ..base.clone()
+            },
+            TvConfig {
+                box_wake_app: Some("YouTube?x=1".into()),
+                ..base.clone()
+            },
         ];
         for config in bad {
-            assert!(manager.set_config(config.clone()).await.is_err(), "{config:?} accepted");
+            assert!(
+                manager.set_config(config.clone()).await.is_err(),
+                "{config:?} accepted"
+            );
         }
         let saved = manager
             .set_config(TvConfig {
@@ -908,8 +981,12 @@ mod tests {
     /// an upside-down one must not panic the clamp.
     #[test]
     fn volume_reads_and_clamps_without_panicking() {
-        let volume = TvVolume::from_json(&json!({ "current": 12, "min": 0, "max": 256, "muted": true }));
-        assert_eq!((volume.current, volume.min, volume.max, volume.muted), (12, 0, 255, true));
+        let volume =
+            TvVolume::from_json(&json!({ "current": 12, "min": 0, "max": 256, "muted": true }));
+        assert_eq!(
+            (volume.current, volume.min, volume.max, volume.muted),
+            (12, 0, 255, true)
+        );
         assert_eq!(volume.clamp(200), 200);
 
         let upside_down = TvVolume::from_json(&json!({ "current": 5, "min": 60, "max": 10 }));

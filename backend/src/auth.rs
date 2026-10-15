@@ -13,7 +13,11 @@
 //!   tokens and settings stay with people.
 //! - `MachineClient`: the IR bridge's bearer token, nothing else.
 
-use std::{collections::HashMap, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use axum::{
     extract::{FromRef, FromRequestParts},
@@ -61,7 +65,12 @@ pub struct AuthUser {
 
 impl AuthUser {
     pub fn of(person: &Person, auth_ms: i64) -> Self {
-        Self { id: person.id.clone(), name: person.name.clone(), role: person.role, auth_ms }
+        Self {
+            id: person.id.clone(),
+            name: person.name.clone(),
+            role: person.role,
+            auth_ms,
+        }
     }
 
     pub fn is_admin(&self) -> bool {
@@ -73,7 +82,10 @@ impl AuthUser {
 /// path `/`, so a sibling subdomain can neither read nor plant them).
 pub fn cookie_names(config: &Config) -> (String, String) {
     if config.auth_cookie_secure {
-        (format!("__Host-{}", config.auth_cookie_name), "__Host-maison_refresh".into())
+        (
+            format!("__Host-{}", config.auth_cookie_name),
+            "__Host-maison_refresh".into(),
+        )
     } else {
         (config.auth_cookie_name.clone(), "maison_refresh".into())
     }
@@ -81,7 +93,11 @@ pub fn cookie_names(config: &Config) -> (String, String) {
 
 /// A paired wall screen's cookie (`screens.rs`): its token, HttpOnly, `__Host-` when secure.
 pub fn screen_cookie_name(config: &Config) -> String {
-    if config.auth_cookie_secure { "__Host-maison_screen".into() } else { "maison_screen".into() }
+    if config.auth_cookie_secure {
+        "__Host-maison_screen".into()
+    } else {
+        "maison_screen".into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -102,9 +118,17 @@ where
             // a machine where only a person may be
             return Err(Refusal::Forbidden.into());
         }
-        let token = bearer.or_else(|| cookie_value(&parts.headers, &access)).ok_or(Refusal::NotSignedIn)?;
-        let claims = decode_token(token, state.config.jwt_secret.as_bytes()).map_err(|_| Refusal::NotSignedIn)?.claims;
-        let person = state.people.person(&claims.user_id).await?.ok_or(Refusal::NotSignedIn)?;
+        let token = bearer
+            .or_else(|| cookie_value(&parts.headers, &access))
+            .ok_or(Refusal::NotSignedIn)?;
+        let claims = decode_token(token, state.config.jwt_secret.as_bytes())
+            .map_err(|_| Refusal::NotSignedIn)?
+            .claims;
+        let person = state
+            .people
+            .person(&claims.user_id)
+            .await?
+            .ok_or(Refusal::NotSignedIn)?;
         if claims.issued_ms < person.not_before_ms {
             return Err(Refusal::NotSignedIn.into());
         }
@@ -120,8 +144,15 @@ where
 {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Option<Self>, Self::Rejection> {
-        Ok(<Self as FromRequestParts<S>>::from_request_parts(parts, state).await.ok())
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        Ok(
+            <Self as FromRequestParts<S>>::from_request_parts(parts, state)
+                .await
+                .ok(),
+        )
     }
 }
 
@@ -172,15 +203,24 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
-        if let Some(token) = extract_bearer_token(&parts.headers).ok().filter(|token| is_service_token(token)) {
-            return service_token(&app_state.people, token, Scope::Devices, now_ms()).await.map(|t| Self::Service(t.name));
+        if let Some(token) = extract_bearer_token(&parts.headers)
+            .ok()
+            .filter(|token| is_service_token(token))
+        {
+            return service_token(&app_state.people, token, Scope::Devices, now_ms())
+                .await
+                .map(|t| Self::Service(t.name));
         }
         let refused = match AuthenticatedUser::from_request_parts(parts, state).await {
             Ok(user) => return Ok(Self::Person(user.0)),
             Err(refused) => refused,
         };
-        match cookie_value(&parts.headers, &screen_cookie_name(&app_state.config)).filter(|token| is_service_token(token)) {
-            Some(token) => service_token(&app_state.people, token, Scope::Devices, now_ms()).await.map(|t| Self::Service(t.name)),
+        match cookie_value(&parts.headers, &screen_cookie_name(&app_state.config))
+            .filter(|token| is_service_token(token))
+        {
+            Some(token) => service_token(&app_state.people, token, Scope::Devices, now_ms())
+                .await
+                .map(|t| Self::Service(t.name)),
             None => Err(refused),
         }
     }
@@ -231,12 +271,23 @@ pub async fn issue_service_token(
 
 /// The service token `token`, when it exists and carries `scope`; its use is recorded
 /// (`TOKEN_USE_STEP_MS`). Unknown or revoked: not signed in.
-pub(crate) async fn service_token(people: &People, token: &str, scope: Scope, now_ms: i64) -> Result<StoredToken, AppError> {
-    let found = people.token_by_hash(&hash_secret(token)).await?.ok_or(Refusal::NotSignedIn)?;
+pub(crate) async fn service_token(
+    people: &People,
+    token: &str,
+    scope: Scope,
+    now_ms: i64,
+) -> Result<StoredToken, AppError> {
+    let found = people
+        .token_by_hash(&hash_secret(token))
+        .await?
+        .ok_or(Refusal::NotSignedIn)?;
     if found.scope != scope {
         return Err(Refusal::Forbidden.into());
     }
-    if found.last_used_ms.is_none_or(|at| now_ms - at >= TOKEN_USE_STEP_MS) {
+    if found
+        .last_used_ms
+        .is_none_or(|at| now_ms - at >= TOKEN_USE_STEP_MS)
+    {
         // a failed write costs only the date: the call goes on
         if let Err(error) = people.token_used(&found.id, now_ms).await {
             tracing::warn!(%error, token = %found.name, "service token use not recorded");
@@ -292,8 +343,15 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, AppError> {
         .ok_or_else(|| AppError::unauthorized("No token provided"))
 }
 
-fn decode_token(token: &str, secret: &[u8]) -> Result<jsonwebtoken::TokenData<Claims>, jsonwebtoken::errors::Error> {
-    decode::<Claims>(token, &DecodingKey::from_secret(secret), &Validation::default())
+fn decode_token(
+    token: &str,
+    secret: &[u8],
+) -> Result<jsonwebtoken::TokenData<Claims>, jsonwebtoken::errors::Error> {
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret),
+        &Validation::default(),
+    )
 }
 
 // ---------- refresh tokens ----------
@@ -334,7 +392,9 @@ pub enum Taken {
     /// Good, and now spent: rotate.
     Valid(RefreshEntry),
     /// Spent already: someone else has a copy. Its family has been ended.
-    Replayed { user_id: Option<String> },
+    Replayed {
+        user_id: Option<String>,
+    },
     Unknown,
 }
 
@@ -353,7 +413,10 @@ impl RefreshTokenStore {
             Tokens::default()
         });
         prune(&mut tokens, Utc::now().timestamp());
-        Self { inner: Arc::new(Mutex::new(tokens)), path: Some(Arc::new(path.to_path_buf())) }
+        Self {
+            inner: Arc::new(Mutex::new(tokens)),
+            path: Some(Arc::new(path.to_path_buf())),
+        }
     }
 
     pub async fn insert(&self, token: &str, entry: RefreshEntry) {
@@ -369,11 +432,21 @@ impl RefreshTokenStore {
         let mut tokens = self.inner.lock().await;
         let mut changed = prune(&mut tokens, now);
         let taken = if let Some(entry) = tokens.live.remove(&key) {
-            tokens.spent.insert(key, Spent { family: entry.family.clone(), expires_at: entry.expires_at });
+            tokens.spent.insert(
+                key,
+                Spent {
+                    family: entry.family.clone(),
+                    expires_at: entry.expires_at,
+                },
+            );
             changed = true;
             Taken::Valid(entry)
         } else if let Some(spent) = tokens.spent.get(&key).cloned() {
-            let user_id = tokens.live.values().find(|e| e.family == spent.family).map(|e| e.user_id.clone());
+            let user_id = tokens
+                .live
+                .values()
+                .find(|e| e.family == spent.family)
+                .map(|e| e.user_id.clone());
             let before = tokens.live.len();
             tokens.live.retain(|_, e| e.family != spent.family);
             changed |= tokens.live.len() != before;
@@ -435,30 +508,73 @@ mod tests {
     async fn a_service_token_is_random_base64url_shown_once_and_its_use_dated_hourly() {
         let dir = crate::util::test_dir();
         let people = People::new(&dir.path().join("auth.json"));
-        let token = issue_service_token(&people, " achi ", Scope::Devices, TokenKind::App).await.unwrap().unwrap();
+        let token = issue_service_token(&people, " achi ", Scope::Devices, TokenKind::App)
+            .await
+            .unwrap()
+            .unwrap();
         let secret = token.strip_prefix(SERVICE_TOKEN_PREFIX).expect("prefixed");
         assert_eq!(secret.len(), 43, "32 bytes, base64url without padding");
-        assert!(secret.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
-        assert!(issue_service_token(&people, "achi", Scope::Devices, TokenKind::App).await.unwrap().is_none(), "the name is taken");
-        assert!(issue_service_token(&people, " ", Scope::Devices, TokenKind::App).await.is_err(), "a name");
+        assert!(secret
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert!(
+            issue_service_token(&people, "achi", Scope::Devices, TokenKind::App)
+                .await
+                .unwrap()
+                .is_none(),
+            "the name is taken"
+        );
+        assert!(
+            issue_service_token(&people, " ", Scope::Devices, TokenKind::App)
+                .await
+                .is_err(),
+            "a name"
+        );
         assert!(is_service_token(&token) && !is_service_token("eyJhbGciOiJIUzI1NiJ9.x.y"));
 
-        assert_eq!(service_token(&people, &token, Scope::Devices, 1_000).await.unwrap().name, "achi");
+        assert_eq!(
+            service_token(&people, &token, Scope::Devices, 1_000)
+                .await
+                .unwrap()
+                .name,
+            "achi"
+        );
         let used = || async { people.tokens().await.unwrap()[0].last_used_ms };
         assert_eq!(used().await, Some(1_000));
-        service_token(&people, &token, Scope::Devices, 1_000 + TOKEN_USE_STEP_MS - 1).await.unwrap();
+        service_token(
+            &people,
+            &token,
+            Scope::Devices,
+            1_000 + TOKEN_USE_STEP_MS - 1,
+        )
+        .await
+        .unwrap();
         assert_eq!(used().await, Some(1_000), "not rewritten within the hour");
-        service_token(&people, &token, Scope::Devices, 1_000 + TOKEN_USE_STEP_MS).await.unwrap();
+        service_token(&people, &token, Scope::Devices, 1_000 + TOKEN_USE_STEP_MS)
+            .await
+            .unwrap();
         assert_eq!(used().await, Some(1_000 + TOKEN_USE_STEP_MS));
 
         let forged = format!("{SERVICE_TOKEN_PREFIX}{}", "A".repeat(43));
-        assert!(service_token(&people, &forged, Scope::Devices, 0).await.is_err());
+        assert!(service_token(&people, &forged, Scope::Devices, 0)
+            .await
+            .is_err());
         assert!(people.revoke_token("achi").await.unwrap());
-        assert!(service_token(&people, &token, Scope::Devices, 0).await.is_err(), "revoked at once");
+        assert!(
+            service_token(&people, &token, Scope::Devices, 0)
+                .await
+                .is_err(),
+            "revoked at once"
+        );
     }
 
     fn entry(family: &str) -> RefreshEntry {
-        RefreshEntry { user_id: "leonard".into(), expires_at: Utc::now().timestamp() + 60, family: family.into(), auth_ms: 0 }
+        RefreshEntry {
+            user_id: "leonard".into(),
+            expires_at: Utc::now().timestamp() + 60,
+            family: family.into(),
+            auth_ms: 0,
+        }
     }
 
     #[tokio::test]
@@ -470,12 +586,27 @@ mod tests {
         tokens.insert("other", entry("f2")).await;
         assert!(matches!(tokens.take("a").await, Taken::Valid(_)));
         tokens.insert("b", entry("f1")).await; // rotated
-        assert!(matches!(tokens.take("a").await, Taken::Replayed { .. }), "a copy of a spent token");
-        assert!(matches!(tokens.take("b").await, Taken::Replayed { .. } | Taken::Unknown), "its family ended");
-        assert!(matches!(tokens.take("other").await, Taken::Valid(_)), "another sign-in untouched");
+        assert!(
+            matches!(tokens.take("a").await, Taken::Replayed { .. }),
+            "a copy of a spent token"
+        );
+        assert!(
+            matches!(
+                tokens.take("b").await,
+                Taken::Replayed { .. } | Taken::Unknown
+            ),
+            "its family ended"
+        );
+        assert!(
+            matches!(tokens.take("other").await, Taken::Valid(_)),
+            "another sign-in untouched"
+        );
         assert!(matches!(tokens.take("nope").await, Taken::Unknown));
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("\"other\"") && !text.contains("\"b\""), "only hashes on disk");
+        assert!(
+            !text.contains("\"other\"") && !text.contains("\"b\""),
+            "only hashes on disk"
+        );
         // reloaded from disk: a spent token is still known as spent
         let again = RefreshTokenStore::load(&path);
         assert!(matches!(again.take("other").await, Taken::Replayed { .. }));
@@ -486,7 +617,10 @@ mod tests {
         let tokens = RefreshTokenStore::default();
         tokens.insert("a", entry("f")).await;
         let (x, y) = tokio::join!(tokens.take("a"), tokens.take("a"));
-        let valid = [x, y].iter().filter(|t| matches!(t, Taken::Valid(_))).count();
+        let valid = [x, y]
+            .iter()
+            .filter(|t| matches!(t, Taken::Valid(_)))
+            .count();
         assert_eq!(valid, 1);
     }
 
@@ -502,10 +636,26 @@ mod tests {
         let written = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         assert!(matches!(tokens.take("nope").await, Taken::Unknown));
-        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), written);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            written
+        );
         // an expired one going is a change worth keeping
-        tokens.insert("old", RefreshEntry { expires_at: Utc::now().timestamp() - 1, ..entry("g") }).await;
+        tokens
+            .insert(
+                "old",
+                RefreshEntry {
+                    expires_at: Utc::now().timestamp() - 1,
+                    ..entry("g")
+                },
+            )
+            .await;
         assert!(matches!(tokens.take("nope").await, Taken::Unknown));
-        assert!(!std::fs::read_to_string(&path).unwrap().contains(&hash_secret("old")), "pruned on disk");
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(&hash_secret("old")),
+            "pruned on disk"
+        );
     }
 }

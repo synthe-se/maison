@@ -6,17 +6,17 @@
 use std::future::Future;
 
 use axum::{
-    Json, Router,
     extract::{Path, State},
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState,
     error::AppError,
     lamps::{LampState, LampStats},
     routes::SimpleResponse,
+    AppState,
 };
 
 /// A lamp family, as the shared routes drive it.
@@ -34,9 +34,21 @@ pub trait LampBackend: Send + Sync + 'static {
     fn listing(&self) -> impl Future<Output = (Vec<Self::View>, LampStats)> + Send {
         async { (self.list().await, self.stats().await) }
     }
-    fn set_power(&self, id: &str, on: bool) -> impl Future<Output = Result<LampState, AppError>> + Send;
-    fn set_brightness(&self, id: &str, brightness: u8) -> impl Future<Output = Result<LampState, AppError>> + Send;
-    fn set_temperature(&self, id: &str, temperature: u8) -> impl Future<Output = Result<LampState, AppError>> + Send;
+    fn set_power(
+        &self,
+        id: &str,
+        on: bool,
+    ) -> impl Future<Output = Result<LampState, AppError>> + Send;
+    fn set_brightness(
+        &self,
+        id: &str,
+        brightness: u8,
+    ) -> impl Future<Output = Result<LampState, AppError>> + Send;
+    fn set_temperature(
+        &self,
+        id: &str,
+        temperature: u8,
+    ) -> impl Future<Output = Result<LampState, AppError>> + Send;
     fn rename(&self, id: &str, name: &str) -> impl Future<Output = Result<(), AppError>> + Send;
 }
 
@@ -74,7 +86,11 @@ pub struct ActionResponse {
 
 impl ActionResponse {
     pub fn ok(state: LampState, message: String) -> Json<Self> {
-        Json(Self { success: true, state, message })
+        Json(Self {
+            success: true,
+            state,
+            message,
+        })
     }
 }
 
@@ -123,7 +139,10 @@ async fn list<B: LampBackend>(State(state): State<AppState>) -> Json<ListRespons
 }
 
 async fn stats<B: LampBackend>(State(state): State<AppState>) -> Json<StatsResponse> {
-    Json(StatsResponse { success: true, stats: B::of(&state).stats().await })
+    Json(StatsResponse {
+        success: true,
+        stats: B::of(&state).stats().await,
+    })
 }
 
 /// One lamp; an unknown id is a 404.
@@ -131,8 +150,15 @@ async fn lamp<B: LampBackend>(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
 ) -> Result<Json<LampResponse<B::View>>, AppError> {
-    let lamp = B::of(&state).get(&lamp_id).await.ok_or_else(|| AppError::not_found(format!("{} not found", B::NAME)))?;
-    Ok(Json(LampResponse { success: true, lamp, message: format!("{} retrieved", B::NAME) }))
+    let lamp = B::of(&state)
+        .get(&lamp_id)
+        .await
+        .ok_or_else(|| AppError::not_found(format!("{} not found", B::NAME)))?;
+    Ok(Json(LampResponse {
+        success: true,
+        lamp,
+        message: format!("{} retrieved", B::NAME),
+    }))
 }
 
 async fn power<B: LampBackend>(
@@ -141,7 +167,10 @@ async fn power<B: LampBackend>(
     Json(body): Json<PowerBody>,
 ) -> Result<Json<ActionResponse>, AppError> {
     let lamp_state = B::of(&state).set_power(&lamp_id, body.enabled).await?;
-    Ok(ActionResponse::ok(lamp_state, format!("{} power updated", B::NAME)))
+    Ok(ActionResponse::ok(
+        lamp_state,
+        format!("{} power updated", B::NAME),
+    ))
 }
 
 async fn brightness<B: LampBackend>(
@@ -149,8 +178,13 @@ async fn brightness<B: LampBackend>(
     Path(lamp_id): Path<String>,
     Json(body): Json<BrightnessBody>,
 ) -> Result<Json<ActionResponse>, AppError> {
-    let lamp_state = B::of(&state).set_brightness(&lamp_id, body.brightness).await?;
-    Ok(ActionResponse::ok(lamp_state, format!("{} brightness updated", B::NAME)))
+    let lamp_state = B::of(&state)
+        .set_brightness(&lamp_id, body.brightness)
+        .await?;
+    Ok(ActionResponse::ok(
+        lamp_state,
+        format!("{} brightness updated", B::NAME),
+    ))
 }
 
 async fn temperature<B: LampBackend>(
@@ -158,8 +192,13 @@ async fn temperature<B: LampBackend>(
     Path(lamp_id): Path<String>,
     Json(body): Json<TemperatureBody>,
 ) -> Result<Json<ActionResponse>, AppError> {
-    let lamp_state = B::of(&state).set_temperature(&lamp_id, body.temperature).await?;
-    Ok(ActionResponse::ok(lamp_state, format!("{} temperature updated", B::NAME)))
+    let lamp_state = B::of(&state)
+        .set_temperature(&lamp_id, body.temperature)
+        .await?;
+    Ok(ActionResponse::ok(
+        lamp_state,
+        format!("{} temperature updated", B::NAME),
+    ))
 }
 
 async fn rename<B: LampBackend>(

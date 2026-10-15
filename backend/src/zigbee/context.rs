@@ -5,12 +5,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use ezsp::{
-    Callback, Connection as EzspConnection, Messaging,
     ember::{
-        Eui64, NodeId,
         aps::{Frame as EzspApsFrame, Options as EzspApsOptions},
         message::Destination,
+        Eui64, NodeId,
     },
+    Callback, Connection as EzspConnection, Messaging,
 };
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 
@@ -21,7 +21,10 @@ use super::{
     error::DriverError,
     remotes::RemotePresses,
     touchlink::TouchlinkScan,
-    zcl::{DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID, ZDO_PROFILE_ID, build_read_attributes_payload},
+    zcl::{
+        build_read_attributes_payload, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID,
+        ZDO_PROFILE_ID,
+    },
 };
 
 /// Join handles for the four pipeline tasks (ASH transmitter/receiver and EZSP
@@ -97,11 +100,15 @@ impl EzspContext {
     }
 
     pub fn device(&self, node_id: u16) -> Option<&DiscoveredDevice> {
-        self.joined_devices.iter().find(|device| device.node_id == node_id)
+        self.joined_devices
+            .iter()
+            .find(|device| device.node_id == node_id)
     }
 
     pub fn device_mut(&mut self, node_id: u16) -> Option<&mut DiscoveredDevice> {
-        self.joined_devices.iter_mut().find(|device| device.node_id == node_id)
+        self.joined_devices
+            .iter_mut()
+            .find(|device| device.node_id == node_id)
     }
 
     /// The devices, shared with the manager (only a change is announced).
@@ -112,12 +119,17 @@ impl EzspContext {
     /// A device left: forget it and its sequence numbers.
     pub fn forget(&mut self, node_id: u16, eui64: &str) {
         // by EUI64: a node id can be given to another device after a rejoin
-        self.joined_devices.retain(|device| device.info.eui64 != eui64);
+        self.joined_devices
+            .retain(|device| device.info.eui64 != eui64);
         self.next_device_sequence.remove(&node_id);
     }
 
     pub fn next_device_sequence(&mut self, node_id: u16) -> u8 {
-        next_sequence_for_device(&mut self.next_device_sequence, &mut self.next_global_sequence, node_id)
+        next_sequence_for_device(
+            &mut self.next_device_sequence,
+            &mut self.next_global_sequence,
+            node_id,
+        )
     }
 
     /// A ZCL frame (home-automation profile, from our endpoint) to `endpoint` of `node_id`;
@@ -131,8 +143,14 @@ impl EzspContext {
         build: impl FnOnce(u8) -> Vec<u8>,
     ) -> Result<(), DriverError> {
         let sequence = self.next_device_sequence(node_id);
-        let frame = aps_frame(HOME_AUTOMATION_PROFILE_ID, cluster_id, DEFAULT_SOURCE_ENDPOINT, endpoint);
-        self.send_unicast(node_id, frame, build(sequence), what).await
+        let frame = aps_frame(
+            HOME_AUTOMATION_PROFILE_ID,
+            cluster_id,
+            DEFAULT_SOURCE_ENDPOINT,
+            endpoint,
+        );
+        self.send_unicast(node_id, frame, build(sequence), what)
+            .await
     }
 
     /// A ZDO request (profile and endpoints 0) to `node_id`; `build` gets the sequence number.
@@ -145,7 +163,8 @@ impl EzspContext {
     ) -> Result<(), DriverError> {
         let sequence = self.next_device_sequence(node_id);
         let frame = aps_frame(ZDO_PROFILE_ID, cluster_id, 0, 0);
-        self.send_unicast(node_id, frame, build(sequence), what).await
+        self.send_unicast(node_id, frame, build(sequence), what)
+            .await
     }
 
     pub async fn send_read_attributes(
@@ -155,9 +174,13 @@ impl EzspContext {
         cluster_id: u16,
         attributes: &[u16],
     ) -> Result<(), DriverError> {
-        self.send_zcl(node_id, endpoint, cluster_id, "ZCL read attributes", |sequence| {
-            build_read_attributes_payload(attributes, sequence)
-        })
+        self.send_zcl(
+            node_id,
+            endpoint,
+            cluster_id,
+            "ZCL read attributes",
+            |sequence| build_read_attributes_payload(attributes, sequence),
+        )
         .await
     }
 
@@ -170,7 +193,12 @@ impl EzspContext {
         what: &'static str,
     ) -> Result<(), DriverError> {
         self.connection
-            .send_unicast(Destination::Direct(NodeId::from(node_id)), frame, 0, payload.into_iter().collect())
+            .send_unicast(
+                Destination::Direct(NodeId::from(node_id)),
+                frame,
+                0,
+                payload.into_iter().collect(),
+            )
             .await
             .map_err(DriverError::ezsp(what))?;
         self.last_activity = Instant::now();
@@ -179,7 +207,12 @@ impl EzspContext {
 }
 
 /// Every unicast is retried, with route discovery.
-fn aps_frame(profile_id: u16, cluster_id: u16, source_endpoint: u8, destination_endpoint: u8) -> EzspApsFrame {
+fn aps_frame(
+    profile_id: u16,
+    cluster_id: u16,
+    source_endpoint: u8,
+    destination_endpoint: u8,
+) -> EzspApsFrame {
     EzspApsFrame::new(
         profile_id,
         cluster_id,
@@ -192,7 +225,11 @@ fn aps_frame(profile_id: u16, cluster_id: u16, source_endpoint: u8, destination_
 }
 
 /// Each device has its own sequence, started from a global one.
-fn next_sequence_for_device(per_device: &mut HashMap<u16, u8>, next_global: &mut u8, node_id: u16) -> u8 {
+fn next_sequence_for_device(
+    per_device: &mut HashMap<u16, u8>,
+    next_global: &mut u8,
+    node_id: u16,
+) -> u8 {
     let current = per_device.entry(node_id).or_insert_with(|| {
         let value = *next_global;
         *next_global = next_global.wrapping_add(1);
@@ -211,10 +248,25 @@ mod tests {
     fn device_sequences_are_independent() {
         let mut per_device = HashMap::new();
         let mut next_global = 1;
-        assert_eq!(next_sequence_for_device(&mut per_device, &mut next_global, 0x8a4c), 1);
-        assert_eq!(next_sequence_for_device(&mut per_device, &mut next_global, 0x8a4c), 2);
-        assert_eq!(next_sequence_for_device(&mut per_device, &mut next_global, 0x6cce), 2);
-        assert_eq!(next_sequence_for_device(&mut per_device, &mut next_global, 0x8a4c), 3);
-        assert_eq!(next_sequence_for_device(&mut per_device, &mut next_global, 0x6cce), 3);
+        assert_eq!(
+            next_sequence_for_device(&mut per_device, &mut next_global, 0x8a4c),
+            1
+        );
+        assert_eq!(
+            next_sequence_for_device(&mut per_device, &mut next_global, 0x8a4c),
+            2
+        );
+        assert_eq!(
+            next_sequence_for_device(&mut per_device, &mut next_global, 0x6cce),
+            2
+        );
+        assert_eq!(
+            next_sequence_for_device(&mut per_device, &mut next_global, 0x8a4c),
+            3
+        );
+        assert_eq!(
+            next_sequence_for_device(&mut per_device, &mut next_global, 0x6cce),
+            3
+        );
     }
 }

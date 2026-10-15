@@ -43,16 +43,30 @@ pub struct ZigbeeDeviceInfo {
     #[serde(default)]
     pub supports_color: bool,
     /// Kept as `isRemote`: a lamp or not is all the file needs.
-    #[serde(default, rename = "isRemote", serialize_with = "remote_flag", deserialize_with = "from_remote_flag")]
+    #[serde(
+        default,
+        rename = "isRemote",
+        serialize_with = "remote_flag",
+        deserialize_with = "from_remote_flag"
+    )]
     pub device_type: ZigbeeDeviceType,
 }
 
-fn remote_flag<S: Serializer>(device_type: &ZigbeeDeviceType, serializer: S) -> Result<S::Ok, S::Error> {
+fn remote_flag<S: Serializer>(
+    device_type: &ZigbeeDeviceType,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     serializer.serialize_bool(*device_type == ZigbeeDeviceType::Remote)
 }
 
-fn from_remote_flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ZigbeeDeviceType, D::Error> {
-    Ok(if bool::deserialize(deserializer)? { ZigbeeDeviceType::Remote } else { ZigbeeDeviceType::Lamp })
+fn from_remote_flag<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ZigbeeDeviceType, D::Error> {
+    Ok(if bool::deserialize(deserializer)? {
+        ZigbeeDeviceType::Remote
+    } else {
+        ZigbeeDeviceType::Lamp
+    })
 }
 
 impl ZigbeeDeviceInfo {
@@ -70,7 +84,10 @@ impl ZigbeeDeviceInfo {
     pub fn updated(&self, newer: &ZigbeeDeviceInfo) -> ZigbeeDeviceInfo {
         ZigbeeDeviceInfo {
             model: newer.model.clone().or_else(|| self.model.clone()),
-            manufacturer: newer.manufacturer.clone().or_else(|| self.manufacturer.clone()),
+            manufacturer: newer
+                .manufacturer
+                .clone()
+                .or_else(|| self.manufacturer.clone()),
             ..newer.clone()
         }
     }
@@ -150,7 +167,10 @@ impl DiscoveredDevice {
             reachable: false,
             interview_attempts: 0,
             last_seen: None,
-            desired: Desired { applied: true, ..Desired::default() },
+            desired: Desired {
+                applied: true,
+                ..Desired::default()
+            },
             last_discovery_at: None,
             failed_ping_cycles: 0,
         }
@@ -159,11 +179,21 @@ impl DiscoveredDevice {
     /// A device that just joined: heard now, to be interviewed. A joining lamp is on.
     pub fn joined(node_id: u16, eui64: String) -> Self {
         Self {
-            light: Light { is_on: true, brightness: 100, ..Light::default() },
+            light: Light {
+                is_on: true,
+                brightness: 100,
+                ..Light::default()
+            },
             connected: true,
             reachable: true,
             last_seen: Some(Instant::now()),
-            ..Self::known(node_id, ZigbeeDeviceInfo { eui64, ..ZigbeeDeviceInfo::default() })
+            ..Self::known(
+                node_id,
+                ZigbeeDeviceInfo {
+                    eui64,
+                    ..ZigbeeDeviceInfo::default()
+                },
+            )
         }
     }
 
@@ -206,7 +236,11 @@ impl DiscoveredDevice {
         );
         device.connected = true;
         device.reachable = true;
-        device.light = Light { is_on: true, brightness: 100, ..Light::default() };
+        device.light = Light {
+            is_on: true,
+            brightness: 100,
+            ..Light::default()
+        };
         device
     }
 }
@@ -229,7 +263,9 @@ impl From<&DiscoveredDevice> for ZigbeeDevice {
 /// Pi has no RTC and NTP steps its clock after boot.
 fn wall_clock(instant: Instant) -> String {
     let at = Utc::now() - chrono::Duration::from_std(instant.elapsed()).unwrap_or_default();
-    DateTime::from_timestamp(at.timestamp(), 0).unwrap_or(at).to_rfc3339()
+    DateTime::from_timestamp(at.timestamp(), 0)
+        .unwrap_or(at)
+        .to_rfc3339()
 }
 
 /// The id of a device in the API: its EUI64's hex digits, lowercase; the node id when the
@@ -276,13 +312,24 @@ mod tests {
         let old = serde_json::json!({"ieeeAddress": "aa", "endpoint": 1, "model": null, "manufacturer": null,
             "supportsBrightness": true, "supportsTemperature": false, "colorTempMin": null, "isRemote": true});
         let old: ZigbeeDeviceInfo = serde_json::from_value(old).unwrap();
-        assert_eq!((old.device_type, old.supports_color), (ZigbeeDeviceType::Remote, false));
+        assert_eq!(
+            (old.device_type, old.supports_color),
+            (ZigbeeDeviceType::Remote, false)
+        );
     }
 
     #[test]
     fn a_reinterview_keeps_the_names_it_has_not_read_yet() {
-        let kept = ZigbeeDeviceInfo { manufacturer: Some("Signify".into()), ..hue_lamp() };
-        let fresh = ZigbeeDeviceInfo { model: None, manufacturer: None, endpoint: Some(12), ..hue_lamp() };
+        let kept = ZigbeeDeviceInfo {
+            manufacturer: Some("Signify".into()),
+            ..hue_lamp()
+        };
+        let fresh = ZigbeeDeviceInfo {
+            model: None,
+            manufacturer: None,
+            endpoint: Some(12),
+            ..hue_lamp()
+        };
         let updated = kept.updated(&fresh);
         assert_eq!(updated.model.as_deref(), Some("LCT015"));
         assert_eq!(updated.manufacturer.as_deref(), Some("Signify"));
@@ -295,7 +342,13 @@ mod tests {
         device.heard();
         let first = ZigbeeDevice::from(&device);
         assert_eq!(first.id, "4b8ec60801881700");
-        assert!(first.last_seen.as_deref().is_some_and(|at| !at.contains('.')), "to the second");
+        assert!(
+            first
+                .last_seen
+                .as_deref()
+                .is_some_and(|at| !at.contains('.')),
+            "to the second"
+        );
         assert_eq!(ZigbeeDevice::from(&device), first);
     }
 
@@ -303,7 +356,10 @@ mod tests {
     fn a_joining_device_is_on_and_awaits_its_interview() {
         let device = DiscoveredDevice::joined(0x1234, "00:17:88:01:08:0c:00:0b".into());
         assert!(device.light.is_on && device.reachable && !device.interview_completed);
-        assert_eq!((device.light.brightness, device.info.device_type), (100, ZigbeeDeviceType::Unknown));
+        assert_eq!(
+            (device.light.brightness, device.info.device_type),
+            (100, ZigbeeDeviceType::Unknown)
+        );
         assert!(device.desired.applied);
         assert_eq!(normalize_device_id("", 0x1234), "0000000000001234");
     }

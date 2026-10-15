@@ -12,11 +12,13 @@ use super::{
     device::ZigbeeDeviceType,
     error::DriverError,
     zcl::{
-        BIND_REQ_CLUSTER_ID, DEFAULT_SOURCE_ENDPOINT, LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID, PHILIPS_SPECIFIC_CLUSTER_ID,
-        ZCL_LEVEL_CONTROL_COMMAND_MOVE, ZCL_LEVEL_CONTROL_COMMAND_MOVE_WITH_ON_OFF, ZCL_LEVEL_CONTROL_COMMAND_STEP,
-        ZCL_LEVEL_CONTROL_COMMAND_STEP_WITH_ON_OFF, ZCL_LEVEL_CONTROL_COMMAND_STOP, ZCL_LEVEL_CONTROL_COMMAND_STOP_WITH_ON_OFF,
-        ZCL_ON_OFF_COMMAND_OFF, ZCL_ON_OFF_COMMAND_ON, build_brightness_command_payload, build_on_off_command_payload,
-        format_eui64, hex_bytes, parse_eui64, parse_zcl_header,
+        build_brightness_command_payload, build_on_off_command_payload, format_eui64, hex_bytes,
+        parse_eui64, parse_zcl_header, BIND_REQ_CLUSTER_ID, DEFAULT_SOURCE_ENDPOINT,
+        LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID, PHILIPS_SPECIFIC_CLUSTER_ID,
+        ZCL_LEVEL_CONTROL_COMMAND_MOVE, ZCL_LEVEL_CONTROL_COMMAND_MOVE_WITH_ON_OFF,
+        ZCL_LEVEL_CONTROL_COMMAND_STEP, ZCL_LEVEL_CONTROL_COMMAND_STEP_WITH_ON_OFF,
+        ZCL_LEVEL_CONTROL_COMMAND_STOP, ZCL_LEVEL_CONTROL_COMMAND_STOP_WITH_ON_OFF,
+        ZCL_ON_OFF_COMMAND_OFF, ZCL_ON_OFF_COMMAND_ON,
     },
 };
 
@@ -38,7 +40,12 @@ fn is_repeat(last: Option<(bool, Instant)>, value: bool) -> bool {
 }
 
 /// A command from a remote, as the lamps' action it stands for.
-pub async fn handle_remote_command(context: &mut EzspContext, remote: u16, cluster_id: u16, payload: &[u8]) {
+pub async fn handle_remote_command(
+    context: &mut EzspContext,
+    remote: u16,
+    cluster_id: u16,
+    payload: &[u8],
+) {
     let node = format!("0x{remote:04x}");
     info!(remote_node_id = %node, cluster_id = format_args!("0x{cluster_id:04x}"), payload = %hex_bytes(payload), "remote: incoming command from remote device");
     // [frame control, (manufacturer code ×2: Philips' hueNotification), sequence, command, …]
@@ -59,11 +66,15 @@ pub async fn handle_remote_command(context: &mut EzspContext, remote: u16, clust
         ON_OFF_CLUSTER_ID => match header.command_id {
             ZCL_ON_OFF_COMMAND_ON => remote_power(context, &node, true, "ON").await,
             ZCL_ON_OFF_COMMAND_OFF => remote_power(context, &node, false, "OFF").await,
-            command_id => debug!(remote_node_id = %node, command_id, "remote: unknown On/Off command"),
+            command_id => {
+                debug!(remote_node_id = %node, command_id, "remote: unknown On/Off command")
+            }
         },
         LEVEL_CONTROL_CLUSTER_ID => level_command(context, &node, header.command_id, body).await,
         PHILIPS_SPECIFIC_CLUSTER_ID => hue_notification(context, &node, body).await,
-        _ => debug!(remote_node_id = %node, cluster_id = format_args!("0x{cluster_id:04x}"), command_id = header.command_id, "remote: unhandled cluster command"),
+        _ => {
+            debug!(remote_node_id = %node, cluster_id = format_args!("0x{cluster_id:04x}"), command_id = header.command_id, "remote: unhandled cluster command")
+        }
     }
 }
 
@@ -140,19 +151,34 @@ async fn broadcast_power_to_all_lamps(context: &mut EzspContext, enabled: bool) 
         .filter(|device| device.info.has_input(ON_OFF_CLUSTER_ID))
         .filter_map(|device| Some((device.node_id, device.info.endpoint?)))
         .collect::<Vec<_>>();
-    info!(enabled, target_count = targets.len(), "remote broadcast: sending power command to all lamps");
+    info!(
+        enabled,
+        target_count = targets.len(),
+        "remote broadcast: sending power command to all lamps"
+    );
     for (lamp, endpoint) in targets {
         let sent = context
-            .send_zcl(lamp, endpoint, ON_OFF_CLUSTER_ID, "unicast remote on/off", |sequence| build_on_off_command_payload(enabled, sequence))
+            .send_zcl(
+                lamp,
+                endpoint,
+                ON_OFF_CLUSTER_ID,
+                "unicast remote on/off",
+                |sequence| build_on_off_command_payload(enabled, sequence),
+            )
             .await;
         match sent {
             Ok(()) => {
                 if let Some(device) = context.device_mut(lamp) {
                     device.light.is_on = enabled;
                 }
-                debug!(lamp_node_id = format_args!("0x{lamp:04x}"), enabled, "remote broadcast: power command sent");
+                debug!(
+                    lamp_node_id = format_args!("0x{lamp:04x}"),
+                    enabled, "remote broadcast: power command sent"
+                );
             }
-            Err(error) => warn!(lamp_node_id = format_args!("0x{lamp:04x}"), %error, "remote broadcast: power command failed"),
+            Err(error) => {
+                warn!(lamp_node_id = format_args!("0x{lamp:04x}"), %error, "remote broadcast: power command failed")
+            }
         }
     }
 }
@@ -164,17 +190,33 @@ async fn broadcast_brightness_step_to_all_lamps(context: &mut EzspContext, up: b
         .joined_devices
         .iter()
         .filter(|device| device.info.device_type == ZigbeeDeviceType::Lamp && device.reachable)
-        .filter(|device| device.info.supports_brightness && device.info.has_input(LEVEL_CONTROL_CLUSTER_ID))
-        .filter_map(|device| Some((device.node_id, device.info.endpoint?, device.light.brightness)))
+        .filter(|device| {
+            device.info.supports_brightness && device.info.has_input(LEVEL_CONTROL_CLUSTER_ID)
+        })
+        .filter_map(|device| {
+            Some((
+                device.node_id,
+                device.info.endpoint?,
+                device.light.brightness,
+            ))
+        })
         .collect::<Vec<_>>();
-    info!(direction = if up { "up" } else { "down" }, step = DIMMER_BRIGHTNESS_STEP, target_count = targets.len(),
-        "remote broadcast: sending brightness step to all lamps");
+    info!(
+        direction = if up { "up" } else { "down" },
+        step = DIMMER_BRIGHTNESS_STEP,
+        target_count = targets.len(),
+        "remote broadcast: sending brightness step to all lamps"
+    );
     for (lamp, endpoint, current) in targets {
         let brightness = stepped(current, up);
         let sent = context
-            .send_zcl(lamp, endpoint, LEVEL_CONTROL_CLUSTER_ID, "unicast remote brightness step", |sequence| {
-                build_brightness_command_payload(brightness, sequence)
-            })
+            .send_zcl(
+                lamp,
+                endpoint,
+                LEVEL_CONTROL_CLUSTER_ID,
+                "unicast remote brightness step",
+                |sequence| build_brightness_command_payload(brightness, sequence),
+            )
             .await;
         match sent {
             Ok(()) => {
@@ -183,9 +225,14 @@ async fn broadcast_brightness_step_to_all_lamps(context: &mut EzspContext, up: b
                     device.light.is_on = brightness > 0;
                     device.desired.brightness = Some(brightness);
                 }
-                debug!(lamp_node_id = format_args!("0x{lamp:04x}"), brightness, "remote broadcast: brightness step sent");
+                debug!(
+                    lamp_node_id = format_args!("0x{lamp:04x}"),
+                    brightness, "remote broadcast: brightness step sent"
+                );
             }
-            Err(error) => warn!(lamp_node_id = format_args!("0x{lamp:04x}"), %error, "remote broadcast: brightness step failed"),
+            Err(error) => {
+                warn!(lamp_node_id = format_args!("0x{lamp:04x}"), %error, "remote broadcast: brightness step failed")
+            }
         }
     }
 }
@@ -201,12 +248,20 @@ fn stepped(brightness: u8, up: bool) -> u8 {
 /// Binds a Hue dimmer's buttons to the coordinator, both ways it reports them: endpoint 1
 /// On/Off and Level (lamp commands), endpoint 2 Philips' hueNotification.
 pub async fn bind_remote_clusters(context: &mut EzspContext, node_id: u16, eui64: &str) {
-    let bindings = [(1, ON_OFF_CLUSTER_ID), (1, LEVEL_CONTROL_CLUSTER_ID), (2, PHILIPS_SPECIFIC_CLUSTER_ID)];
+    let bindings = [
+        (1, ON_OFF_CLUSTER_ID),
+        (1, LEVEL_CONTROL_CLUSTER_ID),
+        (2, PHILIPS_SPECIFIC_CLUSTER_ID),
+    ];
     for (endpoint, cluster_id) in bindings {
         let (node, cluster) = (format!("0x{node_id:04x}"), format!("0x{cluster_id:04x}"));
         match send_bind_request(context, node_id, eui64, endpoint, cluster_id).await {
-            Ok(()) => info!(node_id = %node, endpoint, cluster_id = %cluster, "ZDO Bind_req sent successfully"),
-            Err(error) => warn!(node_id = %node, endpoint, cluster_id = %cluster, %error, "ZDO Bind_req failed"),
+            Ok(()) => {
+                info!(node_id = %node, endpoint, cluster_id = %cluster, "ZDO Bind_req sent successfully")
+            }
+            Err(error) => {
+                warn!(node_id = %node, endpoint, cluster_id = %cluster, %error, "ZDO Bind_req failed")
+            }
         }
     }
 }
@@ -223,23 +278,31 @@ async fn send_bind_request(
 ) -> Result<(), DriverError> {
     let coordinator = context
         .coordinator_eui64
-        .ok_or(DriverError::Unavailable("The coordinator's address is not known yet"))?
+        .ok_or(DriverError::Unavailable(
+            "The coordinator's address is not known yet",
+        ))?
         .into_array();
-    let remote = parse_eui64(remote_eui64).ok_or_else(|| DriverError::Unsupported(format!("invalid remote EUI64: {remote_eui64}")))?;
+    let remote = parse_eui64(remote_eui64)
+        .ok_or_else(|| DriverError::Unsupported(format!("invalid remote EUI64: {remote_eui64}")))?;
     info!(target_node_id = format_args!("0x{target_node_id:04x}"), %remote_eui64, remote_endpoint,
         cluster_id = format_args!("0x{cluster_id:04x}"), coordinator_eui64 = %format_eui64(coordinator), "sending ZDO Bind_req to remote");
     context
-        .send_zdo(target_node_id, BIND_REQ_CLUSTER_ID, "send Bind_req", |sequence| {
-            let mut payload = Vec::with_capacity(23);
-            payload.push(sequence);
-            payload.extend(remote.iter().rev());
-            payload.push(remote_endpoint);
-            payload.extend(cluster_id.to_le_bytes());
-            payload.push(0x03);
-            payload.extend(coordinator.iter().rev());
-            payload.push(DEFAULT_SOURCE_ENDPOINT);
-            payload
-        })
+        .send_zdo(
+            target_node_id,
+            BIND_REQ_CLUSTER_ID,
+            "send Bind_req",
+            |sequence| {
+                let mut payload = Vec::with_capacity(23);
+                payload.push(sequence);
+                payload.extend(remote.iter().rev());
+                payload.push(remote_endpoint);
+                payload.extend(cluster_id.to_le_bytes());
+                payload.push(0x03);
+                payload.extend(coordinator.iter().rev());
+                payload.push(DEFAULT_SOURCE_ENDPOINT);
+                payload
+            },
+        )
         .await
 }
 
@@ -251,11 +314,17 @@ mod tests {
     fn the_second_copy_of_a_press_is_dropped() {
         let now = Instant::now();
         assert!(!is_repeat(None, true));
-        assert!(is_repeat(Some((true, now)), true), "the same action, just now");
+        assert!(
+            is_repeat(Some((true, now)), true),
+            "the same action, just now"
+        );
         assert!(!is_repeat(Some((false, now)), true), "the other button");
         let long_ago = now.checked_sub(REMOTE_DEDUP_WINDOW + Duration::from_millis(1));
         if let Some(long_ago) = long_ago {
-            assert!(!is_repeat(Some((true, long_ago)), true), "a new press after the window");
+            assert!(
+                !is_repeat(Some((true, long_ago)), true),
+                "a new press after the window"
+            );
         }
     }
 

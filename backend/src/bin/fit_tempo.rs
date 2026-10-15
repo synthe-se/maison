@@ -26,12 +26,18 @@ use maison_backend::{
     store::{self, Access},
     tempo::{
         forecast::{
-            consumption_features, dot, expected, solar_features, wind_features, Backtest, HorizonScore, Model,
-            WeatherPoint, CONSUMPTION_FEATURES,
+            consumption_features, dot, expected, solar_features, wind_features, Backtest,
+            HorizonScore, Model, WeatherPoint, CONSUMPTION_FEATURES,
         },
-        inputs::{coordinates, daily_temperature, daily_wind_power, parse_hourly, tempo_days, NetLoad, OdreRow, Series, Weather, WEATHER_MODEL},
+        inputs::{
+            coordinates, daily_temperature, daily_wind_power, parse_hourly, tempo_days, NetLoad,
+            OdreRow, Series, Weather, WEATHER_MODEL,
+        },
         outlook,
-        rules::{is_winter, season_bounds, season_name, season_start_year, Color, History, Quotas, FIRST_SEASON},
+        rules::{
+            is_winter, season_bounds, season_name, season_start_year, Color, History, Quotas,
+            FIRST_SEASON,
+        },
         source::{Sources, Values},
         HORIZON,
     },
@@ -109,7 +115,12 @@ struct Downloads {
 impl Downloads {
     /// The answer, from `target/tempo-fit/<name>` when already there; Open-Meteo's « too
     /// many requests » is waited out.
-    async fn get(&self, name: &str, url: &str, query: &[(&str, String)]) -> Result<String, Failure> {
+    async fn get(
+        &self,
+        name: &str,
+        url: &str,
+        query: &[(&str, String)],
+    ) -> Result<String, Failure> {
         let path = self.dir.join(name);
         if let Ok(text) = std::fs::read_to_string(&path) {
             return Ok(text);
@@ -134,8 +145,19 @@ impl Downloads {
     }
 
     /// Hourly `keys` at `places` from `url`, in chunks of a few years (the answers are big).
-    async fn hourly(&self, ask: Hourly<'_>, from: NaiveDate, to: NaiveDate) -> Result<Vec<Value>, Failure> {
-        let Hourly { name, url, places, keys, model } = ask;
+    async fn hourly(
+        &self,
+        ask: Hourly<'_>,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<Value>, Failure> {
+        let Hourly {
+            name,
+            url,
+            places,
+            keys,
+            model,
+        } = ask;
         let mut bodies = Vec::new();
         let mut start = from;
         while start <= to {
@@ -150,7 +172,9 @@ impl Downloads {
             if let Some(model) = model {
                 query.push(("models", model.into()));
             }
-            let text = self.get(&format!("{name}-{start}-{end}.json"), url, &query).await?;
+            let text = self
+                .get(&format!("{name}-{start}-{end}.json"), url, &query)
+                .await?;
             bodies.push(serde_json::from_str(&text)?);
             start = end + Duration::days(1);
         }
@@ -159,7 +183,11 @@ impl Downloads {
 }
 
 /// `daily` of every chunk, merged.
-fn merged(bodies: &[Value], key: &str, daily: impl Fn(&[Series]) -> Daily) -> Result<Daily, Failure> {
+fn merged(
+    bodies: &[Value],
+    key: &str,
+    daily: impl Fn(&[Series]) -> Daily,
+) -> Result<Daily, Failure> {
     let mut out = Daily::new();
     for body in bodies {
         out.extend(daily(&parse_hourly(body, key)?));
@@ -171,7 +199,9 @@ fn merged(bodies: &[Value], key: &str, daily: impl Fn(&[Series]) -> Daily) -> Re
 fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
     let n = b.len();
     for col in 0..n {
-        let pivot = (col..n).max_by(|i, j| a[*i][col].abs().total_cmp(&a[*j][col].abs())).expect("rows");
+        let pivot = (col..n)
+            .max_by(|i, j| a[*i][col].abs().total_cmp(&a[*j][col].abs()))
+            .expect("rows");
         a.swap(col, pivot);
         b.swap(col, pivot);
         for row in col + 1..n {
@@ -208,7 +238,11 @@ fn least_squares(x: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, f64) {
         row[i] += RIDGE;
     }
     let beta = solve(a, b);
-    let residuals: Vec<f64> = x.iter().zip(y).map(|(row, target)| target - dot(row, &beta)).collect();
+    let residuals: Vec<f64> = x
+        .iter()
+        .zip(y)
+        .map(|(row, target)| target - dot(row, &beta))
+        .collect();
     let sd = (residuals.iter().map(|r| r * r).sum::<f64>() / residuals.len() as f64).sqrt();
     (beta, sd)
 }
@@ -227,26 +261,40 @@ impl Data {
     /// What the weather service had to say on `issued`: past days as observed, coming ones
     /// as forecast that day.
     fn weather(&self, issued: NaiveDate) -> Option<Weather> {
-        let mut weather = Weather { issued: Some(issued), ..Default::default() };
+        let mut weather = Weather {
+            issued: Some(issued),
+            ..Default::default()
+        };
         for back in 0..3 {
             let day = issued - Duration::days(back);
-            weather.temperature.insert(day, *self.temperature.get(&day)?);
+            weather
+                .temperature
+                .insert(day, *self.temperature.get(&day)?);
         }
         for lead in 1..=HORIZON {
             let day = issued + Duration::days(lead);
             let i = lead as usize - 1;
-            weather.temperature.insert(day, *self.forecast_temperature[i].get(&day)?);
-            weather.wind_power.insert(day, *self.forecast_wind[i].get(&day)?);
+            weather
+                .temperature
+                .insert(day, *self.forecast_temperature[i].get(&day)?);
+            weather
+                .wind_power
+                .insert(day, *self.forecast_wind[i].get(&day)?);
         }
         Some(weather)
     }
 
     /// The observed weather of a past day.
     fn observed(&self, date: NaiveDate) -> Option<Weather> {
-        let mut weather = Weather { issued: Some(date), ..Default::default() };
+        let mut weather = Weather {
+            issued: Some(date),
+            ..Default::default()
+        };
         for back in 0..3 {
             let day = date - Duration::days(back);
-            weather.temperature.insert(day, *self.temperature.get(&day)?);
+            weather
+                .temperature
+                .insert(day, *self.temperature.get(&day)?);
         }
         weather.wind_power.insert(date, *self.wind.get(&date)?);
         Some(weather)
@@ -261,10 +309,15 @@ impl Data {
 
 /// Fits on the days before `until`.
 fn fit(data: &Data, until: NaiveDate, base: &Model) -> Model {
-    let (mut xc, mut yc, mut xw, mut yw, mut xs, mut ys) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let (mut xc, mut yc, mut xw, mut yw, mut xs, mut ys) =
+        (vec![], vec![], vec![], vec![], vec![], vec![]);
     let first = season_bounds(FIRST_SEASON).0;
     for date in first.iter_days().take_while(|d| *d < until) {
-        let (Some(weather), Some([c, w, s]), Some(levels)) = (data.observed(date), data.net.load.get(&date), data.net.levels(date)) else {
+        let (Some(weather), Some([c, w, s]), Some(levels)) = (
+            data.observed(date),
+            data.net.load.get(&date),
+            data.net.levels(date),
+        ) else {
             continue;
         };
         let day = weather.day(date).expect("observed days are whole");
@@ -280,7 +333,13 @@ fn fit(data: &Data, until: NaiveDate, base: &Model) -> Model {
     let (solar, s_sd) = least_squares(&xs, &ys);
     eprintln!("fit before {until}: {} days, residual sd consumption {c_sd:.4}, wind {w_sd:.4}, solar {s_sd:.4}", yc.len());
     assert_eq!(consumption.len(), CONSUMPTION_FEATURES);
-    Model { consumption, wind, solar, fitted_through: until - Duration::days(1), ..base.clone() }
+    Model {
+        consumption,
+        wind,
+        solar,
+        fitted_through: until - Duration::days(1),
+        ..base.clone()
+    }
 }
 
 /// The days a season's backtest forecasts from: every day with its weather forecast.
@@ -315,7 +374,10 @@ impl Tally {
             self.winter_right += ok;
         }
         self.blue_right += u32::from(actual == Color::Blue);
-        self.brier += Color::ALL.iter().map(|c| (p[c.index()] - f64::from(u32::from(*c == actual))).powi(2)).sum::<f64>();
+        self.brier += Color::ALL
+            .iter()
+            .map(|c| (p[c.index()] - f64::from(u32::from(*c == actual))).powi(2))
+            .sum::<f64>();
         self.confusion[actual.index()][predicted.index()] += 1;
     }
 
@@ -324,11 +386,21 @@ impl Tally {
         let tp = f64::from(self.confusion[i][i]);
         let predicted: u32 = (0..3).map(|a| self.confusion[a][i]).sum();
         let actual: u32 = self.confusion[i].iter().sum();
-        if tp == 0.0 { 0.0 } else { 2.0 * tp / f64::from(predicted + actual) }
+        if tp == 0.0 {
+            0.0
+        } else {
+            2.0 * tp / f64::from(predicted + actual)
+        }
     }
 
     fn score(&self, horizon: u32) -> HorizonScore {
-        let share = |a: u32, b: u32| if b == 0 { 0.0 } else { f64::from(a) / f64::from(b) };
+        let share = |a: u32, b: u32| {
+            if b == 0 {
+                0.0
+            } else {
+                f64::from(a) / f64::from(b)
+            }
+        };
         let round = |x: f64| (x * 1000.0).round() / 1000.0;
         HorizonScore {
             horizon,
@@ -353,8 +425,14 @@ async fn main() -> Result<(), Failure> {
         let _ = std::fs::remove_dir_all(&dir);
     }
     std::fs::create_dir_all(&dir)?;
-    let client = maison_backend::net::web_client(concat!("Maison-fit/", env!("CARGO_PKG_VERSION")), std::time::Duration::from_secs(600))?;
-    let downloads = Downloads { client: client.clone(), dir };
+    let client = maison_backend::net::web_client(
+        concat!("Maison-fit/", env!("CARGO_PKG_VERSION")),
+        std::time::Duration::from_secs(600),
+    )?;
+    let downloads = Downloads {
+        client: client.clone(),
+        dir,
+    };
     let today = maison_backend::util::house_today();
     let yesterday = today - Duration::days(1);
     let (cities, wind_sites) = (cities(), wind_sites());
@@ -364,20 +442,39 @@ async fn main() -> Result<(), Failure> {
     let mut colors = History::new();
     for start in FIRST_SEASON..=season_start_year(today) {
         let season = sources.season(&client, start, today).await?;
-        store::write_json(&out.join(format!("tempo_history_{}.json", season_name(start))), &Values::from_history(&season), Access::Shared)?;
+        store::write_json(
+            &out.join(format!("tempo_history_{}.json", season_name(start))),
+            &Values::from_history(&season),
+            Access::Shared,
+        )?;
         colors.extend(season);
     }
 
     // 2. éCO2mix as Tempo days: the consolidated years, then the current months
     let odre = config.tempo_odre_url.trim_end_matches('/');
     let mut load = BTreeMap::new();
-    for (dataset, since) in [("eco2mix-national-cons-def", season_bounds(FIRST_SEASON - 1).0), ("eco2mix-national-tr", today - Duration::days(400))] {
+    for (dataset, since) in [
+        (
+            "eco2mix-national-cons-def",
+            season_bounds(FIRST_SEASON - 1).0,
+        ),
+        ("eco2mix-national-tr", today - Duration::days(400)),
+    ] {
         let query = [
-            ("select", "date_heure,consommation,eolien,solaire".to_string()),
+            (
+                "select",
+                "date_heure,consommation,eolien,solaire".to_string(),
+            ),
             ("where", format!("date_heure >= '{since}T00:00:00Z'")),
             ("order_by", "date_heure".to_string()),
         ];
-        let text = downloads.get(&format!("{dataset}.json"), &format!("{odre}/{dataset}/exports/json"), &query).await?;
+        let text = downloads
+            .get(
+                &format!("{dataset}.json"),
+                &format!("{odre}/{dataset}/exports/json"),
+                &query,
+            )
+            .await?;
         let rows: Vec<OdreRow> = serde_json::from_str(&text)?;
         // the consolidated data first; the current months only add what it lacks
         for (day, values) in tempo_days(&rows) {
@@ -389,26 +486,83 @@ async fn main() -> Result<(), Failure> {
     let from = season_bounds(FIRST_SEASON - 1).1 - Duration::days(5);
     let keys = |k: &str| vec![k.to_string()];
     let (temperature_keys, wind_keys) = (keys("temperature_2m"), keys("wind_speed_100m"));
-    let ask = |name, url, places, keys, model| Hourly { name, url, places, keys, model };
-    let temps = downloads.hourly(ask("archive-temperature", ARCHIVE_URL, &cities, &temperature_keys, None), from, yesterday).await?;
-    let winds = downloads.hourly(ask("archive-wind", ARCHIVE_URL, &wind_sites, &wind_keys, None), from, yesterday).await?;
-    let leads = |k: &str| (1..=HORIZON).map(|h| format!("{k}_previous_day{h}")).collect::<Vec<_>>();
+    let ask = |name, url, places, keys, model| Hourly {
+        name,
+        url,
+        places,
+        keys,
+        model,
+    };
+    let temps = downloads
+        .hourly(
+            ask(
+                "archive-temperature",
+                ARCHIVE_URL,
+                &cities,
+                &temperature_keys,
+                None,
+            ),
+            from,
+            yesterday,
+        )
+        .await?;
+    let winds = downloads
+        .hourly(
+            ask("archive-wind", ARCHIVE_URL, &wind_sites, &wind_keys, None),
+            from,
+            yesterday,
+        )
+        .await?;
+    let leads = |k: &str| {
+        (1..=HORIZON)
+            .map(|h| format!("{k}_previous_day{h}"))
+            .collect::<Vec<_>>()
+    };
     let first_forecast: NaiveDate = FIRST_FORECAST.parse()?;
     let (temperature_leads, wind_leads) = (leads("temperature_2m"), leads("wind_speed_100m"));
     let ftemps = downloads
-        .hourly(ask("forecast-temperature", PREVIOUS_RUNS_URL, &cities, &temperature_leads, Some(WEATHER_MODEL)), first_forecast, yesterday)
+        .hourly(
+            ask(
+                "forecast-temperature",
+                PREVIOUS_RUNS_URL,
+                &cities,
+                &temperature_leads,
+                Some(WEATHER_MODEL),
+            ),
+            first_forecast,
+            yesterday,
+        )
         .await?;
     let fwinds = downloads
-        .hourly(ask("forecast-wind", PREVIOUS_RUNS_URL, &wind_sites, &wind_leads, Some(WEATHER_MODEL)), first_forecast, yesterday)
+        .hourly(
+            ask(
+                "forecast-wind",
+                PREVIOUS_RUNS_URL,
+                &wind_sites,
+                &wind_leads,
+                Some(WEATHER_MODEL),
+            ),
+            first_forecast,
+            yesterday,
+        )
         .await?;
     let temperature = merged(&temps, "temperature_2m", |s| daily_temperature(s, &cities))?;
     let data = Data {
         colors,
-        net: NetLoad { load, temperature: temperature.clone() },
+        net: NetLoad {
+            load,
+            temperature: temperature.clone(),
+        },
         wind: merged(&winds, "wind_speed_100m", daily_wind_power)?,
         temperature,
-        forecast_temperature: temperature_leads.iter().map(|k| merged(&ftemps, k, |s| daily_temperature(s, &cities))).collect::<Result<_, _>>()?,
-        forecast_wind: wind_leads.iter().map(|k| merged(&fwinds, k, daily_wind_power)).collect::<Result<_, _>>()?,
+        forecast_temperature: temperature_leads
+            .iter()
+            .map(|k| merged(&ftemps, k, |s| daily_temperature(s, &cities)))
+            .collect::<Result<_, _>>()?,
+        forecast_wind: wind_leads
+            .iter()
+            .map(|k| merged(&fwinds, k, daily_wind_power))
+            .collect::<Result<_, _>>()?,
     };
 
     // 4. the backtest: the full seasons with a week of forecasts every day
@@ -428,17 +582,29 @@ async fn main() -> Result<(), Failure> {
     let seasons: Vec<i32> = (season_start_year(first_forecast) + 1..season_start_year(today))
         .filter(|start| issues(&data, *start).len() > 300)
         .collect();
-    let fitted: Vec<Season> =
-        seasons.iter().map(|start| (*start, fit(&data, season_bounds(*start).0, &base), issues(&data, *start))).collect();
+    let fitted: Vec<Season> = seasons
+        .iter()
+        .map(|start| {
+            (
+                *start,
+                fit(&data, season_bounds(*start).0, &base),
+                issues(&data, *start),
+            )
+        })
+        .collect();
 
     // the error of x by horizon, in winter (the summer is far from every threshold)
     let mut errors: Vec<Vec<f64>> = vec![vec![]; HORIZON as usize];
     for (_, model, issued) in &fitted {
         for (issue, weather) in issued {
-            let Some(levels) = data.net.levels(*issue) else { continue };
+            let Some(levels) = data.net.levels(*issue) else {
+                continue;
+            };
             for lead in 1..=HORIZON {
                 let date = *issue + Duration::days(lead);
-                if let (true, Some(day), Some(actual)) = (is_winter(date), weather.day(date), data.actual(date)) {
+                if let (true, Some(day), Some(actual)) =
+                    (is_winter(date), weather.day(date), data.actual(date))
+                {
                     errors[lead as usize - 1].push(expected(model, &levels, &day) - actual);
                 }
             }
@@ -457,37 +623,79 @@ async fn main() -> Result<(), Failure> {
     let mut tallies = vec![Tally::default(); HORIZON as usize];
     let mut timing = (std::time::Duration::ZERO, 0u32);
     for (_, model, issued) in &fitted {
-        let model = Model { sigma: sigma.clone(), ..model.clone() };
+        let model = Model {
+            sigma: sigma.clone(),
+            ..model.clone()
+        };
         for (issue, weather) in issued {
             // what was known before 10:40: up to the day itself
-            let known: History = data.colors.range(season_bounds(season_start_year(*issue)).0..=*issue).map(|(d, c)| (*d, *c)).collect();
+            let known: History = data
+                .colors
+                .range(season_bounds(season_start_year(*issue)).0..=*issue)
+                .map(|(d, c)| (*d, *c))
+                .collect();
             let levels = data.net.levels(*issue);
             let started = Instant::now();
-            let (days, _) = outlook(&model, &known, Quotas::default(), Some(weather), levels, *issue);
+            let (days, _) = outlook(
+                &model,
+                &known,
+                Quotas::default(),
+                Some(weather),
+                levels,
+                *issue,
+            );
             timing = (timing.0 + started.elapsed(), timing.1 + 1);
             for day in days {
                 if let Some(actual) = data.colors.get(&day.date) {
-                    let p = [day.probabilities.blue, day.probabilities.white, day.probabilities.red];
+                    let p = [
+                        day.probabilities.blue,
+                        day.probabilities.white,
+                        day.probabilities.red,
+                    ];
                     tallies[day.horizon as usize - 1].add(day.date, *actual, day.color, p);
                 }
             }
         }
     }
-    let horizons: Vec<HorizonScore> = tallies.iter().enumerate().map(|(i, t)| t.score(i as u32 + 1)).collect();
-    println!("backtest on {}:", seasons.iter().map(|s| season_name(*s)).collect::<Vec<_>>().join(", "));
+    let horizons: Vec<HorizonScore> = tallies
+        .iter()
+        .enumerate()
+        .map(|(i, t)| t.score(i as u32 + 1))
+        .collect();
+    println!(
+        "backtest on {}:",
+        seasons
+            .iter()
+            .map(|s| season_name(*s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("  J+h  days  accuracy  winter  red F1  white F1  Brier  always blue");
     for s in &horizons {
         println!(
             "  J+{}  {:4}  {:8.3}  {:6.3}  {:6.3}  {:8.3}  {:5.3}  {:11.3}",
-            s.horizon, s.days, s.accuracy, s.winter_accuracy, s.red_f1, s.white_f1, s.brier, s.always_blue
+            s.horizon,
+            s.days,
+            s.accuracy,
+            s.winter_accuracy,
+            s.red_f1,
+            s.white_f1,
+            s.brier,
+            s.always_blue
         );
     }
-    println!("one forecast (normalisation, rules, {RUNS} draws × 7 days): {:?} on this machine", timing.0 / timing.1.max(1));
+    println!(
+        "one forecast (normalisation, rules, {RUNS} draws × 7 days): {:?} on this machine",
+        timing.0 / timing.1.max(1)
+    );
 
     // 5. the model shipped: every day up to yesterday
     let mut model = fit(&data, today, &base);
     model.sigma = sigma;
-    model.backtest = Backtest { seasons: seasons.iter().map(|s| season_name(*s)).collect(), horizons };
+    model.backtest = Backtest {
+        seasons: seasons.iter().map(|s| season_name(*s)).collect(),
+        horizons,
+    };
     model.fitted_through = *data.net.load.keys().next_back().ok_or("no load")?;
     store::write_json(&out.join("model.json"), &model, Access::Shared)?;
 

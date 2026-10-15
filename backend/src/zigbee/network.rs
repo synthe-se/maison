@@ -4,21 +4,22 @@
 
 use std::{num::NonZero, sync::Arc, time::Duration};
 
-use ashv2::{Payload, ezsp::Receiver as AshEzspReceiver, start as start_ash};
+use ashv2::{ezsp::Receiver as AshEzspReceiver, start as start_ash, Payload};
 use ezsp::{
-    Callback, Client as EzspClient, Configuration, Connection as EzspConnection, Networking, Security, Utilities,
     ember::{
-        Eui64,
         join::Method as EmberJoinMethod,
         key::Data as EmberKeyData,
         network::{Parameters as EmberNetworkParameters, Status as EmberNetworkStatus},
         security::initial,
+        Eui64,
     },
     ezsp::{config, decision, network::InitBitmask as NetworkInitBitmask, policy, value},
+    Callback, Client as EzspClient, Configuration, Connection as EzspConnection, Networking,
+    Security, Utilities,
 };
 use tokio::{
     sync::mpsc,
-    time::{Instant, timeout},
+    time::{timeout, Instant},
 };
 use tokio_serial::SerialPortBuilderExt;
 use tracing::{debug, info, warn};
@@ -27,9 +28,9 @@ use super::{
     config::ZigbeeConfig,
     context::{EzspContext, PipelineTasks},
     device::DiscoveredDevice,
-    driver::{EZSP_COMMAND_TIMEOUT, Shared},
+    driver::{Shared, EZSP_COMMAND_TIMEOUT},
     error::DriverError,
-    zcl::{DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID, format_eui64},
+    zcl::{format_eui64, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID},
 };
 
 const EZSP_CHANNEL_SIZE: usize = 256;
@@ -44,7 +45,8 @@ const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(180);
 /// round-trip, so a healthy dongle is never torn down by the watchdog for want of traffic.
 const KEEPALIVE_AFTER: Duration = Duration::from_secs(60);
 const DEFAULT_HOME_GATEWAY_DEVICE_ID: u16 = 0x0050;
-const DEFAULT_LOCAL_INPUT_CLUSTERS: &[u16] = &[0x0000, 0x0006, 0x0008, 0x0300, 0x0403, 0x0201, 0xFC00];
+const DEFAULT_LOCAL_INPUT_CLUSTERS: &[u16] =
+    &[0x0000, 0x0006, 0x0008, 0x0300, 0x0403, 0x0201, 0xFC00];
 const DEFAULT_LOCAL_OUTPUT_CLUSTERS: &[u16] = &[0x0000, 0x0006, 0x0008, 0x0300, 0x0403];
 const DEFAULT_STACK_PROFILE: u16 = 2;
 const DEFAULT_SECURITY_LEVEL: u16 = 5;
@@ -88,7 +90,9 @@ impl From<EmberNetworkStatus> for NetworkState {
 pub fn network_state_of(status: Result<ezsp::ember::Status, u8>) -> Option<NetworkState> {
     use ezsp::ember::Status;
     match status {
-        Ok(Status::NetworkUp | Status::NetworkOpened | Status::NetworkClosed) => Some(NetworkState::Joined),
+        Ok(Status::NetworkUp | Status::NetworkOpened | Status::NetworkClosed) => {
+            Some(NetworkState::Joined)
+        }
         Ok(Status::NetworkDown) => Some(NetworkState::Down),
         other => {
             info!(status = ?other, "zigbee stack status");
@@ -104,9 +108,15 @@ pub async fn bring_up(
     shared: &Arc<Shared>,
     devices: &[DiscoveredDevice],
 ) -> Result<EzspContext, DriverError> {
-    let mut context = open_ezsp_context(serial_port, config.protocol_version, Arc::clone(shared)).await?;
+    let mut context =
+        open_ezsp_context(serial_port, config.protocol_version, Arc::clone(shared)).await?;
     context.joined_devices = devices.to_vec();
-    let state = match timeout(NETWORK_INIT_TIMEOUT, ensure_coordinator_network(&mut context, config, serial_port)).await {
+    let state = match timeout(
+        NETWORK_INIT_TIMEOUT,
+        ensure_coordinator_network(&mut context, config, serial_port),
+    )
+    .await
+    {
         Ok(Ok(state)) => state,
         Ok(Err(error)) => {
             teardown_context(context).await;
@@ -127,7 +137,12 @@ pub async fn bring_up(
 /// across a reconnect, and teardown never hangs the driver.
 pub async fn teardown_context(context: EzspContext) {
     info!("tearing down EZSP pipeline");
-    let EzspContext { connection, tasks, callbacks_rx, .. } = context;
+    let EzspContext {
+        connection,
+        tasks,
+        callbacks_rx,
+        ..
+    } = context;
     drop(connection);
     drop(callbacks_rx);
     tasks.shutdown().await;
@@ -152,7 +167,12 @@ async fn open_ezsp_context(
         // Negotiation is strict: the NCP must report exactly the version asked. On a
         // mismatch (a firmware upgrade) the pipeline is rebuilt once with the version it
         // announced, so the driver adapts without a config change.
-        let link = Link { serial_port, baud_rate, flow_control, mode };
+        let link = Link {
+            serial_port,
+            baud_rate,
+            flow_control,
+            mode,
+        };
         let opened = match link.open(protocol_version).await {
             Err((_, Some(announced))) => {
                 warn!(%serial_port, desired = protocol_version.get(), negotiated = announced.get(), "NCP reports a different EZSP protocol version — retrying with it");
@@ -188,7 +208,10 @@ impl Link<'_> {
     /// Opens the port, spawns the four pipeline tasks and negotiates `version`. On failure
     /// the tasks are shut down; on a version mismatch the version the NCP announced comes
     /// back with the error, for a retry with it.
-    async fn open(&self, version: NonZero<u8>) -> Result<Pipeline, (DriverError, Option<NonZero<u8>>)> {
+    async fn open(
+        &self,
+        version: NonZero<u8>,
+    ) -> Result<Pipeline, (DriverError, Option<NonZero<u8>>)> {
         let stream = tokio_serial::new(self.serial_port, self.baud_rate)
             .flow_control(self.flow_control)
             .open_native_async()
@@ -196,7 +219,11 @@ impl Link<'_> {
         let (reader, writer) = tokio::io::split(stream);
         let (payload_tx, payload_rx) = mpsc::channel::<Payload>(EZSP_CHANNEL_SIZE);
         let (ash_handle, ash_futures) = start_ash(reader, writer, payload_tx);
-        let (client, ezsp_futures) = EzspClient::run(ash_handle, AshEzspReceiver::new(payload_rx), EZSP_CHANNEL_SIZE);
+        let (client, ezsp_futures) = EzspClient::run(
+            ash_handle,
+            AshEzspReceiver::new(payload_rx),
+            EZSP_CHANNEL_SIZE,
+        );
         let tasks = PipelineTasks([
             tokio::spawn(ezsp_futures.transmitter),
             tokio::spawn(ezsp_futures.receiver),
@@ -211,7 +238,8 @@ impl Link<'_> {
                 tasks.shutdown().await;
                 let announced = match &error {
                     ezsp::Error::ProtocolVersionMismatch { negotiated, .. } => {
-                        NonZero::new(negotiated.protocol_version()).filter(|announced| *announced != version)
+                        NonZero::new(negotiated.protocol_version())
+                            .filter(|announced| *announced != version)
                     }
                     _ => None,
                 };
@@ -234,10 +262,18 @@ async fn ensure_coordinator_network(
     configure_stack(context).await?;
     configure_trust_center(context).await?;
 
-    if let Err(error) = context.connection.network_init(NetworkInitBitmask::PARENT_INFO_IN_TOKEN).await {
+    if let Err(error) = context
+        .connection
+        .network_init(NetworkInitBitmask::PARENT_INFO_IN_TOKEN)
+        .await
+    {
         warn!(%serial_port, %error, "ezsp network_init failed");
     }
-    let mut state = context.connection.network_state().await.map_err(DriverError::ezsp("read network state"))?;
+    let mut state = context
+        .connection
+        .network_state()
+        .await
+        .map_err(DriverError::ezsp("read network state"))?;
 
     if state == EmberNetworkStatus::NoNetwork {
         info!(%serial_port, "forming new Zigbee coordinator network");
@@ -248,9 +284,16 @@ async fn ensure_coordinator_network(
         // join. Some firmware refuses it on a running network (EmberInvalidCall); the
         // runtime policies set above are the ones that matter for joins.
         info!(%serial_port, "refreshing trust center security state on existing network");
-        match Security::set_initial_security_state(&mut context.connection, initial_security_state()).await {
+        match Security::set_initial_security_state(
+            &mut context.connection,
+            initial_security_state(),
+        )
+        .await
+        {
             Ok(()) => info!("trust center security state refreshed successfully"),
-            Err(error) => warn!(%error, "set_initial_security_state not accepted on running network (non-fatal — runtime policies still apply)"),
+            Err(error) => {
+                warn!(%error, "set_initial_security_state not accepted on running network (non-fatal — runtime policies still apply)")
+            }
         }
     }
 
@@ -261,7 +304,9 @@ async fn ensure_coordinator_network(
             info!(eui64 = %format_eui64(eui64.into_array()), "coordinator EUI64 cached");
             context.coordinator_eui64 = Some(eui64);
         }
-        Err(error) => warn!(%error, "failed to fetch coordinator EUI64 — remote binding will not work"),
+        Err(error) => {
+            warn!(%error, "failed to fetch coordinator EUI64 — remote binding will not work")
+        }
     }
     Ok(state)
 }
@@ -283,15 +328,35 @@ async fn configure_local_endpoint(context: &mut EzspContext) -> Result<(), Drive
 
 async fn configure_stack(context: &mut EzspContext) -> Result<(), DriverError> {
     let settings = [
-        (config::Id::StackProfile, DEFAULT_STACK_PROFILE, "set stack profile"),
-        (config::Id::SecurityLevel, DEFAULT_SECURITY_LEVEL, "set security level"),
+        (
+            config::Id::StackProfile,
+            DEFAULT_STACK_PROFILE,
+            "set stack profile",
+        ),
+        (
+            config::Id::SecurityLevel,
+            DEFAULT_SECURITY_LEVEL,
+            "set security level",
+        ),
         // sleepy end devices (remotes, sensors) join as children: some firmware allows none
-        (config::Id::MaxEndDeviceChildren, 16, "set max end device children"),
+        (
+            config::Id::MaxEndDeviceChildren,
+            16,
+            "set max end device children",
+        ),
         // 2^8 minutes (~4 h) before a child that did not poll is dropped: remotes poll rarely
-        (config::Id::EndDevicePollTimeout, 8, "set end device poll timeout"),
+        (
+            config::Id::EndDevicePollTimeout,
+            8,
+            "set end device poll timeout",
+        ),
     ];
     for (id, value, what) in settings {
-        context.connection.set_configuration_value(id, value).await.map_err(DriverError::ezsp(what))?;
+        context
+            .connection
+            .set_configuration_value(id, value)
+            .await
+            .map_err(DriverError::ezsp(what))?;
     }
     Ok(())
 }
@@ -301,11 +366,18 @@ async fn configure_trust_center(context: &mut EzspContext) -> Result<(), DriverE
     let connection = &mut context.connection;
     // New joins and unsecured rejoins (bitmask 0x03): the network key goes out encrypted with
     // the joiner's link key, the well-known one imported at permit-join time.
-    let joins = (decision::Bitmask::ALLOW_JOINS | decision::Bitmask::ALLOW_UNSECURED_REJOINS).bits();
-    connection.set_policy(policy::Id::TrustCenter, joins).await.map_err(DriverError::ezsp("set trust center policy"))?;
+    let joins =
+        (decision::Bitmask::ALLOW_JOINS | decision::Bitmask::ALLOW_UNSECURED_REJOINS).bits();
+    connection
+        .set_policy(policy::Id::TrustCenter, joins)
+        .await
+        .map_err(DriverError::ezsp("set trust center policy"))?;
     // the Trust Center link key may be requested (Zigbee 3.0)
     let key_requests = u8::from(decision::Id::AllowTcKeyRequestsAndSendCurrentKey);
-    connection.set_policy(policy::Id::TcKeyRequest, key_requests).await.map_err(DriverError::ezsp("set TC key request policy"))?;
+    connection
+        .set_policy(policy::Id::TcKeyRequest, key_requests)
+        .await
+        .map_err(DriverError::ezsp("set TC key request policy"))?;
     // rejoins with « ZigBeeAlliance09 » (the Hue dimmer after a reset), for 10 minutes
     connection
         .set_policy(policy::Id::TcJoinsUsingWellKnownKey, 0x01u8)
@@ -317,7 +389,10 @@ async fn configure_trust_center(context: &mut EzspContext) -> Result<(), DriverE
         .map_err(DriverError::ezsp("set TC well-known key rejoin timeout"))?;
     // no application link keys between devices
     let app_keys = u8::from(decision::Id::DenyAppKeyRequests);
-    connection.set_policy(policy::Id::AppKeyRequest, app_keys).await.map_err(DriverError::ezsp("set app key request policy (deny)"))?;
+    connection
+        .set_policy(policy::Id::AppKeyRequest, app_keys)
+        .await
+        .map_err(DriverError::ezsp("set app key request policy (deny)"))?;
     // transient keys kept 300 s (LE u16)
     let transient: heapless::Vec<u8, 255, u8> = [0x2C, 0x01].into_iter().collect();
     connection
@@ -337,16 +412,35 @@ async fn configure_trust_center(context: &mut EzspContext) -> Result<(), DriverE
         .await
         .map_err(DriverError::ezsp("set message contents callback policy"))?;
     // Touchlink requests and responses handled by the NCP
-    connection.set_policy(policy::Id::Zll, ZLL_POLICY_ENABLED).await.map_err(DriverError::ezsp("enable ZLL policy"))
+    connection
+        .set_policy(policy::Id::Zll, ZLL_POLICY_ENABLED)
+        .await
+        .map_err(DriverError::ezsp("enable ZLL policy"))
 }
 
-async fn form_coordinator_network(context: &mut EzspContext, config: &ZigbeeConfig) -> Result<(), DriverError> {
-    let coordinator_eui64 = context.connection.get_eui64().await.map_err(DriverError::ezsp("get coordinator EUI64"))?;
+async fn form_coordinator_network(
+    context: &mut EzspContext,
+    config: &ZigbeeConfig,
+) -> Result<(), DriverError> {
+    let coordinator_eui64 = context
+        .connection
+        .get_eui64()
+        .await
+        .map_err(DriverError::ezsp("get coordinator EUI64"))?;
     let pan_id = match config.pan_id {
         Some(value) => usable_pan_id(value),
-        None => usable_pan_id(context.connection.get_random_number().await.map_err(DriverError::ezsp("generate PAN ID"))?),
+        None => usable_pan_id(
+            context
+                .connection
+                .get_random_number()
+                .await
+                .map_err(DriverError::ezsp("generate PAN ID"))?,
+        ),
     };
-    let extended_pan_id = config.extended_pan_id.map(Eui64::from).unwrap_or_else(|| derive_extended_pan_id(coordinator_eui64));
+    let extended_pan_id = config
+        .extended_pan_id
+        .map(Eui64::from)
+        .unwrap_or_else(|| derive_extended_pan_id(coordinator_eui64));
     let (channel, tx_power) = (config.channel, config.tx_power);
     info!(pan_id = format_args!("0x{pan_id:04x}"), %extended_pan_id, channel, tx_power, "forming Zigbee coordinator network");
 
@@ -363,12 +457,22 @@ async fn form_coordinator_network(context: &mut EzspContext, config: &ZigbeeConf
         0,
         1_u32 << channel,
     );
-    context.connection.form_network(parameters).await.map_err(DriverError::ezsp("form coordinator network"))
+    context
+        .connection
+        .form_network(parameters)
+        .await
+        .map_err(DriverError::ezsp("form coordinator network"))
 }
 
-async fn log_network_parameters(context: &mut EzspContext, serial_port: &str) -> Result<(), DriverError> {
-    let (node_type, parameters) =
-        context.connection.get_network_parameters().await.map_err(DriverError::ezsp("get network parameters"))?;
+async fn log_network_parameters(
+    context: &mut EzspContext,
+    serial_port: &str,
+) -> Result<(), DriverError> {
+    let (node_type, parameters) = context
+        .connection
+        .get_network_parameters()
+        .await
+        .map_err(DriverError::ezsp("get network parameters"))?;
     info!(
         %serial_port,
         node_type = %node_type,
@@ -382,12 +486,18 @@ async fn log_network_parameters(context: &mut EzspContext, serial_port: &str) ->
     Ok(())
 }
 
-async fn wait_for_network_ready(context: &mut EzspContext) -> Result<EmberNetworkStatus, DriverError> {
+async fn wait_for_network_ready(
+    context: &mut EzspContext,
+) -> Result<EmberNetworkStatus, DriverError> {
     for _ in 0..25 {
         if let Err(error) = super::callbacks::drain_callbacks(context).await {
             warn!(%error, "callback while forming the network");
         }
-        let state = context.connection.network_state().await.map_err(DriverError::ezsp("read network state after form"))?;
+        let state = context
+            .connection
+            .network_state()
+            .await
+            .map_err(DriverError::ezsp("read network state after form"))?;
         if state != EmberNetworkStatus::NoNetwork && state != EmberNetworkStatus::JoiningNetwork {
             return Ok(state);
         }
@@ -459,16 +569,18 @@ pub async fn check_link(context: &mut EzspContext) -> Result<(), String> {
     match link_health(context.last_activity.elapsed()) {
         LinkHealth::Fine => Ok(()),
         LinkHealth::Dead => Err("EZSP watchdog timeout — no activity".to_string()),
-        LinkHealth::Probe => match timeout(EZSP_COMMAND_TIMEOUT, context.connection.network_state()).await {
-            Ok(Ok(_)) => {
-                debug!("EZSP keepalive answered");
-                context.last_activity = Instant::now();
-                Ok(())
+        LinkHealth::Probe => {
+            match timeout(EZSP_COMMAND_TIMEOUT, context.connection.network_state()).await {
+                Ok(Ok(_)) => {
+                    debug!("EZSP keepalive answered");
+                    context.last_activity = Instant::now();
+                    Ok(())
+                }
+                Ok(Err(error)) => Err(format!("EZSP keepalive failed: {error}")),
+                // a dropped round-trip leaves the pipeline out of step: rebuild it
+                Err(_elapsed) => Err("EZSP keepalive timed out".to_string()),
             }
-            Ok(Err(error)) => Err(format!("EZSP keepalive failed: {error}")),
-            // a dropped round-trip leaves the pipeline out of step: rebuild it
-            Err(_elapsed) => Err("EZSP keepalive timed out".to_string()),
-        },
+        }
     }
 }
 
@@ -479,24 +591,54 @@ mod tests {
     #[test]
     fn the_watchdog_probes_a_quiet_link_before_giving_up_on_it() {
         assert_eq!(link_health(Duration::ZERO), LinkHealth::Fine);
-        assert_eq!(link_health(KEEPALIVE_AFTER - Duration::from_millis(1)), LinkHealth::Fine);
-        assert_eq!(link_health(KEEPALIVE_AFTER), LinkHealth::Probe, "a calm network is probed, not torn down");
+        assert_eq!(
+            link_health(KEEPALIVE_AFTER - Duration::from_millis(1)),
+            LinkHealth::Fine
+        );
+        assert_eq!(
+            link_health(KEEPALIVE_AFTER),
+            LinkHealth::Probe,
+            "a calm network is probed, not torn down"
+        );
         assert_eq!(link_health(WATCHDOG_TIMEOUT), LinkHealth::Probe);
-        assert_eq!(link_health(WATCHDOG_TIMEOUT + Duration::from_secs(1)), LinkHealth::Dead);
+        assert_eq!(
+            link_health(WATCHDOG_TIMEOUT + Duration::from_secs(1)),
+            LinkHealth::Dead
+        );
         const { assert!(KEEPALIVE_AFTER.as_secs() < WATCHDOG_TIMEOUT.as_secs()) };
     }
 
     #[test]
     fn stack_statuses_say_the_network_state() {
         use ezsp::ember::Status;
-        assert_eq!(network_state_of(Ok(Status::NetworkUp)), Some(NetworkState::Joined));
-        assert_eq!(network_state_of(Ok(Status::NetworkDown)), Some(NetworkState::Down));
-        assert_eq!(network_state_of(Ok(Status::NetworkOpened)), Some(NetworkState::Joined), "open to joins: up");
-        assert_eq!(network_state_of(Ok(Status::NetworkClosed)), Some(NetworkState::Joined), "closed to joins: up");
+        assert_eq!(
+            network_state_of(Ok(Status::NetworkUp)),
+            Some(NetworkState::Joined)
+        );
+        assert_eq!(
+            network_state_of(Ok(Status::NetworkDown)),
+            Some(NetworkState::Down)
+        );
+        assert_eq!(
+            network_state_of(Ok(Status::NetworkOpened)),
+            Some(NetworkState::Joined),
+            "open to joins: up"
+        );
+        assert_eq!(
+            network_state_of(Ok(Status::NetworkClosed)),
+            Some(NetworkState::Joined),
+            "closed to joins: up"
+        );
         assert_eq!(network_state_of(Ok(Status::DeliveryFailed)), None);
         assert_eq!(network_state_of(Err(0xee)), None);
-        assert_eq!(NetworkState::from(EmberNetworkStatus::JoinedNetwork), NetworkState::Joined);
-        assert_eq!(NetworkState::from(EmberNetworkStatus::JoinedNetworkNoParent), NetworkState::Down);
+        assert_eq!(
+            NetworkState::from(EmberNetworkStatus::JoinedNetwork),
+            NetworkState::Joined
+        );
+        assert_eq!(
+            NetworkState::from(EmberNetworkStatus::JoinedNetworkNoParent),
+            NetworkState::Down
+        );
         assert_eq!(NetworkState::Joined.problem(), None);
         assert!(NetworkState::Down.problem().is_some());
     }

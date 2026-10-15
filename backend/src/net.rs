@@ -39,9 +39,15 @@ pub async fn read_capped(
     device: &'static str,
 ) -> Result<Vec<u8>, AppError> {
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| unreachable(device, error))? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| unreachable(device, error))?
+    {
         if body.len() + chunk.len() > max {
-            return Err(AppError::service_unavailable(format!("{device} answered too much")));
+            return Err(AppError::service_unavailable(format!(
+                "{device} answered too much"
+            )));
         }
         body.extend_from_slice(&chunk);
     }
@@ -79,8 +85,13 @@ pub fn device_address(value: &str) -> Result<(String, Option<u16>), AppError> {
     let refuse = || AppError::bad_request(format!("{value:?} is {NOT_A_DEVICE}"));
     let (host, port) = match value.rsplit_once(':') {
         Some((host, port)) => {
-            let digits = !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit());
-            let port = port.parse::<u16>().ok().filter(|p| digits && *p != 0).ok_or_else(refuse)?;
+            let digits =
+                !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit());
+            let port = port
+                .parse::<u16>()
+                .ok()
+                .filter(|p| digits && *p != 0)
+                .ok_or_else(refuse)?;
             (host, Some(port))
         }
         None => (value, None),
@@ -107,14 +118,18 @@ pub fn device_ipv4(value: &str) -> Result<Ipv4Addr, AppError> {
 /// `name.local`, `living-room.tv.local`: DNS labels only.
 fn is_local_name(host: &str) -> bool {
     let lower = host.to_ascii_lowercase();
-    let Some(name) = lower.strip_suffix(".local") else { return false };
+    let Some(name) = lower.strip_suffix(".local") else {
+        return false;
+    };
     host.len() <= 253
         && name.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
                 && !label.starts_with('-')
                 && !label.ends_with('-')
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         })
 }
 
@@ -122,7 +137,11 @@ fn is_local_name(host: &str) -> bool {
 /// id): lowercase letters and digits only, so « AA:BB:… », « aa-bb-… » and « aabb… » are
 /// the same device.
 pub fn address_key(value: &str) -> String {
-    value.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 #[cfg(test)]
@@ -132,24 +151,66 @@ mod tests {
     /// The single gate against SSRF: only what a LAN device can be gets through.
     #[test]
     fn device_addresses_accept_lan_devices_only() {
-        for good in ["192.168.1.52", "10.0.0.3", "172.16.4.1", "172.31.255.254", "rabbit.local", "Living-Room.TV.local"] {
+        for good in [
+            "192.168.1.52",
+            "10.0.0.3",
+            "172.16.4.1",
+            "172.31.255.254",
+            "rabbit.local",
+            "Living-Room.TV.local",
+        ] {
             assert!(device_host(good).is_ok(), "{good} should be accepted");
         }
         assert_eq!(device_host("Rabbit.LOCAL").unwrap(), "rabbit.local");
-        assert_eq!(device_address("192.168.1.153:5555").unwrap(), ("192.168.1.153".into(), Some(5555)));
-        assert_eq!(device_address("tv.local:1925").unwrap(), ("tv.local".into(), Some(1925)));
+        assert_eq!(
+            device_address("192.168.1.153:5555").unwrap(),
+            ("192.168.1.153".into(), Some(5555))
+        );
+        assert_eq!(
+            device_address("tv.local:1925").unwrap(),
+            ("tv.local".into(), Some(1925))
+        );
         for bad in [
-            "", "127.0.0.1", "0.0.0.0", "169.254.169.254", "8.8.8.8", "172.32.0.1", "255.255.255.255",
-            "224.0.0.1", "localhost", "example.com", "rabbit", ".local", "a..local", "-a.local",
-            "http://192.168.1.2", "192.168.1.2/status", "192.168.1.2?x", "192.168.1.2#x",
-            "user@192.168.1.2", "192.168.1.2 ", "x.local/../y", "[::1]", "::1", "192.168.1.2:",
-            "192.168.1.2:0", "192.168.1.2:65536", "192.168.1.2:+80", "192.168.01.2",
+            "",
+            "127.0.0.1",
+            "0.0.0.0",
+            "169.254.169.254",
+            "8.8.8.8",
+            "172.32.0.1",
+            "255.255.255.255",
+            "224.0.0.1",
+            "localhost",
+            "example.com",
+            "rabbit",
+            ".local",
+            "a..local",
+            "-a.local",
+            "http://192.168.1.2",
+            "192.168.1.2/status",
+            "192.168.1.2?x",
+            "192.168.1.2#x",
+            "user@192.168.1.2",
+            "192.168.1.2 ",
+            "x.local/../y",
+            "[::1]",
+            "::1",
+            "192.168.1.2:",
+            "192.168.1.2:0",
+            "192.168.1.2:65536",
+            "192.168.1.2:+80",
+            "192.168.01.2",
         ] {
             assert!(device_address(bad).is_err(), "{bad:?} should be refused");
         }
-        assert!(device_host("192.168.1.2:80").is_err(), "no port where none is expected");
+        assert!(
+            device_host("192.168.1.2:80").is_err(),
+            "no port where none is expected"
+        );
         assert!(device_ipv4("rabbit.local").is_err(), "IPv4 only");
-        assert_eq!(device_ipv4("192.168.1.73").unwrap(), Ipv4Addr::new(192, 168, 1, 73));
+        assert_eq!(
+            device_ipv4("192.168.1.73").unwrap(),
+            Ipv4Addr::new(192, 168, 1, 73)
+        );
     }
 
     #[test]
@@ -180,7 +241,11 @@ mod tests {
                 .await;
         });
         let client = device_client(Duration::from_secs(2)).unwrap();
-        let response = client.get(format!("http://{address}/")).send().await.unwrap();
+        let response = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), 302);
     }
 
@@ -193,10 +258,16 @@ mod tests {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut buffer = [0u8; 1024];
             let _ = socket.read(&mut buffer).await;
-            let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789").await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789")
+                .await;
         });
         let client = device_client(Duration::from_secs(2)).unwrap();
-        let response = client.get(format!("http://{address}/")).send().await.unwrap();
+        let response = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
         let error = read_capped(response, 4, "Plug").await.unwrap_err();
         assert_eq!(error.to_string(), "Plug answered too much");
     }

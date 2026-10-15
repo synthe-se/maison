@@ -34,7 +34,14 @@ pub struct WeatherPoint {
 
 impl WeatherPoint {
     pub fn new(name: &str, latitude: f64, longitude: f64, weight: f64) -> Self {
-        Self { place: crate::sun::Place { name: name.into(), latitude, longitude }, weight }
+        Self {
+            place: crate::sun::Place {
+                name: name.into(),
+                latitude,
+                longitude,
+            },
+            weight,
+        }
     }
 }
 
@@ -107,7 +114,11 @@ impl Model {
     }
 
     pub fn score(&self, horizon: u32) -> Option<HorizonScore> {
-        self.backtest.horizons.iter().find(|s| s.horizon == horizon).copied()
+        self.backtest
+            .horizons
+            .iter()
+            .find(|s| s.horizon == horizon)
+            .copied()
     }
 }
 
@@ -204,12 +215,20 @@ impl Levels {
         if days.len() < MIN_LEVEL_DAYS {
             return None;
         }
-        let net = sorted(days.iter().map(|d| d.consumption - d.wind - d.solar).collect());
+        let net = sorted(
+            days.iter()
+                .map(|d| d.consumption - d.wind - d.solar)
+                .collect(),
+        );
         let wind = sorted(days.iter().map(|d| d.wind).collect());
         let solar = sorted(days.iter().map(|d| d.solar).collect());
         let temperatures = sorted(days.iter().filter_map(|d| d.temperature).collect());
         // without a year of temperatures, RTE's reference one (no correction)
-        let t30 = if temperatures.len() >= MIN_LEVEL_DAYS { quantile(&temperatures, 0.3) } else { K };
+        let t30 = if temperatures.len() >= MIN_LEVEL_DAYS {
+            quantile(&temperatures, 0.3)
+        } else {
+            K
+        };
         let (q40, q80) = (quantile(&net, 0.4), quantile(&net, 0.8));
         Some(Self {
             consumption: days.iter().map(|d| d.consumption).sum::<f64>() / days.len() as f64,
@@ -238,7 +257,10 @@ pub struct DayWeather {
 
 /// The expected normalised net consumption of a day.
 pub fn expected(model: &Model, levels: &Levels, day: &DayWeather) -> f64 {
-    let consumption = dot(&consumption_features(day.date, day.temperature), &model.consumption) * levels.consumption;
+    let consumption = dot(
+        &consumption_features(day.date, day.temperature),
+        &model.consumption,
+    ) * levels.consumption;
     let wind = dot(&wind_features(day.wind_power), &model.wind) * levels.wind;
     let solar = dot(&solar_features(day.date), &model.solar) * levels.solar;
     levels.normalise(consumption - wind - solar)
@@ -271,7 +293,10 @@ pub fn simulate(days: &[Ahead], stock: Stock, rho: f64, runs: u32, seed: u64) ->
         }
     }
     let runs = f64::from(runs.max(1));
-    counts.iter().map(|c| c.map(|n| f64::from(n) / runs)).collect()
+    counts
+        .iter()
+        .map(|c| c.map(|n| f64::from(n) / runs))
+        .collect()
 }
 
 /// The most likely colour (the dearer one on a tie: better warned than surprised).
@@ -356,7 +381,10 @@ pub(crate) mod tests {
         let levels = Levels::from_days(&past_year()).unwrap();
         // a net consumption at the 40 % quantile is 0, at the 80 % one is e^(−γ(t30 − k))⁻¹
         assert!(levels.normalise(levels.q40).abs() < 1e-12);
-        let mut net: Vec<f64> = past_year().iter().map(|d| d.consumption - d.wind - d.solar).collect();
+        let mut net: Vec<f64> = past_year()
+            .iter()
+            .map(|d| d.consumption - d.wind - d.solar)
+            .collect();
         net.sort_by(f64::total_cmp);
         let mut temps: Vec<f64> = past_year().iter().filter_map(|d| d.temperature).collect();
         temps.sort_by(f64::total_cmp);
@@ -377,13 +405,21 @@ pub(crate) mod tests {
         day(2026, 1, 12)
             .iter_days()
             .take(7)
-            .map(|date| Ahead { rules: DayRules::new(date), x, sigma })
+            .map(|date| Ahead {
+                rules: DayRules::new(date),
+                x,
+                sigma,
+            })
             .collect()
     }
 
     #[test]
     fn the_same_seed_gives_the_same_forecast() {
-        let stock = Stock { red: 15, white: 25, red_run: 0 };
+        let stock = Stock {
+            red: 15,
+            white: 25,
+            red_run: 0,
+        };
         let a = simulate(&week(1.3, 0.3), stock, 0.7, 400, 42);
         assert_eq!(a, simulate(&week(1.3, 0.3), stock, 0.7, 400, 42));
         assert_ne!(a, simulate(&week(1.3, 0.3), stock, 0.7, 400, 43));
@@ -394,7 +430,11 @@ pub(crate) mod tests {
 
     #[test]
     fn certainty_without_noise_and_the_rules_hold_in_every_run() {
-        let stock = Stock { red: 15, white: 25, red_run: 0 };
+        let stock = Stock {
+            red: 15,
+            white: 25,
+            red_run: 0,
+        };
         // very cold, no error: red on weekdays, white on Saturday, blue on Sunday
         let p = simulate(&week(5.0, 0.0), stock, 0.7, 50, 1);
         let colors: Vec<Color> = p.iter().map(likeliest).collect();
@@ -404,7 +444,10 @@ pub(crate) mod tests {
         // two reds left: never more than two in the week, whatever the draw
         let p = simulate(&week(1.5, 1.0), Stock { red: 2, ..stock }, 0.7, 400, 7);
         assert!(p.iter().map(|p| p[Red.index()]).sum::<f64>() <= 2.0 + 1e-9);
-        assert!(p[6][White.index()] == 0.0 && p[6][Red.index()] == 0.0, "Sunday");
+        assert!(
+            p[6][White.index()] == 0.0 && p[6][Red.index()] == 0.0,
+            "Sunday"
+        );
     }
 
     #[test]
@@ -418,15 +461,29 @@ pub(crate) mod tests {
     #[test]
     fn a_cold_day_is_expected_higher_than_a_mild_one() {
         let (m, levels) = (model(), Levels::from_days(&past_year()).unwrap());
-        let at = |temperature, wind_power| expected(&m, &levels, &DayWeather { date: day(2026, 1, 13), temperature, wind_power });
+        let at = |temperature, wind_power| {
+            expected(
+                &m,
+                &levels,
+                &DayWeather {
+                    date: day(2026, 1, 13),
+                    temperature,
+                    wind_power,
+                },
+            )
+        };
         assert!(at(-2.0, 0.2) > at(10.0, 0.2));
-        assert!(at(5.0, 0.1) > at(5.0, 0.9), "wind lowers the net consumption");
+        assert!(
+            at(5.0, 0.1) > at(5.0, 0.9),
+            "wind lowers the net consumption"
+        );
     }
 
     #[test]
     fn a_snake_case_model_file_still_loads_and_is_written_camel_case() {
         // the vendored file, as fit_tempo wrote it before the API went camelCase
-        let old: Model = serde_json::from_str(include_str!("../../../cache/tempo/model.json")).unwrap();
+        let old: Model =
+            serde_json::from_str(include_str!("../../../cache/tempo/model.json")).unwrap();
         assert!(!old.wind_sites.is_empty());
         let score = old.backtest.horizons[0];
         assert!(score.winter_accuracy > 0.0 && score.always_blue > 0.0 && score.red_f1 > 0.0);
@@ -434,6 +491,9 @@ pub(crate) mod tests {
         assert!(written["fittedThrough"].is_string() && written["windSites"].is_array());
         assert!(written["backtest"]["horizons"][0]["winterAccuracy"].is_number());
         let again: Model = serde_json::from_value(written).unwrap();
-        assert_eq!((again.fitted_through, again.backtest.horizons[0]), (old.fitted_through, score));
+        assert_eq!(
+            (again.fitted_through, again.backtest.horizons[0]),
+            (old.fitted_through, score)
+        );
     }
 }

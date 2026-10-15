@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::error::AppError;
 
@@ -41,7 +41,10 @@ pub enum Access {
 }
 
 /// The file's value; missing is `T::default()`, empty or unparsable follows `corrupt`.
-pub fn read_json<T: DeserializeOwned + Default>(path: &Path, corrupt: Corrupt) -> Result<T, AppError> {
+pub fn read_json<T: DeserializeOwned + Default>(
+    path: &Path,
+    corrupt: Corrupt,
+) -> Result<T, AppError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
@@ -57,7 +60,10 @@ pub fn read_json<T: DeserializeOwned + Default>(path: &Path, corrupt: Corrupt) -
         (Err(why), Corrupt::Fail) => {
             // the path and the parse error go to the log, never to a client
             tracing::error!(%why, "unreadable state file");
-            Err(AppError::http(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "A state file is unreadable (see the log)"))
+            Err(AppError::http(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "A state file is unreadable (see the log)",
+            ))
         }
         (Err(why), Corrupt::Reset) => {
             let aside = sibling(path, "corrupt");
@@ -71,7 +77,11 @@ pub fn read_json<T: DeserializeOwned + Default>(path: &Path, corrupt: Corrupt) -
 }
 
 /// Writes `value` as pretty JSON with a final newline, atomically (see the module notes).
-pub fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T, access: Access) -> Result<(), AppError> {
+pub fn write_json<T: Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+    access: Access,
+) -> Result<(), AppError> {
     let text = format!("{}\n", serde_json::to_string_pretty(value)?);
     write_bytes(path, text.as_bytes(), access)
 }
@@ -101,7 +111,11 @@ pub fn write_bytes(path: &Path, bytes: &[u8], access: Access) -> Result<(), AppE
 
 /// `write_json` off the async runtime: the fsyncs stall the Pi's single core otherwise (the
 /// IR key path included). The value is serialised here, before leaving the caller's thread.
-pub async fn write_json_async<T: Serialize + ?Sized>(path: &Path, value: &T, access: Access) -> Result<(), AppError> {
+pub async fn write_json_async<T: Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+    access: Access,
+) -> Result<(), AppError> {
     let text = format!("{}\n", serde_json::to_string_pretty(value)?);
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || write_bytes(&path, text.as_bytes(), access)).await?
@@ -137,7 +151,9 @@ pub fn load_or_create_secret<T>(
     match fs::read(path) {
         Ok(bytes) if !bytes.is_empty() => match decode(&bytes) {
             Some(value) => return Ok(value),
-            None => tracing::warn!(path = %path.display(), "unreadable secret file: making a new one"),
+            None => {
+                tracing::warn!(path = %path.display(), "unreadable secret file: making a new one")
+            }
         },
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -153,7 +169,11 @@ pub fn load_or_create_secret<T>(
 pub fn locked<T>(path: &Path, f: impl FnOnce() -> Result<T, AppError>) -> Result<T, AppError> {
     fs::create_dir_all(parent(path))?;
     let lock_path = sibling(path, "lock");
-    let lock = OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
     keep_owner(&lock_path, path, parent(path))?;
     lock.lock()?;
     let out = f();
@@ -162,12 +182,17 @@ pub fn locked<T>(path: &Path, f: impl FnOnce() -> Result<T, AppError>) -> Result
 }
 
 fn parent(path: &Path) -> &Path {
-    path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))
+    path.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 /// `dir/name.json` → `dir/name.json.<suffix>`.
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
     name.push(format!(".{suffix}"));
     path.with_file_name(name)
 }
@@ -194,7 +219,9 @@ fn keep_owner(file: &Path, like: &Path, dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let Ok(owner) = fs::metadata(like).or_else(|_| fs::metadata(dir)) else { return Ok(()) };
+        let Ok(owner) = fs::metadata(like).or_else(|_| fs::metadata(dir)) else {
+            return Ok(());
+        };
         let mine = fs::metadata(file)?;
         if (mine.uid(), mine.gid()) != (owner.uid(), owner.gid()) {
             match std::os::unix::fs::chown(file, Some(owner.uid()), Some(owner.gid())) {
@@ -231,11 +258,21 @@ mod tests {
         let dir = test_dir();
         let d = dir.path();
         let path = d.join("sub").join("x.json");
-        assert_eq!(read_json::<Vec<u8>>(&path, Corrupt::Fail).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            read_json::<Vec<u8>>(&path, Corrupt::Fail).unwrap(),
+            Vec::<u8>::new()
+        );
         write_json(&path, &vec![1u8, 2], Access::Shared).unwrap();
-        assert_eq!(read_json::<Vec<u8>>(&path, Corrupt::Fail).unwrap(), vec![1, 2]);
+        assert_eq!(
+            read_json::<Vec<u8>>(&path, Corrupt::Fail).unwrap(),
+            vec![1, 2]
+        );
         assert!(fs::read_to_string(&path).unwrap().ends_with('\n'));
-        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
         assert_eq!(leftovers.len(), 1, "no temp file left: {leftovers:?}");
     }
 
@@ -245,12 +282,21 @@ mod tests {
         let d = dir.path();
         let path = d.join("x.json");
         fs::write(&path, "").unwrap();
-        assert!(read_json::<Vec<u8>>(&path, Corrupt::Fail).is_err(), "empty is not « nothing »");
+        assert!(
+            read_json::<Vec<u8>>(&path, Corrupt::Fail).is_err(),
+            "empty is not « nothing »"
+        );
         fs::write(&path, "[1, 2").unwrap();
         assert!(read_json::<Vec<u8>>(&path, Corrupt::Fail).is_err());
         assert!(path.exists(), "a state file is left alone");
-        assert_eq!(read_json::<Vec<u8>>(&path, Corrupt::Reset).unwrap(), Vec::<u8>::new());
-        assert!(!path.exists() && d.join("x.json.corrupt").exists(), "a cache is kept aside");
+        assert_eq!(
+            read_json::<Vec<u8>>(&path, Corrupt::Reset).unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(
+            !path.exists() && d.join("x.json.corrupt").exists(),
+            "a cache is kept aside"
+        );
     }
 
     #[cfg(unix)]
@@ -260,9 +306,15 @@ mod tests {
         let dir = test_dir();
         let path = dir.path().join("secret.json");
         write_json(&path, &"s", Access::Private).unwrap();
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         write_json(&path, &"t", Access::Private).unwrap();
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -281,7 +333,10 @@ mod tests {
         let path = dir.path().join("key");
         let decode = |b: &[u8]| (b == b"good").then_some(1);
         fs::write(&path, b"torn").unwrap();
-        assert_eq!(load_or_create_secret(&path, decode, || Ok((1, b"good".to_vec()))).unwrap(), 1);
+        assert_eq!(
+            load_or_create_secret(&path, decode, || Ok((1, b"good".to_vec()))).unwrap(),
+            1
+        );
         assert_eq!(fs::read(&path).unwrap(), b"good");
         let never = || -> Result<(i32, Vec<u8>), AppError> { panic!("kept, not regenerated") };
         assert_eq!(load_or_create_secret(&path, decode, never).unwrap(), 1);

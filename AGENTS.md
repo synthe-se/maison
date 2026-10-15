@@ -152,6 +152,7 @@ cd web && bun run format              # oxfmt over web/ and e2e/ (`bun run lint`
 cd web && bun scripts/i18n.add.ts '{"key": ["français", "English"]}'   # every locale at once
 cd e2e && bun run all                 # after `cargo build` and `bun --cwd web run build`
 cargo check --manifest-path backend/Cargo.toml --no-default-features   # the Pi's feature set
+cargo fmt --manifest-path backend/Cargo.toml --check                    # rustfmt's defaults, kept clean
 MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_live -- --nocapture
 python3 -m unittest discover -s frame -p 'test_*.py'   # the frame's tooling
 cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the kiosk APK

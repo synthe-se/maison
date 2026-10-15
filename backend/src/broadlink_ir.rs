@@ -39,7 +39,10 @@ pub fn decode(packet: &[u8]) -> Result<Vec<u32>, String> {
         return Err("packet too short".to_string());
     }
     if packet[0] != IR_TOKEN {
-        return Err(format!("unsupported Broadlink packet token 0x{:02X}", packet[0]));
+        return Err(format!(
+            "unsupported Broadlink packet token 0x{:02X}",
+            packet[0]
+        ));
     }
     let encoded = &packet[HEADER_LEN..];
     let mut durations_us = Vec::new();
@@ -51,7 +54,9 @@ pub fn decode(packet: &[u8]) -> Result<Vec<u32>, String> {
                 let pair = encoded
                     .get(index + 1..index + 3)
                     .ok_or_else(|| "truncated extended Broadlink duration".to_string())?;
-                durations_us.push(ticks_to_micros(u16::from_be_bytes([pair[0], pair[1]]).into()));
+                durations_us.push(ticks_to_micros(
+                    u16::from_be_bytes([pair[0], pair[1]]).into(),
+                ));
                 index += 3;
             }
             ticks => {

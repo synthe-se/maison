@@ -63,7 +63,9 @@ impl DriverError {
     /// « unreachable » (the detail, serial path included, stays in the log).
     pub fn into_client(self) -> AppError {
         match self {
-            Self::UnknownDevice(_) => AppError::service_unavailable("This Zigbee lamp is not on the network yet"),
+            Self::UnknownDevice(_) => {
+                AppError::service_unavailable("This Zigbee lamp is not on the network yet")
+            }
             Self::Unsupported(message) => AppError::service_unavailable(message),
             Self::Unavailable(message) => AppError::service_unavailable(message),
             error @ (Self::Ezsp { .. } | Self::Serial(_) | Self::Timeout(_)) => {
@@ -106,25 +108,46 @@ mod tests {
 
     #[test]
     fn transport_failures_break_the_link() {
-        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "ASH retransmissions exhausted");
+        let io = std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "ASH retransmissions exhausted",
+        );
         assert_eq!(ezsp(ezsp::Error::Io(io)).link(), Link::Broken);
-        assert_eq!(ezsp(ezsp::Error::Decode(ezsp::Decode::TooFewBytes)).link(), Link::Broken);
+        assert_eq!(
+            ezsp(ezsp::Error::Decode(ezsp::Decode::TooFewBytes)).link(),
+            Link::Broken
+        );
         assert_eq!(ezsp(ezsp::Error::ChannelClosed).link(), Link::Broken);
-        assert_eq!(ezsp(NcpStatus::DataFrameTooShort.into()).link(), Link::Broken);
+        assert_eq!(
+            ezsp(NcpStatus::DataFrameTooShort.into()).link(),
+            Link::Broken
+        );
         assert_eq!(ezsp(NcpStatus::NotConnected.into()).link(), Link::Broken);
-        assert_eq!(DriverError::Timeout("EZSP negotiation").link(), Link::Broken);
+        assert_eq!(
+            DriverError::Timeout("EZSP negotiation").link(),
+            Link::Broken
+        );
     }
 
     #[test]
     fn a_refusal_from_the_stack_is_only_suspect() {
-        assert_eq!(ezsp(ezsp::ember::Status::DeliveryFailed.into()).link(), Link::Suspect);
-        assert_eq!(ezsp(ezsp::Error::TransactionQueueFull).link(), Link::Suspect);
+        assert_eq!(
+            ezsp(ezsp::ember::Status::DeliveryFailed.into()).link(),
+            Link::Suspect
+        );
+        assert_eq!(
+            ezsp(ezsp::Error::TransactionQueueFull).link(),
+            Link::Suspect
+        );
     }
 
     #[test]
     fn a_request_refused_before_the_dongle_says_nothing_about_the_link() {
         assert_eq!(DriverError::UnknownDevice("nope".into()).link(), Link::Fine);
-        assert_eq!(DriverError::Unsupported("no On/Off cluster".into()).link(), Link::Fine);
+        assert_eq!(
+            DriverError::Unsupported("no On/Off cluster".into()).link(),
+            Link::Fine
+        );
         assert_eq!(DriverError::Unavailable("restarting").link(), Link::Fine);
     }
 

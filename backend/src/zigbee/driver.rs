@@ -9,22 +9,22 @@ use std::{
 };
 
 use tokio::{
-    sync::{Mutex, RwLock, mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch, Mutex, RwLock},
     task::JoinHandle,
-    time::{Instant, MissedTickBehavior, interval, timeout},
+    time::{interval, timeout, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info, warn};
 
 use super::{
-    availability::{AVAILABILITY_CHECK_INTERVAL_TICKS, check_availability},
+    availability::{check_availability, AVAILABILITY_CHECK_INTERVAL_TICKS},
     callbacks::drain_callbacks,
-    commands::{DriverCommand, handle_command},
+    commands::{handle_command, DriverCommand},
     config::ZigbeeConfig,
     context::EzspContext,
     device::{DiscoveredDevice, ZigbeeDevice, ZigbeeDeviceInfo},
     discovery::retry_pending_interviews,
     error::{DriverError, Link},
-    network::{NetworkState, bring_up, check_link, teardown_context},
+    network::{bring_up, check_link, teardown_context, NetworkState},
 };
 use crate::error::AppError;
 
@@ -173,7 +173,11 @@ impl Driver {
         }
         if let Err(error) = self.send(DriverCommand::DiscoverDevices).await {
             warn!(%error, "native zigbee first discovery failed");
-            self.shared.say(Some("Zigbee discovery failed; it is tried again".to_string())).await;
+            self.shared
+                .say(Some(
+                    "Zigbee discovery failed; it is tried again".to_string(),
+                ))
+                .await;
             return;
         }
         *discovered = true;
@@ -182,17 +186,26 @@ impl Driver {
     pub async fn send(&self, command: DriverCommand) -> Result<(), AppError> {
         self.start_task_if_needed();
         match *self.shared.lifecycle.read().await {
-            DriverLifecycle::Starting => return Err(AppError::service_unavailable("The Zigbee radio is still starting")),
+            DriverLifecycle::Starting => {
+                return Err(AppError::service_unavailable(
+                    "The Zigbee radio is still starting",
+                ))
+            }
             DriverLifecycle::Failed(reason) => return Err(AppError::service_unavailable(reason)),
             DriverLifecycle::Ready => {}
         }
 
         let (reply_tx, reply_rx) = oneshot::channel();
         // both steps bounded: a caller never hangs, even on a wedged driver reporting Ready
-        timeout(COMMAND_ENQUEUE_TIMEOUT, self.command_tx.send(DriverRequest { command, reply_tx }))
-            .await
-            .map_err(|_| AppError::service_unavailable("The Zigbee radio is not taking commands (queue full)"))?
-            .map_err(|_| AppError::service_unavailable("The Zigbee radio is not running"))?;
+        timeout(
+            COMMAND_ENQUEUE_TIMEOUT,
+            self.command_tx.send(DriverRequest { command, reply_tx }),
+        )
+        .await
+        .map_err(|_| {
+            AppError::service_unavailable("The Zigbee radio is not taking commands (queue full)")
+        })?
+        .map_err(|_| AppError::service_unavailable("The Zigbee radio is not running"))?;
         timeout(COMMAND_REPLY_TIMEOUT, reply_rx)
             .await
             .map_err(|_| AppError::service_unavailable("The Zigbee radio did not answer in time"))?
@@ -201,21 +214,47 @@ impl Driver {
     }
 
     fn start_task_if_needed(&self) {
-        let mut task = self.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut task = self
+            .task
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if task.is_some() {
             return;
         }
-        let Some(command_rx) = self.command_rx.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() else {
+        let Some(command_rx) = self
+            .command_rx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        else {
             return;
         };
-        let (config, known, shared) = (self.config.clone(), self.known_devices.clone(), Arc::clone(&self.shared));
-        *task = Some(tokio::spawn(supervise_driver(Arc::clone(&self.shared), command_rx, move |command_rx| {
-            Box::pin(run_driver(config.clone(), known.clone(), Arc::clone(&shared), command_rx))
-        })));
+        let (config, known, shared) = (
+            self.config.clone(),
+            self.known_devices.clone(),
+            Arc::clone(&self.shared),
+        );
+        *task = Some(tokio::spawn(supervise_driver(
+            Arc::clone(&self.shared),
+            command_rx,
+            move |command_rx| {
+                Box::pin(run_driver(
+                    config.clone(),
+                    known.clone(),
+                    Arc::clone(&shared),
+                    command_rx,
+                ))
+            },
+        )));
     }
 
     pub fn shutdown(&self) {
-        if let Some(handle) = self.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+        if let Some(handle) = self
+            .task
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
             handle.abort();
         }
     }
@@ -242,15 +281,21 @@ impl Driver {
 /// driver (a parser bug, an unexpected NCP answer) is a restart after a pause, not a Zigbee
 /// dead until the service restarts. While it waits the lifecycle says `Failed` (requests
 /// fail fast); a clean return (queue closed, no serial port) ends it.
-async fn supervise_driver<F>(shared: Arc<Shared>, mut command_rx: mpsc::Receiver<DriverRequest>, mut run: F)
-where
+async fn supervise_driver<F>(
+    shared: Arc<Shared>,
+    mut command_rx: mpsc::Receiver<DriverRequest>,
+    mut run: F,
+) where
     F: for<'a> FnMut(&'a mut mpsc::Receiver<DriverRequest>) -> futures::future::BoxFuture<'a, ()>,
 {
     use futures::FutureExt;
     const CRASHED: &str = "The Zigbee radio crashed; it restarts";
     let mut crashes: u32 = 0;
     loop {
-        let Err(panic) = std::panic::AssertUnwindSafe(run(&mut command_rx)).catch_unwind().await else {
+        let Err(panic) = std::panic::AssertUnwindSafe(run(&mut command_rx))
+            .catch_unwind()
+            .await
+        else {
             return;
         };
         crashes = crashes.saturating_add(1);
@@ -273,7 +318,9 @@ where
 /// 1 s, 2 s, 4 s… up to [`MAX_RESTART_DELAY`]: a driver that panics at once every time
 /// must not spin the Pi's single core.
 fn restart_delay(crashes: u32) -> Duration {
-    Duration::from_secs(1).saturating_mul(1_u32 << crashes.saturating_sub(1).min(6)).min(MAX_RESTART_DELAY)
+    Duration::from_secs(1)
+        .saturating_mul(1_u32 << crashes.saturating_sub(1).min(6))
+        .min(MAX_RESTART_DELAY)
 }
 
 /// Opens the pipeline, serves commands until the link fails, rebuilds it, forever; returns
@@ -287,12 +334,17 @@ async fn run_driver(
     let Some(serial_port) = config.serial_port.clone() else {
         warn!("no Zigbee serial port is set (ZIGBEE_SERIAL_PORT): the radio stays off");
         shared.say(Some(NO_SERIAL_PORT.to_string())).await;
-        shared.set_lifecycle(DriverLifecycle::Failed(NO_SERIAL_PORT)).await;
+        shared
+            .set_lifecycle(DriverLifecycle::Failed(NO_SERIAL_PORT))
+            .await;
         drain_pending_requests(command_rx, NO_SERIAL_PORT);
         return;
     };
     // the kept devices first; after a rebuild, the old pipeline's (desired state included)
-    let mut devices = known.into_iter().map(|(node_id, info)| DiscoveredDevice::known(node_id, info)).collect::<Vec<_>>();
+    let mut devices = known
+        .into_iter()
+        .map(|(node_id, info)| DiscoveredDevice::known(node_id, info))
+        .collect::<Vec<_>>();
     let mut attempts: u32 = 0;
     loop {
         let mut context = match bring_up(&config, &serial_port, &shared, &devices).await {
@@ -321,7 +373,10 @@ async fn run_driver(
 
 /// Serves commands and runs the chores until the queue closes (`None`) or the link fails
 /// (why).
-async fn event_loop(context: &mut EzspContext, command_rx: &mut mpsc::Receiver<DriverRequest>) -> Option<String> {
+async fn event_loop(
+    context: &mut EzspContext,
+    command_rx: &mut mpsc::Receiver<DriverRequest>,
+) -> Option<String> {
     let mut tick = interval(POLL_INTERVAL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut tick_count: u32 = 0;
@@ -353,7 +408,9 @@ async fn serve(context: &mut EzspContext, request: DriverRequest) -> Result<(), 
     let limit = request.command.timeout();
     let Ok(result) = timeout(limit, handle_command(context, request.command)).await else {
         error!("EZSP command timed out after {limit:?} — triggering reconnect");
-        let _ = request.reply_tx.send(Err(DriverError::Timeout("EZSP command")));
+        let _ = request
+            .reply_tx
+            .send(Err(DriverError::Timeout("EZSP command")));
         return Err(format!("EZSP command timed out after {limit:?}"));
     };
     match &result {
@@ -361,7 +418,9 @@ async fn serve(context: &mut EzspContext, request: DriverRequest) -> Result<(), 
             context.last_activity = Instant::now();
             context.publish();
         }
-        Err(error) => warn!(%error, consecutive_errors = context.errors.count(), "native zigbee command failed"),
+        Err(error) => {
+            warn!(%error, consecutive_errors = context.errors.count(), "native zigbee command failed")
+        }
     }
     let rebuild = context.errors.record(&result);
     if request.reply_tx.send(result).is_err() {
@@ -373,7 +432,9 @@ async fn serve(context: &mut EzspContext, request: DriverRequest) -> Result<(), 
 /// The chores of one tick: link health, callbacks, interview retries, availability.
 async fn on_tick(context: &mut EzspContext, tick_count: u32) -> Result<(), String> {
     check_link(context).await?;
-    drain_callbacks(context).await.map_err(|error| error.to_string())?;
+    drain_callbacks(context)
+        .await
+        .map_err(|error| error.to_string())?;
     if tick_count.is_multiple_of(DISCOVERY_RETRY_INTERVAL_TICKS) {
         // a hung unicast here would block the whole loop
         timeout(EZSP_COMMAND_TIMEOUT, retry_pending_interviews(context))
@@ -412,7 +473,8 @@ impl ErrorCount {
             Link::Broken => Some(format!("EZSP transport failure: {error}")),
             Link::Suspect => {
                 self.0 += 1;
-                (self.0 >= MAX_CONSECUTIVE_ERRORS).then(|| format!("{} consecutive EZSP command failures", self.0))
+                (self.0 >= MAX_CONSECUTIVE_ERRORS)
+                    .then(|| format!("{} consecutive EZSP command failures", self.0))
             }
         }
     }
@@ -422,14 +484,20 @@ impl ErrorCount {
 /// at first, `Failed` past [`MAX_RECONNECT_ATTEMPTS`] (requests fail fast), with a capped
 /// exponential backoff. It never gives up.
 async fn backoff_before_retry(shared: &Shared, attempts: u32) {
-    let delay = RECONNECT_DELAY.saturating_mul(1_u32 << attempts.saturating_sub(1).min(8)).min(MAX_RECONNECT_DELAY);
+    let delay = RECONNECT_DELAY
+        .saturating_mul(1_u32 << attempts.saturating_sub(1).min(8))
+        .min(MAX_RECONNECT_DELAY);
     let lifecycle = if attempts > MAX_RECONNECT_ATTEMPTS {
         DriverLifecycle::Failed("The Zigbee radio is unreachable; it keeps trying")
     } else {
         DriverLifecycle::Starting
     };
     shared.set_lifecycle(lifecycle).await;
-    shared.say(Some(format!("Reconnecting the Zigbee radio (attempt {attempts}, next try in {delay:?})"))).await;
+    shared
+        .say(Some(format!(
+            "Reconnecting the Zigbee radio (attempt {attempts}, next try in {delay:?})"
+        )))
+        .await;
     info!(attempts, ?delay, "zigbee radio reconnect scheduled");
     tokio::time::sleep(delay).await;
 }
@@ -458,24 +526,43 @@ mod tests {
     #[test]
     fn only_link_failures_count_toward_a_rebuild() {
         let refused = || Err(DriverError::UnknownDevice("nope".into()));
-        let failed = || Err(DriverError::ezsp("send unicast")(ezsp::Error::TransactionQueueFull));
+        let failed = || {
+            Err(DriverError::ezsp("send unicast")(
+                ezsp::Error::TransactionQueueFull,
+            ))
+        };
         let mut errors = ErrorCount::default();
         for _ in 0..20 {
-            assert_eq!(errors.record(&refused()), None, "an unknown lamp is no reason to rebuild");
+            assert_eq!(
+                errors.record(&refused()),
+                None,
+                "an unknown lamp is no reason to rebuild"
+            );
         }
         assert_eq!(errors.count(), 0);
         for _ in 0..4 {
             assert_eq!(errors.record(&failed()), None);
         }
-        assert_eq!(errors.record(&refused()), None, "a refusal neither counts nor resets");
-        assert!(errors.record(&failed()).is_some_and(|reason| reason.starts_with("5 consecutive")));
+        assert_eq!(
+            errors.record(&refused()),
+            None,
+            "a refusal neither counts nor resets"
+        );
+        assert!(errors
+            .record(&failed())
+            .is_some_and(|reason| reason.starts_with("5 consecutive")));
 
         let mut errors = ErrorCount::default();
         errors.record(&failed());
         errors.record(&Ok(()));
         assert_eq!(errors.count(), 0, "a success resets");
-        let corrupt = Err(DriverError::ezsp("send unicast")(ezsp::Error::Decode(ezsp::Decode::TooFewBytes)));
-        assert!(errors.record(&corrupt).is_some(), "a broken frame rebuilds at once");
+        let corrupt = Err(DriverError::ezsp("send unicast")(ezsp::Error::Decode(
+            ezsp::Decode::TooFewBytes,
+        )));
+        assert!(
+            errors.record(&corrupt).is_some(),
+            "a broken frame rebuilds at once"
+        );
     }
 
     #[tokio::test]
@@ -503,7 +590,10 @@ mod tests {
         for _ in 0..300 {
             match *shared.lifecycle.read().await {
                 DriverLifecycle::Failed(reason) => {
-                    assert!(!reason.contains("parser bug"), "the panic text stays in the log: {reason}");
+                    assert!(
+                        !reason.contains("parser bug"),
+                        "the panic text stays in the log: {reason}"
+                    );
                     saw_failed = true;
                 }
                 DriverLifecycle::Ready => break,
@@ -512,25 +602,49 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(saw_failed, "the crash is said while the driver waits");
-        assert_eq!(*shared.lifecycle.read().await, DriverLifecycle::Ready, "the driver came back");
+        assert_eq!(
+            *shared.lifecycle.read().await,
+            DriverLifecycle::Ready,
+            "the driver came back"
+        );
 
         // the queue survived the crash: the restarted driver answers
         let (reply_tx, reply_rx) = oneshot::channel();
-        command_tx.send(DriverRequest { command: DriverCommand::DiscoverDevices, reply_tx }).await.unwrap();
+        command_tx
+            .send(DriverRequest {
+                command: DriverCommand::DiscoverDevices,
+                reply_tx,
+            })
+            .await
+            .unwrap();
         assert!(reply_rx.await.unwrap().is_ok());
 
         drop(command_tx);
-        supervisor.await.expect("a clean return ends the supervisor");
+        supervisor
+            .await
+            .expect("a clean return ends the supervisor");
         assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn the_client_hears_no_serial_path_while_the_radio_is_down() {
-        let config = ZigbeeConfig { serial_port: Some("/dev/null-maison-test".to_string()), ..ZigbeeConfig::default() };
+        let config = ZigbeeConfig {
+            serial_port: Some("/dev/null-maison-test".to_string()),
+            ..ZigbeeConfig::default()
+        };
         let driver = Driver::new(config, Vec::new());
-        driver.shared.set_lifecycle(DriverLifecycle::Failed("The Zigbee radio is unreachable; it keeps trying")).await;
+        driver
+            .shared
+            .set_lifecycle(DriverLifecycle::Failed(
+                "The Zigbee radio is unreachable; it keeps trying",
+            ))
+            .await;
         driver.test_detach();
-        let error = driver.send(DriverCommand::PermitJoin { seconds: 0 }).await.unwrap_err().to_string();
+        let error = driver
+            .send(DriverCommand::PermitJoin { seconds: 0 })
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(!error.contains("/dev/"), "{error}");
         assert!(!driver.message().await.unwrap_or_default().contains("/dev/"));
     }
@@ -542,10 +656,17 @@ mod tests {
         let shared = Shared::new(None);
         shared.set_network(NetworkState::Down).await;
         assert_eq!(*shared.network.read().await, NetworkState::Down);
-        assert_eq!(shared.message.read().await.as_deref(), Some("The Zigbee network is down"));
+        assert_eq!(
+            shared.message.read().await.as_deref(),
+            Some("The Zigbee network is down")
+        );
         shared.set_network(NetworkState::Joined).await;
         assert_eq!(*shared.network.read().await, NetworkState::Joined);
-        assert_eq!(*shared.message.read().await, None, "a healthy network says nothing");
+        assert_eq!(
+            *shared.message.read().await,
+            None,
+            "a healthy network says nothing"
+        );
     }
 
     #[test]
@@ -557,7 +678,10 @@ mod tests {
         assert!(seen.has_changed().unwrap());
         seen.borrow_and_update();
         shared.publish(&devices);
-        assert!(!seen.has_changed().unwrap(), "the same devices again are no news");
+        assert!(
+            !seen.has_changed().unwrap(),
+            "the same devices again are no news"
+        );
         let mut dimmed = devices.clone();
         dimmed[0].light.brightness = 40;
         shared.publish(&dimmed);

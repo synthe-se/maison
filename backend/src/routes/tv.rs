@@ -1,18 +1,18 @@
 use axum::{
-    Json, Router,
     extract::State,
     routing::{get, post, put},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::{
-    AppState,
     auth::AdminUser,
     error::AppError,
     ir::SwitchState,
     routes::{Answer, SimpleResponse},
     tv::{self, TvConfig, TvKey, TvStatus},
+    AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -120,12 +120,19 @@ async fn set_ambilight(
     State(state): State<AppState>,
     Json(body): Json<AmbilightRequest>,
 ) -> Result<Json<Answer<Value>>, AppError> {
-    let on = body.state.resolve(|| async { Ok(state.tv.ambilight().await?.power) }).await?;
+    let on = body
+        .state
+        .resolve(|| async { Ok(state.tv.ambilight().await?.power) })
+        .await?;
     state.tv.set_ambilight_power(on).await?;
-    Ok(Answer::ok(json!({ "ambilight": state.tv.ambilight().await? })))
+    Ok(Answer::ok(
+        json!({ "ambilight": state.tv.ambilight().await? }),
+    ))
 }
 
-async fn ambilight_styles(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
+async fn ambilight_styles(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
     state.tv.ambilight_styles().await.map(Json)
 }
 

@@ -44,9 +44,16 @@ pub(super) fn stable_lamp_id(peripheral: &Peripheral, properties: &PeripheralPro
 }
 
 /// The address shown for a scanned lamp: its own, else the peripheral id.
-pub(super) fn lamp_display_address(peripheral: &Peripheral, properties: &PeripheralProperties) -> String {
+pub(super) fn lamp_display_address(
+    peripheral: &Peripheral,
+    properties: &PeripheralProperties,
+) -> String {
     let address = properties.address.to_string().trim().to_ascii_lowercase();
-    if is_zero_address(&address) { peripheral.id().to_string() } else { address }
+    if is_zero_address(&address) {
+        peripheral.id().to_string()
+    } else {
+        address
+    }
 }
 
 /// Whether a kept lamp is the one a scan found.
@@ -61,7 +68,8 @@ pub(super) fn lamp_matches_scan(
     lamp_id == stable_id
         || lamp_address == stable_id
         || lamp_address == address_key(display_address)
-        || ((is_zero_address(&lamp.id) || is_zero_address(&lamp.address)) && lamp.name == discovered_name)
+        || ((is_zero_address(&lamp.id) || is_zero_address(&lamp.address))
+            && lamp.name == discovered_name)
 }
 
 /// The kept lamps, one per device: older files may hold a lamp twice (once by address,
@@ -72,7 +80,8 @@ pub(super) fn dedupe_stored_lamps(configs: Vec<StoredLampConfig>) -> Vec<StoredL
         let canonical = canonical_stored_identity(&config);
         let normalized = normalize_stored_config(config, &canonical);
         match deduped.get(&canonical) {
-            Some(existing) if stored_config_score(&normalized) <= stored_config_score(existing) => {}
+            Some(existing) if stored_config_score(&normalized) <= stored_config_score(existing) => {
+            }
             _ => {
                 deduped.insert(canonical, normalized);
             }
@@ -83,7 +92,11 @@ pub(super) fn dedupe_stored_lamps(configs: Vec<StoredLampConfig>) -> Vec<StoredL
 
 fn canonical_stored_identity(config: &StoredLampConfig) -> String {
     let id = address_key(&config.id);
-    if !id.is_empty() && !is_zero_address(&config.id) { id } else { address_key(&config.address) }
+    if !id.is_empty() && !is_zero_address(&config.id) {
+        id
+    } else {
+        address_key(&config.address)
+    }
 }
 
 fn normalize_stored_config(mut config: StoredLampConfig, canonical: &str) -> StoredLampConfig {
@@ -113,13 +126,21 @@ mod tests {
     use super::*;
 
     fn lamp(id: &str, address: &str) -> StoredLampConfig {
-        StoredLampConfig { id: id.into(), name: "Lamp".into(), address: address.into(), ..Default::default() }
+        StoredLampConfig {
+            id: id.into(),
+            name: "Lamp".into(),
+            address: address.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn a_lamp_kept_twice_is_kept_once_the_most_complete() {
         let bare = lamp("AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff");
-        let known = StoredLampConfig { has_connected_once: true, ..lamp("aabbccddeeff", "aa:bb:cc:dd:ee:ff") };
+        let known = StoredLampConfig {
+            has_connected_once: true,
+            ..lamp("aabbccddeeff", "aa:bb:cc:dd:ee:ff")
+        };
         let kept = dedupe_stored_lamps(vec![bare.clone(), known.clone(), bare]);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].id, "aabbccddeeff");

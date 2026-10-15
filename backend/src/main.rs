@@ -58,7 +58,9 @@ async fn invite(args: &[String]) -> i32 {
                 println!("{INVITE_USAGE}");
                 return 0;
             }
-            other if person.is_none() && !other.starts_with('-') => person = Some(other.to_string()),
+            other if person.is_none() && !other.starts_with('-') => {
+                person = Some(other.to_string())
+            }
             _ => {
                 eprintln!("{INVITE_USAGE}");
                 return 2;
@@ -79,9 +81,16 @@ async fn invite(args: &[String]) -> i32 {
         return 1;
     }
     let people = maison_backend::people::People::new(&config.auth_path);
-    match maison_backend::routes::passkeys::new_invite(&people, public_url, &person, &name, admin, None).await {
+    match maison_backend::routes::passkeys::new_invite(
+        &people, public_url, &person, &name, admin, None,
+    )
+    .await
+    {
         Ok(created) => {
-            println!("Invitation for {name}, valid {} days. The link, to open once:", maison_backend::passkey::INVITE_DAYS);
+            println!(
+                "Invitation for {name}, valid {} days. The link, to open once:",
+                maison_backend::passkey::INVITE_DAYS
+            );
             println!("{}", created.url);
             0
         }
@@ -121,14 +130,28 @@ async fn token(args: &[String]) -> i32 {
                     return 2;
                 }
             };
-            maison_backend::auth::issue_service_token(&people, name, scope, maison_backend::people::TokenKind::App).await.map(|token| match token {
+            maison_backend::auth::issue_service_token(
+                &people,
+                name,
+                scope,
+                maison_backend::people::TokenKind::App,
+            )
+            .await
+            .map(|token| match token {
                 Some(token) => {
-                    println!("Service token « {} » (scope {}). Shown this once, keep it now:", name.trim(), scope.as_str());
+                    println!(
+                        "Service token « {} » (scope {}). Shown this once, keep it now:",
+                        name.trim(),
+                        scope.as_str()
+                    );
                     println!("{token}");
                     0
                 }
                 None => {
-                    eprintln!("A token is already named « {} »: revoke it first.", name.trim());
+                    eprintln!(
+                        "A token is already named « {} »: revoke it first.",
+                        name.trim()
+                    );
                     1
                 }
             })
@@ -139,7 +162,8 @@ async fn token(args: &[String]) -> i32 {
             }
             for t in tokens {
                 let day = |ms: i64| {
-                    chrono::DateTime::from_timestamp_millis(ms).map_or_else(|| "?".into(), |d| d.format("%Y-%m-%d").to_string())
+                    chrono::DateTime::from_timestamp_millis(ms)
+                        .map_or_else(|| "?".into(), |d| d.format("%Y-%m-%d").to_string())
                 };
                 let used = t.last_used_ms.map_or_else(|| "never".into(), day);
                 println!(

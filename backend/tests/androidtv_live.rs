@@ -67,7 +67,10 @@ async fn remote_v2_beats_adb_on_latency() {
 
     // Warm both paths so neither pays a first-call penalty.
     session.key(20).await.expect("warm remote");
-    manager().send_key(maison_backend::androidtv::AndroidKey::Down).await.ok();
+    manager()
+        .send_key(maison_backend::androidtv::AndroidKey::Down)
+        .await
+        .ok();
 
     let mut remote_total = std::time::Duration::ZERO;
     for _ in 0..5 {

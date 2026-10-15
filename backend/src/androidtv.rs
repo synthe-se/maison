@@ -31,14 +31,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
-    AppState,
     adb::{self, AdbDevice, AdbKey},
     atvremote::{Identity, Pairing, Session},
-    net::device_host,
     error::AppError,
     json_config::{Checked, JsonConfig},
+    net::device_host,
     store,
     util::non_blank,
+    AppState,
 };
 
 const DEFAULT_ADB_PORT: u16 = 5555;
@@ -128,7 +128,11 @@ pub struct AndroidTvConfig {
     pub port: Option<u16>,
     /// Packages surfaced as shortcuts in the dashboard. Written `favoriteApps`; the British
     /// spelling older files kept still loads.
-    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "favouriteApps")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "favouriteApps"
+    )]
     pub favorite_apps: Vec<AndroidApp>,
 }
 
@@ -136,7 +140,9 @@ pub struct AndroidTvConfig {
 /// shell.
 impl Checked for AndroidTvConfig {
     fn checked(mut self) -> Result<Self, AppError> {
-        self.host = non_blank(self.host).map(|host| device_host(&host)).transpose()?;
+        self.host = non_blank(self.host)
+            .map(|host| device_host(&host))
+            .transpose()?;
         for app in &self.favorite_apps {
             validate_package(&app.package)?;
         }
@@ -223,20 +229,32 @@ impl AndroidTvManager {
 
     /// The box's host, checked where it came in (`Checked`).
     async fn host(&self) -> Result<String, AppError> {
-        self.config().await.host.ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))
+        self.config()
+            .await
+            .host
+            .ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))
     }
 
     async fn address(&self) -> Result<String, AppError> {
         let host = self.host().await?;
-        Ok(format!("{host}:{}", self.config().await.port.unwrap_or(DEFAULT_ADB_PORT)))
+        Ok(format!(
+            "{host}:{}",
+            self.config().await.port.unwrap_or(DEFAULT_ADB_PORT)
+        ))
     }
 
     fn set_remote_failed(&self, at: Option<Instant>) {
-        *self.remote_failed_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = at;
+        *self
+            .remote_failed_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = at;
     }
 
     fn remote_backing_off(&self) -> bool {
-        let failed = *self.remote_failed_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let failed = *self
+            .remote_failed_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         failed.is_some_and(|at| at.elapsed() < REMOTE_RETRY_AFTER)
     }
 
@@ -301,7 +319,11 @@ impl AndroidTvManager {
     /// Sends a key, over Remote v2 when the box is paired.
     pub async fn send_key(&self, key: AndroidKey) -> Result<(), AppError> {
         let (_, number) = key.codes();
-        self.remote_or_adb(|session| async move { session.key(number).await }, &key.adb_command()).await
+        self.remote_or_adb(
+            |session| async move { session.key(number).await },
+            &key.adb_command(),
+        )
+        .await
     }
 
     /// Sends a key over ADB, bypassing the Remote v2 preference. Exists so
@@ -357,7 +379,10 @@ impl AndroidTvManager {
     /// Completes pairing with the code from the screen.
     pub async fn finish_pairing(&self, code: &str) -> Result<(), AppError> {
         let pairing = self.pending_pairing.lock().await.take().ok_or_else(|| {
-            AppError::http(StatusCode::CONFLICT, "no pairing in progress — start one first")
+            AppError::http(
+                StatusCode::CONFLICT,
+                "no pairing in progress — start one first",
+            )
         })?;
         pairing.finish(code).await?;
         // Force the next key onto the freshly paired session, without waiting out the
@@ -484,7 +509,9 @@ impl AndroidTvManager {
             return Err(AppError::bad_request("empty APK"));
         }
         if !head.starts_with(b"PK\x03\x04") {
-            return Err(AppError::bad_request("that file is not an APK (missing zip signature)"));
+            return Err(AppError::bad_request(
+                "that file is not an APK (missing zip signature)",
+            ));
         }
 
         let address = self.address().await?;
@@ -513,7 +540,9 @@ impl AndroidTvManager {
     }
 
     pub async fn one_touch_play(&self) -> Result<(), AppError> {
-        self.shell("cmd hdmi_control onetouchplay").await.map(|_| ())
+        self.shell("cmd hdmi_control onetouchplay")
+            .await
+            .map(|_| ())
     }
 }
 
@@ -559,7 +588,11 @@ fn cleaned_up(rm: Result<String, AppError>) -> bool {
 /// Launches an app on the box, first powering the television on and routing it to the
 /// box when asked: launching on a dark screen is rarely what is meant. Best-effort for
 /// the TV: a dead TV link does not stop the launch.
-pub async fn launch_with_tv(state: &AppState, package: &str, ensure_tv_on: bool) -> Result<(), AppError> {
+pub async fn launch_with_tv(
+    state: &AppState,
+    package: &str,
+    ensure_tv_on: bool,
+) -> Result<(), AppError> {
     if ensure_tv_on {
         if let Err(error) = crate::tv::ensure_on(state).await {
             tracing::debug!(%error, "could not power the TV on before launching");
@@ -579,7 +612,9 @@ pub(crate) fn validate_package(package: &str) -> Result<(), AppError> {
     if valid {
         Ok(())
     } else {
-        Err(AppError::bad_request(format!("invalid package name {package:?}")))
+        Err(AppError::bad_request(format!(
+            "invalid package name {package:?}"
+        )))
     }
 }
 
@@ -617,7 +652,10 @@ mod tests {
         for (key, name, code) in pairs {
             assert_eq!(key.codes(), (name, code), "{key:?}");
         }
-        assert_eq!(AndroidKey::Ok.adb_command(), "input keyevent KEYCODE_DPAD_CENTER");
+        assert_eq!(
+            AndroidKey::Ok.adb_command(),
+            "input keyevent KEYCODE_DPAD_CENTER"
+        );
     }
 
     /// The wire names the API takes map onto the table: every key has both spellings,
@@ -625,41 +663,89 @@ mod tests {
     #[test]
     fn every_key_has_its_own_codes() {
         let names = [
-            "up", "down", "left", "right", "ok", "back", "home", "menu", "search", "volume_up",
-            "volume_down", "mute", "play_pause", "play", "pause", "stop", "next", "previous",
-            "rewind", "fast_forward", "channel_up", "channel_down", "power", "sleep", "wakeup",
+            "up",
+            "down",
+            "left",
+            "right",
+            "ok",
+            "back",
+            "home",
+            "menu",
+            "search",
+            "volume_up",
+            "volume_down",
+            "mute",
+            "play_pause",
+            "play",
+            "pause",
+            "stop",
+            "next",
+            "previous",
+            "rewind",
+            "fast_forward",
+            "channel_up",
+            "channel_down",
+            "power",
+            "sleep",
+            "wakeup",
         ];
         let codes: Vec<_> = names
             .iter()
-            .map(|name| serde_json::from_value::<AndroidKey>(serde_json::json!(name)).expect(name).codes())
+            .map(|name| {
+                serde_json::from_value::<AndroidKey>(serde_json::json!(name))
+                    .expect(name)
+                    .codes()
+            })
             .collect();
         for (index, (name, number)) in codes.iter().enumerate() {
             assert!(name.starts_with("KEYCODE_"));
-            assert!(codes[index + 1..].iter().all(|(n, c)| n != name && c != number), "{name} twice");
+            assert!(
+                codes[index + 1..]
+                    .iter()
+                    .all(|(n, c)| n != name && c != number),
+                "{name} twice"
+            );
         }
     }
 
     #[test]
     fn a_failed_cleanup_is_reported() {
         assert!(cleaned_up(Ok(String::new())));
-        assert!(!cleaned_up(Ok("rm: /data/local/tmp/maison-install.apk: Read-only file system".into())));
-        assert!(!cleaned_up(Err(AppError::service_unavailable("Android TV box unreachable"))));
+        assert!(!cleaned_up(Ok(
+            "rm: /data/local/tmp/maison-install.apk: Read-only file system".into()
+        )));
+        assert!(!cleaned_up(Err(AppError::service_unavailable(
+            "Android TV box unreachable"
+        ))));
     }
 
     /// A kept connection that died is dialled again once, transparently; a box that is
     /// really gone is an error.
     #[tokio::test]
     async fn a_stale_connection_is_dialled_again() {
-        let (address, connections) = adb::fake::serve(1, |command| vec![format!("ran {command}").into_bytes()]).await;
+        let (address, connections) =
+            adb::fake::serve(1, |command| vec![format!("ran {command}").into_bytes()]).await;
         let key = AdbKey::new(adb::generate_key().expect("key"));
         let mut slot = None;
-        assert_eq!(shell_on(&mut slot, &address, &key, "first").await.expect("first"), "ran first");
+        assert_eq!(
+            shell_on(&mut slot, &address, &key, "first")
+                .await
+                .expect("first"),
+            "ran first"
+        );
         // the fake hangs up after one command: the kept connection is now stale
-        assert_eq!(shell_on(&mut slot, &address, &key, "second").await.expect("second"), "ran second");
+        assert_eq!(
+            shell_on(&mut slot, &address, &key, "second")
+                .await
+                .expect("second"),
+            "ran second"
+        );
         assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         let mut nowhere = None;
-        assert!(shell_on(&mut nowhere, "127.0.0.1:1", &key, "x").await.is_err());
+        assert!(shell_on(&mut nowhere, "127.0.0.1:1", &key, "x")
+            .await
+            .is_err());
         assert!(nowhere.is_none());
     }
 
@@ -726,13 +812,26 @@ mod tests {
     async fn the_host_must_be_a_lan_device_and_a_new_one_forgets_the_old_box() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager = new_manager(&dir);
-        for bad in ["127.0.0.1", "8.8.8.8", "192.168.1.153:5555", "box.example.com", "a/b.local"] {
-            let config = AndroidTvConfig { host: Some(bad.into()), ..AndroidTvConfig::default() };
+        for bad in [
+            "127.0.0.1",
+            "8.8.8.8",
+            "192.168.1.153:5555",
+            "box.example.com",
+            "a/b.local",
+        ] {
+            let config = AndroidTvConfig {
+                host: Some(bad.into()),
+                ..AndroidTvConfig::default()
+            };
             assert!(manager.set_config(config).await.is_err(), "{bad} accepted");
         }
         manager.set_remote_failed(Some(Instant::now()));
         assert!(manager.remote_backing_off());
-        let config = AndroidTvConfig { host: Some(" box.local ".into()), port: Some(5555), ..AndroidTvConfig::default() };
+        let config = AndroidTvConfig {
+            host: Some(" box.local ".into()),
+            port: Some(5555),
+            ..AndroidTvConfig::default()
+        };
         let saved = manager.set_config(config).await.expect("saved");
         assert_eq!(saved.host.as_deref(), Some("box.local"));
         assert!(!manager.remote_backing_off(), "a new box gets a fresh try");
@@ -747,7 +846,9 @@ mod tests {
         assert!(!manager.remote_backing_off());
         manager.set_remote_failed(Some(Instant::now()));
         assert!(manager.remote_backing_off());
-        manager.set_remote_failed(Instant::now().checked_sub(REMOTE_RETRY_AFTER + Duration::from_secs(1)));
+        manager.set_remote_failed(
+            Instant::now().checked_sub(REMOTE_RETRY_AFTER + Duration::from_secs(1)),
+        );
         assert!(!manager.remote_backing_off());
     }
 
@@ -756,7 +857,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager = new_manager(&dir);
         let first = manager.install_permit().expect("free");
-        assert!(manager.install_permit().is_err(), "busy while the first runs");
+        assert!(
+            manager.install_permit().is_err(),
+            "busy while the first runs"
+        );
         drop(first);
         assert!(manager.install_permit().is_ok());
     }
@@ -766,13 +870,21 @@ mod tests {
     async fn an_upload_that_is_not_an_apk_is_refused_before_any_transfer() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manager = new_manager(&dir);
-        let chunks = |parts: Vec<&'static [u8]>| futures::stream::iter(parts.into_iter().map(|p| Ok(Bytes::from_static(p))));
-        let error = manager.install_apk(chunks(vec![b"MZ", b"\x90\x00"])).await.unwrap_err();
+        let chunks = |parts: Vec<&'static [u8]>| {
+            futures::stream::iter(parts.into_iter().map(|p| Ok(Bytes::from_static(p))))
+        };
+        let error = manager
+            .install_apk(chunks(vec![b"MZ", b"\x90\x00"]))
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("not an APK"), "{error}");
         let error = manager.install_apk(chunks(vec![])).await.unwrap_err();
         assert!(error.to_string().contains("empty"), "{error}");
         // a real zip head, cut in two: it gets past the check, to the missing box
-        let error = manager.install_apk(chunks(vec![b"P", b"K\x03\x04rest"])).await.unwrap_err();
+        let error = manager
+            .install_apk(chunks(vec![b"P", b"K\x03\x04rest"]))
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("No Android TV box"), "{error}");
     }
 
@@ -787,7 +899,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path().join("adb-key")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.path().join("adb-key"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
     }
@@ -796,8 +911,12 @@ mod tests {
     async fn set_config_persists_and_rejects_bad_packages() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("androidtv.json");
-        let manager = AndroidTvManager::new(&path, &dir.path().join("adb-key"), &dir.path().join("atv-identity"))
-            .expect("manager");
+        let manager = AndroidTvManager::new(
+            &path,
+            &dir.path().join("adb-key"),
+            &dir.path().join("atv-identity"),
+        )
+        .expect("manager");
 
         manager
             .set_config(AndroidTvConfig {
@@ -817,8 +936,8 @@ mod tests {
             &dir.path().join("atv-identity"),
         )
         .expect("reload")
-            .config()
-            .await;
+        .config()
+        .await;
         assert_eq!(reloaded.host.as_deref(), Some("192.168.1.153"));
         assert_eq!(reloaded.favorite_apps.len(), 1);
 
@@ -841,6 +960,9 @@ mod tests {
         let config: AndroidTvConfig = serde_json::from_str(old).expect("old file");
         assert_eq!(config.favorite_apps.len(), 1);
         let written = serde_json::to_string(&config).expect("written");
-        assert!(written.contains("\"favoriteApps\"") && !written.contains("favourite"), "{written}");
+        assert!(
+            written.contains("\"favoriteApps\"") && !written.contains("favourite"),
+            "{written}"
+        );
     }
 }

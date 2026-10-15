@@ -25,7 +25,10 @@ pub struct SimpleResponse {
 
 impl SimpleResponse {
     pub fn ok(message: impl Into<String>) -> axum::Json<Self> {
-        axum::Json(Self { success: true, message: message.into() })
+        axum::Json(Self {
+            success: true,
+            message: message.into(),
+        })
     }
 }
 
@@ -40,7 +43,10 @@ pub struct Answer<T> {
 
 impl<T: serde::Serialize> Answer<T> {
     pub fn ok(body: T) -> axum::Json<Self> {
-        axum::Json(Self { success: true, body })
+        axum::Json(Self {
+            success: true,
+            body,
+        })
     }
 }
 

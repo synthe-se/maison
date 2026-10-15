@@ -83,7 +83,7 @@ pub fn encode_rc5(address: u8, command: u8, toggle: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     /// The exact bytes that were fired at the set and brought it out of deep
     /// standby: the network answered within five seconds and the box reported

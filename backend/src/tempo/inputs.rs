@@ -12,7 +12,9 @@ use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, NaiveTim
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::forecast::{effective_temperature, wind_power, DayWeather, Levels, Model, PastDay, WeatherPoint};
+use super::forecast::{
+    effective_temperature, wind_power, DayWeather, Levels, Model, PastDay, WeatherPoint,
+};
 use crate::{error::AppError, util::HOUSE_TZ};
 
 /// The weather model the forecast was fitted and replayed with.
@@ -40,13 +42,19 @@ pub fn parse_hourly(body: &Value, key: &str) -> Result<Vec<Series>, AppError> {
         .into_iter()
         .map(|place| {
             let hourly = &place["hourly"];
-            let bad = || AppError::service_unavailable(format!("Open-Meteo answered without hourly {key}"));
+            let bad = || {
+                AppError::service_unavailable(format!("Open-Meteo answered without hourly {key}"))
+            };
             let times = hourly["time"].as_array().ok_or_else(bad)?;
             let values = hourly[key].as_array().ok_or_else(bad)?;
             Ok(Series {
                 times: times
                     .iter()
-                    .map(|t| t.as_str().and_then(|t| NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M").ok()).ok_or_else(bad))
+                    .map(|t| {
+                        t.as_str()
+                            .and_then(|t| NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M").ok())
+                            .ok_or_else(bad)
+                    })
                     .collect::<Result<_, _>>()?,
                 values: values.iter().map(Value::as_f64).collect(),
             })
@@ -61,12 +69,18 @@ pub fn tempo_day_of(local: NaiveDateTime) -> NaiveDate {
 
 /// Per day (`day_of` a time), each place's mean of `f(value)`; days missing hours anywhere
 /// are left out.
-fn daily_means(series: &[Series], day_of: fn(NaiveDateTime) -> NaiveDate, f: fn(f64) -> f64) -> BTreeMap<NaiveDate, Vec<f64>> {
+fn daily_means(
+    series: &[Series],
+    day_of: fn(NaiveDateTime) -> NaiveDate,
+    f: fn(f64) -> f64,
+) -> BTreeMap<NaiveDate, Vec<f64>> {
     let mut sums: BTreeMap<NaiveDate, Vec<(f64, usize)>> = BTreeMap::new();
     for (place, s) in series.iter().enumerate() {
         for (time, value) in s.times.iter().zip(&s.values) {
             if let Some(value) = value {
-                let day = sums.entry(day_of(*time)).or_insert_with(|| vec![(0.0, 0); series.len()]);
+                let day = sums
+                    .entry(day_of(*time))
+                    .or_insert_with(|| vec![(0.0, 0); series.len()]);
                 day[place].0 += f(*value);
                 day[place].1 += 1;
             }
@@ -83,7 +97,17 @@ pub fn daily_temperature(series: &[Series], cities: &[WeatherPoint]) -> BTreeMap
     let total: f64 = cities.iter().map(|c| c.weight).sum();
     daily_means(series, |t| t.date(), |t| t)
         .into_iter()
-        .map(|(day, means)| (day, means.iter().zip(cities).map(|(t, c)| t * c.weight).sum::<f64>() / total))
+        .map(|(day, means)| {
+            (
+                day,
+                means
+                    .iter()
+                    .zip(cities)
+                    .map(|(t, c)| t * c.weight)
+                    .sum::<f64>()
+                    / total,
+            )
+        })
         .collect()
 }
 
@@ -97,8 +121,17 @@ pub fn daily_wind_power(series: &[Series]) -> BTreeMap<NaiveDate, f64> {
 
 /// `latitude=…&longitude=…` for places.
 pub fn coordinates(places: &[WeatherPoint]) -> [(&'static str, String); 2] {
-    let join = |f: fn(&WeatherPoint) -> f64| places.iter().map(|p| f(p).to_string()).collect::<Vec<_>>().join(",");
-    [("latitude", join(|p| p.place.latitude)), ("longitude", join(|p| p.place.longitude))]
+    let join = |f: fn(&WeatherPoint) -> f64| {
+        places
+            .iter()
+            .map(|p| f(p).to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    [
+        ("latitude", join(|p| p.place.latitude)),
+        ("longitude", join(|p| p.place.longitude)),
+    ]
 }
 
 /// The weather around the forecast: past days' and coming days' temperatures, coming days'
@@ -114,7 +147,11 @@ pub struct Weather {
 impl Weather {
     /// A day's inputs, when the weather covers it and the two days before.
     pub fn day(&self, date: NaiveDate) -> Option<DayWeather> {
-        let t = |back: i64| self.temperature.get(&(date - Duration::days(back))).copied();
+        let t = |back: i64| {
+            self.temperature
+                .get(&(date - Duration::days(back)))
+                .copied()
+        };
         Some(DayWeather {
             date,
             temperature: effective_temperature(t(0)?, t(1)?, t(2)?),
@@ -125,7 +162,12 @@ impl Weather {
 
 /// Today's forecast from Open-Meteo: 3 past days (the temperature lags), 9 ahead (J+7 ends
 /// at 06:00 on J+8).
-pub async fn fetch_weather(client: &reqwest::Client, url: &str, model: &Model, today: NaiveDate) -> Result<Weather, AppError> {
+pub async fn fetch_weather(
+    client: &reqwest::Client,
+    url: &str,
+    model: &Model,
+    today: NaiveDate,
+) -> Result<Weather, AppError> {
     let ask = |places: &[WeatherPoint], key: &'static str| {
         let mut query = coordinates(places).to_vec();
         query.extend([
@@ -136,19 +178,33 @@ pub async fn fetch_weather(client: &reqwest::Client, url: &str, model: &Model, t
             ("models", WEATHER_MODEL.into()),
         ]);
         async move {
-            let response = client.get(format!("{url}/v1/forecast")).query(&query).send().await?;
+            let response = client
+                .get(format!("{url}/v1/forecast"))
+                .query(&query)
+                .send()
+                .await?;
             if !response.status().is_success() {
-                return Err(AppError::service_unavailable(format!("Open-Meteo: {}", response.status())));
+                return Err(AppError::service_unavailable(format!(
+                    "Open-Meteo: {}",
+                    response.status()
+                )));
             }
             parse_hourly(&response.json::<Value>().await?, key)
         }
     };
-    let temperature = daily_temperature(&ask(&model.cities, "temperature_2m").await?, &model.cities);
+    let temperature =
+        daily_temperature(&ask(&model.cities, "temperature_2m").await?, &model.cities);
     let wind_power = daily_wind_power(&ask(&model.wind_sites, "wind_speed_100m").await?);
     if temperature.is_empty() || wind_power.is_empty() {
-        return Err(AppError::service_unavailable("Open-Meteo answered without full days"));
+        return Err(AppError::service_unavailable(
+            "Open-Meteo answered without full days",
+        ));
     }
-    Ok(Weather { issued: Some(today), temperature, wind_power })
+    Ok(Weather {
+        issued: Some(today),
+        temperature,
+        wind_power,
+    })
 }
 
 /// One éCO2mix row (MW over the quarter of an hour; a gap is null).
@@ -166,7 +222,9 @@ pub fn tempo_days(rows: &[OdreRow]) -> BTreeMap<NaiveDate, [f64; 3]> {
     // sums, rows, and the hours seen (a bit each)
     let mut days: BTreeMap<NaiveDate, ([f64; 3], usize, u32)> = BTreeMap::new();
     for row in rows {
-        let (Some(c), Some(w), Some(s)) = (row.consommation, row.eolien, row.solaire) else { continue };
+        let (Some(c), Some(w), Some(s)) = (row.consommation, row.eolien, row.solaire) else {
+            continue;
+        };
         let local = row.date_heure.with_timezone(&HOUSE_TZ).naive_local();
         let day = days.entry(tempo_day_of(local)).or_default();
         day.0[0] += c;
@@ -202,14 +260,20 @@ pub async fn fetch_load(
     let response = client
         .get(format!("{url}/{dataset}/exports/json"))
         .query(&[
-            ("select", "date_heure,consommation,eolien,solaire".to_string()),
+            (
+                "select",
+                "date_heure,consommation,eolien,solaire".to_string(),
+            ),
             ("where", format!("date_heure >= '{start}'")),
             ("order_by", "date_heure".to_string()),
         ])
         .send()
         .await?;
     if !response.status().is_success() {
-        return Err(AppError::service_unavailable(format!("ODRE éCO2mix: {}", response.status())));
+        return Err(AppError::service_unavailable(format!(
+            "ODRE éCO2mix: {}",
+            response.status()
+        )));
     }
     Ok(tempo_days(&response.json::<Vec<OdreRow>>().await?))
 }
@@ -241,9 +305,16 @@ impl NetLoad {
     }
 
     /// Adds days (finished ones only: before `today`), forgets those over [`KEEP_DAYS`] old.
-    pub fn merge(&mut self, load: BTreeMap<NaiveDate, [f64; 3]>, temperature: &BTreeMap<NaiveDate, f64>, today: NaiveDate) {
-        self.load.extend(load.into_iter().filter(|(d, _)| *d < today));
-        self.temperature.extend(temperature.range(..today).map(|(d, t)| (*d, *t)));
+    pub fn merge(
+        &mut self,
+        load: BTreeMap<NaiveDate, [f64; 3]>,
+        temperature: &BTreeMap<NaiveDate, f64>,
+        today: NaiveDate,
+    ) {
+        self.load
+            .extend(load.into_iter().filter(|(d, _)| *d < today));
+        self.temperature
+            .extend(temperature.range(..today).map(|(d, t)| (*d, *t)));
         let oldest = today - Duration::days(KEEP_DAYS);
         self.load.retain(|d, _| *d >= oldest);
         self.temperature.retain(|d, _| *d >= oldest);
@@ -262,21 +333,34 @@ mod tests {
 
     fn hours(from: &str, values: &[f64]) -> Value {
         let start = NaiveDateTime::parse_from_str(from, "%Y-%m-%dT%H:%M").unwrap();
-        let times: Vec<String> =
-            (0..values.len()).map(|i| (start + Duration::hours(i as i64)).format("%Y-%m-%dT%H:%M").to_string()).collect();
+        let times: Vec<String> = (0..values.len())
+            .map(|i| {
+                (start + Duration::hours(i as i64))
+                    .format("%Y-%m-%dT%H:%M")
+                    .to_string()
+            })
+            .collect();
         json!({ "hourly": { "time": times, "temperature_2m": values, "wind_speed_100m": values } })
     }
 
     #[test]
     fn temperatures_are_weighted_calendar_days() {
         // two places: 10 °C and 20 °C all day, weights 3 and 1; the second day is short
-        let body = json!([hours("2026-01-10T00:00", &[10.0; 30]), hours("2026-01-10T00:00", &[20.0; 30])]);
+        let body = json!([
+            hours("2026-01-10T00:00", &[10.0; 30]),
+            hours("2026-01-10T00:00", &[20.0; 30])
+        ]);
         let series = parse_hourly(&body, "temperature_2m").unwrap();
         let daily = daily_temperature(&series, &[place(3.0), place(1.0)]);
         assert_eq!(daily.len(), 1);
         assert!((daily[&day(2026, 1, 10)] - 12.5).abs() < 1e-12);
         // one place: an object, not an array
-        assert_eq!(parse_hourly(&hours("2026-01-10T00:00", &[1.0]), "temperature_2m").unwrap().len(), 1);
+        assert_eq!(
+            parse_hourly(&hours("2026-01-10T00:00", &[1.0]), "temperature_2m")
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(parse_hourly(&json!({"error": true}), "temperature_2m").is_err());
     }
 
@@ -288,7 +372,10 @@ mod tests {
         let series = parse_hourly(&hours("2026-01-10T00:00", &values), "wind_speed_100m").unwrap();
         let daily = daily_wind_power(&series);
         assert_eq!(daily.get(&day(2026, 1, 10)), Some(&1.0));
-        assert!(!daily.contains_key(&day(2026, 1, 9)), "six hours are no day");
+        assert!(
+            !daily.contains_key(&day(2026, 1, 9)),
+            "six hours are no day"
+        );
     }
 
     #[test]
@@ -307,7 +394,10 @@ mod tests {
         let days = tempo_days(&rows);
         assert_eq!(days.len(), 1, "the 11th has one quarter: not a day");
         let [c, w, s] = days[&day(2026, 1, 10)];
-        assert!((c - (47.0 * 60_000.0 + 48.0 * 70_000.0) / 95.0).abs() < 1e-6, "{c}");
+        assert!(
+            (c - (47.0 * 60_000.0 + 48.0 * 70_000.0) / 95.0).abs() < 1e-6,
+            "{c}"
+        );
         assert_eq!((w, s), (5_000.0, 0.0));
     }
 
@@ -315,8 +405,12 @@ mod tests {
     fn the_net_load_keeps_a_year_of_finished_days() {
         let today = day(2026, 10, 3);
         let mut net = NetLoad::default();
-        let load = (0..500).map(|i| (today - Duration::days(i), [50_000.0, 5_000.0, 1_000.0])).collect();
-        let temps = (0..500).map(|i| (today - Duration::days(i), 10.0)).collect();
+        let load = (0..500)
+            .map(|i| (today - Duration::days(i), [50_000.0, 5_000.0, 1_000.0]))
+            .collect();
+        let temps = (0..500)
+            .map(|i| (today - Duration::days(i), 10.0))
+            .collect();
         net.merge(load, &temps, today);
         assert!(!net.load.contains_key(&today), "today is not over");
         assert_eq!(net.load.len(), 400);
@@ -329,7 +423,12 @@ mod tests {
     fn a_day_needs_its_two_days_before() {
         let weather = Weather {
             issued: Some(day(2026, 1, 10)),
-            temperature: [(day(2026, 1, 9), 0.0), (day(2026, 1, 10), 10.0), (day(2026, 1, 11), 20.0)].into(),
+            temperature: [
+                (day(2026, 1, 9), 0.0),
+                (day(2026, 1, 10), 10.0),
+                (day(2026, 1, 11), 20.0),
+            ]
+            .into(),
             wind_power: [(day(2026, 1, 11), 0.5), (day(2026, 1, 10), 0.5)].into(),
         };
         let d = weather.day(day(2026, 1, 11)).unwrap();
