@@ -290,7 +290,8 @@ only for a forecast ≥ 80 %). Firmware tooling lives in uplg/nabgcc, not here.
 - A system app's native libraries are extracted in `lib/arm` (Android 6 reads the ABI there);
   the vendor build forces a home screen to the panel's landscape unless the activity asks
   `screenOrientation="user"`; the clock says 1970 until NTP, so Gecko stays hidden (the brand's
-  petrol) until a page has loaded. The boot animation draws before any rotation applies.
+  petrol) until a page has loaded. The boot animation draws before any rotation applies;
+  U-Boot's logo is `logo.bmp` in the resource partition, drawn on the raw panel (docs/frame.md).
 - Frameo reinstalls itself into /data while its beta is on: `pm uninstall net.frameo.frame`.
 - The backup, the vendor's device tree, the release keystore and rkdeveloptool live in
   `~/maison-frame/`, never in the repo; rkdeveloptool writes a `log/` into its working directory.

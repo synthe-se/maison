@@ -22,22 +22,29 @@ python3 -m unittest discover -s frame -p 'test_*.py'
 kiosk in `/system/priv-app/MaisonFrame` with its libraries extracted in `lib/arm`, the boot
 animation (`frame/bootanimation.sh`: the sign-in door's identity panel, from the app's sources),
 `build.prop` (French, Paris, ADB over Wi-Fi). Before a flash, compare its tree with the vendor's:
-only those paths may differ.
+only those paths may differ. It also makes `resource.img`: the vendor's, with U-Boot's logo (the
+first screen, read from that partition, not from boot.img's copy) replaced in place by the boot
+animation's still frame; the device tree beside it stays byte for byte.
+
+Rotations: U-Boot draws on the raw panel (800×1280); Android's landscape is the panel turned 90°
+(`ro.sf.hwrotation`); the boot animation draws in Android's rotation 0, before the locked one
+applies; the frame stands at `ROTATION` (1). So the animation's frames turn ROTATION × 90°
+clockwise, the logo (1 + ROTATION) × 90°: both seen upright on the frame.
 
 ## Flash
 
 ```bash
 export ANDROID_SERIAL=<serial> RKDEVELOPTOOL=~/maison-frame/bin/rkdeveloptool
 frame/flash.sh keys     # once, on the vendor's Android: this computer's ADB key in adb_keys
-frame/flash.sh          # adb reboot loader, then system.img, chunk by chunk, read back
+frame/flash.sh          # adb reboot loader, then resource.img and system.img, chunk by chunk, read back
 adb shell pm uninstall net.frameo.frame    # if Frameo had updated itself into /data
 ANDROID_SERIAL=<serial> frame/provision.sh https://<Maison's address>   # asks for the token
 ```
 
 `flash.sh keys` matters: Frameo approved a computer's ADB key for the session only, and this
 build's SystemUI, which would ask, is disabled. Without the key in `/data/misc/adb/adb_keys`, ADB
-is gone with Frameo; `flash.sh` refuses to start without it. Only /system is written: boot,
-recovery and userdata (Wi-Fi, ADB's keys, the kiosk's address) stay.
+is gone with Frameo; `flash.sh` refuses to start without it. Only /system and resource are
+written: boot, recovery and userdata (Wi-Fi, ADB's keys, the kiosk's address) stay.
 
 ## When nothing answers
 
@@ -48,6 +55,8 @@ system comes back with:
 ```bash
 python3 frame/rkwrite.py ~/maison-frame/backup/mmcblk0p11.img mmcblk0p11 && rkdeveloptool rd
 ```
+
+(`mmcblk0p3.img` and `mmcblk0p3` for the vendor's logo.)
 
 The loader may drop halfway: do the reset again, `rkwrite.py` resumes where it stopped.
 

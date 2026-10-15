@@ -9,6 +9,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -92,6 +93,28 @@ class InitAndProps(unittest.TestCase):
         self.assertNotIn("baidu", out)
         for line in ("ro.keep=1", "ro.product.locale=fr-FR", "persist.sys.timezone=Europe/Paris", "service.adb.tcp.port=5555"):
             self.assertIn(line, out.splitlines())
+
+
+class Logo(unittest.TestCase):
+    def png(self, w, h, rgb_rows, filt=0):
+        raw = b"".join(bytes([filt]) + r for r in rgb_rows)
+        chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+    def test_a_png_becomes_the_bottom_up_bgr_bmp_u_boot_reads(self):
+        rows = [bytes([255, 0, 0, 0, 255, 0]), bytes([0, 0, 255, 10, 20, 30])]
+        w, h, back = build.png_rows(self.png(2, 2, rows))
+        self.assertEqual((w, h, back), (2, 2, rows))
+        bmp = build.bmp24(w, h, back)
+        self.assertEqual(struct.unpack("<ii", bmp[18:26]), (2, 2))
+        self.assertEqual(struct.unpack("<H", bmp[28:30])[0], 24)
+        # bottom row first, BGR, each row padded to 4 bytes
+        self.assertEqual(bmp[54:], bytes([255, 0, 0, 30, 20, 10, 0, 0]) + bytes([0, 0, 255, 0, 255, 0, 0, 0]))
+
+    def test_the_png_filters_are_undone(self):
+        # Sub (1) then Up (2): the same pixels as unfiltered
+        sub = [bytes([10, 20, 30, 5, 5, 5])]
+        self.assertEqual(build.png_rows(self.png(2, 1, sub, 1))[2], [bytes([10, 20, 30, 15, 25, 35])])
 
 
 class Rkwrite(unittest.TestCase):

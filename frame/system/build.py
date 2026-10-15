@@ -3,6 +3,9 @@ Adups FOTA, SuperSU and the vendor's extras gone, Maison's kiosk APK the only ho
 animation, French, Paris time and ADB over Wi-Fi. The image is changed in place with debugfs (no
 mount, no Linux): everything else stays byte for byte the vendor's.
 
+Its resource image too, with one change: U-Boot's logo (`logo.bmp`, shown before Android) becomes
+the boot animation's still frame, in place, same size; the device tree beside it is untouched.
+
 The vendor's boot image stays as it is by default: its U-Boot checks an id we cannot reproduce,
 and everything Maison needs can be said from /system (the services whose binaries are gone simply
 fail to start). `--boot` also builds a boot image of ours (bootimg.py: `adb root`, the ADB keys in
@@ -15,11 +18,13 @@ Needs e2fsprogs (brew install e2fsprogs) and, for the boot animation, frame/boot
 
 import argparse
 import os
+import struct
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -170,6 +175,75 @@ def build_system(backup: Path, apk: Path, out: Path, work: Path) -> Path:
     return image
 
 
+def png_rows(png: bytes) -> tuple[int, int, list[bytes]]:
+    """An 8-bit RGB or RGBA PNG's rows as RGB bytes (the five PNG filters undone)."""
+    w, h, depth, colour = struct.unpack(">IIBB", png[16:26])
+    if depth != 8 or colour not in (2, 6):
+        raise SystemExit("logo: an 8-bit RGB(A) PNG expected")
+    bpp = 3 if colour == 2 else 4
+    data, i = b"", 8
+    while i < len(png):
+        n, kind = struct.unpack(">I4s", png[i : i + 8])
+        if kind == b"IDAT":
+            data += png[i + 8 : i + 8 + n]
+        i += 12 + n
+    raw, stride, prev, rows = zlib.decompress(data), w * bpp, bytearray(w * bpp), []
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1 : (y + 1) * (stride + 1)])
+        for x in range(stride):
+            a, b = line[x - bpp] if x >= bpp else 0, prev[x]
+            c = prev[x - bpp] if x >= bpp else 0
+            if f == 1:
+                line[x] = (line[x] + a) & 0xFF
+            elif f == 2:
+                line[x] = (line[x] + b) & 0xFF
+            elif f == 3:
+                line[x] = (line[x] + (a + b) // 2) & 0xFF
+            elif f == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
+        prev = line
+        rows.append(bytes(line) if bpp == 3 else bytes(v for k, v in enumerate(line) if k % 4 != 3))
+    return w, h, rows
+
+
+def bmp24(w: int, h: int, rows: list[bytes]) -> bytes:
+    """The 24-bit bottom-up BMP U-Boot reads (BGR, rows padded to 4 bytes)."""
+    pad = b"\0" * (-(w * 3) % 4)
+    pixels = b"".join(bytes(r[i + 2 - 2 * (i % 3)] for i in range(len(r))) + pad for r in reversed(rows))
+    header = struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54)
+    info = struct.pack("<IiiHHIIiiII", 40, w, h, 1, 24, 0, len(pixels), 3780, 3780, 0, 0)
+    return header + info + pixels
+
+
+def build_resource(backup: Path, out: Path, work: Path) -> Path:
+    """The vendor's resource image with only logo.bmp replaced, in place and the same size. U-Boot
+    draws it on the raw panel (800×1280), before any rotation: the panel is turned 90° from
+    Android's landscape (ro.sf.hwrotation), and the frame stands at ROTATION: the still frame,
+    upright, turned (1 + ROTATION) × 90°."""
+    image = bytearray((backup / "mmcblk0p3.img").read_bytes())
+    if image[:4] != b"RSCE":
+        raise SystemExit("resource: not a Rockchip resource image")
+    at = image.find(b"ENTRlogo.bmp\0")
+    block, size = struct.unpack("<II", image[at + 260 : at + 268])
+    old = image[block * 512 : block * 512 + size]
+    w, h = struct.unpack("<ii", old[18:26])
+    frames = work / "frames"
+    subprocess.run(["bun", REPO / "frame/bootanimation.ts", frames], check=True, capture_output=True)
+    still = work / "still.png"
+    shutil.copyfile(frames / "part1/000.png", still)
+    turn = (1 + int(os.environ.get("ROTATION", "1"))) * 90 % 360
+    if turn:
+        subprocess.run(["sips", "-r", str(turn), still], check=True, capture_output=True)
+    logo = bmp24(*png_rows(still.read_bytes()))
+    if len(logo) != size or (w, h) != struct.unpack("<ii", logo[18:26]):
+        raise SystemExit(f"logo: {len(logo)} bytes for {size}, the vendor's is {w}×{h}")
+    image[block * 512 : block * 512 + size] = logo
+    path = out / "resource.img"
+    path.write_bytes(bytes(image))
+    return path
+
+
 def build_boot(backup: Path, adb_keys: Path, out: Path) -> Path:
     boot = bootimg.BootImage((backup / "mmcblk0p5.img").read_bytes())
     bootimg.maison(boot, adb_keys.read_bytes())
@@ -192,7 +266,8 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as work:
         system = build_system(args.backup, args.apk, args.out, Path(work))
-    images = [system]
+        resource = build_resource(args.backup, args.out, Path(work))
+    images = [system, resource]
     stale = args.out / "boot.img"
     if args.boot:
         images.append(build_boot(args.backup, args.adb_keys, args.out))

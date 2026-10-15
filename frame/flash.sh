@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Writes frame/build's system.img (and boot.img, when build.py made one) to the frame over USB-C,
+# Writes frame/build's system.img and resource.img (U-Boot's logo; boot.img too, when build.py
+# made one) to the frame over USB-C,
 # in Rockchip's loader mode, through frame/rkwrite.py: the loader's addressing proved against the
 # backup before anything is written, 16 MiB chunks each read back, resumed if the loader drops.
 # The rest of the eMMC (loader, uboot, kernel, resource, recovery, userdata) is left as it is:
@@ -35,6 +36,7 @@ if ! "$RKDEVELOPTOOL" ld 2>/dev/null | grep -q Loader; then
 	adb reboot loader
 fi
 [ -f "$BUILD/boot.img" ] && python3 -I "$REPO/frame/rkwrite.py" "$BUILD/boot.img" mmcblk0p5
+[ -f "$BUILD/resource.img" ] && python3 -I "$REPO/frame/rkwrite.py" "$BUILD/resource.img" mmcblk0p3
 python3 -I "$REPO/frame/rkwrite.py" "$BUILD/system.img" mmcblk0p11
 "$RKDEVELOPTOOL" rd >/dev/null
 echo "rebooting into Maison"
