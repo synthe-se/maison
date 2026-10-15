@@ -2,7 +2,7 @@
 name = "maison-backend"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.98"
+rust-version = "1.99.1"
 default-run = "maison-backend"
 
 [features]
@@ -20,7 +20,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 axum = { version = "0.8.9", features = ["multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.23.1"
-btleplug = { version = "0.13.3", optional = true }
+btleplug = { version = "0.13.5", optional = true }
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
 chrono-tz = "0.10.4"
 dotenvy = "0.15.7"
@@ -47,34 +47,34 @@ rbroadlink = "0.4.2"
 # keys — hence rcgen to mint the cert and x509-parser to read the TV's.
 # rustls/tokio-rustls are already in the tree via reqwest.
 rcgen = "0.14.10"
-rustls = "0.23.45"
+rustls = "0.23.46"
 tokio-rustls = "0.26.6"
 x509-parser = "0.18.1"
-sha2 = "0.11.0"
-rsa = "0.10.0-rc.18"
+sha2 = "0.11.1"
+rsa = "0.10.0-rc.19"
 sha1 = { version = "0.11.0", features = ["oid"] }
 rand = "0.10.3"
 rust-async-tuyapi = { git = "https://github.com/uplg/rust-async-tuyapi", rev = "6cd9180b296a04ef9e6751b594c6235aa79b7157" }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 thiserror = "2.0.21"
 time = "0.3.55"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
 tokio-serial = "5.5.0"
 tower-http = { version = "0.7.1", features = ["cors", "fs", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-uuid = { version = "1.26.1", features = ["v4"] }
+uuid = { version = "1.28.0", features = ["v4"] }
 # Matter controller (Sonoff Orb-RBS shutter switch): commissioning over IP,
 # CASE sessions and the Interaction Model in pure Rust, on the ring already in
 # the tree. matter-codec supplies the TLV tags for command fields.
-matter-controller = "0.16.0"
-matter-codec = "0.3.1"
+matter-controller = "0.18.2"
+matter-codec = "0.3.2"
 sunrise = "3.0.0"
 
 [dev-dependencies]
 # paused time in tests (the Tuya worker lifecycle)
-tokio = { version = "1.53.1", features = ["test-util"] }
+tokio = { version = "1.53.3", features = ["test-util"] }
 # a software authenticator and client: passkeys end to end, discoverable ones included
 passkey = { version = "0.6.0", features = ["rust-crypto"] }
 async-trait = "0.1"
