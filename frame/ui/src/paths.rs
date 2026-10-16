@@ -48,6 +48,9 @@ pub fn segment(id: &str) -> String {
     out
 }
 
+/// The server's event stream: what changed, by name (`maison_api::events`).
+pub const EVENTS: &str = "/events";
+
 #[cfg(test)]
 mod tests {
     use super::*;

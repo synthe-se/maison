@@ -57,9 +57,12 @@ pub struct App {
 impl App {
     pub fn new(config: &Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let client = Client::new(&config.origin, &config.state_dir, HTTP_WAIT);
+        let live = Live::new(client.clone(), wake.clone());
+        // what the server says changed: read again at once, the polls a safety net
+        live.listen();
         Self {
             words: Words::new(config.lang),
-            live: Live::new(client.clone(), wake.clone()),
+            live,
             session: Session::start(client.clone(), wake.clone()),
             commands: Commands::new(client, wake),
             sliders: Sliders::default(),

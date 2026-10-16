@@ -4,6 +4,7 @@
 
 pub mod codes;
 pub mod envelope;
+pub mod events;
 pub mod lamps;
 pub mod matter;
 pub mod meross;

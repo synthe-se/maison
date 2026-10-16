@@ -6,6 +6,7 @@ pub mod broadlink;
 pub mod broadlink_ir;
 pub mod config;
 pub mod error;
+pub mod events;
 #[cfg(feature = "bluetooth")]
 pub mod hue;
 #[cfg(not(feature = "bluetooth"))]
@@ -85,6 +86,8 @@ pub struct AppState {
     pub(crate) tv: TvManager,
     pub(crate) androidtv: AndroidTvManager,
     pub(crate) zigbee: ZigbeeManager,
+    /// What changed, for the event stream (`GET /api/events`).
+    pub(crate) events: events::Events,
 }
 
 /// The app from the environment (`.env` included): the server's.
@@ -140,7 +143,11 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         tv,
         androidtv,
         zigbee,
+        events: events::Events::default(),
     };
+
+    // every family's changes, said on the event stream
+    state.events.follow_all(&state);
 
     // The cats' devices connect at start, each then kept connected by its own worker.
     let startup_tuya = state.tuya.clone();
@@ -266,7 +273,8 @@ const AUTH_FAILURES_PER_MINUTE: u32 = 10;
 /// service token (`auth::DeviceClient`: an app's from the LAN too when allowed, a wall
 /// screen's through the tunnel). Admin-only routes inside add `AdminUser`, which a service
 /// token never is; settings add `SettingsClient`, which a wall screen never is.
-const DEVICE_ROUTES: [(&str, DeviceRouter); 11] = [
+const DEVICE_ROUTES: [(&str, DeviceRouter); 12] = [
+    ("/events", events::router),
     ("/broadlink", routes::broadlink::router),
     ("/devices", routes::devices::router),
     ("/hue-lamps", routes::hue::router),

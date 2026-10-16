@@ -11,6 +11,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -83,6 +84,8 @@ pub enum Read {
         failure: Failure,
         pace: Duration,
     },
+    /// The server said what changed (its event stream): those sources read again now.
+    Changed(String),
 }
 
 /// A value as a view sees it (shared: a view reads several at once).
@@ -141,6 +144,8 @@ struct Entry {
 
 pub struct Live {
     client: Client,
+    /// The server's event stream is open: pushed sources are read only as a safety net.
+    pushed: Arc<AtomicBool>,
     entries: HashMap<String, Entry>,
     tx: Sender<Read>,
     rx: Receiver<Read>,
@@ -156,6 +161,7 @@ impl Live {
         let (tx, rx) = mpsc::channel();
         Self {
             client,
+            pushed: Arc::new(AtomicBool::new(false)),
             entries: HashMap::new(),
             tx,
             rx,
@@ -255,6 +261,7 @@ impl Live {
                     }
                     self.signed_out = false;
                 }
+                Read::Changed(prefix) => self.refresh(&prefix),
                 Read::Failed { key, failure, pace } => {
                     read_now.push((key.clone(), Instant::now()));
                     if failure == Failure::SignedOut {
@@ -294,7 +301,85 @@ impl Live {
     }
 
     fn spawn<T: Send + Sync + 'static>(&self, source: Source<T>) -> Sender<()> {
-        spawn(&self.client, source, self.tx.clone(), self.wake.clone())
+        spawn(
+            &self.client,
+            source,
+            self.tx.clone(),
+            self.wake.clone(),
+            self.pushed.clone(),
+        )
+    }
+
+    /// Opens the server's event stream on its own thread, for the app's life: each change
+    /// read again at once; while it is open, the pushed sources' polls slow to a safety net.
+    pub fn listen(&self) {
+        let (client, tx, wake, pushed) = (
+            self.client.clone(),
+            self.tx.clone(),
+            self.wake.clone(),
+            self.pushed.clone(),
+        );
+        let spawned = std::thread::Builder::new()
+            .name("events".into())
+            .spawn(move || {
+                let mut attempt = 0_u32;
+                loop {
+                    match client.events() {
+                        Ok(stream) => {
+                            attempt = 0;
+                            pushed.store(true, Ordering::Release);
+                            // what changed while it was closed: everything reads again
+                            if tx.send(Read::Changed(String::new())).is_err() {
+                                return;
+                            }
+                            wake();
+                            for name in changes(stream) {
+                                if tx.send(Read::Changed(name)).is_err() {
+                                    return;
+                                }
+                                wake();
+                            }
+                            pushed.store(false, Ordering::Release);
+                        }
+                        Err(f) => {
+                            pushed.store(false, Ordering::Release);
+                            if f != Failure::SignedOut {
+                                eprintln!("events: {f}");
+                            }
+                        }
+                    }
+                    attempt = attempt.saturating_add(1);
+                    std::thread::sleep(Duration::from_secs(2u64.saturating_pow(attempt.min(5))));
+                }
+            });
+        if let Err(e) = spawned {
+            eprintln!("the event stream could not start: {e}");
+        }
+    }
+}
+
+/// The names an event stream says changed (`data: <name>` lines of `change` events).
+pub fn changes(stream: impl std::io::BufRead) -> impl Iterator<Item = String> {
+    stream.lines().map_while(Result::ok).filter_map(|line| {
+        line.strip_prefix("data:")
+            .map(|d| d.trim_start().to_string())
+    })
+}
+
+/// Whether the server's event stream says when `key` changes.
+fn is_pushed(key: &str) -> bool {
+    maison_api::events::ALL
+        .iter()
+        .any(|(_, name)| key.starts_with(name))
+        || key.starts_with("tuya:")
+}
+
+/// A source's pace, given whether the event stream is open.
+fn effective(key: &str, pace: Duration, pushed: bool) -> Duration {
+    if pushed && is_pushed(key) {
+        pace.max(Duration::from_millis(maison_api::events::PUSHED_SAFETY_MS))
+    } else {
+        pace
     }
 }
 
@@ -304,6 +389,7 @@ fn spawn<T: Send + Sync + 'static>(
     source: Source<T>,
     tx: Sender<Read>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    pushed: Arc<AtomicBool>,
 ) -> Sender<()> {
     let (poke, ear) = mpsc::channel::<()>();
     let client = client.clone();
@@ -313,7 +399,11 @@ fn spawn<T: Send + Sync + 'static>(
             let asked = Instant::now();
             let read = match (source.fetch)(&client) {
                 Ok(v) => {
-                    let pace = (source.pace)(Some(&v));
+                    let pace = effective(
+                        &source.key,
+                        (source.pace)(Some(&v)),
+                        pushed.load(Ordering::Acquire),
+                    );
                     (
                         Read::Value {
                             key: source.key.clone(),
@@ -325,7 +415,11 @@ fn spawn<T: Send + Sync + 'static>(
                     )
                 }
                 Err(failure) => {
-                    let pace = (source.pace)(None);
+                    let pace = effective(
+                        &source.key,
+                        (source.pace)(None),
+                        pushed.load(Ordering::Acquire),
+                    );
                     (
                         Read::Failed {
                             key: source.key.clone(),
@@ -384,6 +478,29 @@ mod tests {
             c.get::<serde_json::Value>("/n")
                 .map(|v| v["n"].as_u64().unwrap_or(0) as u32)
         })
+    }
+
+    #[test]
+    fn an_event_stream_says_names_and_pushed_sources_slow_down() {
+        let stream =
+            ": keep-alive\n\nevent: change\ndata: zigbee-lamp\n\nevent: change\ndata: \n\n";
+        let names: Vec<String> = changes(std::io::Cursor::new(stream)).collect();
+        assert_eq!(names, ["zigbee-lamp", ""]);
+        let fast = Duration::from_secs(1);
+        assert_eq!(effective("shutters:list", fast, false), fast);
+        assert_eq!(
+            effective("shutters:list", fast, true),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            effective("meross:electricity:p1", fast, true),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            effective("hue-lamp:list", fast, true),
+            fast,
+            "Hue says nothing: still polled"
+        );
     }
 
     #[test]

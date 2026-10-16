@@ -226,6 +226,33 @@ impl Client {
         self.answer(req.call())
     }
 
+    /// The server's event stream (`GET /api/events`), read line by line as it comes: no
+    /// global timeout (it stays open), but a body read at most ten minutes long, so a stream
+    /// that died silently is opened again.
+    pub fn events(&self) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
+        let mut req = self
+            .agent
+            .get(format!("{}{}", self.api, crate::paths::EVENTS))
+            .header("Accept", "text/event-stream")
+            .config()
+            .timeout_global(None)
+            .timeout_recv_body(Some(Duration::from_secs(600)))
+            .build();
+        if let Some(c) = self.jar.get() {
+            req = req.header("Cookie", c);
+        }
+        let res = req
+            .call()
+            .map_err(|e| Failure::Unreachable(e.to_string()))?;
+        match res.status().as_u16() {
+            200 => Ok(Box::new(std::io::BufReader::new(
+                res.into_body().into_reader(),
+            ))),
+            401 => Err(Failure::SignedOut),
+            status => Err(Failure::Refused { status, code: None }),
+        }
+    }
+
     /// A POST with a JSON body, or none.
     pub fn post<T: DeserializeOwned>(
         &self,
