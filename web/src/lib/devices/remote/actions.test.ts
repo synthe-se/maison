@@ -162,9 +162,15 @@ describe('the TV, the box and scenes, summed up', () => {
 		expect(summarize(<IrAction>{ action: 'scene', scene: 'gone' }, sources)).toBe(m.remote_summary_scene({ scene: 'gone' }));
 	});
 
-	it('reads a run’s results', () => {
-		expect(outcome('ok: lamp off')).toEqual({ ok: true, detail: 'lamp off' });
-		expect(outcome('failed: timeout')).toEqual({ ok: false, detail: 'timeout' });
+	it('words a run’s results: the action with its devices’ names, and why one failed', () => {
+		const off = <IrAction>{ action: 'tv_power', state: 'off' };
+		expect(outcome({ action: off, ok: true }, sources)).toEqual({ ok: true, what: m.remote_summary_tv_off(), why: '' });
+		expect(outcome({ action: off, ok: false, code: 'device_unreachable' }, sources)).toEqual({
+			ok: false,
+			what: m.remote_summary_tv_off(),
+			why: m.code_device_unreachable()
+		});
+		expect(outcome({ action: off, ok: false }, sources).why).toBe(m.error_server());
 	});
 });
 

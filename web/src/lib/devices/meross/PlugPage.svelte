@@ -6,7 +6,7 @@
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
-	import { isoDay, num, percent, shortDay } from '#lib/i18n.svelte.ts';
+	import { facts, isoDay, num, percent, shortDay } from '#lib/i18n.svelte.ts';
 	import { time } from '#lib/clock.svelte.ts';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
@@ -108,15 +108,15 @@
 					<dl class="readings">
 						<div>
 							<dt>{m.meross_voltage()}</dt>
-							<dd>{e ? volts(e.volts) : '—'}</dd>
+							<dd>{e ? volts(e.volts) : m.common_no_value()}</dd>
 						</div>
 						<div>
 							<dt>{m.meross_current()}</dt>
-							<dd>{e ? milliamps(e.amps) : '—'}</dd>
+							<dd>{e ? milliamps(e.amps) : m.common_no_value()}</dd>
 						</div>
 						<div>
 							<dt>{m.meross_power()}</dt>
-							<dd>{e ? watts(e.watts, 1) : '—'}</dd>
+							<dd>{e ? watts(e.watts, 1) : m.common_no_value()}</dd>
 						</div>
 					</dl>
 				</Group>
@@ -125,7 +125,7 @@
 					<Group
 						id="conso-title"
 						title={m.meross_consumption()}
-						fact={`${m.meross_consumption_days({ count: consumption.data.summary.days })} · ${kwh(consumption.data.summary.totalKwh)}`}
+						fact={facts(m.meross_consumption_days({ count: consumption.data.summary.days }), kwh(consumption.data.summary.totalKwh))}
 					>
 						{#if estimate && estimate.days > 0 && tempo.data}
 							<div class="estimate">

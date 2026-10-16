@@ -1,12 +1,12 @@
 <script lang="ts">
-	// What « Tester » answered: passed or not, then each action with its own outcome and what
-	// the backend said (« ok: … » / « failed: … », read by actions.ts `outcome`).
+	// What « Tester » answered: passed or not, then each action with its own outcome, named with
+	// the devices' names, and why it failed in the refusal's words (actions.ts `outcome`).
 	import { m } from '#lib/paraglide/messages.js';
 	import Icon from '#lib/components/Icon.svelte';
-	import type { IrAction, IrTestResponse } from './api.ts';
-	import { outcome, summarize, type Sources } from './actions.ts';
+	import type { KeyResponse } from './api.ts';
+	import { outcome, type Sources } from './actions.ts';
 
-	let { response, actions, sources }: { response: IrTestResponse; actions: IrAction[]; sources: Sources } = $props();
+	let { response, sources }: { response: KeyResponse; sources: Sources } = $props();
 </script>
 
 <div class="callout" class:warn={!response.success}>
@@ -16,11 +16,11 @@
 	</p>
 	<ol class="results">
 		{#each response.results as result, i (i)}
-			{@const { ok, detail } = outcome(result)}
+			{@const { ok, what, why } = outcome(result, sources)}
 			<li>
-				<span>{actions[i] ? summarize(actions[i], sources) : ''}</span>
+				<span>{what}</span>
 				<strong>{ok ? m.remote_test_item_ok() : m.remote_test_item_failed()}</strong>
-				<span class="detail">{detail}</span>
+				{#if why}<span class="detail">{why}</span>{/if}
 			</li>
 		{/each}
 	</ol>
@@ -45,7 +45,5 @@
 	}
 	.detail {
 		color: var(--ink-muted);
-		font-family: var(--font-mono);
-		overflow-wrap: anywhere;
 	}
 </style>

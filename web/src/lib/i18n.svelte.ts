@@ -79,10 +79,19 @@ export function inSentence(text: string): string {
 	return text.charAt(0).toLocaleLowerCase(current.locale) + text.slice(1);
 }
 
+/** What stands between two facts on one line (« 42 W · 0,7 c€/h »), for markup that puts an
+ * element on either side. */
+export const separator = (): string => m.facts_separator();
+
+/** Facts side by side on one line (« 42 W · 0,7 c€/h »), the empty ones left out. */
+export function facts(...parts: (string | false | null | undefined)[]): string {
+	return parts.filter((p): p is string => !!p).join(separator());
+}
+
 /** The window's title: the page's, then Maison's (« Salon · Maison »); Maison's alone at home. */
 export function pageTitle(title?: string): string {
 	const brand = m.branding_name();
-	return !title || title === brand ? brand : `${title} · ${brand}`;
+	return !title || title === brand ? brand : facts(title, brand);
 }
 
 /** When something happened: the time if today, else the day and the time (« 3 oct. 21:04 »). */

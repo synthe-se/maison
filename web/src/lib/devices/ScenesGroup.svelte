@@ -7,6 +7,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
+	import { facts } from '#lib/i18n.svelte.ts';
 	import type { Scene } from './scenes/api.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
@@ -87,7 +88,7 @@
 			<ul class="scenes plain-list">
 				{#each all as s (s.id)}
 					<li>
-						<button class="btn scene" {...pending(g.is(s.id))} onclick={() => runScene(g, s)}>
+						<button class="btn scene" {...pending(g.is(s.id))} onclick={() => runScene(g, s, sources.current)}>
 							<Icon name={iconOf(s)} busy={g.is(s.id)} />{s.name}
 						</button>
 						{#if session.admin && managing}
@@ -153,10 +154,10 @@
 	<ConfirmDialog
 		bind:open={confirming}
 		title={m.scenes_run_title({ name: askedScene.name })}
-		description={askedScene.actions.map((a) => summarize(a, sources.current)).join(' · ')}
+		description={facts(...askedScene.actions.map((a) => summarize(a, sources.current)))}
 		action={m.scenes_run({ name: askedScene.name })}
 		onconfirm={() => {
-			void runScene(g, askedScene);
+			void runScene(g, askedScene, sources.current);
 		}}
 	/>
 {/if}

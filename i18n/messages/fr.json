@@ -124,6 +124,7 @@
 	"common_error": "Erreur",
 	"common_loading": "Chargement…",
 	"common_name": "Nom",
+	"common_no_value": "—",
 	"common_refresh": "Actualiser",
 	"common_remove": "Retirer",
 	"common_remove_from_maison": "Retirer {name} de Maison ?",
@@ -200,6 +201,7 @@
 	"everywhere_confirm_description": "Toutes tes sessions se ferment, celle-ci aussi : il faudra te reconnecter avec ta clé d’accès sur chaque appareil.",
 	"everywhere_confirm_title": "Te déconnecter partout ?",
 	"everywhere_title": "Partout à la fois",
+	"facts_separator": " · ",
 	"feeder_distribute": [
 		{
 			"declarations": [
@@ -671,6 +673,7 @@
 	"price_euros": "{euros} €",
 	"price_euros_per_hour": "{euros} €/h",
 	"reload": "Recharger",
+	"remote_action_failed": "{action} : {reason}",
 	"remote_action_number": "Action {n}",
 	"remote_action_removed": "Action retirée",
 	"remote_action_type": "Type d’action",

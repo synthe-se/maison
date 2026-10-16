@@ -3,6 +3,7 @@
 	// The remote's picture and the list of configured buttons both open one editor, in a sheet.
 	// Configuring is an admin's: a member sees what each button does.
 	import { m } from '#lib/paraglide/messages.js';
+	import { facts } from '#lib/i18n.svelte.ts';
 	import { irApi, type IrBinding } from '#lib/devices/remote/api.ts';
 	import { keymap as keymapData } from '#lib/devices/remote/data.ts';
 	import { live } from '#lib/live.svelte.ts';
@@ -88,7 +89,7 @@
 								<div class="text">
 									<h3 class="tile-title">{b.label || keyName(code)}</h3>
 									<p class="tile-state">
-										{keyName(code)} · {m.remote_key_number({ code })}
+										{facts(keyName(code), m.remote_key_number({ code }))}
 										{#if b.repeat}<span class="chip"><Icon name="repeat" size={12} />{m.remote_repeat()}</span>{/if}
 									</p>
 								</div>

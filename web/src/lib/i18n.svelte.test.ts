@@ -23,6 +23,7 @@ import {
 	switchLocale,
 	weekday,
 	when,
+	facts,
 	formatDuration,
 	formatMinutes,
 	unreachableSince
@@ -210,5 +211,12 @@ describe('unreachableSince', () => {
 	it('never heard: says so', () => {
 		expect(unreachableSince(0)).toBe(m.state_unreachable());
 		expect(unreachableSince(null)).toBe(m.state_unreachable());
+	});
+});
+
+describe('facts', () => {
+	it('puts facts side by side, the empty ones left out', () => {
+		expect(facts('42 W', null, '', false, '0,7 c€/h')).toBe(`42 W${m.facts_separator()}0,7 c€/h`);
+		expect(facts('seul')).toBe('seul');
 	});
 });

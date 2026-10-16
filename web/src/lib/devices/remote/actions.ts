@@ -21,7 +21,8 @@ import { scenes as sceneList } from '#lib/devices/scenes/data.ts';
 import { buildClimateCommand, parseClimateCommand } from '#lib/devices/climate/command.ts';
 import { degrees, FAN_LABEL, MODE_LABEL, VANE_LABEL } from '#lib/devices/climate/labels.ts';
 import { boxApps } from '#lib/devices/tv/apps.ts';
-import type { IrAction, IrBinding, IrCoverCommand, IrSwitchState } from './api.ts';
+import { codeText } from '#lib/errors.ts';
+import type { ActionResult, IrAction, IrBinding, IrCoverCommand, IrSwitchState } from './api.ts';
 
 export type ActionType = IrAction['action'];
 
@@ -272,10 +273,10 @@ export function isComplete(a: { action: string }): boolean {
 	}
 }
 
-/** One line of what running actions answered (`/ir/test`, a scene's run): « ok: … » or
- * « failed: … », and what it says after. */
-export function outcome(result: string): { ok: boolean; detail: string } {
-	return { ok: !result.startsWith('failed'), detail: result.replace(/^(ok|failed):\s*/, '') };
+/** How one action went, in words (`/ir/test`, a scene's run): what it was, with the devices'
+ * names, and when it failed, why (its refusal's words). */
+export function outcome(r: ActionResult, s: Sources): { ok: boolean; what: string; why: string } {
+	return { ok: r.ok, what: summarize(r.action, s), why: r.ok ? '' : (codeText(r.code) ?? m.error_server()) };
 }
 
 /** One action of an editor's list, with a stable key for its row. */

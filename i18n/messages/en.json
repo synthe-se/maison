@@ -124,6 +124,7 @@
 	"common_error": "Error",
 	"common_loading": "Loading…",
 	"common_name": "Name",
+	"common_no_value": "—",
 	"common_refresh": "Refresh",
 	"common_remove": "Remove",
 	"common_remove_from_maison": "Remove {name} from Maison?",
@@ -200,6 +201,7 @@
 	"everywhere_confirm_description": "Every session of yours ends, this one too: you will sign in again with your passkey on each device.",
 	"everywhere_confirm_title": "Sign out everywhere?",
 	"everywhere_title": "Everywhere at once",
+	"facts_separator": " · ",
 	"feeder_distribute": [
 		{
 			"declarations": [
@@ -671,6 +673,7 @@
 	"price_euros": "€{euros}",
 	"price_euros_per_hour": "€{euros}/h",
 	"reload": "Reload",
+	"remote_action_failed": "{action}: {reason}",
 	"remote_action_number": "Action {n}",
 	"remote_action_removed": "Action removed",
 	"remote_action_type": "Action type",

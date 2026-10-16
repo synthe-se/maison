@@ -7,6 +7,7 @@
 	import type { Snippet } from 'svelte';
 	import { Collapsible } from 'bits-ui';
 	import { m } from '#lib/paraglide/messages.js';
+	import { separator } from '#lib/i18n.svelte.ts';
 	import type { Command } from '#lib/command.svelte.ts';
 	import { unavailable } from '#lib/gesture.svelte.ts';
 	import Icon, { type IconName } from './Icon.svelte';
@@ -111,7 +112,7 @@
 				<p class="tile-state" id={why} class:warn={warn || offline || command?.late}>
 					{line}
 					{#if command?.late && ontoggle && on !== undefined && !offline}
-						· <button class="link-btn retry" onclick={() => ontoggle(!on)}>{m.common_retry()}</button>
+						{separator()}<button class="link-btn retry" onclick={() => ontoggle(!on)}>{m.common_retry()}</button>
 					{/if}
 				</p>
 			</div>

@@ -6,7 +6,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { ApiError } from '#lib/api.ts';
 	import { MAX_NAME } from '#lib/limits.ts';
-	import { longDate } from '#lib/i18n.svelte.ts';
+	import { longDate, separator } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
@@ -130,7 +130,7 @@
 	{#if created}
 		<div class="callout" role="group" aria-labelledby="created-title">
 			<p id="created-title">
-				<strong>{m.invites_link({ name: created.name })}</strong> · {m.invites_expires({ date: longDate(created.expiresMs) })}
+				<strong>{m.invites_link({ name: created.name })}</strong>{separator()}{m.invites_expires({ date: longDate(created.expiresMs) })}
 			</p>
 			<div class="inline">
 				<label class="sr-only" for="invite-url">{m.invites_link({ name: created.name })}</label>

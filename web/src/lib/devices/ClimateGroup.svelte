@@ -7,7 +7,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { when } from '#lib/i18n.svelte.ts';
+	import { facts, when } from '#lib/i18n.svelte.ts';
 	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
@@ -102,7 +102,7 @@
 					</div>
 				{:else}
 					<p class="hint searching" id="{id}-why">
-						<Icon name="search" busy />{m.climate_searching_title()} — {m.climate_searching_description()}
+						<Icon name="search" busy />{facts(m.climate_searching_title(), m.climate_searching_description())}
 					</p>
 				{/if}
 			{/if}

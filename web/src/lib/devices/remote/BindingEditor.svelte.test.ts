@@ -192,12 +192,19 @@ describe('BindingEditor', () => {
 		await test().click();
 		await expect.element(page.getByText(m.remote_testing())).toBeVisible();
 		await expect.element(test()).toBeDisabled();
-		answer.resolve({ success: false, message: '', results: ['ok: sent', 'failed: plug offline'] });
+		answer.resolve({
+			success: false,
+			message: '',
+			results: [
+				{ action: actions[0], ok: true },
+				{ action: actions[1], ok: false, code: 'device_unreachable' }
+			]
+		});
 		const results = page.getByRole('listitem').filter({ hasText: m.remote_test_item_ok() });
 		await expect.element(results).toMatchTextContent(summarize(actions[0], remoteSources()));
 		const failed = page.getByRole('listitem').filter({ hasText: m.remote_test_item_failed() });
 		await expect.element(failed).toMatchTextContent(summarize(actions[1], remoteSources()));
-		await expect.element(failed).toMatchTextContent('plug offline');
+		await expect.element(failed).toMatchTextContent(m.code_device_unreachable());
 		await expect.element(page.getByText(m.remote_test_failed())).toBeVisible();
 		expect(say).toHaveBeenCalledWith(m.remote_test_failed());
 		expect((api.sent('POST', '/ir/test')[0] as ApiCall).body).toEqual({ actions });
@@ -207,7 +214,7 @@ describe('BindingEditor', () => {
 	});
 
 	it('says a passed test', async () => {
-		stubApi({ 'POST /ir/test': { success: true, message: '', results: ['ok: done'] } });
+		stubApi({ 'POST /ir/test': { success: true, message: '', results: [{ action: nab('ping'), ok: true }] } });
 		await editor(116, { '116': { actions: [nab('ping')] } });
 		await test().click();
 		await expect.element(page.getByText(m.remote_test_passed())).toBeVisible();

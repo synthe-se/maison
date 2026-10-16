@@ -4,7 +4,7 @@
 	// title), and « Ajouter une clé d’accès » from this device (asking the passkey again first
 	// when the last sign-in is old: the server says `reauth_needed`).
 	import { m } from '#lib/paraglide/messages.js';
-	import { longDate, when } from '#lib/i18n.svelte.ts';
+	import { lifeLine } from './lines.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
@@ -69,9 +69,7 @@
 				{/snippet}
 				<ListRow
 					whole={renaming === k.id ? rename : undefined}
-					second="{m.keys_created({ when: longDate(k.createdMs) })} · {k.lastUsedMs
-						? m.keys_used({ when: when(k.lastUsedMs) })
-						: m.keys_never_used()}"
+					second={lifeLine(k.createdMs, k.lastUsedMs, { since: m.keys_created, used: m.keys_used, never: m.keys_never_used })}
 				>
 					<span>{keyName(k)}</span>{#if k.backedUp}<span class="chip accent">{m.keys_synced()}</span>{/if}
 					{#snippet end()}

@@ -4,7 +4,7 @@
 // 06:00 »), never « Aujourd’hui rouge » above an off-peak blue.
 
 import { m } from '#lib/paraglide/messages.js';
-import { hhmm, lower, num } from '#lib/i18n.svelte.ts';
+import { facts, hhmm, lower, num } from '#lib/i18n.svelte.ts';
 import type { TempoForecast, TempoToday } from './api.ts';
 import { TEMPO, dayWords } from './colors.ts';
 import type { PriceNow } from './price.ts';
@@ -32,9 +32,9 @@ export function nextLine(data: TempoToday, current: PriceNow | null, forecast: T
 		return current.next ? m.tempo_from({ color: TEMPO[current.next].name(), time: hhmm(current.until) }) : '';
 	if (data.tomorrow.color) return m.tempo_tomorrow_is({ words: dayWords(data.tomorrow.color, false) });
 	const f = forecast?.days.find((d) => d.date === data.tomorrow.date);
-	const parts = [
-		now.getHours() * 60 + now.getMinutes() < ANNOUNCED_AT ? m.tempo_announced_at() : '',
-		f ? dayWords(f.color, !f.official, f.confidence) : ''
-	].filter(Boolean);
-	return m.tempo_tomorrow_is({ words: parts.length ? parts.join(' · ') : dayWords(null, false) });
+	const words = facts(
+		now.getHours() * 60 + now.getMinutes() < ANNOUNCED_AT && m.tempo_announced_at(),
+		f && dayWords(f.color, !f.official, f.confidence)
+	);
+	return m.tempo_tomorrow_is({ words: words || dayWords(null, false) });
 }

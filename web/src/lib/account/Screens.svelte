@@ -6,7 +6,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { ApiError } from '#lib/api.ts';
 	import { MAX_NAME, SCREEN_CODE_LENGTH } from '#lib/limits.ts';
-	import { longDate, when } from '#lib/i18n.svelte.ts';
+	import { lifeLine } from './lines.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
@@ -126,9 +126,7 @@
 			<ul class="plain-list">
 				{#each screens.data as s (s.id)}
 					<ListRow
-						second="{m.screens_since({ when: longDate(s.createdMs) })} · {s.lastUsedMs
-							? m.screens_used({ when: when(s.lastUsedMs) })
-							: m.screens_never_used()}"
+						second={lifeLine(s.createdMs, s.lastUsedMs, { since: m.screens_since, used: m.screens_used, never: m.screens_never_used })}
 					>
 						<span>{s.name}</span>
 						{#snippet end()}

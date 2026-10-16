@@ -7,6 +7,7 @@
 	// stay, not operable, the state line saying why. Every answer names the shutter: the list
 	// takes it at once.
 	import { m } from '#lib/paraglide/messages.js';
+	import { separator } from '#lib/i18n.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import type { Live } from '#lib/live.svelte.ts';
 	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
@@ -97,7 +98,7 @@
 		{#if next}
 			<!-- the next scheduled move, and skipping it once (or the undo) -->
 			<p class="next hint" class:skipped={next.skipped}>
-				<span>{nextMove(c)}</span> ·
+				<span>{nextMove(c)}</span>{separator()}
 				<button class="link-btn" {...pending(g.is('skip'))} onclick={skip}>
 					{next.skipped ? m.shutters_skip_undo() : skipLabel(next.event, next.at)}
 				</button>

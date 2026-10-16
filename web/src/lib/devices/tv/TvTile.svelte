@@ -31,7 +31,7 @@
 					{#if tv.volume}
 						<div class="volume" role="group" aria-label={m.tv_volume()}>
 							<Key k="volume_down" size="small" fire={tv.keys.volume_down} />
-							<span class="level" aria-hidden="true">{tv.volume.muted ? '–' : tv.shownLevel}</span>
+							<span class="level" aria-hidden="true">{tv.volume.muted ? m.common_no_value() : tv.shownLevel}</span>
 							<Key k="volume_up" size="small" fire={tv.keys.volume_up} />
 						</div>
 					{/if}

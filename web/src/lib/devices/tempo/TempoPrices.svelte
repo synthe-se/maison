@@ -4,7 +4,7 @@
 	// subscription. The dashboard's tile says only the price in force.
 	import { m } from '#lib/paraglide/messages.js';
 	import type { TempoToday } from './api.ts';
-	import { hhmm, longDate, lower, num } from '#lib/i18n.svelte.ts';
+	import { facts, hhmm, longDate, lower, num, separator } from '#lib/i18n.svelte.ts';
 	import Group from '#lib/components/Group.svelte';
 	import { time } from '#lib/clock.svelte.ts';
 	import { TEMPO, TEMPO_COLORS } from './colors.ts';
@@ -26,10 +26,10 @@
 			<p class="eyebrow">{m.tempo_now()}</p>
 			<p class="now">
 				<Swatch color={current.color} />
-				<span>{periodColor(current.period, current.color)} · <strong>{price(current.price)}</strong></span>
+				<span>{periodColor(current.period, current.color)}{separator()}<strong>{price(current.price)}</strong></span>
 				<span class="muted">{m.tempo_until({ time: hhmm(current.until) })}</span>
 			</p>
-			<p class="hint">{periodColor(current.other.period, current.color)} · {price(current.other.price)}</p>
+			<p class="hint">{facts(periodColor(current.other.period, current.color), price(current.other.price))}</p>
 			{#if tomorrowPrices && data.tomorrow.color}
 				<p class="hint">
 					{m.tempo_tomorrow_prices({
