@@ -47,7 +47,7 @@ docker run --rm --platform linux/arm/v7 -v "$REPO/frame/linux/rootfs:/overlay:ro
 		useradd --system --create-home --groups video,render,input kiosk
 		# root logs in on the bring-up console only (autologin, gated by a file: the getty drop-in), never by a password: none is set, the account is locked
 		passwd -l root
-		systemctl enable systemd-networkd systemd-resolved systemd-timesyncd wpa_supplicant@wlan0 maison-kiosk serial-getty@ttyGS0
+		systemctl enable systemd-networkd systemd-resolved systemd-timesyncd wpa_supplicant@wlan0 maison-ui serial-getty@ttyGS0
 		systemctl mask systemd-firstboot
 	"
 	rm -rf /tmp/root/var/cache/apt/* /tmp/root/var/lib/apt/lists/*

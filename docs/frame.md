@@ -114,7 +114,7 @@ python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/r
 python3 -I frame/linux/image.py frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/recovery-linux.img
 frame/linux/install.sh --target https://<maison>   # once: the system and Maison's address
 frame/linux/try.sh --install --flash                # then: on the frame, booted, its console up
-frame/linux/console.sh 'systemctl status maison-kiosk'   # a root shell over the USB-C
+frame/linux/console.sh 'systemctl status maison-ui'   # a root shell over the USB-C
 ```
 
 `--debug` is for bring-up: the backlight blinks five times as soon as init runs (a sign with
@@ -157,8 +157,8 @@ The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md
 system beside cog: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
 client, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`;
 its launcher (`/usr/local/sbin/maison-ui`) turns the output with `wlr-randr` (`MAISON_TURN`, 0
-or 180, else the app turns its own picture). Not enabled yet: `systemctl stop maison-kiosk;
-systemctl start maison-ui`, enabled once measured on the frame.
+or 180, else the app turns its own picture). Enabled since the owner chose it on the frame (smooth where cog was slow); cog's `maison-kiosk`
+stays installed, disabled: `systemctl stop maison-ui; systemctl start maison-kiosk` brings it back.
 
 A wall screen's theme follows the sun at the house when nothing is chosen (« Soleil », which
 anyone may choose too): dark from sunset to sunrise, from the house's place (set with the
