@@ -30,7 +30,7 @@ zigbee-lamps.json
 zigbee-lamps-blacklist.json
 broadlink-codes.json
 # Matter fabric private keys + commissioned covers
-matter/
+/matter/
 # People, passkeys, invitations
 auth/
 nabaztag.json
