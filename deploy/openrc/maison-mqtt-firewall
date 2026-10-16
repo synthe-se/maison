@@ -1,0 +1,58 @@
+#!/sbin/openrc-run
+
+# Mosquitto's TLS port (8883) for the Meross plugs only. Their firmware needs a broker to boot,
+# and it cannot be assumed to do client certificates or passwords: the broker stays anonymous,
+# and the kernel lets only the plugs' addresses (and the Pi itself) reach it. The list is
+# deploy.sh's, written from meross-devices.json at every push (one IPv4 address a line);
+# mosquitto needs this service (/etc/conf.d/mosquitto, rc_need), so it never listens unguarded.
+
+name="maison-mqtt-firewall"
+description="Mosquitto's 8883 for the Meross plugs only"
+allow_file="@@APP_DIR@@/deploy/mosquitto/plugs.allow"
+chain="MAISON_MQTT"
+port="8883"
+
+depend() {
+	before mosquitto
+	after iptables ip6tables
+}
+
+start() {
+	ebegin "Opening ${port} to the plugs only"
+	if [ ! -f "${allow_file}" ]; then
+		eend 1 "Missing ${allow_file} (deploy.sh push writes it from meross-devices.json)"
+		return 1
+	fi
+	iptables -N "${chain}" 2>/dev/null || iptables -F "${chain}" || { eend 1 "iptables: no ${chain} chain"; return 1; }
+	iptables -A "${chain}" -s 127.0.0.1 -j ACCEPT || { eend 1; return 1; }
+	while read -r address; do
+		[ -n "${address}" ] || continue
+		case "${address}" in
+			*[!0-9.]*)
+				eend 1 "${allow_file}: « ${address} » is not an IPv4 address"
+				return 1
+				;;
+		esac
+		iptables -A "${chain}" -s "${address}" -j ACCEPT || { eend 1; return 1; }
+	done <"${allow_file}"
+	iptables -A "${chain}" -j DROP || { eend 1; return 1; }
+	iptables -C INPUT -p tcp --dport "${port}" -j "${chain}" 2>/dev/null ||
+		iptables -I INPUT -p tcp --dport "${port}" -j "${chain}" || { eend 1; return 1; }
+	# the plugs speak IPv4: nobody reaches the broker over IPv6
+	if command -v ip6tables >/dev/null 2>&1; then
+		ip6tables -C INPUT -p tcp --dport "${port}" -j DROP 2>/dev/null ||
+			ip6tables -I INPUT -p tcp --dport "${port}" -j DROP || { eend 1; return 1; }
+	fi
+	eend 0
+}
+
+stop() {
+	ebegin "Closing the plugs' rule on ${port}"
+	iptables -D INPUT -p tcp --dport "${port}" -j "${chain}" 2>/dev/null
+	iptables -F "${chain}" 2>/dev/null
+	iptables -X "${chain}" 2>/dev/null
+	if command -v ip6tables >/dev/null 2>&1; then
+		ip6tables -D INPUT -p tcp --dport "${port}" -j DROP 2>/dev/null
+	fi
+	eend 0
+}
