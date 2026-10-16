@@ -99,11 +99,6 @@ async fn only_lan_devices_can_be_configured() {
             "tv {host}"
         );
         assert_eq!(
-            configure(&app, "/api/tv/config", json!({"boxHost": host})).await,
-            StatusCode::BAD_REQUEST,
-            "box {host}"
-        );
-        assert_eq!(
             configure(&app, "/api/tv/config", json!({"irBlasterHost": host})).await,
             StatusCode::BAD_REQUEST,
             "blaster {host}"
@@ -114,17 +109,17 @@ async fn only_lan_devices_can_be_configured() {
             "androidtv {host}"
         );
     }
-    // the DIAL app goes into a URL path
+    // the box's DIAL app goes into a URL path
     for app_name in ["../x", "YouTube/../../admin", "a?b", "a b"] {
-        let body = json!({"boxHost": "192.168.1.153", "boxWakeApp": app_name});
+        let body = json!({"host": "192.168.1.153", "wakeApp": app_name});
         assert_eq!(
-            configure(&app, "/api/tv/config", body).await,
+            configure(&app, "/api/androidtv/config", body).await,
             StatusCode::BAD_REQUEST,
             "{app_name}"
         );
     }
 
-    let good = json!({"host": "192.168.1.52", "irBlasterHost": "192.168.1.73", "boxHost": "box.local", "boxWakeApp": "YouTube"});
+    let good = json!({"host": "192.168.1.52", "irBlasterHost": "192.168.1.73"});
     assert_eq!(
         configure(&app, "/api/tv/config", good).await,
         StatusCode::OK
@@ -142,7 +137,7 @@ async fn only_lan_devices_can_be_configured() {
         configure(
             &app,
             "/api/androidtv/config",
-            json!({"host": "192.168.1.153", "port": 5555})
+            json!({"host": "192.168.1.153", "port": 5555, "wakeApp": "YouTube"})
         )
         .await,
         StatusCode::OK
@@ -170,12 +165,6 @@ async fn an_apk_upload_without_a_box_says_so() {
         .body(Body::from(body))
         .expect("request");
     let (status, _, answer) = common::respond(&app, request).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
-    assert!(
-        answer["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("No Android TV box"),
-        "{answer}"
-    );
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert_eq!(answer["code"], json!("not_configured"), "no box: {answer}");
 }

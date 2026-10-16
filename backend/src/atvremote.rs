@@ -27,27 +27,59 @@
 //! payload. Both schemas are small and stable, so they are encoded by hand
 //! rather than dragging in `prost` and a `protoc` build dependency — the same
 //! call made for the ADB client next door.
+//!
+//! The TV's certificate is self-signed, so nothing vouches for it: trust on first use.
+//! Pairing (itself proof against a man in the middle: its secret hashes both keys) forgets
+//! any earlier one; the first session after it pins the certificate the TV presents
+//! (SHA-256, kept with our identity), and every session after refuses another, its
+//! handshake signatures checked against the pinned key (ASVS 12.3.2).
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     time::timeout,
 };
 use tokio_rustls::{
     client::TlsStream,
     rustls::{
         client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-        pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+        crypto::WebPkiSupportedAlgorithms,
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime},
         ClientConfig, DigitallySignedStruct, SignatureScheme,
     },
     TlsConnector,
 };
 
-use crate::{error::AppError, net::unreachable, store};
+use crate::{
+    error::{AppError, Refusal},
+    net::unreachable,
+    store::{self, Access},
+    util::refused,
+};
+
+/// How errors name the box to the client (the detail is logged).
+const TV: &str = "Android TV";
+
+/// Our own failure (an identity that cannot be made or read): the detail in the log.
+fn internal(what: &str, error: impl std::fmt::Display) -> AppError {
+    tracing::error!(%error, "{what}");
+    Refusal::Internal.into()
+}
+
+/// A certificate's SHA-256: what is pinned.
+pub type Fingerprint = [u8; 32];
+
+fn fingerprint(certificate: &CertificateDer<'_>) -> Fingerprint {
+    Sha256::digest(certificate.as_ref()).into()
+}
 
 pub const PAIRING_PORT: u16 = 6467;
 pub const REMOTE_PORT: u16 = 6466;
@@ -225,12 +257,18 @@ enum Field<'a> {
 /// rcgen cannot generate RSA with the ring backend, so the key comes from the
 /// `rsa` crate — the same one the ADB client already uses — and rcgen only
 /// wraps it into a self-signed X.509.
+#[derive(Clone)]
 pub struct Identity {
     pub certificate: CertificateDer<'static>,
-    key: PrivateKeyDer<'static>,
+    /// PKCS#8.
+    key_der: Vec<u8>,
     /// Kept for the pairing hash, which needs the raw public numbers.
     modulus: Vec<u8>,
     exponent: Vec<u8>,
+    /// The TV's certificate since the first session after pairing: another is refused.
+    pub pinned: Option<Fingerprint>,
+    /// Where it is kept (the pin is written there too).
+    path: PathBuf,
 }
 
 impl Identity {
@@ -240,16 +278,32 @@ impl Identity {
     pub fn load_or_create(path: &Path) -> Result<Self, AppError> {
         store::load_or_create_secret(
             path,
-            |stored| Self::from_stored(stored).ok(),
+            |stored| Self::from_stored(stored, path).ok(),
             || {
                 let stored = Self::mint()?;
-                Ok((Self::from_stored(&stored)?, stored))
+                Ok((Self::from_stored(&stored, path)?, stored))
             },
         )
     }
 
-    /// Stored form is the PKCS#8 key followed by the certificate, each
-    /// length-prefixed — enough structure to reload, without pulling in PEM.
+    fn key(&self) -> PrivateKeyDer<'static> {
+        PrivatePkcs8KeyDer::from(self.key_der.clone()).into()
+    }
+
+    /// Pins the TV's certificate (`None`: forgets it, as pairing again does), kept with
+    /// the identity.
+    pub async fn pin(&mut self, pinned: Option<Fingerprint>) -> Result<(), AppError> {
+        let stored = stored_form(&self.key_der, self.certificate.as_ref(), pinned)?;
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || store::write_bytes(&path, &stored, Access::Private))
+            .await??;
+        self.pinned = pinned;
+        Ok(())
+    }
+
+    /// Stored form is the PKCS#8 key followed by the certificate, then the pinned TV
+    /// certificate's fingerprint when there is one, each length-prefixed — enough structure
+    /// to reload, without pulling in PEM.
     fn mint() -> Result<Vec<u8>, AppError> {
         use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_RSA_SHA256};
 
@@ -257,39 +311,24 @@ impl Identity {
         let key_der = crate::adb::encode_key(&rsa_key)?;
 
         let key_pair = KeyPair::from_pkcs8_der_and_sign_algo(
-            &rustls::pki_types::PrivatePkcs8KeyDer::from(key_der.clone()),
+            &PrivatePkcs8KeyDer::from(key_der.clone()),
             &PKCS_RSA_SHA256,
         )
-        .map_err(|error| {
-            AppError::service_unavailable(format!("could not wrap the ADB key for TLS: {error}"))
-        })?;
+        .map_err(|error| internal("could not wrap the ADB key for TLS", error))?;
 
-        let mut params = CertificateParams::new(vec!["maison".to_string()]).map_err(|error| {
-            AppError::service_unavailable(format!("bad certificate parameters: {error}"))
-        })?;
+        let mut params = CertificateParams::new(vec!["maison".to_string()])
+            .map_err(|error| internal("bad certificate parameters", error))?;
         let mut name = DistinguishedName::new();
         name.push(DnType::CommonName, "maison");
         params.distinguished_name = name;
 
-        let certificate = params.self_signed(&key_pair).map_err(|error| {
-            AppError::service_unavailable(format!("could not self-sign: {error}"))
-        })?;
-
-        let cert_der = certificate.der().to_vec();
-        let mut stored = Vec::with_capacity(8 + key_der.len() + cert_der.len());
-        let length = |bytes: &[u8]| {
-            u32::try_from(bytes.len())
-                .map(u32::to_le_bytes)
-                .map_err(|_| AppError::service_unavailable("Android TV identity too large"))
-        };
-        stored.extend_from_slice(&length(&key_der)?);
-        stored.extend_from_slice(&key_der);
-        stored.extend_from_slice(&length(&cert_der)?);
-        stored.extend_from_slice(&cert_der);
-        Ok(stored)
+        let certificate = params
+            .self_signed(&key_pair)
+            .map_err(|error| internal("could not self-sign", error))?;
+        stored_form(&key_der, certificate.der(), None)
     }
 
-    fn from_stored(stored: &[u8]) -> Result<Self, AppError> {
+    fn from_stored(stored: &[u8], path: &Path) -> Result<Self, AppError> {
         let read_chunk = |offset: usize| -> Option<(Vec<u8>, usize)> {
             let len_bytes: [u8; 4] = stored.get(offset..offset + 4)?.try_into().ok()?;
             let len = usize::try_from(u32::from_le_bytes(len_bytes)).ok()?;
@@ -298,10 +337,15 @@ impl Identity {
             Some((stored.get(start..end)?.to_vec(), end))
         };
 
-        let (key_der, next) = read_chunk(0)
-            .ok_or_else(|| AppError::service_unavailable("corrupt Android TV identity"))?;
-        let (cert_der, _) = read_chunk(next)
-            .ok_or_else(|| AppError::service_unavailable("corrupt Android TV identity"))?;
+        let corrupt = || internal("corrupt Android TV identity", path.display());
+        let (key_der, next) = read_chunk(0).ok_or_else(corrupt)?;
+        let (cert_der, next) = read_chunk(next).ok_or_else(corrupt)?;
+        // absent from identities kept before pinning, and until the first session
+        let pinned = match read_chunk(next) {
+            Some((pin, _)) => Some(Fingerprint::try_from(pin.as_slice()).map_err(|_| corrupt())?),
+            None if next == stored.len() => None,
+            None => return Err(corrupt()),
+        };
 
         // The pairing hash wants the public numbers, so read them back out of
         // the key we just loaded rather than re-deriving them from the cert.
@@ -311,12 +355,34 @@ impl Identity {
 
         Ok(Self {
             certificate: CertificateDer::from(cert_der),
-            key: PrivateKeyDer::try_from(key_der)
-                .map_err(|error| AppError::service_unavailable(format!("bad key: {error}")))?,
+            key_der,
             modulus,
             exponent,
+            pinned,
+            path: path.to_path_buf(),
         })
     }
+}
+
+/// The identity as kept: each part length-prefixed (see `Identity::mint`).
+fn stored_form(
+    key_der: &[u8],
+    cert_der: &[u8],
+    pinned: Option<Fingerprint>,
+) -> Result<Vec<u8>, AppError> {
+    let mut stored = Vec::with_capacity(12 + key_der.len() + cert_der.len() + 32);
+    let parts: [Option<&[u8]>; 3] = [
+        Some(key_der),
+        Some(cert_der),
+        pinned.as_ref().map(<[u8; 32]>::as_slice),
+    ];
+    for part in parts.into_iter().flatten() {
+        let length = u32::try_from(part.len())
+            .map_err(|_| internal("Android TV identity too large", part.len()))?;
+        stored.extend_from_slice(&length.to_le_bytes());
+        stored.extend_from_slice(part);
+    }
+    Ok(stored)
 }
 
 /// Big-endian modulus and exponent, trimmed of leading zeroes.
@@ -339,90 +405,109 @@ fn public_numbers(public: &rsa::RsaPublicKey) -> (Vec<u8>, Vec<u8>) {
 
 // ------------------------------------------------------------------- TLS ---
 
-/// Accepts whatever certificate the television presents.
-///
-/// It is self-signed by a device on the local network with no name we could
-/// verify, so there is nothing to check against. Confidentiality still holds,
-/// and authentication runs the other way: the TV verifies *us*, via the
-/// client certificate it accepted during pairing.
+/// The television's certificate: self-signed by a device on the local network with no
+/// name to verify, so the one it presented after pairing is pinned (trust on first use)
+/// and its handshake signatures are checked against it. Unpinned (pairing, or the first
+/// session after it), any is taken: pairing proves itself through its secret.
 #[derive(Debug)]
-struct AcceptTelevisionCert;
+struct TelevisionCert {
+    pinned: Option<Fingerprint>,
+    algorithms: WebPkiSupportedAlgorithms,
+}
 
-impl ServerCertVerifier for AcceptTelevisionCert {
+impl TelevisionCert {
+    fn new(pinned: Option<Fingerprint>) -> Self {
+        Self {
+            pinned,
+            algorithms: rustls::crypto::aws_lc_rs::default_provider()
+                .signature_verification_algorithms,
+        }
+    }
+}
+
+impl ServerCertVerifier for TelevisionCert {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
+        match self.pinned {
+            Some(pinned) if fingerprint(end_entity) != pinned => Err(rustls::Error::General(
+                "not the certificate the TV presented after pairing".into(),
+            )),
+            _ => Ok(ServerCertVerified::assertion()),
+        }
     }
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-        ]
+        self.algorithms.supported_schemes()
     }
 }
 
+/// A TLS session to the TV at `host:port` (its certificate `pinned` when given), and the
+/// fingerprint of the certificate it presented.
 async fn connect_tls(
     host: &str,
     port: u16,
     identity: &Identity,
-) -> Result<TlsStream<TcpStream>, AppError> {
+    pinned: Option<Fingerprint>,
+) -> Result<(TlsStream<TcpStream>, Fingerprint), AppError> {
     let config = ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptTelevisionCert))
-        .with_client_auth_cert(vec![identity.certificate.clone()], identity.key.clone_key())
-        .map_err(|error| {
-            AppError::service_unavailable(format!("TLS client setup failed: {error}"))
-        })?;
+        .with_custom_certificate_verifier(Arc::new(TelevisionCert::new(pinned)))
+        .with_client_auth_cert(vec![identity.certificate.clone()], identity.key())
+        .map_err(|error| internal("TLS client setup failed", error))?;
 
     let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port)))
         .await
-        .map_err(|_| unreachable("Android TV", format!("{host}:{port} timed out")))?
-        .map_err(|error| unreachable("Android TV", error))?;
-    // The name is irrelevant — the verifier above accepts anything — but
-    // rustls requires one, so use a fixed placeholder rather than the IP,
-    // which would not parse as a DNS name.
-    let server_name = ServerName::try_from("androidtv").expect("static name is valid");
+        .map_err(|_| unreachable(TV, format!("{host}:{port} timed out")))?
+        .map_err(|error| unreachable(TV, error))?;
+    // The name is irrelevant (the certificate is pinned, not named), but rustls requires
+    // one, so use a fixed placeholder rather than the IP, which would not parse as a DNS
+    // name.
+    let server_name = ServerName::from(
+        rustls::pki_types::DnsName::try_from_str("androidtv")
+            .map_err(|error| internal("TLS name", error))?,
+    );
 
     // Bounded too: a TV that accepts the connection and then stalls would otherwise hold
     // the caller (and the manager's session lock) as long as it likes.
-    timeout(
+    let stream = timeout(
         IO_TIMEOUT,
         TlsConnector::from(Arc::new(config)).connect(server_name, stream),
     )
     .await
-    .map_err(|_| unreachable("Android TV", "TLS handshake timed out"))?
-    .map_err(|error| unreachable("Android TV", format!("TLS handshake failed: {error}")))
+    .map_err(|_| unreachable(TV, "TLS handshake timed out"))?
+    .map_err(|error| unreachable(TV, format!("TLS handshake failed: {error}")))?;
+    let presented = stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|chain| chain.first())
+        .map(fingerprint)
+        .ok_or_else(|| unreachable(TV, "the TV presented no certificate"))?;
+    Ok((stream, presented))
 }
 
 // --------------------------------------------------------------- framing ---
@@ -433,8 +518,8 @@ where
 {
     timeout(IO_TIMEOUT, writer.write_all(&payload))
         .await
-        .map_err(|_| AppError::service_unavailable("timed out writing to the TV"))??;
-    Ok(())
+        .map_err(|_| unreachable(TV, "timed out writing to the TV"))?
+        .map_err(|error| unreachable(TV, error))
 }
 
 /// Reads one length-delimited message. The length is a varint, so it is read
@@ -450,25 +535,25 @@ where
         let mut byte = [0u8; 1];
         timeout(budget, reader.read_exact(&mut byte))
             .await
-            .map_err(|_| AppError::service_unavailable("timed out reading from the TV"))??;
+            .map_err(|_| unreachable(TV, "timed out reading from the TV"))?
+            .map_err(|error| unreachable(TV, error))?;
         match decoder.push(byte[0]) {
             Ok(Some(length)) => break length,
             Ok(None) => {}
-            Err(VarintOverflow) => {
-                return Err(AppError::service_unavailable("malformed message length"))
-            }
+            Err(VarintOverflow) => return Err(unreachable(TV, "malformed message length")),
         }
     };
 
     let length = usize::try_from(length)
         .ok()
         .filter(|length| *length <= MAX_MESSAGE_BYTES)
-        .ok_or_else(|| AppError::service_unavailable("oversized message from the TV"))?;
+        .ok_or_else(|| unreachable(TV, "oversized message from the TV"))?;
     let mut payload = vec![0u8; length];
     if length > 0 {
         timeout(budget, reader.read_exact(&mut payload))
             .await
-            .map_err(|_| AppError::service_unavailable("timed out reading a message"))??;
+            .map_err(|_| unreachable(TV, "timed out reading a message"))?
+            .map_err(|error| unreachable(TV, error))?;
     }
     Ok(payload)
 }
@@ -481,6 +566,8 @@ pub struct Pairing {
     stream: TlsStream<TcpStream>,
     client: (Vec<u8>, Vec<u8>),
     server: (Vec<u8>, Vec<u8>),
+    /// Ours, to forget the TV's certificate once paired (the next session pins its own).
+    identity: Identity,
 }
 
 fn outer_message(field: u32, build: impl FnOnce(&mut ProtoBuf)) -> Vec<u8> {
@@ -502,26 +589,29 @@ fn expect_ok(payload: &[u8], step: &str) -> Result<(), AppError> {
             if let Field::Varint(status) = value {
                 return match status {
                     200 => Ok(()),
-                    402 => Err(AppError::service_unavailable(
+                    402 => Err(refused(
+                        Refusal::Invalid,
                         "the TV rejected the pairing code",
                     )),
-                    other => Err(AppError::service_unavailable(format!(
-                        "the TV refused {step} (status {other})"
-                    ))),
+                    other => Err(unreachable(
+                        TV,
+                        format!("the TV refused {step} (status {other})"),
+                    )),
                 };
             }
         }
     }
-    Err(AppError::service_unavailable(format!(
-        "no status in the TV's answer to {step}"
-    )))
+    Err(unreachable(
+        TV,
+        format!("no status in the TV's answer to {step}"),
+    ))
 }
 
 impl Pairing {
     /// Opens the pairing session; the TV displays a six hex-digit code once
     /// this returns.
     pub async fn start(host: &str, identity: &Identity) -> Result<Self, AppError> {
-        let stream = connect_tls(host, PAIRING_PORT, identity).await?;
+        let (stream, _) = connect_tls(host, PAIRING_PORT, identity, None).await?;
 
         // The pairing hash needs the TV's public numbers, which are only
         // available from the certificate it just presented.
@@ -530,13 +620,14 @@ impl Pairing {
             .1
             .peer_certificates()
             .and_then(|chain| chain.first().cloned())
-            .ok_or_else(|| AppError::service_unavailable("the TV presented no certificate"))?;
+            .ok_or_else(|| unreachable(TV, "the TV presented no certificate"))?;
         let server = server_public_numbers(&server_cert)?;
 
         let mut pairing = Self {
             stream,
             client: (identity.modulus.clone(), identity.exponent.clone()),
             server,
+            identity: identity.clone(),
         };
 
         pairing
@@ -595,13 +686,9 @@ impl Pairing {
     /// mistyped code be caught here, before the TV is asked to reject it.
     pub async fn finish(mut self, code: &str) -> Result<(), AppError> {
         let code = code.trim();
-        if code.len() != 6 || !code.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(AppError::bad_request(
-                "the pairing code is six hexadecimal digits",
-            ));
-        }
-        let code_bytes = decode_hex(code)
-            .ok_or_else(|| AppError::bad_request("the pairing code is not valid hexadecimal"))?;
+        let code_bytes = crate::util::unhex(code)
+            .filter(|bytes| bytes.len() == 3)
+            .ok_or_else(|| refused(Refusal::Invalid, "a pairing code is six hexadecimal digits"))?;
 
         let mut hasher = Sha256::new();
         hasher.update(&self.client.0);
@@ -612,7 +699,7 @@ impl Pairing {
         let alpha = hasher.finalize();
 
         if alpha[0] != code_bytes[0] {
-            return Err(AppError::bad_request("wrong pairing code"));
+            return Err(refused(Refusal::Invalid, "wrong pairing code"));
         }
 
         write_framed(
@@ -621,34 +708,22 @@ impl Pairing {
         )
         .await?;
         let answer = read_framed(&mut self.stream, PAIRING_TIMEOUT).await?;
-        expect_ok(&answer, "the pairing secret")
+        expect_ok(&answer, "the pairing secret")?;
+        // paired anew, maybe with another TV: its certificate is pinned at the next session
+        self.identity.pin(None).await
     }
-}
-
-fn decode_hex(value: &str) -> Option<Vec<u8>> {
-    value
-        .len()
-        .is_multiple_of(2)
-        .then(|| {
-            (0..value.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&value[i..i + 2], 16).ok())
-                .collect::<Option<Vec<u8>>>()
-        })
-        .flatten()
 }
 
 /// Modulus and exponent from the TV's certificate, trimmed like the client's.
 fn server_public_numbers(cert: &CertificateDer<'_>) -> Result<(Vec<u8>, Vec<u8>), AppError> {
     use x509_parser::{prelude::*, public_key::PublicKey};
 
-    let (_, parsed) = X509Certificate::from_der(cert.as_ref()).map_err(|error| {
-        AppError::service_unavailable(format!("unreadable TV certificate: {error}"))
-    })?;
+    let (_, parsed) = X509Certificate::from_der(cert.as_ref())
+        .map_err(|error| unreachable(TV, format!("unreadable TV certificate: {error}")))?;
     let public_key = parsed.public_key();
-    let rsa = public_key.parsed().map_err(|error| {
-        AppError::service_unavailable(format!("unreadable TV public key: {error}"))
-    })?;
+    let rsa = public_key
+        .parsed()
+        .map_err(|error| unreachable(TV, format!("unreadable TV public key: {error}")))?;
 
     match rsa {
         PublicKey::RSA(rsa) => {
@@ -658,9 +733,7 @@ fn server_public_numbers(cert: &CertificateDer<'_>) -> Result<(Vec<u8>, Vec<u8>)
             };
             Ok((trim(rsa.modulus), trim(rsa.exponent)))
         }
-        _ => Err(AppError::service_unavailable(
-            "the TV's certificate is not RSA",
-        )),
+        _ => Err(unreachable(TV, "the TV's certificate is not RSA")),
     }
 }
 
@@ -709,6 +782,22 @@ fn answer_to(field: u32, value: &Field<'_>) -> Option<Vec<u8>> {
     Some(m.frame())
 }
 
+/// What `remote_start` (field 40) says: whether the TV is on. It comes once the session is
+/// active, then at each power change.
+fn started(field: u32, value: &Field<'_>) -> Option<bool> {
+    let (40, Field::Bytes(body)) = (field, value) else {
+        return None;
+    };
+    let mut inner = ProtoReader::new(body);
+    let mut on = false;
+    while let Some((f, v)) = inner.next_field() {
+        if let (1, Field::Varint(value)) = (f, v) {
+            on = value != 0;
+        }
+    }
+    Some(on)
+}
+
 /// Direction SHORT: a press and release in one message, which is what a tap
 /// on a remote is. Long presses would need START_LONG/END_LONG around a hold.
 const DIRECTION_SHORT: i64 = 3;
@@ -722,11 +811,19 @@ const DIRECTION_SHORT: i64 = 3;
 #[derive(Clone)]
 pub struct Session {
     commands: tokio::sync::mpsc::Sender<Vec<u8>>,
+    /// Whether the TV says it is on (`remote_start`), once it said so.
+    power: watch::Receiver<Option<bool>>,
 }
 
 impl Session {
-    pub async fn connect(host: &str, identity: &Identity) -> Result<Self, AppError> {
-        let stream = connect_tls(host, REMOTE_PORT, identity).await?;
+    /// A session to the TV at `host`, its certificate checked against the pinned one; the
+    /// first after pairing pins what it presents.
+    pub async fn connect(host: &str, identity: &mut Identity) -> Result<Self, AppError> {
+        let (stream, presented) = connect_tls(host, REMOTE_PORT, identity, identity.pinned).await?;
+        if identity.pinned.is_none() {
+            tracing::info!(%host, "the TV's certificate pinned: another will be refused");
+            identity.pin(Some(presented)).await?;
+        }
         let (reader, writer) = tokio::io::split(stream);
         Self::start(reader, writer).await
     }
@@ -739,6 +836,7 @@ impl Session {
     {
         let (commands, mut rx) = mpsc::channel::<Vec<u8>>(64);
         let (ready, wait_ready) = oneshot::channel::<()>();
+        let (power_tx, power) = watch::channel(None);
 
         // The reader owns the read half and is never interrupted, so a key press
         // arriving mid-message cannot cut a frame in two. Its read budget is also the
@@ -770,6 +868,9 @@ impl Session {
                         let Some(payload) = payload else { return };
                         let mut parser = ProtoReader::new(&payload);
                         while let Some((field, value)) = parser.next_field() {
+                            if let Some(on) = started(field, &value) {
+                                power_tx.send_replace(Some(on));
+                            }
                             let Some(answer) = answer_to(field, &value) else { continue };
                             if write_framed(&mut writer, answer).await.is_err() {
                                 return;
@@ -777,7 +878,8 @@ impl Session {
                             // remote_set_active answered: the session is usable
                             if field == 2 {
                                 if let Some(ready) = ready.take() {
-                                    let _ = ready.send(());
+                                    // nobody waits any more: the caller gave up, the session goes on
+                                    ready.send(()).ok();
                                 }
                             }
                         }
@@ -795,11 +897,13 @@ impl Session {
         });
 
         match timeout(NEGOTIATION_TIMEOUT, wait_ready).await {
-            Ok(Ok(())) => Ok(Self { commands }),
-            Ok(Err(_)) => Err(AppError::service_unavailable(
+            Ok(Ok(())) => Ok(Self { commands, power }),
+            Ok(Err(_)) => Err(unreachable(
+                TV,
                 "the remote session ended during negotiation",
             )),
-            Err(_) => Err(AppError::service_unavailable(
+            Err(_) => Err(unreachable(
+                TV,
                 "the TV did not open a remote session (is it paired?)",
             )),
         }
@@ -809,7 +913,12 @@ impl Session {
         self.commands
             .send(payload)
             .await
-            .map_err(|_| AppError::service_unavailable("the remote session is closed"))
+            .map_err(|_| unreachable(TV, "the remote session is closed"))
+    }
+
+    /// Whether the TV is on as it says it (`None` until it said), as it changes.
+    pub fn power(&self) -> watch::Receiver<Option<bool>> {
+        self.power.clone()
     }
 
     /// Taps a key. Codes are the standard Android ones, shared with ADB.
@@ -952,7 +1061,8 @@ mod tests {
     /// in two, and every message after it was garbage.
     #[tokio::test]
     async fn key_presses_mid_frame_keep_the_framing() {
-        let (client, mut tv) = tokio::io::duplex(4096);
+        // a pipe of 2 bytes: a write past them waits for the reader
+        let (client, mut tv) = tokio::io::duplex(2);
         let (reader, writer) = tokio::io::split(client);
         let starting = tokio::spawn(Session::start(reader, writer));
 
@@ -966,25 +1076,97 @@ mod tests {
         let mut ping = ProtoBuf::default();
         ping.message(8, |m| m.int(1, 42));
         let ping = ping.frame();
+        // the pipe holds 2 bytes: once the third is in, the reader has the ping's head
         tv.write_all(&ping[..2]).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tv.write_all(&ping[2..3]).await.unwrap();
         session.key(20).await.unwrap();
         let key = read_framed(&mut tv, Duration::from_secs(2)).await.unwrap();
         assert_eq!(first_field(&key), (10, Some(20)), "the key went out");
-        tv.write_all(&ping[2..]).await.unwrap();
+        tv.write_all(&ping[3..]).await.unwrap();
         let pong = read_framed(&mut tv, Duration::from_secs(2)).await.unwrap();
         assert_eq!(first_field(&pong), (9, Some(42)), "the ping was read whole");
         assert!(session.is_open());
 
+        // the TV says it is on, then off
+        let mut power = session.power();
+        for on in [1, 0] {
+            let mut start = ProtoBuf::default();
+            start.message(40, |m| m.int(1, on));
+            tv.write_all(&start.frame()).await.unwrap();
+            power.changed().await.unwrap();
+            assert_eq!(*power.borrow_and_update(), Some(on == 1));
+        }
+
         // the TV going away ends the session
         drop(tv);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        session.commands.closed().await;
         assert!(!session.is_open());
+    }
+
+    /// A local TLS server standing in for the TV, presenting `certificate`.
+    async fn tv_stub(certificate: rcgen::CertifiedKey<rcgen::KeyPair>) -> u16 {
+        use tokio_rustls::rustls::ServerConfig;
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![certificate.cert.der().clone()],
+                PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()).into(),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move { acceptor.accept(stream).await });
+            }
+        });
+        port
+    }
+
+    /// Trust on first use: unpinned, any certificate is taken and its fingerprint said;
+    /// pinned, only that one (another TV, a man in the middle: refused at the handshake).
+    #[tokio::test]
+    async fn the_tv_certificate_is_pinned() {
+        let dir = crate::util::test_dir();
+        let mut identity = Identity::load_or_create(&dir.path().join("atv-identity")).unwrap();
+        let tv = rcgen::generate_simple_self_signed(vec!["androidtv".into()]).unwrap();
+        let tv_fingerprint = fingerprint(tv.cert.der());
+        let port = tv_stub(tv).await;
+
+        let (_, presented) = connect_tls("127.0.0.1", port, &identity, None)
+            .await
+            .unwrap();
+        assert_eq!(presented, tv_fingerprint);
+        connect_tls("127.0.0.1", port, &identity, Some(tv_fingerprint))
+            .await
+            .expect("the pinned TV");
+        let other = rcgen::generate_simple_self_signed(vec!["androidtv".into()]).unwrap();
+        let impostor = tv_stub(other).await;
+        assert!(
+            connect_tls("127.0.0.1", impostor, &identity, Some(tv_fingerprint))
+                .await
+                .is_err(),
+            "another certificate is refused"
+        );
+
+        // the pin is kept with the identity, and pairing again forgets it
+        identity.pin(Some(tv_fingerprint)).await.unwrap();
+        let reloaded = Identity::load_or_create(&dir.path().join("atv-identity")).unwrap();
+        assert_eq!(reloaded.pinned, Some(tv_fingerprint));
+        assert_eq!(
+            reloaded.certificate, identity.certificate,
+            "the same identity"
+        );
+        identity.pin(None).await.unwrap();
+        let reloaded = Identity::load_or_create(&dir.path().join("atv-identity")).unwrap();
+        assert_eq!(reloaded.pinned, None);
     }
 
     #[tokio::test]
     async fn a_torn_identity_is_replaced() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("atv-identity");
         std::fs::write(&path, b"torn").unwrap();
         let identity = Identity::load_or_create(&path).expect("a new identity");

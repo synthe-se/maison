@@ -194,6 +194,17 @@ pub fn minutes_of_day(value: &str) -> Option<u16> {
     (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
+/// Hex digits as bytes (either case, two per byte); `None` for anything else.
+pub fn unhex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&value[i..i + 2], 16).ok())
+        .collect()
+}
+
 #[cfg(test)]
 mod appended_tests {
     use super::*;
@@ -232,6 +243,16 @@ mod appended_tests {
             "24:00", "12:60", "7:30", "07:3", "0730", "aa:bb", "-1:00", "07:30 ",
         ] {
             assert_eq!(minutes_of_day(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn hex_reads_back() {
+        assert_eq!(unhex("0aFf10"), Some(vec![0x0a, 0xff, 0x10]));
+        assert_eq!(unhex(&hex(&[1, 2, 254], "")), Some(vec![1, 2, 254]));
+        assert_eq!(unhex(""), Some(Vec::new()));
+        for bad in ["abc", "zz", "+1", "0x", "é1"] {
+            assert_eq!(unhex(bad), None, "{bad}");
         }
     }
 

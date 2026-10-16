@@ -346,7 +346,7 @@ async fn execute(
         }
         IrAction::TvKey { key } => state.tv.send_key(*key).await,
         IrAction::TvVolume { level } => {
-            state.tv.set_volume(*level, None).await?;
+            state.tv.set_volume(Some(*level), None).await?;
             Ok(())
         }
         IrAction::TvAmbilight { state: switch } => {
