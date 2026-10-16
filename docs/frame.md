@@ -176,6 +176,13 @@ What the bring-up taught, each point seen on the frame:
   `FRAME_SSH_KEY`), no password; the host key made once on the frame, kept on userdata. The
   frame answers as `maison-frame.local` (mDNS); its Wi-Fi address comes from the eMMC's serial
   (maison-mac.service): the AIC8800 has none, the driver drew one per boot (a new lease, a new IP).
+- Without a host on the USB-C (the frame on its own power), /dev/ttyGS0 never opens: the
+  console's getty must open it itself, non-blocking (`StandardInput=null`, `agetty -L`). With
+  systemd's `StandardInput=tty` the unit's child blocked opening it while holding the lock on
+  /dev/console, PID 1 waited on that lock for ever, and nothing else started: the app neither
+  (`chvt 7` waiting, cage waiting for its session). Found with the journal kept and SSH.
+- No cable, the tools go over SSH: console.sh takes the USB console when it is there, else
+  `ssh root@maison-frame.local`; install, flash and journals work with the frame on the wall.
 - The journal is kept on userdata (`/var/log/journal`, written every 5 s): a boot that went wrong
   reads at the next one. Each boot has its own machine id (the system lives in RAM): read one with
   `journalctl -D /var/log/journal/<id>`.

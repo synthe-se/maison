@@ -407,6 +407,9 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   kept on userdata, and the app never waits for NTP. `ssh root@maison-frame.local` (the Mac's key
   only); the journal kept on userdata (`journalctl -D /var/log/journal/<boot's machine id>`); the
   boot picture is the initramfs's (splash.py), each step said under the mark.
+- Without a host on the USB-C, /dev/ttyGS0 never opens: its getty opens it itself, non-blocking
+  (systemd opening it held /dev/console's lock and froze PID 1: the app never started on the
+  frame's own power). console.sh goes over SSH when no cable is there.
 - The mainline USB-C root console exists only while `/android-data/maison/debug-console`
   does (root's password is locked): remove the file once the frame is on the wall.
   `initramfs.py --debug` adds the bring-up's backlight blinks and 8 s pause.

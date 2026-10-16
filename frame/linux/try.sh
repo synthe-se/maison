@@ -18,7 +18,8 @@ RKDIR=$(mktemp -d)
 rk() { (cd "$RKDIR" && rkdeveloptool "$@"); }
 
 step() { echo "[$(date +%H:%M:%S)] $*"; }
-console() { compgen -G '/dev/cu.usbmodem*' >/dev/null; }
+# Linux up: its USB console, else its SSH (console.sh takes either)
+console() { "$REPO/frame/linux/console.sh" true 8 >/dev/null 2>&1; }
 no_console() { ! console; }
 loader() { rk ld 2>/dev/null | grep -q Loader; }
 # wait_for <what> <seconds> <test…>

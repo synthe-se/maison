@@ -14,7 +14,7 @@ PORT=9799
 c() { "$REPO/frame/linux/console.sh" "$@"; }
 
 [ -f "$SRC" ] || { echo "send: no $SRC" >&2; exit 1; }
-compgen -G '/dev/cu.usbmodem*' >/dev/null || { echo "send: no frame console (Linux up, the USB-C on the Mac)" >&2; exit 1; }
+c true 10 >/dev/null || { echo "send: the frame answers neither on its console nor over SSH (Linux up?)" >&2; exit 1; }
 sum=$(shasum -a 256 "$SRC" | cut -c1-64)
 ip=$(c "ip -4 -o addr show wlan0 | sed -E 's/.* inet ([0-9.]+).*/\1/'" 20)
 case "$ip" in *.*.*.*) ;; *) echo "send: the frame says no Wi-Fi address: $ip" >&2; exit 1 ;; esac

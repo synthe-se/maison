@@ -22,7 +22,7 @@ a() { adb ${SERIAL:+-s "$SERIAL"} "$@"; }
 # Linux up (its USB console there): the frame takes the image itself, over the Wi-Fi (send.sh:
 # one connection, the SHA-256 checked over the console before the rename); Android is not needed
 # (it sits in the recovery slot since Linux boots by default).
-if compgen -G '/dev/cu.usbmodem*' >/dev/null; then
+if "$REPO/frame/linux/console.sh" true 10 >/dev/null 2>&1; then
 	[ -z "${1:-}" ] || { echo "--target: from Linux, write root's /android-data/maison/target over the console" >&2; exit 2; }
 	there=/android-data${DIR#/data}/rootfs.squashfs
 	if [ "$("$REPO/frame/linux/console.sh" "sha256sum $there 2>/dev/null | cut -c1-64" 120)" = "$(shasum -a 256 "$IMG" | cut -c1-64)" ]; then
