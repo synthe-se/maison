@@ -1,13 +1,18 @@
 #!/sbin/openrc-run
 
+# The Cloudflare tunnel, under a user of its own (not the backend's): a cloudflared compromised
+# reads neither .env (JWT_SECRET) nor auth/ nor matter/. Its token lives in its own 0600 file,
+# which deploy.sh writes from the Mac's .env (CLOUDFLARE_TUNNEL_TOKEN) and leaves out of the
+# Pi's .env; it reaches cloudflared in its environment, never on a command line.
+
 name="cloudflared-maison"
 description="maison Cloudflare Tunnel"
-app_dir="@@APP_DIR@@"
-env_file="${app_dir}/.env"
+token_file="/etc/cloudflared-maison/token"
 pidfile="/run/${RC_SVCNAME}.pid"
 logfile="/var/log/cloudflared-maison.log"
-service_user="@@SERVICE_USER@@"
-service_group="@@SERVICE_GROUP@@"
+service_user="@@TUNNEL_USER@@"
+# http2 (default) or quic, from /etc/conf.d/cloudflared-maison (deploy.sh writes it)
+cloudflared_protocol="${cloudflared_protocol:-http2}"
 
 depend() {
 	need net
@@ -15,17 +20,13 @@ depend() {
 }
 
 start_pre() {
-	checkpath -f -m 0644 -o "${service_user}:${service_group}" "${logfile}"
-	if [ ! -f "${env_file}" ]; then
-		eerror "Missing env file: ${env_file}"
-		return 1
-	fi
+	checkpath -f -m 0640 -o "${service_user}:${service_user}" "${logfile}"
 	if ! command -v cloudflared >/dev/null 2>&1; then
 		eerror "cloudflared is not installed"
 		return 1
 	fi
-	if ! grep -q '^CLOUDFLARE_TUNNEL_TOKEN=.' "${env_file}"; then
-		eerror "CLOUDFLARE_TUNNEL_TOKEN is missing in ${env_file}"
+	if [ ! -s "${token_file}" ]; then
+		eerror "Missing tunnel token: ${token_file} (deploy.sh push writes it)"
 		return 1
 	fi
 }
@@ -33,9 +34,9 @@ start_pre() {
 start() {
 	ebegin "Starting ${RC_SVCNAME}"
 	start-stop-daemon --start --background --make-pidfile --pidfile "${pidfile}" \
-		--user "${service_user}" --group "${service_group}" --chdir "${app_dir}" \
+		--user "${service_user}" --group "${service_user}" --chdir / \
 		--stdout "${logfile}" --stderr "${logfile}" \
-		--exec /bin/sh -- -lc 'set -a; . "'"${env_file}"'"; set +a; export TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN}"; exec cloudflared tunnel --no-autoupdate --protocol "${CLOUDFLARED_PROTOCOL:-http2}" run'
+		--exec /bin/sh -- -c 'TUNNEL_TOKEN="$(cat "'"${token_file}"'")"; export TUNNEL_TOKEN; exec cloudflared tunnel --no-autoupdate --protocol "'"${cloudflared_protocol}"'" run'
 	eend $?
 }
 

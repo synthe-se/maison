@@ -183,6 +183,7 @@ async fn temperature<B: LampBackend>(
 
 async fn rename<B: LampBackend>(
     State(state): State<AppState>,
+    _settings: crate::auth::SettingsClient,
     Path(lamp_id): Path<String>,
     Json(body): Json<RenameBody>,
 ) -> Result<Json<SimpleResponse>, AppError> {

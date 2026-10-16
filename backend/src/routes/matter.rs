@@ -9,7 +9,7 @@ use maison_api::matter::{Covers, OneCover, PositionRequest};
 use maison_api::sun::{NextSun, Where};
 
 use crate::{
-    auth::AdminUser,
+    auth::{AdminUser, SettingsClient},
     error::AppError,
     matter::{CoverCommand, CoverView, SunSchedule},
     routes::{Answer, Reply, SimpleResponse},
@@ -100,6 +100,7 @@ pub fn router() -> Router<AppState> {
 
 async fn schedule(
     State(state): State<AppState>,
+    _settings: SettingsClient,
     Path(id): Path<String>,
     Json(body): Json<SunSchedule>,
 ) -> CoverAnswer {
@@ -109,6 +110,7 @@ async fn schedule(
 /// « Not tonight »: skips only the schedule's next opening or closing.
 async fn skip(
     State(state): State<AppState>,
+    _settings: SettingsClient,
     Path(id): Path<String>,
     Json(body): Json<SkipRequest>,
 ) -> CoverAnswer {
@@ -161,6 +163,7 @@ async fn commission(
 
 async fn rename(
     State(state): State<AppState>,
+    _settings: SettingsClient,
     Path(id): Path<String>,
     Json(body): Json<RenameRequest>,
 ) -> CoverAnswer {

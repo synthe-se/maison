@@ -1,6 +1,13 @@
 //! Wall screens (`screens.rs` says how pairing goes): a screen asks for a pairing and claims it,
 //! signed out; an admin pairs it by its code, lists the screens and revokes one. A paired screen
 //! is a `TokenKind::Screen` service token, in a cookie only its browser holds.
+//!
+//! - `POST /api/screens/pairing`, `POST /api/screens/pairing/claim` `{secret}`: the screen,
+//!   signed out.
+//! - `GET /api/screens/me`: who the screen is (a read: nothing changes); `POST
+//!   /api/screens/me`: the same, its cookie renewed (each start of its page).
+//! - `GET /api/screens`, `POST /api/screens` `{code, name}` (a recent passkey sign-in),
+//!   `DELETE /api/screens/{id}`: admins.
 
 use std::net::SocketAddr;
 
@@ -14,14 +21,22 @@ use axum::{
 use time::Duration as CookieDuration;
 
 use crate::{
-    auth::{cookie_value, issue_service_token, screen_cookie_name, service_token, AdminUser},
-    error::AppError,
-    passkey::{client_ip, Refusal},
-    people::{Scope, TokenKind},
+    auth::{
+        cookie_name, cookie_value, issue_service_token, recent_passkey, service_token, AdminUser,
+        CookieName,
+    },
+    error::{AppError, Refusal},
+    passkey::client_ip,
+    people::{Scope, StoredToken, TokenKind},
     routes::{auth::cookie, Answer, Reply, SimpleResponse},
     screens::{Claim, Waiting, PAIRING_TTL, POLL},
     util::now_ms,
     AppState,
+};
+
+// The answers and requests: the API crate's, shared with the frame.
+use maison_api::screens::{
+    ClaimAnswer, ClaimRequest, Me, PairRequest, Paired, Pairing, Screen, ScreenName, Screens,
 };
 
 /// How long a screen's cookie lives without being seen: the most browsers keep one (400 days);
@@ -34,13 +49,8 @@ pub fn router() -> Router<AppState> {
         .route("/{id}", delete(revoke))
         .route("/pairing", post(start))
         .route("/pairing/claim", post(claim))
-        .route("/me", get(me))
+        .route("/me", get(me).post(renew))
 }
-
-// The answers and requests: the API crate's, shared with the frame.
-use maison_api::screens::{
-    ClaimAnswer, ClaimRequest, Me, PairRequest, Paired, Pairing, Screen, ScreenName, Screens,
-};
 
 /// A duration as the API says it, in whole milliseconds.
 fn millis(d: std::time::Duration) -> u64 {
@@ -59,7 +69,7 @@ fn screen_cookie(
         SET_COOKIE,
         cookie(
             state,
-            screen_cookie_name(&state.config),
+            cookie_name(&state.config, CookieName::Screen),
             token,
             CookieDuration::days(SCREEN_COOKIE_DAYS),
         ),
@@ -117,19 +127,39 @@ async fn claim(
     }
 }
 
-/// The screen, at each start of its page: who it is, its cookie renewed. Anything but a paired
-/// screen's cookie is not signed in.
+/// The paired screen this cookie names, and its token. Anything but a paired screen's cookie
+/// is not signed in.
+async fn this_screen(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(String, StoredToken), AppError> {
+    let token = cookie_value(headers, &cookie_name(&state.config, CookieName::Screen))
+        .ok_or(Refusal::NotSignedIn)?
+        .to_string();
+    match service_token(&state.people, &token, now_ms()).await? {
+        Some(found) if found.kind == TokenKind::Screen => Ok((token, found)),
+        _ => Err(Refusal::NotSignedIn.into()),
+    }
+}
+
+/// Who the screen is: a read, nothing set.
 async fn me(
     State(state): State<AppState>,
     headers: HeaderMap,
+) -> Result<Json<Answer<Me>>, AppError> {
+    let (_, found) = this_screen(&state, &headers).await?;
+    Ok(Answer::ok(Me {
+        screen: ScreenName { name: found.name },
+    }))
+}
+
+/// The screen, at each start of its page: who it is, its cookie renewed (a change: a POST,
+/// never a link's GET).
+async fn renew(
+    State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let token = cookie_value(&headers, &screen_cookie_name(&state.config))
-        .ok_or(Refusal::NotSignedIn)?
-        .to_string();
-    let found = service_token(&state.people, &token, Scope::Devices, now_ms()).await?;
-    if found.kind != TokenKind::Screen {
-        return Err(Refusal::NotSignedIn.into());
-    }
+    let (token, found) = this_screen(&state, &headers).await?;
     Ok((
         screen_cookie(&state, token),
         Answer::ok(Me {
@@ -138,14 +168,16 @@ async fn me(
     ))
 }
 
-/// An admin pairs the screen showing `code`, as `name`, from the screen's own network.
+/// An admin pairs the screen showing `code`, as `name`, from the screen's own network, after a
+/// recent passkey sign-in (a paired screen drives the house for months).
 async fn pair(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin_user: AdminUser,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<PairRequest>,
 ) -> Result<Json<Answer<Paired>>, AppError> {
+    recent_passkey(&admin_user.0)?;
     let admin = client_ip(addr, &headers);
     match state.pairings.waiting(&body.code, admin) {
         Waiting::Here => {}
@@ -161,6 +193,7 @@ async fn pair(
         state.people.revoke_token(&name).await?;
         return Err(Refusal::PairingUnknown.into());
     }
+    tracing::info!(by = %admin_user.0.id, screen = %name, ip = %admin, "an admin paired a wall screen");
     Ok(Answer::ok(Paired {
         screen: ScreenName { name },
     }))
@@ -187,19 +220,15 @@ async fn list(
 }
 
 /// The screen goes at once: its next request is not signed in, and it offers to pair again.
+/// Only a screen's token (checked and revoked in one edit of the file).
 async fn revoke(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let is_screen = state
-        .people
-        .tokens()
-        .await?
-        .iter()
-        .any(|t| t.id == id && t.kind == TokenKind::Screen);
-    if !is_screen || !state.people.revoke_token(&id).await? {
+    if !state.people.revoke_token_of(&id, TokenKind::Screen).await? {
         return Err(Refusal::NotFound.into());
     }
+    tracing::warn!(by = %admin.0.id, screen = %id, "an admin revoked a wall screen");
     Ok(SimpleResponse::ok("Screen revoked"))
 }

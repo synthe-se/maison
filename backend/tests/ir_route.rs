@@ -36,9 +36,10 @@ async fn rejects_wrong_token() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// Without IR_API_TOKEN the route is closed, and says no more than for a wrong token.
+/// Without IR_API_TOKEN the route is closed, and says no more than for a wrong token: the one
+/// coded 401, « not signed in ».
 #[tokio::test]
-async fn an_unset_machine_token_is_a_plain_401() {
+async fn an_unset_machine_token_is_not_signed_in() {
     let app = common::app(maison_backend::config::Config {
         ir_api_token: None,
         ..common::isolated_config("maison-ir-off")
@@ -51,8 +52,8 @@ async fn an_unset_machine_token_is_a_plain_401() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(
-        body["error"],
-        json!("Invalid machine token"),
+        body["code"],
+        json!("not_signed_in"),
         "nothing about the setup"
     );
 }

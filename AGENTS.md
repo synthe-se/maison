@@ -144,7 +144,7 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
   `consistent-function-scoping` (helpers stay next to their use), `no-underscore-dangle`
   (a framework global). `bun run check` runs both, then type-checks `e2e/` (its tsconfig).
 - **Latest dependencies**, pinned exactly; git forks pinned by `rev`, never a branch.
-- **Rust edition 2021**: no let-chains.
+- **The backend is Rust edition 2021**: no let-chains there. `api/` and `frame/ui` are 2024.
 - SvelteKit 3: imports are `#lib/...` with the file extension (`bun scripts/imports.fix.ts`);
   public build-time values come from `src/env.ts` (`defineEnvVars`) via `$app/env/public`;
   TypeScript 6 (7 is the native port: SvelteKit's sync needs the JS API it dropped). No service worker on purpose (`legacy.ts`
@@ -153,7 +153,9 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
 ## Commands
 
 ```bash
-make backend / make web / make test
+make backend / make web
+make test                             # fmt, clippy, tests of api, backend, frame/ui; web check and tests
+make deny                             # cargo deny on the backend (backend/deny.toml)
 cd web && bun run check               # i18n, css, oxfmt --check, oxlint, svelte-check, e2e types
 cd web && bun run format              # oxfmt over web/ and e2e/ (`bun run lint`: oxlint alone)
 cd web && bun scripts/i18n.add.ts '{"key": ["français", "English"]}'   # every locale at once

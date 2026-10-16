@@ -16,7 +16,8 @@ depend() {
 }
 
 start_pre() {
-	checkpath -f -m 0644 -o "${service_user}:${service_group}" "${logfile}"
+	# 0640: the log names people, addresses and refusals; root and the service read it
+	checkpath -f -m 0640 -o "${service_user}:${service_group}" "${logfile}"
 	if [ ! -f "${env_file}" ]; then
 		eerror "Missing env file: ${env_file}"
 		return 1

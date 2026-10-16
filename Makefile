@@ -1,4 +1,4 @@
-.PHONY: help backend web web-build frontend frontend-build test build-pi deploy deploy-push deploy-start deploy-stop deploy-status deploy-logs cloudflared-upgrade
+.PHONY: help backend web web-build frontend frontend-build test deny build-pi deploy deploy-push deploy-start deploy-stop deploy-status deploy-logs cloudflared-upgrade
 
 # SSH target for the Raspberry Pi. Override on the command line or set
 # PI_HOST in .env (deploy.sh and every deploy-* target read it from here).
@@ -12,7 +12,8 @@ help:
 	@printf "  make backend             Run the Rust backend in foreground (cargo run)\n"
 	@printf "  make web                 Run the SvelteKit dev server (alias: make frontend)\n"
 	@printf "  make web-build           Build the web bundle into web/build (alias: make frontend-build)\n"
-	@printf "  make test                Run backend tests, web checks and web tests\n"
+	@printf "  make test                fmt, clippy and tests of the three crates (api, backend, frame/ui), web checks and tests\n"
+	@printf "  make deny                cargo deny on the backend (licenses, bans, sources, advisories)\n"
 	@printf "\nRaspberry Pi 1 (uses PI_HOST, default from .env):\n"
 	@printf "  make build-pi            Cross-build the ARMv6 musl backend binary\n"
 	@printf "  make deploy              Full deploy: build + push + upgrade + restart\n"
@@ -36,10 +37,22 @@ web-build:
 frontend: web
 frontend-build: web-build
 
+# The three crates (each its own Cargo.lock): fmt, clippy (the backend with the Pi's features
+# too), tests (api's keeps web/src/lib/paces.ts and codes.ts in step), then the web app.
+CRATES := api backend frame/ui
+
 test:
-	cargo test --manifest-path backend/Cargo.toml
+	for crate in $(CRATES); do cargo fmt --manifest-path $$crate/Cargo.toml --check || exit 1; done
+	for crate in $(CRATES); do cargo clippy --manifest-path $$crate/Cargo.toml --all-targets -- -D warnings || exit 1; done
+	cargo clippy --manifest-path backend/Cargo.toml --all-targets --no-default-features -- -D warnings
+	for crate in $(CRATES); do cargo test --manifest-path $$crate/Cargo.toml || exit 1; done
 	bun --cwd web run check
 	bun --cwd web run test
+
+# What the backend depends on (backend/deny.toml); the Pi's target, then the Mac's.
+deny:
+	cargo deny --manifest-path backend/Cargo.toml -t arm-unknown-linux-musleabihf check
+	cargo deny --manifest-path backend/Cargo.toml -t aarch64-apple-darwin check
 
 build-pi:
 	bash scripts/build-rpi1-backend.sh

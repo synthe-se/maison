@@ -66,8 +66,13 @@ async fn set_config(
 
 async fn send_command(
     State(state): State<AppState>,
+    client: crate::auth::DeviceClient,
     Json(body): Json<CommandRequest>,
 ) -> Result<Json<SimpleResponse>, AppError> {
+    // rebooting the rabbit is setting it up, not for a wall screen
+    if body.command.split_whitespace().next() == Some("reboot") {
+        client.not_a_screen()?;
+    }
     state.nabaztag.send_command(&body.command).await?;
     Ok(SimpleResponse::ok(format!(
         "Command sent: {}",

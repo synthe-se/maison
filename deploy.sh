@@ -7,6 +7,8 @@ PI_PASSWORD="${PI_PASSWORD:-}"
 PI_APP_DIR="${PI_APP_DIR:-/opt/maison}"
 PI_SERVICE_USER="${PI_SERVICE_USER:-maison}"
 PI_SERVICE_GROUP="${PI_SERVICE_GROUP:-${PI_SERVICE_USER}}"
+# cloudflared runs as a user of its own: compromised, it reads none of the backend's secrets
+PI_TUNNEL_USER="${PI_TUNNEL_USER:-cloudflared}"
 PI_ENV_FILE="${PI_ENV_FILE:-${ROOT_DIR}/.env}"
 BACKEND_TARGET="${BACKEND_TARGET:-arm-unknown-linux-musleabihf}"
 BACKEND_BIN="${ROOT_DIR}/backend/target/${BACKEND_TARGET}/release/maison-backend"
@@ -85,6 +87,7 @@ Environment:
   PI_APP_DIR       Remote app directory, default /opt/maison
   PI_SERVICE_USER  Service user on the Pi, default maison
   PI_SERVICE_GROUP Service group on the Pi, default maison
+  PI_TUNNEL_USER   cloudflared's own user on the Pi, default cloudflared
   PI_ENV_FILE      Local env file to deploy, default ./.env
   BACKEND_TARGET   Rust target triple, default arm-unknown-linux-musleabihf
   CLOUDFLARED_BIN  Path to cross-compiled cloudflared binary, default ./cloudflared-arm
@@ -142,19 +145,19 @@ rsync_pi() {
 remote_prologue() {
   cat <<'EOF'
 set -eu
-# shellcheck disable=SC2034 # not every script uses all three
-APP_DIR="$1" SERVICE_USER="$2" SERVICE_GROUP="$3"
-shift 3
+# shellcheck disable=SC2034 # not every script uses all four
+APP_DIR="$1" SERVICE_USER="$2" SERVICE_GROUP="$3" TUNNEL_USER="$4"
+shift 4
 EOF
 }
 
-# Run the script read on stdin on the Pi, as root, with APP_DIR,
-# SERVICE_USER and SERVICE_GROUP set and "$@" as its remaining arguments.
+# Run the script read on stdin on the Pi, as root, with APP_DIR, SERVICE_USER,
+# SERVICE_GROUP and TUNNEL_USER set and "$@" as its remaining arguments.
 # ssh hands the remote shell a single command line, hence the quoting.
 ssh_pi_script() {
   require_host
   local args
-  args="$(printf ' %q' "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" "$@")"
+  args="$(printf ' %q' "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" "${PI_TUNNEL_USER}" "$@")"
   { remote_prologue; cat; } | ssh_pi "sh -s --${args}"
 }
 
@@ -177,6 +180,13 @@ fi
 # The backend drives the Zigbee dongle over /dev/ttyUSB0 (root:dialout).
 if ! id -Gn "${SERVICE_USER}" | grep -qw dialout; then
   addgroup "${SERVICE_USER}" dialout
+fi
+# The tunnel's own account: no home, no shell, in no group of the backend's.
+if ! getent group "${TUNNEL_USER}" >/dev/null 2>&1; then
+  addgroup -S "${TUNNEL_USER}"
+fi
+if ! id -u "${TUNNEL_USER}" >/dev/null 2>&1; then
+  adduser -S -D -H -h /var/empty -G "${TUNNEL_USER}" -s /sbin/nologin "${TUNNEL_USER}"
 fi
 
 for dir in ${LAYOUT}; do
@@ -213,6 +223,48 @@ EOF
 ssh_pi_with_state() {
   { remote_state_script; cat; } |
     ssh_pi_script "${REMOTE_LAYOUT[*]}" "${STATE_DIRS[*]}" "${STATE_FILES[@]}"
+}
+
+# A setting of the local .env (the last one wins), quotes around it dropped.
+env_value() {
+  local value
+  value="$(grep -E "^$1=" "${PI_ENV_FILE}" 2>/dev/null | tail -n1 | cut -d'=' -f2-)" || true
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  printf '%s' "${value}"
+}
+
+# The tunnel's token, in its own 0600 file owned by cloudflared's user, sent over ssh's stdin
+# (never on a command line); the Pi's .env goes without it.
+push_tunnel_token() {
+  local token
+  token="$(env_value CLOUDFLARE_TUNNEL_TOKEN)"
+  if [ -z "${token}" ]; then
+    warn "CLOUDFLARE_TUNNEL_TOKEN is empty in ${PI_ENV_FILE}: the tunnel keeps its current token, if any"
+    return 0
+  fi
+  log "Pushing the tunnel token (cloudflared's own 0600 file)"
+  printf '%s\n' "${token}" | ssh_pi "set -eu; umask 077; dir=/etc/cloudflared-maison; mkdir -p \"\${dir}\"; cat >\"\${dir}/token.new\"; chown -R ${PI_TUNNEL_USER}:${PI_TUNNEL_USER} \"\${dir}\"; chmod 700 \"\${dir}\"; chmod 600 \"\${dir}/token.new\"; mv \"\${dir}/token.new\" \"\${dir}/token\""
+}
+
+# The Meross plugs' addresses (meross-devices.json), one IPv4 address a line: what the Pi's
+# firewall lets reach Mosquitto's 8883 (deploy/openrc/maison-mqtt-firewall). Anything but a
+# private IPv4 address stops the deploy.
+plug_addresses() {
+  local file="${ROOT_DIR}/meross-devices.json"
+  if [ ! -f "${file}" ]; then
+    return 0
+  fi
+  python3 -I - "${file}" <<'PY'
+import ipaddress, json, sys
+for device in json.load(open(sys.argv[1])):
+    address = ipaddress.ip_address(str(device["ip"]).strip())
+    if address.version != 4 or not address.is_private:
+        sys.exit(f"meross-devices.json: {address} is not a private IPv4 address")
+    print(address)
+PY
 }
 
 build_local() {
@@ -262,9 +314,16 @@ push_to_pi() {
   # meross-devices.json the Meross key): root's, readable by the service's group only.
   local secret=(--chown="root:${PI_SERVICE_GROUP}" --chmod=F640)
 
+  local scratch
+  scratch="$(mktemp -d)"
+  # shellcheck disable=SC2064 # the directory is known now
+  trap "rm -rf '${scratch}'" EXIT
+
   if [ -f "${PI_ENV_FILE}" ]; then
-    log "Pushing env file"
-    rsync_pi -avz "${secret[@]}" "${PI_ENV_FILE}" "${PI_HOST}:${PI_APP_DIR}/.env"
+    log "Pushing env file (without the tunnel's token: cloudflared has its own file)"
+    grep -v '^CLOUDFLARE_TUNNEL_TOKEN=' "${PI_ENV_FILE}" >"${scratch}/env" || [ $? -eq 1 ]
+    rsync_pi -avz "${secret[@]}" "${scratch}/env" "${PI_HOST}:${PI_APP_DIR}/.env"
+    push_tunnel_token
   else
     warn "Env file not found at ${PI_ENV_FILE}; keeping remote .env untouched"
   fi
@@ -272,7 +331,11 @@ push_to_pi() {
   log "Pushing service templates and configs"
   rsync_pi -avz "${ROOT_DIR}/deploy/openrc/maison" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
   rsync_pi -avz "${ROOT_DIR}/deploy/openrc/cloudflared-maison" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
+  rsync_pi -avz "${ROOT_DIR}/deploy/openrc/maison-mqtt-firewall" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
   rsync_pi -avz "${ROOT_DIR}/deploy/mosquitto/maison.conf" "${PI_HOST}:${PI_APP_DIR}/deploy/mosquitto/"
+  log "Pushing the plugs' addresses (Mosquitto's firewall)"
+  plug_addresses >"${scratch}/plugs.allow"
+  rsync_pi -avz --chown=root:root --chmod=F644 "${scratch}/plugs.allow" "${PI_HOST}:${PI_APP_DIR}/deploy/mosquitto/plugs.allow"
   rsync_pi -avz --chown=root:root "${ROOT_DIR}/deploy/logrotate/maison" "${PI_HOST}:/etc/logrotate.d/maison"
 
   if [ -d "${ROOT_DIR}/mosquitto/certs" ]; then
@@ -328,7 +391,7 @@ upgrade_pi() {
   log "Upgrading host-native services on the Pi"
   ssh_pi_with_state <<'EOF'
 apk update
-apk add --no-cache bash ca-certificates curl git logrotate mosquitto rsync
+apk add --no-cache bash ca-certificates curl git ip6tables iptables logrotate mosquitto rsync
 
 mkdir -p /etc/mosquitto/conf.d /etc/mosquitto/certs/maison /var/log/mosquitto /var/log
 
@@ -348,9 +411,11 @@ if [ -f "${APP_DIR}/mosquitto/certs/server-key.pem" ]; then
 fi
 
 chown -R mosquitto:mosquitto /etc/mosquitto/certs/maison /var/log/mosquitto 2>/dev/null || true
+# the logs name people, addresses and refusals: their writer and root read them
 touch /var/log/maison.log /var/log/cloudflared-maison.log
-chown "${SERVICE_USER}:${SERVICE_GROUP}" /var/log/maison.log /var/log/cloudflared-maison.log
-chmod 644 /var/log/maison.log /var/log/cloudflared-maison.log
+chown "${SERVICE_USER}:${SERVICE_GROUP}" /var/log/maison.log
+chown "${TUNNEL_USER}:${TUNNEL_USER}" /var/log/cloudflared-maison.log
+chmod 640 /var/log/maison.log /var/log/cloudflared-maison.log
 
 if ! command -v cloudflared >/dev/null 2>&1; then
   printf '%s\n' 'Warning: cloudflared is not installed on the Pi.' >&2
@@ -362,37 +427,50 @@ EOF
 start_pi() {
   log "Installing service definitions and restarting the stack"
   ssh_pi_with_state <<'EOF'
-for service in maison cloudflared-maison; do
+for service in maison cloudflared-maison maison-mqtt-firewall; do
   sed \
     -e "s#@@APP_DIR@@#${APP_DIR}#g" \
     -e "s#@@SERVICE_USER@@#${SERVICE_USER}#g" \
     -e "s#@@SERVICE_GROUP@@#${SERVICE_GROUP}#g" \
+    -e "s#@@TUNNEL_USER@@#${TUNNEL_USER}#g" \
     "${APP_DIR}/deploy/openrc/${service}" | tee "/etc/init.d/${service}" >/dev/null
   chmod +x "/etc/init.d/${service}"
 done
 
+# cloudflared's protocol, from the .env (it no longer reads the .env itself)
+protocol="$(grep -E '^CLOUDFLARED_PROTOCOL=' "${APP_DIR}/.env" | tail -n1 | cut -d'=' -f2-)" || true
+printf 'cloudflared_protocol="%s"\n' "${protocol:-http2}" >/etc/conf.d/cloudflared-maison
+# Mosquitto never listens without the plugs-only firewall in front of it
+touch /etc/conf.d/mosquitto
+if ! grep -q '^rc_need=.*maison-mqtt-firewall' /etc/conf.d/mosquitto; then
+  printf '%s\n' 'rc_need="maison-mqtt-firewall"' >>/etc/conf.d/mosquitto
+fi
+
+rc-update add maison-mqtt-firewall default >/dev/null 2>&1 || true
 rc-update add mosquitto default >/dev/null 2>&1 || true
 rc-update add maison default >/dev/null 2>&1 || true
+# the plugs' list may have changed: the rules are rebuilt (mosquitto keeps running)
+rc-service --nodeps maison-mqtt-firewall restart || rc-service maison-mqtt-firewall start
 # --nodeps: maison `need`s mosquitto, so a plain mosquitto restart would also stop maison and
 # start it again in the background, racing the restart below (« maison stopped by something
 # else », flock errors). maison only needs the broker for the plugs' boot; restart it once.
 rc-service --nodeps mosquitto restart || rc-service mosquitto start
 rc-service maison restart || rc-service maison start
 
-if command -v cloudflared >/dev/null 2>&1 && grep -q '^CLOUDFLARE_TUNNEL_TOKEN=.' "${APP_DIR}/.env"; then
+if command -v cloudflared >/dev/null 2>&1 && [ -s /etc/cloudflared-maison/token ]; then
   rc-update add cloudflared-maison default >/dev/null 2>&1 || true
   rc-service cloudflared-maison restart || rc-service cloudflared-maison start
 else
   if ! command -v cloudflared >/dev/null 2>&1; then
     printf '%s\n' 'Skipping cloudflared service start: cloudflared is not installed on the Pi.' >&2
-  elif ! grep -q '^CLOUDFLARE_TUNNEL_TOKEN=.' "${APP_DIR}/.env"; then
-    printf '%s\n' 'Skipping cloudflared service start: CLOUDFLARE_TUNNEL_TOKEN is missing from the remote .env.' >&2
+  else
+    printf '%s\n' 'Skipping cloudflared service start: no tunnel token (/etc/cloudflared-maison/token; CLOUDFLARE_TUNNEL_TOKEN in the local .env, then deploy.sh push).' >&2
   fi
 fi
 
 sleep 2
 
-for service in mosquitto maison cloudflared-maison; do
+for service in maison-mqtt-firewall mosquitto maison cloudflared-maison; do
   if rc-service "${service}" status >/dev/null 2>&1; then
     printf '%s: active\n' "${service}"
   else
@@ -475,7 +553,7 @@ if [ -f "${APP_DIR}/.env" ]; then
 fi
 
 tunnel_token_present='no'
-if [ -f "${APP_DIR}/.env" ] && grep -q '^CLOUDFLARE_TUNNEL_TOKEN=.' "${APP_DIR}/.env"; then
+if [ -s /etc/cloudflared-maison/token ]; then
   tunnel_token_present='yes'
 fi
 
@@ -483,6 +561,7 @@ printf 'Platform:\n'
 printf '  os: %s\n' "$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-unknown}")"
 
 printf '\nServices:\n'
+printf '  mqtt firewall: %s\n' "$(service_state_openrc maison-mqtt-firewall)"
 printf '  mosquitto: %s\n' "$(service_state_openrc mosquitto)"
 printf '  maison: %s\n' "$(service_state_openrc maison)"
 printf '  cloudflared: %s\n' "$(service_state_openrc cloudflared-maison)"
@@ -511,7 +590,7 @@ printf '\nHints:\n'
 if ! command -v cloudflared >/dev/null 2>&1; then
   printf '%s\n' '  - Cloudflare Tunnel cannot start because cloudflared is not installed.'
 elif [ "${tunnel_token_present}" != 'yes' ]; then
-  printf '%s\n' '  - Cloudflare Tunnel cannot start because CLOUDFLARE_TUNNEL_TOKEN is missing in the remote .env.'
+  printf '%s\n' '  - Cloudflare Tunnel cannot start: no token in /etc/cloudflared-maison/token (CLOUDFLARE_TUNNEL_TOKEN in the local .env, then deploy.sh push).'
 fi
 EOF
 }

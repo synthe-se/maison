@@ -1,3 +1,7 @@
+//! What a request that fails answers. A refusal is coded (`Refusal`, maison-api's table): the
+//! apps word it themselves and `401` means « not signed in » alone. Our own failures and the
+//! devices' or services' troubles are 5xx, said generically to the client, in full in the log.
+
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 use thiserror::Error;
@@ -5,6 +9,8 @@ use tracing::{error, warn};
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    /// A 5xx with words for the log and curl ([`AppError::http`]). A 4xx built here is the old,
+    /// uncoded way (see the deprecated helpers below): a refusal is `Coded`.
     #[error("{message}")]
     Http { status: StatusCode, message: String },
     /// A refusal the app explains in its own words: `code` names it (`passkey_rejected`,
@@ -41,7 +47,13 @@ impl From<Refusal> for AppError {
     }
 }
 
+/// The code of the refusal a response carries, in its extensions: the request layer logs every
+/// 401 and 403 with it (`lib.rs`).
+#[derive(Debug, Clone, Copy)]
+pub struct Refused(pub &'static str);
+
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ErrorBody {
     success: bool,
     error: String,
@@ -52,6 +64,8 @@ struct ErrorBody {
 }
 
 impl AppError {
+    /// Our own failure, or a device's or a service's (a 5xx), with words for the log and curl.
+    /// Never a 4xx: a refusal is a code (`AppError::from(Refusal::…)`), which the apps word.
     pub fn http(status: StatusCode, message: impl Into<String>) -> Self {
         Self::Http {
             status,
@@ -109,20 +123,30 @@ impl AppError {
         }
     }
 
+    /// Deprecated: an uncoded 400 the apps cannot word. Use `Refusal::Invalid` (or a closer
+    /// code). Kept only while the device modules move to codes; removed afterwards.
     pub fn bad_request(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::BAD_REQUEST, message)
+        Self::Http {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
     }
 
+    /// Deprecated: an uncoded 404. Use `Refusal::NotFound`. Removed once nothing calls it.
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::NOT_FOUND, message)
+        Self::Http {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
     }
 
+    /// Deprecated: an uncoded 403. Use `Refusal::Forbidden` (an admin's) or a closer code.
+    /// Removed once nothing calls it.
     pub fn forbidden(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::FORBIDDEN, message)
-    }
-
-    pub fn unauthorized(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::UNAUTHORIZED, message)
+        Self::Http {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
     }
 
     pub fn service_unavailable(message: impl Into<String>) -> Self {
@@ -182,6 +206,9 @@ impl IntoResponse for AppError {
             detail,
         };
         let mut response = (status, Json(body)).into_response();
+        if let Some(code) = code {
+            response.extensions_mut().insert(Refused(code));
+        }
         if let Some(seconds) = retry_after_s {
             response
                 .headers_mut()

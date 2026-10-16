@@ -9,13 +9,14 @@ use crate::{
 };
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RootResponse {
     message: &'static str,
-    version: &'static str,
     description: &'static str,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Health {
     status: &'static str,
     service: &'static str,
@@ -38,11 +39,11 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Who answers, nothing more: the routes themselves are the list (`lib.rs`), and a list here
-/// would drift (it once still offered a password login).
+/// would drift (it once still offered a password login). No version: what runs is nobody's
+/// business out there.
 async fn root_handler() -> Json<RootResponse> {
     Json(RootResponse {
         message: "Home API",
-        version: env!("CARGO_PKG_VERSION"),
         description: "Maison backend",
     })
 }

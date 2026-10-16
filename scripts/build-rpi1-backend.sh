@@ -42,6 +42,7 @@ printf 'Using RUSTFLAGS=%s\n' "${RUSTFLAGS}"
 
 rustup run "${TOOLCHAIN}" cargo zigbuild \
   --release \
+  --locked \
   --manifest-path "${MANIFEST}" \
   --target "${TARGET}" \
   --no-default-features \

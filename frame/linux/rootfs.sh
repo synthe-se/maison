@@ -44,7 +44,8 @@ docker run --rm --platform linux/arm/v7 -v "$REPO/frame/linux/rootfs:/overlay:ro
 		echo \"fr_FR.UTF-8 UTF-8\" >/etc/locale.gen && locale-gen >/dev/null
 		echo LANG=fr_FR.UTF-8 >/etc/default/locale
 		useradd --system --create-home --groups video,render,input kiosk
-		passwd -d root
+		# root logs in on the bring-up console only (autologin, gated by a file: the getty drop-in), never by a password: none is set, the account is locked
+		passwd -l root
 		systemctl enable systemd-networkd systemd-resolved systemd-timesyncd wpa_supplicant@wlan0 maison-kiosk serial-getty@ttyGS0
 		systemctl mask systemd-firstboot
 	"

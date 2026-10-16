@@ -29,6 +29,10 @@ const BY_CODE: Record<string, () => string> = {
 	pairing_elsewhere: m.screens_pairing_elsewhere,
 	screen_exists: m.screens_exists,
 	nested_scene: m.scenes_nested,
+	use_public_address: m.code_use_public_address,
+	cross_site: m.code_cross_site,
+	lan_only: m.code_lan_only,
+	too_large: m.code_too_large,
 	[UNREACHABLE]: m.error_network
 };
 

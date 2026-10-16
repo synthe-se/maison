@@ -6,7 +6,12 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    dotenvy::dotenv().ok();
+    // no .env is fine (the environment says it all); one that cannot be read or parsed is not
+    if let Err(error) = dotenvy::dotenv() {
+        if !error.not_found() {
+            eprintln!(".env could not be read: {error}");
+        }
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("invite") => std::process::exit(invite(&args[1..]).await),
@@ -40,8 +45,42 @@ async fn main() {
 }
 
 const INVITE_USAGE: &str = "usage: maison-backend invite <person> --name <Name> [--admin]
-  A one-time link (7 days) that registers <person>'s passkey: their first one, or a new
-  one after losing them all. <person> is an id: lowercase letters, digits and dashes.";
+  A one-time link (7 days, 72 hours for an admin) that registers <person>'s passkey: their
+  first one, or a new one after losing them all. <person> is an id: lowercase letters,
+  digits and dashes.";
+
+/// Where the service writes its log (`deploy/openrc/maison`), `MAISON_LOG_FILE` to say another:
+/// the CLI's security events (an invitation, a token made or revoked) are added to it, so the
+/// service's log tells everything that opened the house. Absent (a dev machine): not written.
+const SERVICE_LOG: &str = "/var/log/maison.log";
+
+/// A security event of the CLI's, in the service's log (never a secret: names and ids).
+fn audit(event: &str) {
+    let path = maison_backend::config::env_text("MAISON_LOG_FILE")
+        .unwrap_or_else(|| SERVICE_LOG.to_string());
+    let line = format!(
+        "{} WARN maison_backend::cli: {event} (by the CLI, as {})\n",
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        invoker()
+    );
+    if std::path::Path::new(&path).is_file() {
+        use std::io::Write;
+        let appended = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(line.as_bytes()));
+        if let Err(error) = appended {
+            eprintln!("{path}: the event could not be logged: {error}");
+        }
+    }
+}
+
+/// Who runs the CLI (root, on the Pi), for the log line.
+fn invoker() -> String {
+    std::env::var("SUDO_USER")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "?".into())
+}
 
 /// `maison-backend invite leonard --name Léonard --admin`: prints the link. The first
 /// account, and the way back in; the same as an admin's « Inviter quelqu'un ».
@@ -87,11 +126,13 @@ async fn invite(args: &[String]) -> i32 {
     .await
     {
         Ok(created) => {
-            println!(
-                "Invitation for {name}, valid {} days. The link, to open once:",
-                maison_backend::passkey::INVITE_DAYS
-            );
+            let hours = maison_backend::passkey::invite_lifetime_ms(admin) / 3_600_000;
+            println!("Invitation for {name}, valid {hours} hours. The link, to open once:");
             println!("{}", created.url);
+            audit(&format!(
+                "invitation made for {person} (admin: {admin}), id {}",
+                created.id
+            ));
             0
         }
         Err(error) => {
@@ -145,6 +186,7 @@ async fn token(args: &[String]) -> i32 {
                         scope.as_str()
                     );
                     println!("{token}");
+                    audit(&format!("service token « {} » created", name.trim()));
                     0
                 }
                 None => {
@@ -161,9 +203,16 @@ async fn token(args: &[String]) -> i32 {
                 println!("No service tokens.");
             }
             for t in tokens {
+                // the house's days, not UTC's
                 let day = |ms: i64| {
-                    chrono::DateTime::from_timestamp_millis(ms)
-                        .map_or_else(|| "?".into(), |d| d.format("%Y-%m-%d").to_string())
+                    chrono::DateTime::from_timestamp_millis(ms).map_or_else(
+                        || "?".into(),
+                        |d| {
+                            d.with_timezone(&maison_backend::util::HOUSE_TZ)
+                                .format("%Y-%m-%d")
+                                .to_string()
+                        },
+                    )
                 };
                 let used = t.last_used_ms.map_or_else(|| "never".into(), day);
                 println!(
@@ -180,6 +229,7 @@ async fn token(args: &[String]) -> i32 {
         ["revoke", key] => people.revoke_token(key).await.map(|gone| {
             if gone {
                 println!("Revoked: « {key} » no longer opens anything.");
+                audit(&format!("service token « {key} » revoked"));
                 0
             } else {
                 eprintln!("No service token named « {key} ».");
