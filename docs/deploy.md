@@ -1,7 +1,7 @@
 # Deploying to the Raspberry Pi 1
 
 Production is a Raspberry Pi 1 Model B (ARMv6, 512 MB) on Alpine Linux in sys mode, with
-OpenRC. No Docker, nothing built on the Pi: the Mac cross-builds a static musl binary and
+OpenRC. No Docker, nothing built on the Pi: the build machine cross-builds a static musl binary and
 the web bundle, and `deploy.sh` pushes them.
 
 The Pi runs four services: `mosquitto` (TLS on :8883, only because the Meross plugs'
@@ -11,7 +11,7 @@ IPv6 dropped; mosquitto needs it, so the broker never listens unguarded), `maiso
 backend, which also serves the web app) and `cloudflared-maison` (the tunnel, under its own
 user: a compromised cloudflared reads neither `.env` nor `auth/` nor `matter/`).
 
-## On the Mac, once
+## On the build machine (macOS), once
 
 ```bash
 rustup target add arm-unknown-linux-musleabihf
@@ -25,7 +25,7 @@ git clone https://github.com/cloudflare/cloudflared.git ../cloudflared   # needs
 versions) for `arm-unknown-linux-musleabihf` with `-C target-cpu=arm1176jzf-s`. OpenSSL
 (linked by webauthn-rs) is vendored and compiled by zig too. `make deny` checks what the
 backend depends on (`backend/deny.toml`: no GPL, crates.io and the pinned uplg forks only,
-RustSec advisories), for the Pi's target and the Mac's.
+RustSec advisories), for the Pi's target and the build machine's.
 
 ## A fresh Pi
 
@@ -72,7 +72,7 @@ dev-only goes in it (pass `PUBLIC_URL=http://localhost:5173` in the shell when d
 | `PORT` | optional, default 3033 (`API_PORT` is read too); a value that does not parse is logged and the default used, like every numeric setting |
 
 Device addresses live in their own files: `devices.json` (Tuya, with local keys) and
-`meross-devices.json` are pushed from the Mac; `tv.json`, `androidtv.json` (from their
+`meross-devices.json` are pushed from the build machine; `tv.json`, `androidtv.json` (from their
 `.template`) and the rest are the Pi's own state, edited from the web app.
 
 ## Deploy
@@ -101,7 +101,7 @@ elsewhere, BusyBox's syslogd can forward to a host on the LAN (`/etc/conf.d/sysl
 feed the backend's log to it (`tail -F /var/log/maison.log | logger -t maison`).
 
 What a push does to the cache: `cache/tempo/` goes with `--update` (what the Pi learnt since
-stays), except `model.json`, which is always the Mac's. Mutable state files are never pushed.
+stays), except `model.json`, which is always the build machine's. Mutable state files are never pushed.
 
 ## First person
 
@@ -149,7 +149,7 @@ refused through the tunnel. Mosquitto's plaintext listener is bound to 127.0.0.1
 
 ## Chores
 
-- **Tempo, once a year** (or when RTE changes its rules), on the Mac only:
+- **Tempo, once a year** (or when RTE changes its rules), on the build machine only:
   `cargo run --release --manifest-path backend/Cargo.toml --bin fit_tempo`, commit
   `cache/tempo/`, then `make deploy`. See [tempo.md](tempo.md).
 - **README screenshot**: `scripts/screenshot.sh` renders an invented house

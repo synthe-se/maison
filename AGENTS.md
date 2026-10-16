@@ -58,7 +58,7 @@ backend/src/
                      `unreachable` (coded `device_unreachable`; the error stays in the log)
   tempo/             colors, quotas, prices, forecast (docs/tempo.md)
   routes/            one module per domain
-  bin/               fit_tempo (Mac only), send_ir, atv_pair, decode_mitsubishi_ir, tuya_probe
+  bin/               fit_tempo (build machine only), send_ir, atv_pair, decode_mitsubishi_ir, tuya_probe
 backend/tests/       integration tests (+ `live-runtime-tests` feature for real devices)
 api/                 maison-api (edition 2024): the API's types said once (screens, sun, tempo
                      and `Today::price_at`, lamps, meross, matter, scenes, remote; the request
@@ -180,7 +180,7 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
   `css.check.ts` refuses literal radii, control heights, px font sizes, rgb()/hex outside
   tokens.css, outline literals, literal z-index, durations and opacities, and media widths
   that are not tokens.css's. Strict CSP, never `'unsafe-inline'`.
-- **Formatted and linted by oxc** (the owner's choice, not Prettier nor ESLint): `oxfmt`
+- **Formatted and linted by oxc** (not Prettier nor ESLint): `oxfmt`
   (tabs, single quotes, 140 columns, no trailing commas; `.svelte` through its Svelte plugin,
   CSS too) and `oxlint` (plugins typescript, unicorn, oxc, import, vitest, promise;
   categories correctness, suspicious and perf as errors, warnings refused) over `web/` and
@@ -379,7 +379,7 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   disabled on this build: without Frameo, only keys in `/data/misc/adb/adb_keys` work.
   `flash.sh keys` puts them there while root exists; `flash.sh` refuses to start without them.
   Once flashed there is no root (`ro.debuggable=0`): APK updates are `pm install -r`, same key.
-- No ADB at all: power off, hold the reset pinhole, plug USB-C into the Mac, then power: the
+- No ADB at all: power off, hold the reset pinhole, plug USB-C into a computer, then power: the
   loader. It can drop mid-write: `rkwrite.py` writes 16 MiB chunks read back, and resumes. Its
   sector 0 is the `parameter`'s (kernel sector − 8192), proved before every write.
 - A system app's native libraries are extracted in `lib/arm` (Android 6 reads the ABI there);
@@ -404,7 +404,7 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   --slot boot`; the screen stays black until Linux lights it); Android sits in `recovery`. A new
   system goes over the Wi-Fi from Linux (`try.sh --install`, its SHA-256 checked); a new kernel to
   `boot` from the loader (`try.sh --flash`, the reset pinhole). No battery: timesyncd's clock is
-  kept on userdata, and the app never waits for NTP. `ssh root@maison-frame.local` (the Mac's key
+  kept on userdata, and the app never waits for NTP. `ssh root@maison-frame.local` (key
   only); the journal kept on userdata (`journalctl -D /var/log/journal/<boot's machine id>`); the
   boot picture is the initramfs's (splash.py), each step said under the mark.
 - Without a host on the USB-C, /dev/ttyGS0 never opens: its getty opens it itself, non-blocking
@@ -440,5 +440,5 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 
 ### Tempo
 
-the forecast is refitted on the Mac yearly (`fit_tempo`), never on the Pi
+the forecast is refitted on the build machine yearly (`fit_tempo`), never on the Pi
 ([docs/tempo.md](docs/tempo.md)).

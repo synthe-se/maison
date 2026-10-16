@@ -473,8 +473,8 @@ pub fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// The coded refusal `code`, with why in the log (the app words the code, the reason is the
-/// owner's).
+/// The coded refusal `code`, with why in the log (the app words the code; the reason is for
+/// the log).
 pub fn refused(
     code: crate::error::Refusal,
     reason: impl std::fmt::Display,

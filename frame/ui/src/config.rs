@@ -4,7 +4,7 @@
 //!   `/android-data/maison/target`: `maison-target` adopts what `install.sh --target` left),
 //!   else `MAISON_TARGET`; its fragment and path are dropped (the kiosk's `#lang=…`, an older
 //!   target's token). HTTPS only, but for this computer (`localhost`, a loopback address) and a
-//!   simulation that says `MAISON_ALLOW_HTTP=1` (its Mac seen from a container): the screen's
+//!   simulation that says `MAISON_ALLOW_HTTP=1` (the host seen from a container): the screen's
 //!   cookie never crosses the Wi-Fi in clear;
 //! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
 //!   `$XDG_DATA_HOME/maison-ui`;

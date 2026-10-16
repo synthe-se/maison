@@ -1,4 +1,4 @@
-# The frame's system for a simulation: Debian trixie armhf (emulated on the Mac), the packages
+# The frame's system for a simulation: Debian trixie armhf (emulated), the packages
 # rootfs.sh installs for the native app (cage, wlr-randr, the Wayland and EGL libraries, Noto),
 # and Mesa's software GLES (llvmpipe) in place of Lima.
 FROM --platform=linux/arm/v7 debian:trixie

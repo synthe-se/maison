@@ -1,4 +1,4 @@
-# cargo deny check: what the backend may depend on. No GPL of any version (the owner's rule),
+# cargo deny check: what the backend may depend on. No GPL of any version,
 # crates from crates.io plus the uplg forks pinned by `rev` in Cargo.toml (ashv2, ezsp,
 # rust-async-tuyapi), advisories from RustSec. `cargo deny --manifest-path backend/Cargo.toml
 # check`; offline (`--offline`: the advisory database cargo-deny last fetched), one target at a
@@ -42,7 +42,7 @@ allow = [
     "CC0-1.0",
     "BSL-1.0",
 ]
-# the repository's own crates (publish = false): no license chosen yet, the owner's to choose
+# the repository's own crates (publish = false): no license chosen yet
 private = { ignore = true }
 
 [bans]

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs a command on the frame as root and prints its output: over its USB console when the
-# USB-C is on the Mac (the initramfs's mksh or the system's root bash, without the shell's echo
+# USB-C is on this machine (the initramfs's mksh or the system's root bash, without the shell's echo
 # or colours; the end is a marker the command's own echo cannot match), else over SSH
-# (root@maison-frame.local, the Mac's key: the frame on the wall, its own power). No answer
+# (root@maison-frame.local, key only). No answer
 # before the deadline fails the script.
 # Usage: frame/linux/console.sh '<command>' [seconds, 30]
 set -euo pipefail

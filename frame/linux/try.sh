@@ -39,7 +39,7 @@ for a in "$@"; do
 done
 
 if $install; then
-	wait_for "the frame's console (the USB-C on the Mac, Linux up)" 120 console
+	wait_for "the frame (USB console or SSH, Linux up)" 120 console
 	step "installing the system on userdata over the Wi-Fi (about 1 min when it changed)"
 	"$REPO/frame/linux/install.sh"
 fi
@@ -71,7 +71,7 @@ if $flash && console; then
 	wait_for "the console to go" 60 no_console
 elif $flash; then
 	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
-	step "the loader: power off, hold the reset pinhole, power on with the USB-C on the Mac"
+	step "the loader: power off, hold the reset pinhole, power on with the USB-C on this machine"
 	wait_for "the loader" 300 loader
 	step "writing $(basename "$IMG") to boot (about 1 min)"
 	python3 "$REPO/frame/rkwrite.py" "$IMG" mmcblk0p5

@@ -1,5 +1,5 @@
-# cargo deny check: what the frame's app may depend on. No GPL of any version (the owner's
-# rule), crates from crates.io only, advisories from RustSec.
+# cargo deny check: what the frame's app may depend on. No GPL of any version, crates from
+# crates.io only, advisories from RustSec.
 
 [graph]
 targets = ["armv7-unknown-linux-gnueabihf", "aarch64-apple-darwin"]
@@ -21,7 +21,7 @@ allow = [
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
 ]
-# the repository's own crates (publish = false): no license chosen yet, the owner's to choose
+# the repository's own crates (publish = false): no license chosen yet
 private = { ignore = true }
 
 [bans]

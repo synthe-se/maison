@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# A file from the Mac to the frame over the Wi-Fi, from Linux up (its USB console there, the
+# A file from this machine to the frame over Wi-Fi, from Linux up (its USB console there, the
 # channel trusted): the frame listens for one connection (systemd-socket-activate --accept, five
-# minutes at most), the Mac sends, the frame checks the SHA-256 said over the console, and only
+# minutes at most), this machine sends, the frame checks the SHA-256 said over the console, and only
 # then renames it into place (mode 0600). Fails loudly on any step: nothing half written replaces
 # anything. install.sh (the system) and try.sh --flash (the boot image) send through it.
 # Usage: frame/linux/send.sh <local file> <path on the frame>

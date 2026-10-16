@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The frame's mainline kernel: Linux (pinned, checked against kernel.org's sums), our patches, our
 # board's device tree, multi_v7_defconfig + maison.config, built with LLVM in an arm64 Alpine (the
-# Mac's own architecture: no emulation) for 32-bit ARM; and the AIC8800's Wi-Fi driver (Radxa's
+# build host's architecture: no emulation) for 32-bit ARM; and the AIC8800's Wi-Fi driver (Radxa's
 # package of AIC's source, pinned, with its own patches: no driver in mainline), its firmware too.
 # Sources and build stay off the repo, in ~/maison-frame/src and a Docker volume; the outputs land
 # in frame/build/linux (aic8800/: the modules and the firmware the initramfs ships).

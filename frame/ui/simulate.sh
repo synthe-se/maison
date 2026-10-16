@@ -3,7 +3,7 @@
 # trixie armhf in Docker, under cage with a headless output of the panel's 800×1280, its GLES 2
 # from Mesa's llvmpipe. The same Wayland, EGL, renderer, fonts and HTTP path as on the frame;
 # only the GPU differs. stdin and stdout are the app's (sim.rs): e2e/frame.ts drives it
-# (`FRAME_SIM=armv7`). The environment's MAISON_* reach the app (and MAISON_ALLOW_HTTP=1: the Mac
+# (`FRAME_SIM=armv7`). The environment's MAISON_* reach the app (and MAISON_ALLOW_HTTP=1: the host
 # is host.docker.internal over http, which the frame itself refuses); its state stays in the
 # container; shots land in e2e/shots (mounted at the same path).
 # The frame's own launcher runs it (rootfs/usr/local/sbin/maison-ui): the output turned by the

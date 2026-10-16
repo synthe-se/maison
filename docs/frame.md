@@ -78,7 +78,7 @@ Android after a power cut: power it with the USB-C unplugged, wait for Maison, t
 ## When nothing answers
 
 No ADB, a system that does not come up: the loader is still there. Power off, hold the reset
-pinhole, plug USB-C into the Mac, then the power; `rkdeveloptool ld` says `Loader`. The vendor's
+pinhole, plug USB-C into a computer, then the power; `rkdeveloptool ld` says `Loader`. The vendor's
 system comes back with:
 
 ```bash
@@ -114,10 +114,10 @@ frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules
 frame/linux/rootfs.sh           # the system: rootfs.squashfs (Docker, armhf emulated, ~20 min)
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
 python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
-frame/linux/try.sh --install    # a new system: over the Wi-Fi, from Linux (USB-C on the Mac), then a reboot
+frame/linux/try.sh --install    # a new system over Wi-Fi from Linux, then a reboot
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
 frame/linux/console.sh 'systemctl status maison-ui'   # a root shell over the USB-C
-ssh root@maison-frame.local     # the same over the Wi-Fi: root by the Mac's key only
+ssh root@maison-frame.local     # the same over Wi-Fi, key only
 ```
 
 `--debug` is for bring-up: the backlight blinks five times as soon as init runs (a sign with
@@ -157,22 +157,22 @@ What the bring-up taught, each point seen on the frame:
 - `boot` holds 14 MiB: our image fits only without the vendor's 3 MB logo in its resource
   (`image.py --slot boot`, `bootimg.rsce_only`). U-Boot draws its first screen from the image it
   boots, not from the resource partition: the screen stays black until Linux lights it.
-- Powered up with the USB-C on the Mac, U-Boot still boots `boot` (Linux); `misc` is ignored
+- Powered up with the USB-C on a computer, U-Boot still boots `boot` (Linux); `misc` is ignored
   (a power cycle is the boot slot's). Linux has no way to ask U-Boot for another slot yet: the
   loader comes from the reset pinhole.
 - No battery and a system in RAM: the clock came back six months behind after a power cut, and
   the app waited minutes for NTP. timesyncd's clock file is kept on userdata
   (`systemd-timesyncd.service.d/maison.conf`), and the app never waits for NTP: it retries.
 - A file goes over the Wi-Fi (send.sh, from Linux): the frame listens once
-  (`systemd-socket-activate --accept`: without it the reader gets the listening socket), the Mac
+  (`systemd-socket-activate --accept`: without it the reader gets the listening socket), the host
   sends, the frame checks the SHA-256 said over the console before it renames the file. A new
   system (install.sh) and a new boot image (try.sh --flash) go that way; boot is then written by
   Linux on /dev/mmcblk0 once the layout's addressing is proved (U-Boot's head where layout.txt
   says, boot's `ANDROID!` header), read back and compared. The loader stays the way back.
 - The boot picture (splash.py): the initramfs draws Maison's mark on /dev/fb0 as soon as the
   panel is up, unbinds fbcon (no kernel text over it) and says each step under the mark
-  (« Ouverture du système… », « Système introuvable… »): what a boot without the Mac does shows.
-- SSH: `openssh-server`, root by the Mac's key only (`rootfs.sh` copies `~/.ssh/id_ed25519.pub`,
+  (« Ouverture du système… », « Système introuvable… »): visible without any cable.
+- SSH: `openssh-server`, root by key only (`rootfs.sh` installs `~/.ssh/id_ed25519.pub`,
   `FRAME_SSH_KEY`), no password; the host key made once on the frame, kept on userdata. The
   frame answers as `maison-frame.local` (mDNS); its Wi-Fi address comes from the eMMC's serial
   (maison-mac.service): the AIC8800 has none, the driver drew one per boot (a new lease, a new IP).
@@ -194,8 +194,7 @@ The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md
 system beside cog: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
 client, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`;
 its launcher (`/usr/local/sbin/maison-ui`) turns the output with `wlr-randr` (`MAISON_TURN`, 0
-or 180, else the app turns its own picture). Enabled since the owner chose it on the frame (smooth where cog was slow); cog's `maison-kiosk`
-stays installed, disabled: `systemctl stop maison-ui; systemctl start maison-kiosk` brings it back.
+or 180, else the app turns its own picture). Enabled; cog's `maison-kiosk` stays installed, disabled: `systemctl stop maison-ui; systemctl start maison-kiosk` brings it back.
 
 A wall screen's theme follows the sun at the house when nothing is chosen (« Soleil », which
 anyone may choose too): dark from sunset to sunrise, from the house's place (set with the

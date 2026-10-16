@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The frame's native interface, cross-built for its Cortex-A7 (armv7-unknown-linux-gnueabihf) in an
-# arm64 Debian trixie (the Mac's architecture: no emulation) against trixie's armhf libraries
+# arm64 Debian trixie (the build host's architecture: no emulation) against trixie's armhf libraries
 # (multiarch), the system it runs on; SDL 3 and SDL3_ttf from their latest sources (the sdl3
 # crate's `build-from-source`), with Wayland for cage. The repository is mounted read-only: the
 # build reads the API crate, the web app's tokens, icons and fonts, and the words. The cargo
@@ -24,7 +24,7 @@ docker volume create "$VOLUME" >/dev/null
 # (`debian:trixie@sha256:…`, the manifest list's, to look up with the network).
 # rustup comes from its script over HTTPS (curl -f, TLS checked), once into the cache volume; the
 # toolchain it installs is checked by rustup against the hashes of its channel's manifest (HTTPS).
-# the web app's fonts come from its node_modules (Fraunces): installed on the Mac first
+# the web app's fonts come from its node_modules (Fraunces): installed first
 [ -f "$REPO/web/node_modules/@fontsource-variable/fraunces/files/fraunces-latin-wght-normal.woff2" ] ||
 	{ echo "the web app's fonts are missing: run \`bun install\` in web/" >&2; exit 1; }
 docker run --rm --platform linux/arm64 -v "$VOLUME:/cache" -v "$REPO:/repo:ro" -v "$OUT:/out" debian:trixie sh -euc '

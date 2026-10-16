@@ -125,9 +125,7 @@ pub const MAX_COLUMNS: usize = 6;
 pub const COLUMN_GAP: f32 = px::S_5;
 pub const GROUP_GAP: f32 = px::S_3;
 pub const HEAD_GAP: f32 = px::S_2;
-/// A row's padding above and below, and at its sides: the web's `var(--s-1) var(--s-3)`, but
-/// twice as tall above and below on the frame (a bigger target for a finger on the wall, the
-/// owner's ask; the house still fits).
+/// A row's padding above and below (the web's `--s-1`, doubled for touch), and at its sides.
 pub const ROW_PAD_Y: f32 = px::S_2;
 pub const ROW_PAD_X: f32 = px::S_3;
 /// Under a row that has a control below its head (`.tile:has(> :nth-child(2))`).

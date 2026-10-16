@@ -169,7 +169,7 @@ be touched anywhere (WCAG 2.5.7), `touch-action: pan-y`.
 - Then the scenes (« Je pars », « Nuit », « Film »: one button each; admins create, edit and
   delete them, starting from three templates filled from the house's devices; members see
   nothing until one exists).
-- Then grouped by device type, not brand, radio or room (one room for now), in the owner's
+- Then grouped by device type, not brand, radio or room (one room for now), in a fixed
   fixed order: Tempo, lamps (one group, Bluetooth and Zigbee alike; the radio is said on the
   lamp's page, « Ajouter une lampe » offers both), the cats' corner, air conditioning,
   shutters, plugs, the rabbit, then « Télé » (little used): the TV and the Android TV box in

@@ -1,5 +1,5 @@
 """The mainline boot's initramfs: its /init (mksh) makes the USB-C port a serial console (CDC ACM:
-/dev/cu.usbmodem* on the Mac), prints on the panel (the kernel's console, fbcon) what came up (the
+/dev/cu.usbmodem* on macOS), prints on the panel (the kernel's console, fbcon) what came up (the
 display, the touch, the eMMC, the SDIO card, the Wi-Fi interface), then starts the system from
 Android's userdata. It writes to the eMMC only there: Maison's address, adopted once from where
 install.sh can leave it (Android's shell-writable /data/local/tmp) into root's /data/maison (the

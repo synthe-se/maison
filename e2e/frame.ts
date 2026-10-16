@@ -93,7 +93,7 @@ const stateDir = mkdtempSync(join(tmpdir(), 'maison-frame-'));
 const app = spawn(APP, [], {
 	env: {
 		...process.env,
-		// from the container, the Mac is host.docker.internal
+		// from the container, the host is host.docker.internal
 		MAISON_TARGET: `http://${ARMV7 ? 'host.docker.internal' : 'localhost'}:${port}`,
 		MAISON_STATE: stateDir,
 		MAISON_LANG: 'fr',

@@ -3,7 +3,7 @@
 # the version it had that day), systemd, the Wi-Fi tools, cog (WPE WebKit) for Maison, and our
 # files (frame/linux/rootfs) over it; packed read-only as squashfs (zstd: fast to read on the
 # Cortex-A7). The initramfs mounts it from Android's userdata with a tmpfs over it: a power cut
-# (no battery) never leaves it half written. Built in an armhf container (emulated on the Mac).
+# (no battery) never leaves it half written. Built in an armhf container (emulated).
 # Usage: frame/linux/rootfs.sh        out: frame/build/linux/rootfs.squashfs
 set -euo pipefail
 . "$(dirname "$0")/../docker.sh"
@@ -20,9 +20,9 @@ PACKAGES=(
 	locales                                                        # fr_FR.UTF-8: WebKit reads its language with setlocale()
 	cage libpam-systemd wlr-randr kbd                              # the native interface's spike (frame/ui): its compositor, its session, chvt
 	libwayland-client0 libwayland-egl1 libwayland-cursor0 libxkbcommon0 libegl1   # what its SDL opens at run time
-	openssh-server                                                 # its owner over SSH, by key only
+	openssh-server                                                 # SSH, key only
 )
-# the key that opens the frame over SSH (root, key only): the owner's, on this Mac
+# the key that opens root over SSH (key only)
 SSH_KEY="${FRAME_SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
 [ -s "$SSH_KEY" ] || { echo "no $SSH_KEY: the frame's SSH key (FRAME_SSH_KEY)" >&2; exit 1; }
 
@@ -42,7 +42,7 @@ docker run --rm --platform linux/arm/v7 -v "$REPO/frame/linux/rootfs:/overlay:ro
 	cp -a /overlay/. /tmp/root/
 	# the native interface, when frame/ui/build.sh made it
 	[ ! -f /ui/maison-frame-ui ] || install -m 0755 /ui/maison-frame-ui /tmp/root/usr/local/bin/
-	# SSH: the key of the owner opens root, by key only (sshd_config.d/maison.conf)
+	# SSH: the authorised key for root (sshd_config.d/maison.conf)
 	install -d -m 0700 /tmp/root/root/.ssh && install -m 0600 /ssh.pub /tmp/root/root/.ssh/authorized_keys
 	chroot /tmp/root sh -euc "
 		echo maison-frame >/etc/hostname
