@@ -37,7 +37,7 @@ export type TvKey =
 	| 'teletext'
 	| 'ambilight_on_off';
 
-export interface TvConfig {
+interface TvConfig {
 	host?: string | null;
 	irBlasterHost?: string | null;
 	boxHost?: string | null;
@@ -51,7 +51,7 @@ export interface TvVolume {
 	muted: boolean;
 }
 
-export interface TvAmbilight {
+interface TvAmbilight {
 	power: boolean;
 	mode?: string;
 	style?: string;

@@ -34,14 +34,14 @@ export interface BroadlinkDiscoverResponse {
 	message: string;
 }
 
-export interface BroadlinkCodesResponse {
+interface BroadlinkCodesResponse {
 	success: boolean;
 	codes: BroadlinkCode[];
 	total: number;
 	message: string;
 }
 
-export interface BroadlinkSendResponse {
+interface BroadlinkSendResponse {
 	success: boolean;
 	result: { host: string; codeId?: string; command?: string; packetLength: number };
 	message: string;

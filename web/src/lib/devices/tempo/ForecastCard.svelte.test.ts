@@ -4,7 +4,7 @@ import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
 import { dayFromToday, percent, shortDay } from '#lib/i18n.svelte.ts';
 import { forecastDay } from '#lib/test/tempo.ts';
-import { probable } from './colors.ts';
+import { dayWords } from './colors.ts';
 import ForecastCard from './ForecastCard.svelte';
 
 describe('ForecastCard', () => {
@@ -13,7 +13,7 @@ describe('ForecastCard', () => {
 		await render(ForecastCard, { d });
 		const card = page.getByRole('article', { name: m.day_tomorrow() });
 		await expect.element(card).toBeVisible();
-		await expect.element(card.getByText(probable('RED', 0.62))).toBeVisible();
+		await expect.element(card.getByText(dayWords('RED', true, 0.62))).toBeVisible();
 		await expect.element(card.getByText(shortDay(d.date))).toBeVisible();
 	});
 

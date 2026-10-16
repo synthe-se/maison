@@ -8,7 +8,7 @@ import { ui } from '#lib/ui.svelte.ts';
 import { list } from '#lib/i18n.svelte.ts';
 import { FAILURE, haptic } from '#lib/haptics.ts';
 
-export interface Outcome {
+interface Outcome {
 	/** The names of the devices that did it. */
 	done: string[];
 	/** The names of those that refused or did not answer. */

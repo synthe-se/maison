@@ -13,7 +13,7 @@ export interface User {
 	role: string;
 }
 
-export interface SessionResponse {
+interface SessionResponse {
 	success: boolean;
 	user?: User;
 	error?: string;
@@ -204,12 +204,12 @@ export async function register(opts: { invite?: string; name?: string; onReauth?
 	return post<Registered>('/passkeys/register/finish', { ceremony: start.ceremony, credential: toJSON(credential), name: opts.name });
 }
 
-export const listPasskeys = () => get<PasskeyInfo[]>('/passkeys');
+const listPasskeys = () => get<PasskeyInfo[]>('/passkeys');
 export const renamePasskey = (key: string, name: string) => patch<PasskeyInfo>(path`/passkeys/${key}`, { name });
 export const removePasskey = (key: string) => del<void>(path`/passkeys/${key}`);
 
 export const inviteGreeting = (token: string) => get<{ name: string }>(path`/invites/${token}`);
-export const listInvites = () => get<Invite[]>('/invites');
+const listInvites = () => get<Invite[]>('/invites');
 /** A link for `name`; with `person`, a way back in for someone who lost every passkey (without
  * it, a name already someone's is refused: `person_exists`). */
 export const createInvite = (name: string, admin: boolean, person?: string) =>

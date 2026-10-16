@@ -22,9 +22,6 @@ export const reading = (raw: { voltage: number; current: number; power: number }
 	watts: raw.power / 1000
 });
 
-/** The live power of a plug, as a tile says it. */
-export const livePower = (e: { raw: { voltage: number; current: number; power: number } }) => watts(reading(e.raw).watts);
-
 /** « 42 W · 0,7 c€/h »: the live power and what it costs at the price in force (none
  * known: the power alone). */
 export const powerAndCost = (w: number, eurPerKwh: number | undefined, digits = 0) =>
@@ -33,7 +30,7 @@ export const powerAndCost = (w: number, eurPerKwh: number | undefined, digits = 
 		: m.meross_power_cost({ power: watts(w, digits), cost: perHour(costPerHour(w, eurPerKwh)) });
 
 /** Above this a plug draws enough to matter during red peak hours (standby leaks do not). */
-export const NUDGE_WATTS = 5;
+const NUDGE_WATTS = 5;
 
 /** What a plug on and drawing power costs per hour during a red day's peak hours (« 0,76 €/h »);
  * undefined at any other time, or when it draws next to nothing. */

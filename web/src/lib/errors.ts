@@ -8,7 +8,7 @@ import type { Code } from '#lib/codes.ts';
 import { m } from '#lib/paraglide/messages.js';
 
 /** The words of every refusal the API answers: a code without words does not type-check. */
-export const CODE_WORDS: Record<Code, () => string> = {
+const CODE_WORDS: Record<Code, () => string> = {
 	not_signed_in: m.code_not_signed_in,
 	forbidden: m.code_forbidden,
 	not_for_screens: m.code_not_for_screens,

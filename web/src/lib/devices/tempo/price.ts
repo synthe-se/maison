@@ -9,7 +9,7 @@ import { lower, num } from '#lib/i18n.svelte.ts';
 import type { TempoCalendar, TempoColor, TempoHours, TempoTariffs, TempoToday } from '#lib/devices/tempo/api.ts';
 import { TEMPO } from './colors.ts';
 
-export type Period = 'peak' | 'offPeak';
+type Period = 'peak' | 'offPeak';
 
 export interface PriceNow {
 	color: TempoColor;
@@ -92,7 +92,7 @@ export const periodColor = (period: Period, color: TempoColor) =>
 /** Peak hours in force on a red day: the costliest kWh of the year. */
 export const redPeak = (p: PriceNow | null) => p?.color === 'RED' && p.period === 'peak';
 
-export interface MonthEstimate {
+interface MonthEstimate {
 	/** € for the days counted. */
 	euros: number;
 	/** Days of the month counted (a reading and a color). */

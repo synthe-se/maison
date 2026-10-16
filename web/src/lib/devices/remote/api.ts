@@ -46,7 +46,7 @@ export interface IrBinding {
 	repeat?: boolean;
 }
 
-export interface IrKeymapResponse {
+interface IrKeymapResponse {
 	success: boolean;
 	/** Keycodes are numbers, serialized as JSON object keys (strings). */
 	keymap: Record<string, IrBinding>;
@@ -62,7 +62,7 @@ export interface IrEvent {
 	receivedAt: string;
 }
 
-export interface IrRecentResponse {
+interface IrRecentResponse {
 	success: boolean;
 	/** Newest first. */
 	events: IrEvent[];

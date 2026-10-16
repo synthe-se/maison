@@ -24,7 +24,7 @@ export const TEMPO: Record<TempoColor, { name: () => string; token: string; key:
 export const UNSURE = 0.6;
 
 /** A forecast in words, with its probability (« Rouge probable · 62 % »). */
-export function probable(c: TempoColor, p: number | undefined): string {
+function probable(c: TempoColor, p: number | undefined): string {
 	return p === undefined ? TEMPO[c].name() : m.tempo_color_probable({ color: TEMPO[c].name(), percent: percent(p) });
 }
 

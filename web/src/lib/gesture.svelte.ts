@@ -36,7 +36,7 @@ export function gate(reason: string | false | null | undefined, busy: boolean) {
 	return reason ? unavailable(reason) : pending(busy);
 }
 
-export interface RunOptions {
+interface RunOptions {
 	/** The field the failure is about: the error is shown under it (`error`), not in a toast,
 	 * and the focus goes back to it so its description is read (WCAG 3.3.1). */
 	field?: () => HTMLElement | null | undefined;

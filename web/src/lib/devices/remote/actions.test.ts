@@ -6,7 +6,6 @@ import { remoteSources } from '#lib/test/remote.ts';
 import {
 	ACTION_TYPES,
 	defaultAction,
-	isComplete,
 	isEditable,
 	outcome,
 	SCENE_TYPES,
@@ -19,6 +18,9 @@ import {
 
 const sources = remoteSources();
 const none: Sources = { lamps: [], hueLamps: [], covers: [], plugs: [], hosts: [], codes: [], apps: [], scenes: [] };
+
+/** Whether an editor finds the action complete (it says nothing about it). */
+const isComplete = (a: IrAction) => actionsProblem([toRow(a)]) === '';
 
 describe('summarize', () => {
 	it('says each action type in one line, with the devices’ real names', () => {
@@ -193,7 +195,7 @@ describe('isComplete', () => {
 	});
 
 	it('never blocks a save on an action it does not edit', () => {
-		expect(isComplete({ action: 'androidtv_key' })).toBe(true);
+		expect(isComplete({ action: 'androidtv_key' } as unknown as IrAction)).toBe(true);
 	});
 });
 

@@ -35,10 +35,10 @@ export interface ClimateSettings {
 }
 
 export const isClimateMode = (v: string): v is ClimateMode => (CLIMATE_MODES as readonly string[]).includes(v);
-export const isClimateFan = (v: string): v is ClimateFan => (CLIMATE_FANS as readonly string[]).includes(v);
-export const isClimateVane = (v: string): v is ClimateVane => (CLIMATE_VANES as readonly string[]).includes(v);
+const isClimateFan = (v: string): v is ClimateFan => (CLIMATE_FANS as readonly string[]).includes(v);
+const isClimateVane = (v: string): v is ClimateVane => (CLIMATE_VANES as readonly string[]).includes(v);
 
-export const clampTemperature = (t: number) => Math.min(TEMP_MAX_C, Math.max(TEMP_MIN_C, Math.round(t)));
+const clampTemperature = (t: number) => Math.min(TEMP_MAX_C, Math.max(TEMP_MIN_C, Math.round(t)));
 
 export function buildClimateCommand(s: ClimateSettings): string {
 	const parts = ['state', s.mode, String(s.temperature), 'fan', s.fan, 'vane', s.vane];

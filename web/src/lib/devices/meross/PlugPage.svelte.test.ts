@@ -68,7 +68,7 @@ describe('PlugPage', () => {
 	});
 
 	// the backend sends « 230.4V », « 0.183A », « 42.4W » (meross.rs format_*): read as numbers
-	// they are NaN. The tile already reads `raw` (livePower); the page does not.
+	// they are NaN: the page reads `raw` (units.ts `reading`), as the tile does.
 	it('says voltage, current and power in numbers', async () => {
 		plugServer();
 		await render(PlugPage, { id: 'p1' });

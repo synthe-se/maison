@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import { hhmm, lower } from '#lib/i18n.svelte.ts';
+import { hhmm, lower, facts } from '#lib/i18n.svelte.ts';
 import { TARIFFS, forecastDay, tempoForecast, tempoToday } from '#lib/test/tempo.ts';
-import { probable } from './colors.ts';
+import { dayWords } from './colors.ts';
 import { cents, nextLine, nowLine } from './now.ts';
 import { priceNow } from './price.ts';
 
@@ -32,10 +32,10 @@ describe('Tempo now, in words', () => {
 	it('before 10:40, tomorrow is announced around 10:40, with the forecast; after, the forecast alone or « unknown »', () => {
 		const data = tempoToday();
 		expect(nextLine(data, priceNow(at('09:00'), data), before(), at('09:00'))).toBe(
-			m.tempo_tomorrow_is({ words: `${m.tempo_announced_at()} · ${probable('WHITE', 0.4)}` })
+			m.tempo_tomorrow_is({ words: facts(m.tempo_announced_at(), dayWords('WHITE', true, 0.4)) })
 		);
 		expect(nextLine(data, priceNow(at('10:40'), data), before(0.7), at('10:40'))).toBe(
-			m.tempo_tomorrow_is({ words: probable('WHITE', 0.7) })
+			m.tempo_tomorrow_is({ words: dayWords('WHITE', true, 0.7) })
 		);
 		expect(nextLine(data, priceNow(at('10:40'), data), tempoForecast({ days: [] }), at('10:40'))).toBe(
 			m.tempo_tomorrow_is({ words: m.common_unknown() })

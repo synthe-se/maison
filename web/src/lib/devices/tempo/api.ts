@@ -2,10 +2,10 @@
 
 import { get, path } from '#lib/api.ts';
 export type TempoColor = 'BLUE' | 'WHITE' | 'RED';
-export type TempoProbabilities = Record<TempoColor, number>;
+type TempoProbabilities = Record<TempoColor, number>;
 
 /** €/kWh, tax included: off-peak and peak. */
-export interface TempoPrice {
+interface TempoPrice {
 	offPeak: number;
 	peak: number;
 }
@@ -19,7 +19,7 @@ export interface TempoTariffs {
 	startsOn: string;
 }
 
-export interface TempoCount {
+interface TempoCount {
 	used: number;
 	total: number;
 	remaining: number;
@@ -33,7 +33,7 @@ export interface TempoStock {
 	red: TempoCount;
 }
 
-export interface TempoDay {
+interface TempoDay {
 	date: string;
 	/** Null until RTE publishes it. */
 	color: TempoColor | null;
@@ -59,7 +59,7 @@ export interface TempoToday {
 	cached: boolean;
 }
 
-export interface TempoScore {
+interface TempoScore {
 	horizon: number;
 	days: number;
 	accuracy: number;

@@ -47,7 +47,7 @@ export interface LampDriver {
 }
 
 /** A family's driver and its live values, all under `key` (so `refresh(key)` reaches every view). */
-export interface LampFamily<List, Detail> extends LampDriver {
+interface LampFamily<List, Detail> extends LampDriver {
 	list: Source<List>;
 	stats: Source<LampStats>;
 	detail: (id: string) => Source<Detail>;

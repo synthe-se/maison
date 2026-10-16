@@ -32,12 +32,12 @@ function tonight(): string {
 const FEEDER_SAVE_MS = 300;
 
 /** A house's JSON answer. */
-export interface Answer {
+interface Answer {
 	body: string;
 }
 
 /** A request's JSON body, as Playwright reads one (whoever forwards it). */
-export type Body = ReturnType<Request['postDataJSON']>;
+type Body = ReturnType<Request['postDataJSON']>;
 
 export function house() {
 	const state = {

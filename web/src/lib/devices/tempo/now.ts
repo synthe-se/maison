@@ -10,7 +10,7 @@ import { TEMPO, dayWords } from './colors.ts';
 import type { PriceNow } from './price.ts';
 
 /** RTE publishes tomorrow's color around 10:40 (minutes after midnight). */
-export const ANNOUNCED_AT = 10 * 60 + 40;
+const ANNOUNCED_AT = 10 * 60 + 40;
 
 /** « 19,2 c€/kWh »: short enough for a row (the Tempo page says it to the ten-thousandth). */
 export const cents = (eurPerKwh: number) => m.tempo_cents({ cents: num(eurPerKwh * 100, 1) });

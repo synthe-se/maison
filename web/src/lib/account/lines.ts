@@ -3,7 +3,7 @@
 
 import { facts, longDate, when } from '#lib/i18n.svelte.ts';
 
-export interface LifeWords {
+interface LifeWords {
 	/** « Créée le 12 novembre 2026 » */
 	since: (p: { when: string }) => string;
 	/** « utilisée le 3 oct. 21:04 » */

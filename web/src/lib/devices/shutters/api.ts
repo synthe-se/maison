@@ -4,7 +4,7 @@ import { get, post, put, patch, del, path } from '#lib/api.ts';
 import type { NextSun } from '#lib/sun/api.ts';
 // Positions are "how open": 100 = fully open, 0 = closed; null until the switch is calibrated.
 
-export type ShutterMotion = 'stopped' | 'opening' | 'closing';
+type ShutterMotion = 'stopped' | 'opening' | 'closing';
 
 export interface Shutter {
 	id: string;
@@ -52,7 +52,7 @@ export interface ShutterResponse {
 }
 
 /** The house's place, and when the sun next rises and sets there (null with no place). */
-export interface PlaceAnswer {
+interface PlaceAnswer {
 	success: boolean;
 	place: Place | null;
 	sun: NextSun | null;

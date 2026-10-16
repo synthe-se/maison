@@ -1,7 +1,7 @@
 // The rabbit's API (garenne, backend/src/nabaztag.rs).
 
 import { get, post, type SimpleResponse } from '#lib/api.ts';
-export interface NabaztagConfig {
+interface NabaztagConfig {
 	host: string | null;
 	tempoEnabled: boolean;
 }
@@ -12,7 +12,7 @@ export interface NabaztagStatusResponse {
 	reachable: boolean;
 }
 
-export interface NabaztagTempoPushResponse {
+interface NabaztagTempoPushResponse {
 	success: boolean;
 	message: string;
 	result: { todayColor: string; tomorrowColor: string | null; ledHex: string; earPosition: number | null };

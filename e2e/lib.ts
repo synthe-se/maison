@@ -159,7 +159,7 @@ export async function shot(target: Page | Locator, name: string, full = false) {
 }
 
 let axeSource: string | undefined;
-export type Violation = { id: string; impact: string; help: string; nodes: { target: unknown }[] };
+type Violation = { id: string; impact: string; help: string; nodes: { target: unknown }[] };
 
 /** axe-core on the page as it is, restricted to `tags`. */
 export async function axe(page: Page, tags: string[]): Promise<Violation[]> {

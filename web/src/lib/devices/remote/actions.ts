@@ -245,7 +245,7 @@ export function defaultAction(type: ActionType, s: Sources): IrAction {
 	}
 }
 
-export function isComplete(a: { action: string }): boolean {
+function isComplete(a: { action: string }): boolean {
 	if (!isEditable(a)) return true;
 	switch (a.action) {
 		case 'nabaztag':

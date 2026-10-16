@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { ApiError, UNREACHABLE } from '#lib/api.ts';
 import { CODES } from '#lib/codes.ts';
-import { CODE_WORDS, codeText, errorText } from './errors.ts';
+import { codeText, errorText } from './errors.ts';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -11,7 +11,6 @@ describe('errorText', () => {
 		const said = CODES.map((code) => errorText(new ApiError('Server words', 400, code)));
 		for (const s of said) expect(s).not.toBe('Server words');
 		expect(new Set(said).size).toBe(CODES.length);
-		expect(Object.keys(CODE_WORDS).toSorted()).toEqual([...CODES].toSorted());
 	});
 
 	it('words each refusal by its name', () => {
