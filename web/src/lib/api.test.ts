@@ -166,7 +166,7 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['meross.consumption', () => merossApi.consumption('p1'), 'GET /meross/p1/consumption'],
 	['meross.dnd', () => merossApi.dnd('p1', true), 'POST /meross/p1/dnd', { enabled: true }],
 	['broadlink.discover', () => broadlinkApi.discover(), 'GET /broadlink/discover'],
-	['broadlink.discover (a new scan)', () => broadlinkApi.discover(true), 'GET /broadlink/discover?forceRefresh=true'],
+	['broadlink.rediscover (a new scan)', () => broadlinkApi.rediscover(), 'POST /broadlink/discover'],
 	['broadlink.listCodes', () => broadlinkApi.listCodes(), 'GET /broadlink/codes'],
 	['broadlink.getMitsubishiState', () => broadlinkApi.getMitsubishiState(), 'GET /broadlink/mitsubishi/state'],
 	[

@@ -12,6 +12,13 @@ describe('Toasts', () => {
 		vi.useRealTimers();
 	});
 
+	it('holds them in a named region while there are some (nothing outside a landmark), none otherwise', async () => {
+		await render(Toasts);
+		await expect.element(page.getByRole('region', { name: m.toasts_label() })).not.toBeInTheDocument();
+		ui.toast('Enregistré');
+		await expect.element(page.getByRole('region', { name: m.toasts_label() }).getByText('Enregistré')).toBeVisible();
+	});
+
 	it('shows each message, and closes it from its button', async () => {
 		await render(Toasts);
 		ui.toast('Programme enregistré');

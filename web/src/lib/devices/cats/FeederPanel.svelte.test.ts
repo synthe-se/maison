@@ -17,7 +17,7 @@ describe('FeederPanel', () => {
 		withStatus({
 			feeding: { manualFeedEnabled: true, lastFeedSize: '2 portions', lastFeedReport: 0, quickFeedAvailable: false },
 			system: { poweredBy: 'Battery', ipAddress: '10.0.0.2' },
-			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006', timestampReadable: '' } }
+			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006' } }
 		});
 		await render(FeederPanel, { id: 'f1' });
 		await expect.element(page.getByText(m.feeder_power_battery())).toBeVisible();

@@ -82,7 +82,7 @@ export async function showcase(page: Page) {
 		'/api/nabaztag': { success: true, config: { host: '192.168.1.50', tempoEnabled: true }, reachable: true },
 		'/api/tv': {
 			success: true,
-			config: { host: '192.168.1.52', irBlasterHost: broadlinkHost().host, boxHost: '192.168.1.153' },
+			config: { host: '192.168.1.52', irBlasterHost: broadlinkHost().host },
 			status: {
 				configured: true,
 				power: 'standby',

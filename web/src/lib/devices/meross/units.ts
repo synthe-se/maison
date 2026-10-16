@@ -1,5 +1,5 @@
 // Electricity in words, once: the plug tile, the plug page. The electricity endpoint's
-// formatted fields already carry their unit (« 42.0W »): numbers come from its raw reading,
+// formatted fields already carry their unit (« 42W »): numbers come from its raw reading,
 // converted by `reading` alone. Daily energy is in Wh.
 
 import { m } from '#lib/paraglide/messages.js';
@@ -15,7 +15,7 @@ export const kwh = (energy: number) => m.meross_kwh({ energy: num(energy, 3) });
 export const kwhFromWh = (wh: number) => kwh(wh / 1000);
 
 /** The plug's raw reading in base units: it reports tenths of a volt, milliamperes and
- * milliwatts (backend/src/meross.rs, `format_*`). */
+ * milliwatts (api/src/meross.rs, `ElectricityRaw::said`). */
 export const reading = (raw: { voltage: number; current: number; power: number }) => ({
 	volts: raw.voltage / 10,
 	amps: raw.current / 1000,

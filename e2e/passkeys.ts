@@ -23,7 +23,7 @@ import {
 const keyRows = (p: Page) => p.getByRole('region', { name: fr.keys_title() }).getByRole('listitem');
 
 const link = invitation();
-check('the CLI printed an invitation link, its token in the fragment', /\/invite#[0-9a-f]{64}$/.test(link));
+check('the CLI printed an invitation link, its token in the fragment', /\/invite#[A-Za-z0-9_-]{43}$/.test(link));
 const browser = await launch();
 // axe is injected inline: past the CSP, as in a11y.ts
 const p = await open(browser, { viewport: { width: 1280, height: 900 }, bypassCSP: true });

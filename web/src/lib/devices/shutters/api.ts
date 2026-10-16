@@ -1,5 +1,6 @@
 // The Matter shutters' API (Sonoff Orb-RBS, backend/src/matter/).
 
+import type { Code } from '#lib/codes.ts';
 import { get, post, put, patch, del, path } from '#lib/api.ts';
 import type { NextSun } from '#lib/sun/api.ts';
 // Positions are "how open": 100 = fully open, 0 = closed; null until the switch is calibrated.
@@ -23,7 +24,8 @@ export interface Shutter {
 	/** The next scheduled opening / closing will be skipped (once). */
 	skipNextOpen: boolean;
 	skipNextClose: boolean;
-	error?: string;
+	/** Why it is offline, as a refusal's code (`device_unreachable`, `internal`). */
+	error?: Code;
 }
 
 /** Follow the sun: open at sunrise, close at sunset, each shifted by minutes (± 180). */

@@ -202,11 +202,12 @@ describe('ClimateGroup', () => {
 		await render(ClimateGroup);
 		const search = page.getByRole('button', { name: m.climate_search_remote() });
 		await search.click();
-		await expect.poll(() => calls.some((c) => c.url === '/api/broadlink/discover?forceRefresh=true')).toBe(true);
+		const scans = () => calls.filter((c) => c.url === '/api/broadlink/discover' && c.init?.method === 'POST');
+		await expect.poll(() => scans().length).toBe(1);
 		await expect.element(search).not.toHaveAttribute('aria-busy');
 		// once: the next reads go to the server's cache again
 		await search.click();
-		await expect.poll(() => calls.filter((c) => c.url === '/api/broadlink/discover?forceRefresh=true').length).toBe(2);
+		await expect.poll(() => scans().length).toBe(2);
 	});
 
 	it('the order itself is folded away, under a disclosure', async () => {

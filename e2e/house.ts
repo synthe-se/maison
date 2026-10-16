@@ -4,7 +4,13 @@
 // answer is typed with the app's own types and built from the unit tests' fixtures
 // (web/src/lib/test), so a changed API fails to type-check here too (`bun run check`).
 import type { Page, Request, Route } from 'playwright';
-import type { DeviceStatusResponse, DevicesResponse, MealPlanEntry, MealPlanResponse } from '../web/src/lib/devices/cats/api.ts';
+import type {
+	DeviceStatusResponse,
+	DevicesResponse,
+	MealPlanEntry,
+	MealPlanResponse,
+	MealPlanUpdate
+} from '../web/src/lib/devices/cats/api.ts';
 import type { HueLampActionResponse, HueLampsResponse, HueLampStatusResponse, LampStats } from '../web/src/lib/devices/lamps/api.ts';
 import type {
 	MerossConsumptionResponse,
@@ -14,7 +20,6 @@ import type {
 } from '../web/src/lib/devices/meross/api.ts';
 import type { ShutterResponse, ShuttersResponse } from '../web/src/lib/devices/shutters/api.ts';
 import type { BroadlinkDiscoverResponse } from '../web/src/lib/devices/climate/api.ts';
-import type { SimpleResponse } from '../web/src/lib/api.ts';
 import { hueLamp } from '../web/src/lib/test/lamps.ts';
 import { merossElectricity, merossPlug, merossStatus } from '../web/src/lib/test/meross.ts';
 import { shutter } from '../web/src/lib/test/shutters.ts';
@@ -187,7 +192,7 @@ export function house() {
 			const parsedStatus = m[2] === 'feeder' ? feederStatus() : m[2] === 'fountain' ? state.fountain : state.litter;
 			return json<DeviceStatusResponse>({
 				success: true,
-				device: { id: d.id, name: d.name, type: d.type, connected: d.connected },
+				device: { id: d.id, name: d.name },
 				parsedStatus,
 				message: ''
 			});
@@ -195,7 +200,13 @@ export function house() {
 		if (method === 'POST' && /^\/api\/devices\/[^/]+\/feeder\/meal-plan$/.test(pathname)) {
 			state.meals = body.mealPlan;
 			await new Promise((r) => setTimeout(r, FEEDER_SAVE_MS));
-			return json<SimpleResponse>({ success: true, message: '' });
+			return json<MealPlanUpdate>({
+				success: true,
+				device: { id: 'feeder-1', name: 'Pixi Feeder' },
+				encodedBase64: '',
+				formattedMealPlan: '',
+				message: ''
+			});
 		}
 		if (method === 'GET' && /^\/api\/devices\/[^/]+\/feeder\/meal-plan$/.test(pathname)) {
 			return json<MealPlanResponse>({
@@ -208,7 +219,7 @@ export function house() {
 		}
 		// the IR blaster: the backend would broadcast a discovery on the real LAN; answer with
 		// a blaster at a TEST-NET address, which the backend refuses before any frame leaves
-		if (method === 'GET' && pathname === '/api/broadlink/discover') {
+		if ((method === 'GET' || method === 'POST') && pathname === '/api/broadlink/discover') {
 			return json<BroadlinkDiscoverResponse>({ success: true, devices: [broadlinkHost()], total: 1, message: '' });
 		}
 		return undefined; // the real backend

@@ -17,7 +17,7 @@ const NAME = 'Philips 55PUS';
 function tvStatus(over: Partial<TvStatus> = {}): TvStatusResponse {
 	return {
 		success: true,
-		config: { host: '192.168.1.52', irBlasterHost: '192.168.1.73', boxHost: null },
+		config: { host: '192.168.1.52', irBlasterHost: '192.168.1.73' },
 		status: {
 			configured: true,
 			power: 'on',
@@ -250,12 +250,10 @@ describe('TvPage', () => {
 		await expect.element(page.getByText(m.tv_not_configured())).toBeVisible();
 		await expect.element(page.getByText(m.tv_configure_hint())).toBeVisible();
 		await expect.element(page.getByRole('button', { name: NAME })).not.toBeInTheDocument();
-		await userEvent.fill(page.getByLabelText(m.tv_box_host()).element(), '192.168.1.153');
+		await userEvent.fill(page.getByLabelText(m.tv_host()).element(), '192.168.1.53');
 		await page.getByRole('button', { name: m.common_save() }).click();
 		await expect.poll(() => reads(calls)).toBe(2);
-		expect(sent(calls)).toEqual([
-			['PUT', '/api/tv/config', { host: '192.168.1.52', irBlasterHost: '192.168.1.73', boxHost: '192.168.1.153' }]
-		]);
+		expect(sent(calls)).toEqual([['PUT', '/api/tv/config', { host: '192.168.1.53', irBlasterHost: '192.168.1.73' }]]);
 	});
 
 	it('the settings button unfolds and folds the settings', async () => {
