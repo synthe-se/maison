@@ -8,6 +8,10 @@
 //! open; the code shown by that app's "share / add to another ecosystem"
 //! screen is what [`MatterManager::commission`] takes.
 //!
+//! Each shutter's position and motion come from a subscription (the switch reports what
+//! changes, and at least every few minutes): the list is served from it, a read only when
+//! it is not established. [`MatterManager::subscribe`] says the list as it changes.
+//!
 //! State lives in its own directory (default `matter/`) because the
 //! controller persists its fabric keys by temp-file + rename: the directory
 //! itself must belong to the service user, unlike the root-owned app dir.
@@ -17,32 +21,36 @@
 //! while every view here reports `openPercent` (100 = fully open).
 
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, Weak},
     time::Duration,
 };
 
-use axum::http::StatusCode;
 use matter_codec::Tag;
 use matter_controller::{
     AttestationTrust, CommandPath, FabricConfig, FileStore, MatterController, MatterTime, ReadPath,
-    Value,
+    SubscriptionEvent, Value,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::{
+    sync::{watch, Mutex, RwLock},
+    task::JoinHandle,
+};
 
 use crate::{
     config::Config,
-    error::AppError,
+    error::{AppError, Refusal},
+    json_config::{Checked, JsonConfig},
     store::{self, Access, Corrupt},
-    sun::{self, Place},
+    sun::{self, NextSun, Place, SunTimes},
+    util::{capped_backoff, lock},
 };
 
 mod schedule;
 
-pub use schedule::SunSchedule;
-use schedule::{clock_trusted, next_sun, offset, Look, NextSun, ScheduleState, MAX_SUN_OFFSET_MIN};
+pub use maison_api::matter::{Cover, CoverMotion, SunSchedule};
+use schedule::{clock_trusted, offset, Look, ScheduleState, MAX_SUN_OFFSET_MIN};
 
 type Time = chrono::DateTime<chrono::Utc>;
 
@@ -65,9 +73,21 @@ const CMD_REMOVE_FABRIC: u32 = 0x0A;
 /// the router's global 180 s timeout.
 const COMMISSION_TIMEOUT: Duration = Duration::from_secs(150);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
-/// Status reads fan out per device on every dashboard poll; an unreachable
-/// switch must not hold the list hostage.
+/// A read (when no subscription is established) fans out per device; an unreachable switch
+/// must not hold the list hostage.
 const READ_TIMEOUT: Duration = Duration::from_secs(6);
+/// The client the geocoding asks with.
+const WEB_TIMEOUT: Duration = Duration::from_secs(10);
+/// A subscription's report interval asked of the switch: at most once a second while the
+/// motor runs, and at least every five minutes (its heartbeat: a switch silent past it is
+/// subscribed to again by the controller).
+const REPORT_MIN_S: u16 = 1;
+const REPORT_MAX_S: u16 = 300;
+/// A subscription that would not be made is asked again after this, doubled each time.
+const SUBSCRIBE_RETRY: Duration = Duration::from_secs(5);
+const MAX_SUBSCRIBE_RETRY: Duration = Duration::from_secs(300);
+/// A cover's follower, should it end or panic, starts again after this.
+const FOLLOW_RESTART: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,7 +146,7 @@ impl CoverConfig {
     }
 
     /// When the schedule will next open and close it (none for an event switched off).
-    fn next_times(&self, next: NextSun) -> (Option<Time>, Option<Time>) {
+    fn next_times(&self, next: SunTimes) -> (Option<Time>, Option<Time>) {
         (
             next.sunrise
                 .filter(|_| self.schedule.open_at_sunrise)
@@ -138,7 +158,36 @@ impl CoverConfig {
     }
 }
 
-pub use maison_api::matter::{Cover as CoverView, CoverMotion};
+/// The covers' file (`covers.json`), kept in memory and on disk together.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Covers(Vec<CoverConfig>);
+
+impl Checked for Covers {}
+
+impl Covers {
+    /// The kept covers, the skips whose time is over forgotten (the Pi was off then), on
+    /// disk too.
+    fn load(path: &Path) -> Result<JsonConfig<Self>, AppError> {
+        let mut covers = store::read_json::<Self>(path, Corrupt::Fail)?;
+        let now = chrono::Utc::now();
+        if covers.0.iter().any(|cover| cover.past_skip(now)) {
+            for cover in &mut covers.0 {
+                cover.expire_skips(now);
+            }
+            store::write_json(path, &covers, Access::Private)?;
+        }
+        JsonConfig::load_as(path, Access::Private)
+    }
+
+    fn get(&self, node_id: u64) -> Option<&CoverConfig> {
+        self.0.iter().find(|cover| cover.node_id == node_id)
+    }
+
+    fn get_mut(&mut self, node_id: u64) -> Option<&mut CoverConfig> {
+        self.0.iter_mut().find(|cover| cover.node_id == node_id)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CoverCommand {
@@ -147,6 +196,41 @@ pub enum CoverCommand {
     Stop,
     /// 0 = closed, 100 = fully open.
     OpenPercent(u8),
+}
+
+/// What a cover's switch said last: from its subscription, or from a read.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Reading {
+    /// The subscription is established (the values are the switch's own, kept up to date).
+    online: bool,
+    open_percent: Option<u8>,
+    target_open_percent: Option<u8>,
+    motion: Option<CoverMotion>,
+}
+
+impl Reading {
+    /// One attribute the switch reported (an unknown one, or a value of another type, is
+    /// not ours to read).
+    fn apply(&mut self, attribute: u32, value: &Value) {
+        match (attribute, value) {
+            (ATTR_CURRENT_LIFT_PERCENT100THS, Value::Uint(closure)) => {
+                self.open_percent = Some(closure_100ths_to_open(*closure));
+            }
+            (ATTR_TARGET_LIFT_PERCENT100THS, Value::Uint(closure)) => {
+                self.target_open_percent = Some(closure_100ths_to_open(*closure));
+            }
+            (ATTR_OPERATIONAL_STATUS, Value::Uint(status)) => {
+                self.motion = Some(motion_from_status(*status));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A cover followed by its subscription: what it says, and the task that listens.
+struct Live {
+    reading: watch::Receiver<Reading>,
+    task: JoinHandle<()>,
 }
 
 #[derive(Clone)]
@@ -161,13 +245,27 @@ struct Inner {
     /// Built on first use: binding the socket and mDNS at startup would make a
     /// network hiccup at boot fatal for a feature that may never be used.
     controller: Mutex<Option<MatterController>>,
-    covers: RwLock<BTreeMap<u64, CoverConfig>>,
+    covers: JsonConfig<Covers>,
     /// One commissioning at a time: a second would race for the same window.
     commissioning: Mutex<()>,
     /// Where the house is, for the sun schedule.
     place: RwLock<Option<Place>>,
     http: reqwest::Client,
+    geocoding_url: String,
     schedule: Mutex<ScheduleState>,
+    /// The covers followed by a subscription, by node id.
+    live: StdMutex<HashMap<u64, Live>>,
+    /// The covers as the API shows them, sent when a report or a change moved them.
+    shown: watch::Sender<Vec<Cover>>,
+}
+
+/// The followers hold the manager weakly: dropped, it stops them.
+impl Drop for Inner {
+    fn drop(&mut self) {
+        for live in lock(&self.live).values() {
+            live.task.abort();
+        }
+    }
 }
 
 impl MatterManager {
@@ -176,6 +274,7 @@ impl MatterManager {
             &config.matter_state_dir,
             &config.matter_trust_dir,
             config.matter_test_roots,
+            &config.geocoding_url,
         )
     }
 
@@ -183,8 +282,9 @@ impl MatterManager {
         state_dir: &Path,
         trust_dir: &Path,
         test_roots: bool,
+        geocoding_url: &str,
     ) -> Result<Self, AppError> {
-        let covers = load_covers(&covers_path(state_dir))?;
+        let covers = Covers::load(&covers_path(state_dir))?;
         let place = store::read_json::<Option<Place>>(&place_path(state_dir), Corrupt::Fail)?;
         Ok(Self {
             inner: Arc::new(Inner {
@@ -192,54 +292,63 @@ impl MatterManager {
                 trust_dir: trust_dir.to_path_buf(),
                 test_roots,
                 controller: Mutex::new(None),
-                covers: RwLock::new(covers),
+                covers,
                 commissioning: Mutex::new(()),
                 place: RwLock::new(place),
-                http: crate::net::web_client(
-                    concat!("Maison/", env!("CARGO_PKG_VERSION")),
-                    Duration::from_secs(10),
-                )?,
+                http: crate::net::web_client(crate::net::USER_AGENT, WEB_TIMEOUT)?,
+                geocoding_url: geocoding_url.to_string(),
                 schedule: Mutex::new(ScheduleState::default()),
+                live: StdMutex::new(HashMap::new()),
+                shown: watch::Sender::new(Vec::new()),
             }),
         })
     }
 
-    pub async fn list(&self) -> Vec<CoverView> {
-        let covers: Vec<CoverConfig> = self.inner.covers.read().await.values().cloned().collect();
-        let controller = match self.controller().await {
-            Ok(controller) => Some(controller),
-            Err(error) => {
-                tracing::warn!(%error, "matter controller unavailable");
-                None
-            }
-        };
-        let next = self.next_events().await;
-        let reads = covers.into_iter().map(|cover| {
-            let controller = controller.clone();
-            async move {
-                match controller {
-                    Some(controller) => read_cover(&controller, cover, next).await,
-                    None => offline_view(&cover, next, "Matter controller unavailable".into()),
-                }
-            }
-        });
-        futures::future::join_all(reads).await
+    /// The covers as the API shows them, as they change (a switch's report, a rename, a
+    /// schedule): for whoever pushes them to the apps.
+    pub fn subscribe(&self) -> watch::Receiver<Vec<Cover>> {
+        self.inner.shown.subscribe()
     }
 
-    pub async fn get(&self, id: &str) -> Result<CoverView, AppError> {
+    /// Every cover: from its subscription when it is established, else read.
+    pub async fn list(&self) -> Vec<Cover> {
+        self.follow_covers().await;
+        let covers = self.inner.covers.get().await.0;
+        let next = self.sun_times(chrono::Utc::now()).await;
+        let views = covers.into_iter().map(|cover| self.current(cover, next));
+        futures::future::join_all(views).await
+    }
+
+    pub async fn get(&self, id: &str) -> Result<Cover, AppError> {
         let cover = self.cover(id).await?;
-        let controller = self.controller().await?;
-        Ok(read_cover(&controller, cover, self.next_events().await).await)
+        self.follow_covers().await;
+        Ok(self
+            .current(cover, self.sun_times(chrono::Utc::now()).await)
+            .await)
     }
 
-    pub async fn commission(&self, code: &str, name: &str) -> Result<CoverView, AppError> {
+    /// A cover as its subscription says it, or as a read says it when none is established.
+    async fn current(&self, cover: CoverConfig, next: SunTimes) -> Cover {
+        let reading = self.reading(cover.node_id);
+        if reading.online {
+            return view_of(&cover, next, &reading);
+        }
+        self.view_at_once(cover, next).await
+    }
+
+    /// What the subscription of `node_id` said last (offline when there is none).
+    fn reading(&self, node_id: u64) -> Reading {
+        lock(&self.inner.live)
+            .get(&node_id)
+            .map(|live| live.reading.borrow().clone())
+            .unwrap_or_default()
+    }
+
+    pub async fn commission(&self, code: &str, name: &str) -> Result<Cover, AppError> {
         let code = normalize_setup_code(code)?;
         let name = normalize_name(name)?;
         let Ok(_guard) = self.inner.commissioning.try_lock() else {
-            return Err(AppError::http(
-                StatusCode::CONFLICT,
-                "A commissioning is already in progress",
-            ));
+            return Err(Refusal::Busy.into());
         };
 
         let controller = self.controller().await?;
@@ -261,10 +370,10 @@ impl MatterManager {
                 // we found it rather than squatting one of its fabric slots.
                 decommission(&controller, info.node_id).await;
                 return Err(match outcome {
-                    Ok(_) => AppError::http(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "This Matter device exposes no window covering",
-                    ),
+                    Ok(_) => {
+                        tracing::warn!("the Matter device commissioned exposes no window covering");
+                        Refusal::Unsupported.into()
+                    }
                     Err(error) => operation_error(error),
                 });
             }
@@ -281,20 +390,29 @@ impl MatterManager {
             skip_close_at: None,
         };
         tracing::info!(
-            node_id = format_args!("{:016X}", info.node_id),
+            node_id = %node_text(info.node_id),
             endpoint,
             "matter cover commissioned"
         );
-        {
-            let mut covers = self.inner.covers.write().await;
-            covers.insert(cover.node_id, cover.clone());
-            self.persist(&covers).await?;
-        }
-        Ok(read_cover(&controller, cover, self.next_events().await).await)
+        store::private_dir(&self.inner.state_dir)?;
+        let kept = cover.clone();
+        self.inner
+            .covers
+            .update(move |covers| {
+                covers.0.retain(|c| c.node_id != kept.node_id);
+                covers.0.push(kept);
+                Ok(())
+            })
+            .await?;
+        self.follow_covers().await;
+        let next = self.sun_times(chrono::Utc::now()).await;
+        let view = read_cover(&controller, cover, next).await;
+        self.publish().await;
+        Ok(view)
     }
 
     /// A person's order: it also replaces any schedule order still being retried.
-    pub async fn command(&self, id: &str, command: CoverCommand) -> Result<CoverView, AppError> {
+    pub async fn command(&self, id: &str, command: CoverCommand) -> Result<Cover, AppError> {
         let cover = self.cover(id).await?;
         self.inner
             .schedule
@@ -304,24 +422,22 @@ impl MatterManager {
             .remove(&cover.node_id);
         let controller = self.controller().await?;
         invoke(&controller, &cover, command).await?;
-        Ok(read_cover(&controller, cover, self.next_events().await).await)
+        // a fresh read: the order's target, at once, whatever the subscription says yet
+        let next = self.sun_times(chrono::Utc::now()).await;
+        Ok(read_cover(&controller, cover, next).await)
     }
 
-    pub async fn rename(&self, id: &str, name: &str) -> Result<CoverView, AppError> {
+    pub async fn rename(&self, id: &str, name: &str) -> Result<Cover, AppError> {
         let name = normalize_name(name)?;
         self.update(id, |cover| cover.name = name).await
     }
 
-    pub async fn set_schedule(
-        &self,
-        id: &str,
-        schedule: SunSchedule,
-    ) -> Result<CoverView, AppError> {
+    pub async fn set_schedule(&self, id: &str, schedule: SunSchedule) -> Result<Cover, AppError> {
         let within = -MAX_SUN_OFFSET_MIN..=MAX_SUN_OFFSET_MIN;
         if !within.contains(&schedule.sunrise_offset_min)
             || !within.contains(&schedule.sunset_offset_min)
         {
-            return Err(AppError::bad_request("Offsets must stay within 3 hours"));
+            return Err(Refusal::Invalid.into());
         }
         self.update(id, move |cover| {
             cover.schedule = schedule;
@@ -343,7 +459,7 @@ impl MatterManager {
         id: &str,
         event: CoverCommand,
         skip: bool,
-    ) -> Result<CoverView, AppError> {
+    ) -> Result<Cover, AppError> {
         self.skip_at(id, event, skip, chrono::Utc::now()).await
     }
 
@@ -354,17 +470,18 @@ impl MatterManager {
         event: CoverCommand,
         skip: bool,
         now: Time,
-    ) -> Result<CoverView, AppError> {
+    ) -> Result<Cover, AppError> {
         let cover = self.cover(id).await?;
         let mut skipped = None;
         if skip {
-            let (open, close) = cover.next_times(self.next_events_at(now).await);
+            let (open, close) = cover.next_times(self.sun_times(now).await);
             let next = if event == CoverCommand::Open {
                 open
             } else {
                 close
             };
-            skipped = Some(next.ok_or_else(|| AppError::bad_request("Nothing scheduled to skip"))?);
+            // nothing scheduled: that event is not set up
+            skipped = Some(next.ok_or(Refusal::NotConfigured)?);
             let mut schedule = self.inner.schedule.lock().await;
             if schedule
                 .pending
@@ -388,59 +505,71 @@ impl MatterManager {
         &self,
         id: &str,
         change: impl FnOnce(&mut CoverConfig),
-    ) -> Result<CoverView, AppError> {
+    ) -> Result<Cover, AppError> {
         let cover = self.change(parse_id(id)?, change).await?;
         Ok(self.view(cover).await)
     }
 
-    /// Changes a cover: saved first, then kept (a failed save leaves memory as on disk).
+    /// Changes a cover: saved first, then kept (`JsonConfig::update`: a failed save leaves
+    /// memory as on disk); then said to the subscribers.
     async fn change(
         &self,
         node_id: u64,
         change: impl FnOnce(&mut CoverConfig),
     ) -> Result<CoverConfig, AppError> {
-        let mut covers = self.inner.covers.write().await;
-        let mut next = covers.clone();
-        let cover = next.get_mut(&node_id).ok_or_else(unknown_shutter)?;
-        change(cover);
-        let cover = cover.clone();
-        self.persist(&next).await?;
-        *covers = next;
-        Ok(cover)
+        store::private_dir(&self.inner.state_dir)?;
+        let changed = self
+            .inner
+            .covers
+            .update(|covers| {
+                let cover = covers.get_mut(node_id).ok_or(Refusal::NotFound)?;
+                change(cover);
+                Ok(cover.clone())
+            })
+            .await?;
+        self.publish().await;
+        Ok(changed)
     }
 
     /// The cover as its switch says, or as kept when the controller is down: a saved change
     /// is not reported as failed because the switch cannot be asked.
-    async fn view(&self, cover: CoverConfig) -> CoverView {
+    async fn view(&self, cover: CoverConfig) -> Cover {
         self.view_at(cover, chrono::Utc::now()).await
     }
 
-    async fn view_at(&self, cover: CoverConfig, now: Time) -> CoverView {
-        let next = self.next_events_at(now).await;
+    async fn view_at(&self, cover: CoverConfig, now: Time) -> Cover {
+        self.current(cover, self.sun_times(now).await).await
+    }
+
+    /// The cover read now (no subscription to go by), or as kept when the controller is
+    /// down (said `internal`: ours, the detail in the log).
+    async fn view_at_once(&self, cover: CoverConfig, next: SunTimes) -> Cover {
         match self.controller().await {
             Ok(controller) => read_cover(&controller, cover, next).await,
-            Err(error) => offline_view(&cover, next, error.to_string()),
+            Err(error) => {
+                tracing::debug!(%error, "matter controller unavailable: the cover as kept");
+                offline_view(&cover, next, Refusal::Internal)
+            }
         }
     }
 
-    // ── the house's place, and the sun schedule ──
+    // ── the house's place, and the sun ──
 
     pub async fn place(&self) -> Option<Place> {
         self.inner.place.read().await.clone()
     }
 
-    /// The next sunrise and sunset at the house, strictly after `now` (the schedule's own
-    /// reckoning); `None` with no place set. Either is `None` in a polar day or night.
-    pub async fn next_sun(&self, now: Time) -> Option<(Option<Time>, Option<Time>)> {
-        let place = self.inner.place.read().await.clone()?;
-        let next = next_sun(&place, now);
-        Some((next.sunrise, next.sunset))
+    /// When the sun next rises and sets at the house, and the side it says now; `None`
+    /// without a place.
+    pub async fn sun_now(&self) -> Option<NextSun> {
+        let place = self.place().await?;
+        Some(sun::next(&place, chrono::Utc::now()).api())
     }
 
     pub async fn set_place(&self, place: Place) -> Result<Place, AppError> {
         if !(-90.0..=90.0).contains(&place.latitude) || !(-180.0..=180.0).contains(&place.longitude)
         {
-            return Err(AppError::bad_request("Invalid coordinates"));
+            return Err(Refusal::Invalid.into());
         }
         store::private_dir(&self.inner.state_dir)?;
         store::write_json_async(
@@ -450,27 +579,26 @@ impl MatterManager {
         )
         .await?;
         *self.inner.place.write().await = Some(place.clone());
+        self.publish().await;
         Ok(place)
     }
 
     pub async fn search_places(&self, query: &str, language: &str) -> Result<Vec<Place>, AppError> {
-        sun::search(&self.inner.http, query, language).await
+        sun::search(&self.inner.http, &self.inner.geocoding_url, query, language).await
     }
 
-    /// The next sunrise and sunset after now, at the house (none without a place).
-    async fn next_events(&self) -> NextSun {
-        self.next_events_at(chrono::Utc::now()).await
-    }
-
-    async fn next_events_at(&self, now: Time) -> NextSun {
-        let Some(place) = self.place().await else {
-            return NextSun::default();
-        };
-        next_sun(&place, now)
+    /// The next sunrise and sunset after `now`, at the house (none without a place).
+    async fn sun_times(&self, now: Time) -> SunTimes {
+        match self.place().await {
+            Some(place) => sun::next(&place, now),
+            None => SunTimes::default(),
+        }
     }
 
     /// One look of the scheduler (every 30 s): sends what fell due, and retries what failed.
+    /// The covers' subscriptions are kept up on the way.
     pub async fn run_schedule(&self) {
+        self.follow_covers().await;
         self.schedule_tick(chrono::Utc::now(), clock_trusted(), |cover, command| {
             let manager = self.clone();
             async move {
@@ -488,7 +616,7 @@ impl MatterManager {
         Fut: std::future::Future<Output = Result<(), AppError>>,
     {
         let place = self.place().await;
-        let covers: Vec<CoverConfig> = self.inner.covers.read().await.values().cloned().collect();
+        let covers = self.inner.covers.get().await.0;
         let Look { orders, skipped } =
             self.inner
                 .schedule
@@ -532,21 +660,29 @@ impl MatterManager {
     pub async fn remove(&self, id: &str) -> Result<(), AppError> {
         let cover = self.cover(id).await?;
         let controller = self.controller().await?;
+        if let Some(live) = lock(&self.inner.live).remove(&cover.node_id) {
+            live.task.abort();
+        }
         decommission(&controller, cover.node_id).await;
-        let mut covers = self.inner.covers.write().await;
-        covers.remove(&cover.node_id);
-        self.persist(&covers).await
+        store::private_dir(&self.inner.state_dir)?;
+        self.inner
+            .covers
+            .update(|covers| {
+                covers.0.retain(|c| c.node_id != cover.node_id);
+                Ok(())
+            })
+            .await?;
+        self.publish().await;
+        Ok(())
     }
 
     async fn cover(&self, id: &str) -> Result<CoverConfig, AppError> {
         let node_id = parse_id(id)?;
         self.inner
             .covers
-            .read()
+            .read(|covers| covers.get(node_id).cloned())
             .await
-            .get(&node_id)
-            .cloned()
-            .ok_or_else(unknown_shutter)
+            .ok_or_else(|| Refusal::NotFound.into())
     }
 
     async fn controller(&self) -> Result<MatterController, AppError> {
@@ -574,15 +710,185 @@ impl MatterManager {
             .build()
             .await
             .map_err(|error| {
-                AppError::service_unavailable(format!("Matter controller failed to start: {error}"))
+                tracing::error!(%error, "Matter controller failed to start");
+                Refusal::Internal.into()
             })
     }
 
-    async fn persist(&self, covers: &BTreeMap<u64, CoverConfig>) -> Result<(), AppError> {
-        store::private_dir(&self.inner.state_dir)?;
-        let list: Vec<&CoverConfig> = covers.values().collect();
-        store::write_json_async(&covers_path(&self.inner.state_dir), &list, Access::Private).await
+    // ── the subscriptions ──
+
+    /// Follows every kept cover that is not followed yet (the controller is built for it,
+    /// not at boot); a follower whose cover is gone is stopped.
+    async fn follow_covers(&self) {
+        let covers = self.inner.covers.get().await.0;
+        let unfollowed = {
+            let mut live = lock(&self.inner.live);
+            live.retain(|node_id, followed| {
+                let kept = covers.iter().any(|cover| cover.node_id == *node_id);
+                if !kept {
+                    followed.task.abort();
+                }
+                kept
+            });
+            covers
+                .iter()
+                .filter(|cover| !live.contains_key(&cover.node_id))
+                .map(|cover| (cover.node_id, cover.endpoint))
+                .collect::<Vec<_>>()
+        };
+        if unfollowed.is_empty() {
+            return;
+        }
+        if let Err(error) = self.controller().await {
+            tracing::debug!(%error, "matter controller unavailable: no subscription yet");
+            return;
+        }
+        let mut live = lock(&self.inner.live);
+        for (node_id, endpoint) in unfollowed {
+            let (sender, reading) = watch::channel(Reading::default());
+            let sender = Arc::new(sender);
+            let weak = Arc::downgrade(&self.inner);
+            let task = crate::every("matter cover subscription", FOLLOW_RESTART, move || {
+                follow(weak.clone(), node_id, endpoint, sender.clone())
+            });
+            live.insert(node_id, Live { reading, task });
+        }
     }
+
+    /// Sends the covers as they are now to [`Self::subscribe`]rs, from what was kept and
+    /// heard (no network), when they changed.
+    async fn publish(&self) {
+        let covers = self.inner.covers.get().await.0;
+        let next = self.sun_times(chrono::Utc::now()).await;
+        let views = covers
+            .iter()
+            .map(|cover| {
+                let reading = self.reading(cover.node_id);
+                if reading.online {
+                    view_of(cover, next, &reading)
+                } else {
+                    offline_view(cover, next, Refusal::DeviceUnreachable)
+                }
+            })
+            .collect::<Vec<_>>();
+        self.inner.shown.send_if_modified(|shown| {
+            let changed = *shown != views;
+            if changed {
+                *shown = views;
+            }
+            changed
+        });
+    }
+}
+
+/// One cover's follower: subscribes to its position, target and motion, and keeps what the
+/// switch reports in `reading`; the controller re-subscribes by itself when the switch goes
+/// quiet, this subscribes again (with a growing pause) when the subscription cannot be made
+/// or ends. It holds the manager weakly: once the manager is gone, it ends.
+async fn follow(
+    manager: Weak<Inner>,
+    node_id: u64,
+    endpoint: u16,
+    reading: Arc<watch::Sender<Reading>>,
+) {
+    let paths = cover_paths(endpoint);
+    let mut attempts: u32 = 0;
+    loop {
+        let Some(controller) = controller_of(&manager).await else {
+            return;
+        };
+        let subscribed = within(
+            COMMAND_TIMEOUT,
+            controller
+                .node(node_id)
+                .subscribe(&paths, &[], REPORT_MIN_S, REPORT_MAX_S),
+        )
+        .await;
+        match subscribed {
+            Ok(mut subscription) => {
+                attempts = 0;
+                while let Some(event) = subscription.next().await {
+                    let changed = match event {
+                        SubscriptionEvent::Report(report) => reading.send_if_modified(|r| {
+                            let before = r.clone();
+                            r.apply(report.path.attribute, &report.value);
+                            *r != before
+                        }),
+                        SubscriptionEvent::Established { max_interval, .. } => {
+                            tracing::info!(node_id = %node_text(node_id), max_interval, "matter cover subscribed");
+                            reading.send_if_modified(|r| !std::mem::replace(&mut r.online, true))
+                        }
+                        SubscriptionEvent::Resubscribing { cause } => {
+                            tracing::info!(node_id = %node_text(node_id), %cause, "matter cover subscription lost: re-subscribing");
+                            reading.send_if_modified(|r| std::mem::replace(&mut r.online, false))
+                        }
+                        SubscriptionEvent::Lagged { dropped } => {
+                            // the reports dropped are recovered by a read
+                            tracing::warn!(node_id = %node_text(node_id), dropped, "matter cover reports dropped: read again");
+                            match within(READ_TIMEOUT, controller.node(node_id).read(&paths)).await
+                            {
+                                Ok(reports) => reading.send_if_modified(|r| {
+                                    let before = r.clone();
+                                    for (path, value) in &reports {
+                                        r.apply(path.attribute, value);
+                                    }
+                                    *r != before
+                                }),
+                                Err(error) => {
+                                    tracing::warn!(node_id = %node_text(node_id), %error, "matter cover read after lost reports failed");
+                                    false
+                                }
+                            }
+                        }
+                        _ => false,
+                    };
+                    if changed {
+                        let Some(inner) = manager.upgrade() else {
+                            return;
+                        };
+                        MatterManager { inner }.publish().await;
+                    }
+                }
+                tracing::info!(node_id = %node_text(node_id), "matter cover subscription ended");
+            }
+            Err(error) => {
+                attempts = attempts.saturating_add(1);
+                tracing::warn!(node_id = %node_text(node_id), %error, attempts, "matter cover subscription refused");
+            }
+        }
+        if reading.send_if_modified(|r| std::mem::replace(&mut r.online, false)) {
+            if let Some(inner) = manager.upgrade() {
+                MatterManager { inner }.publish().await;
+            }
+        }
+        tokio::time::sleep(capped_backoff(
+            SUBSCRIBE_RETRY,
+            attempts.max(1),
+            MAX_SUBSCRIBE_RETRY,
+        ))
+        .await;
+    }
+}
+
+/// The controller, if the manager is still there (held only for the call).
+async fn controller_of(manager: &Weak<Inner>) -> Option<MatterController> {
+    let inner = manager.upgrade()?;
+    match (MatterManager { inner }).controller().await {
+        Ok(controller) => Some(controller),
+        Err(error) => {
+            tracing::debug!(%error, "matter controller unavailable for a subscription");
+            None
+        }
+    }
+}
+
+/// What a cover is read and subscribed to: its position, its target, its motion.
+fn cover_paths(endpoint: u16) -> [ReadPath; 3] {
+    [
+        ReadPath::concrete(endpoint, WINDOW_COVERING, ATTR_CURRENT_LIFT_PERCENT100THS),
+        ReadPath::concrete(endpoint, WINDOW_COVERING, ATTR_TARGET_LIFT_PERCENT100THS),
+        ReadPath::concrete(endpoint, WINDOW_COVERING, ATTR_OPERATIONAL_STATUS),
+    ]
 }
 
 fn covers_path(state_dir: &Path) -> PathBuf {
@@ -593,28 +899,16 @@ fn place_path(state_dir: &Path) -> PathBuf {
     state_dir.join("place.json")
 }
 
-/// The kept covers, without the skips whose time is over (the Pi was off then).
-fn load_covers(path: &Path) -> Result<BTreeMap<u64, CoverConfig>, AppError> {
-    let list: Vec<CoverConfig> = store::read_json(path, Corrupt::Fail)?;
-    let now = chrono::Utc::now();
-    Ok(list
-        .into_iter()
-        .map(|mut cover| {
-            cover.expire_skips(now);
-            (cover.node_id, cover)
-        })
-        .collect())
-}
-
+/// The attestation roots; unusable ones are our failure (`internal`: the detail, and the
+/// fix, in the log).
 pub(crate) fn load_trust(trust_dir: &Path) -> Result<AttestationTrust, AppError> {
     AttestationTrust::from_dirs(&trust_dir.join("paa"), &trust_dir.join("cd")).map_err(|error| {
-        AppError::http(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!(
-                "Matter attestation roots unusable in {} ({error}); run scripts/update-matter-trust.sh",
-                trust_dir.display()
-            ),
-        )
+        tracing::error!(
+            trust_dir = %trust_dir.display(),
+            %error,
+            "Matter attestation roots unusable; run scripts/update-matter-trust.sh"
+        );
+        Refusal::Internal.into()
     })
 }
 
@@ -626,10 +920,7 @@ async fn ensure_fabric(controller: &MatterController) -> Result<(), AppError> {
     if !fabrics.is_empty() {
         return Ok(());
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0);
+    let now = u64::try_from(crate::util::now_ms() / 1000).unwrap_or_default();
     // Backdated an hour so a device whose clock lags slightly still accepts
     // the certificates.
     let validity = (
@@ -678,7 +969,7 @@ async fn decommission(controller: &MatterController, node_id: u64) {
                 // the response may never arrive: a timeout here is expected.
                 let outcome = within(COMMAND_TIMEOUT, node.invoke(path, fields)).await;
                 tracing::info!(
-                    node_id = format_args!("{node_id:016X}"),
+                    node_id = %node_text(node_id),
                     ?outcome,
                     "matter fabric removal"
                 );
@@ -728,57 +1019,40 @@ async fn invoke(
     Ok(())
 }
 
-async fn read_cover(controller: &MatterController, cover: CoverConfig, next: NextSun) -> CoverView {
-    let paths = [
-        ReadPath::concrete(
-            cover.endpoint,
-            WINDOW_COVERING,
-            ATTR_CURRENT_LIFT_PERCENT100THS,
-        ),
-        ReadPath::concrete(
-            cover.endpoint,
-            WINDOW_COVERING,
-            ATTR_TARGET_LIFT_PERCENT100THS,
-        ),
-        ReadPath::concrete(cover.endpoint, WINDOW_COVERING, ATTR_OPERATIONAL_STATUS),
-    ];
+/// The cover read now; offline (`device_unreachable`, the detail in the log) when the
+/// switch does not answer.
+async fn read_cover(controller: &MatterController, cover: CoverConfig, next: SunTimes) -> Cover {
+    let paths = cover_paths(cover.endpoint);
     let reports = match within(READ_TIMEOUT, controller.node(cover.node_id).read(&paths)).await {
         Ok(reports) => reports,
-        Err(error) => return offline_view(&cover, next, error.to_string()),
-    };
-
-    let mut view = offline_view(&cover, next, String::new());
-    view.online = true;
-    view.error = None;
-    for (path, value) in reports {
-        match (path.attribute, value) {
-            (ATTR_CURRENT_LIFT_PERCENT100THS, Value::Uint(closure)) => {
-                view.open_percent = Some(closure_100ths_to_open(closure));
-            }
-            (ATTR_TARGET_LIFT_PERCENT100THS, Value::Uint(closure)) => {
-                view.target_open_percent = Some(closure_100ths_to_open(closure));
-            }
-            (ATTR_OPERATIONAL_STATUS, Value::Uint(status)) => {
-                view.motion = Some(motion_from_status(status));
-            }
-            _ => {}
+        Err(error) => {
+            tracing::debug!(cover = %cover.name, %error, "matter cover read failed");
+            return offline_view(&cover, next, Refusal::DeviceUnreachable);
         }
+    };
+    let mut reading = Reading {
+        online: true,
+        ..Reading::default()
+    };
+    for (path, value) in &reports {
+        reading.apply(path.attribute, value);
     }
-    view
+    view_of(&cover, next, &reading)
 }
 
-fn offline_view(cover: &CoverConfig, next: NextSun, error: String) -> CoverView {
+/// A cover as the API shows it: as kept, and what its switch said (`reading`).
+fn view_of(cover: &CoverConfig, next: SunTimes, reading: &Reading) -> Cover {
     let (next_open, next_close) = cover.next_times(next);
     // what the web strikes through: the next scheduled time, when it is the skipped one
     let skipped = |event, at: Option<Time>| at.is_some_and(|at| cover.skips(event, at));
-    CoverView {
+    Cover {
         id: format_id(cover.node_id),
         name: cover.name.clone(),
         endpoint: cover.endpoint,
-        online: false,
-        open_percent: None,
-        target_open_percent: None,
-        motion: None,
+        online: reading.online,
+        open_percent: reading.open_percent,
+        target_open_percent: reading.target_open_percent,
+        motion: reading.motion,
         vendor_id: cover.vendor_id,
         product_id: cover.product_id,
         schedule: cover.schedule,
@@ -786,11 +1060,20 @@ fn offline_view(cover: &CoverConfig, next: NextSun, error: String) -> CoverView 
         next_close,
         skip_next_open: skipped(CoverCommand::Open, next_open),
         skip_next_close: skipped(CoverCommand::Close, next_close),
-        error: Some(error),
+        error: None,
     }
 }
 
-/// A switch's IM statuses: any failure is the command refused, said with the cover's name.
+/// A cover nobody could ask: as kept, `why` it is offline coded in `error`.
+fn offline_view(cover: &CoverConfig, next: SunTimes, why: Refusal) -> Cover {
+    Cover {
+        error: Some(why.as_str().to_string()),
+        ..view_of(cover, next, &Reading::default())
+    }
+}
+
+/// A switch's IM statuses: any failure is the command refused (`unsupported`: the switch
+/// would not; its status in the log).
 fn rejected(
     cover: &CoverConfig,
     statuses: impl IntoIterator<Item = matter_controller::ImStatus>,
@@ -799,10 +1082,10 @@ fn rejected(
         matter_controller::ImStatus::Failure(code) => Some(code),
         _ => None,
     }) {
-        Some(code) => Err(AppError::http(
-            StatusCode::BAD_GATEWAY,
-            format!("{} rejected the command (status {code:#04x})", cover.name),
-        )),
+        Some(code) => {
+            tracing::warn!(cover = %cover.name, status = format_args!("{code:#04x}"), "the shutter rejected the command");
+            Err(Refusal::Unsupported.into())
+        }
         None => Ok(()),
     }
 }
@@ -826,19 +1109,21 @@ fn open_to_closure_100ths(open: u8) -> u16 {
     (100 - u16::from(open.min(100))) * 100
 }
 
+/// A cover's id in the API: its node id in 16 hex digits.
 fn format_id(node_id: u64) -> String {
     format!("{node_id:016x}")
 }
 
-fn parse_id(id: &str) -> Result<u64, AppError> {
-    if id.len() != 16 {
-        return Err(unknown_shutter());
-    }
-    u64::from_str_radix(id, 16).map_err(|_| unknown_shutter())
+/// A node id as the logs say it.
+fn node_text(node_id: u64) -> String {
+    format!("{node_id:016X}")
 }
 
-fn unknown_shutter() -> AppError {
-    AppError::not_found("Unknown shutter")
+fn parse_id(id: &str) -> Result<u64, AppError> {
+    if id.len() != 16 {
+        return Err(Refusal::NotFound.into());
+    }
+    u64::from_str_radix(id, 16).map_err(|_| Refusal::NotFound.into())
 }
 
 fn normalize_name(name: &str) -> Result<String, AppError> {
@@ -846,7 +1131,8 @@ fn normalize_name(name: &str) -> Result<String, AppError> {
 }
 
 /// Accept a QR payload (`MT:…`) as-is, and a manual pairing code with the
-/// spaces/dashes apps print it with (`3497-011-2332` → `34970112332`).
+/// spaces/dashes apps print it with (`3497-011-2332` → `34970112332`); anything else is the
+/// coded `invalid`.
 fn normalize_setup_code(code: &str) -> Result<String, AppError> {
     let code = code.trim();
     if code.starts_with("MT:") {
@@ -856,9 +1142,7 @@ fn normalize_setup_code(code: &str) -> Result<String, AppError> {
     if (digits.len() == 11 || digits.len() == 21) && digits.bytes().all(|b| b.is_ascii_digit()) {
         Ok(digits)
     } else {
-        Err(AppError::bad_request(
-            "Expected an 11- or 21-digit pairing code, or an MT: QR payload",
-        ))
+        Err(Refusal::Invalid.into())
     }
 }
 
@@ -882,31 +1166,23 @@ async fn within<T>(
     }
 }
 
+/// A commissioning that failed, coded (the detail in the log): a code that does not read is
+/// `invalid`, a clock NTP has not set yet `service_unreachable` (try again in a minute), a
+/// device that did not answer or refused `device_unreachable`.
 fn commission_error(error: CallError) -> AppError {
     use matter_controller::Error;
+    tracing::warn!(%error, "matter commissioning failed");
     match error {
-        CallError::NoAnswer => AppError::http(
-            StatusCode::GATEWAY_TIMEOUT,
-            "Commissioning timed out: is the device on the Wi-Fi with its pairing window open?",
-        ),
-        CallError::Matter(Error::SetupCode(detail)) => {
-            AppError::bad_request(format!("Invalid pairing code: {detail}"))
-        }
-        CallError::Matter(Error::SystemClockUnset(_)) => AppError::service_unavailable(
-            "The system clock is not set yet (waiting for NTP); retry in a minute",
-        ),
-        other => AppError::http(
-            StatusCode::BAD_GATEWAY,
-            format!("Commissioning failed: {other}"),
-        ),
+        CallError::Matter(Error::SetupCode(_)) => Refusal::Invalid.into(),
+        CallError::Matter(Error::SystemClockUnset(_)) => Refusal::ServiceUnreachable.into(),
+        CallError::NoAnswer | CallError::Matter(_) => Refusal::DeviceUnreachable.into(),
     }
 }
 
+/// A shutter that did not answer, or answered nonsense: `net::unreachable`.
 fn operation_error(error: impl Into<CallError>) -> AppError {
-    let error = error.into();
-    AppError::service_unavailable(format!("Matter: {error}"))
+    crate::net::unreachable("Matter shutter", error.into())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,7 +1255,8 @@ mod tests {
     async fn manager_with_one_cover(schedule: SunSchedule) -> (tempfile::TempDir, MatterManager) {
         let dir = crate::util::test_dir();
         // no attestation roots there: the controller fails at once, views are the kept ones
-        let manager = MatterManager::with_paths(dir.path(), dir.path(), false).unwrap();
+        let manager =
+            MatterManager::with_paths(dir.path(), dir.path(), false, NO_GEOCODING).unwrap();
         let cover = CoverConfig {
             node_id: 1,
             name: "Salon".into(),
@@ -990,10 +1267,21 @@ mod tests {
             skip_open_at: None,
             skip_close_at: None,
         };
-        manager.inner.covers.write().await.insert(1, cover);
+        manager
+            .inner
+            .covers
+            .update(|covers| {
+                covers.0.push(cover);
+                Ok(())
+            })
+            .await
+            .unwrap();
         *manager.inner.place.write().await = Some(paris());
         (dir, manager)
     }
+
+    /// Nothing listens there: a test's manager never asks the internet.
+    const NO_GEOCODING: &str = "http://127.0.0.1:9";
 
     async fn look(
         manager: &MatterManager,
@@ -1214,9 +1502,13 @@ mod tests {
             kept(&manager).await.skip_close_at.is_none(),
             "cleared once its time passed"
         );
-        let reloaded =
-            MatterManager::with_paths(&manager.inner.state_dir, &manager.inner.state_dir, false)
-                .unwrap();
+        let reloaded = MatterManager::with_paths(
+            &manager.inner.state_dir,
+            &manager.inner.state_dir,
+            false,
+            NO_GEOCODING,
+        )
+        .unwrap();
         assert!(
             reloaded
                 .cover(&format_id(1))
@@ -1440,8 +1732,8 @@ mod tests {
     }
 
     /// Restarted after the skipped event: the skip is gone from the start.
-    #[test]
-    fn a_past_skip_is_forgotten_on_load() {
+    #[tokio::test]
+    async fn a_past_skip_is_forgotten_on_load() {
         let dir = crate::util::test_dir();
         let long_ago = chrono::Utc::now() - chrono::TimeDelta::days(2);
         let soon = chrono::Utc::now() + chrono::TimeDelta::hours(2);
@@ -1450,10 +1742,117 @@ mod tests {
             "skipOpenAt": long_ago, "skipCloseAt": soon,
         }]);
         store::write_json(&covers_path(dir.path()), &covers, Access::Private).unwrap();
-        let loaded = load_covers(&covers_path(dir.path())).unwrap();
+        let manager =
+            MatterManager::with_paths(dir.path(), dir.path(), false, NO_GEOCODING).unwrap();
+        let loaded = kept(&manager).await;
         assert_eq!(
-            (loaded[&1].skip_open_at, loaded[&1].skip_close_at),
+            (loaded.skip_open_at, loaded.skip_close_at),
             (None, Some(soon))
+        );
+    }
+
+    /// What a switch reports (by subscription or read) makes the cover's view; an unknown
+    /// attribute or type changes nothing.
+    #[test]
+    fn a_reading_is_made_of_the_switch_s_reports() {
+        let mut reading = Reading::default();
+        reading.apply(ATTR_CURRENT_LIFT_PERCENT100THS, &Value::Uint(2_500));
+        reading.apply(ATTR_TARGET_LIFT_PERCENT100THS, &Value::Uint(0));
+        reading.apply(ATTR_OPERATIONAL_STATUS, &Value::Uint(0b01));
+        reading.apply(ATTR_CLUSTER_REVISION, &Value::Uint(5));
+        reading.apply(ATTR_CURRENT_LIFT_PERCENT100THS, &Value::Bool(true));
+        assert_eq!(
+            reading,
+            Reading {
+                online: false,
+                open_percent: Some(75),
+                target_open_percent: Some(100),
+                motion: Some(CoverMotion::Opening),
+            }
+        );
+    }
+
+    /// An offline cover says why by a code, never by a library's words.
+    #[tokio::test]
+    async fn an_offline_cover_says_why_by_a_code() {
+        let (_dir, manager) = manager_with_one_cover(BOTH).await;
+        let covers = manager.list().await;
+        assert_eq!(covers.len(), 1);
+        assert!(!covers[0].online);
+        assert_eq!(
+            covers[0].error.as_deref(),
+            Some("internal"),
+            "no controller here"
+        );
+        let cover = kept(&manager).await;
+        let view = offline_view(&cover, SunTimes::default(), Refusal::DeviceUnreachable);
+        assert_eq!(view.error.as_deref(), Some("device_unreachable"));
+        let online = view_of(
+            &cover,
+            SunTimes::default(),
+            &Reading {
+                online: true,
+                ..Reading::default()
+            },
+        );
+        assert!(online.online && online.error.is_none());
+    }
+
+    /// Whoever pushes the covers hears a change once: a rename, a schedule.
+    #[tokio::test]
+    async fn the_covers_are_announced_when_they_change() {
+        let (_dir, manager) = manager_with_one_cover(BOTH).await;
+        let mut shown = manager.subscribe();
+        manager.rename(&format_id(1), "Bureau").await.unwrap();
+        assert!(shown.has_changed().unwrap());
+        assert_eq!(shown.borrow_and_update()[0].name, "Bureau");
+        manager.rename(&format_id(1), "Bureau").await.unwrap();
+        assert!(!shown.has_changed().unwrap(), "the same name is no news");
+        manager
+            .set_schedule(
+                &format_id(1),
+                SunSchedule {
+                    close_at_sunset: false,
+                    ..BOTH
+                },
+            )
+            .await
+            .unwrap();
+        assert!(shown.borrow_and_update()[0].next_close.is_none());
+    }
+
+    #[tokio::test]
+    async fn refusals_are_coded() {
+        let (_dir, manager) = manager_with_one_cover(BOTH).await;
+        let code = |error: AppError| match error {
+            AppError::Coded { code, .. } => code,
+            other => panic!("uncoded: {other}"),
+        };
+        assert_eq!(
+            code(manager.get("00000000000000ff").await.unwrap_err()),
+            "not_found"
+        );
+        assert_eq!(code(manager.get("nope").await.unwrap_err()), "not_found");
+        let late = SunSchedule {
+            sunset_offset_min: MAX_SUN_OFFSET_MIN + 1,
+            ..BOTH
+        };
+        assert_eq!(
+            code(manager.set_schedule(&format_id(1), late).await.unwrap_err()),
+            "invalid"
+        );
+        let nowhere = Place {
+            name: "x".into(),
+            latitude: 91.0,
+            longitude: 0.0,
+        };
+        assert_eq!(
+            code(manager.set_place(nowhere).await.unwrap_err()),
+            "invalid"
+        );
+        assert_eq!(
+            code(manager.commission("1234", "Salon").await.unwrap_err()),
+            "invalid"
         );
     }
 
@@ -1468,7 +1867,7 @@ mod tests {
     fn an_empty_covers_file_is_an_error_not_no_shutters() {
         let dir = crate::util::test_dir();
         std::fs::write(covers_path(dir.path()), "").unwrap();
-        assert!(MatterManager::with_paths(dir.path(), dir.path(), true).is_err());
+        assert!(MatterManager::with_paths(dir.path(), dir.path(), true, NO_GEOCODING).is_err());
     }
 
     /// Every vendored root must parse: `from_dirs` fails as a whole on a

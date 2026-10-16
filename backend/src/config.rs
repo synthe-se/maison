@@ -50,6 +50,12 @@ pub struct Config {
     pub tempo_tarifs_url: String,
     pub tempo_odre_url: String,
     pub open_meteo_url: String,
+    /// Tempo's files (`tempo/mod.rs`: the seasons, `model.json`, `netload.json`,
+    /// `weather.json`), shared with `fit_tempo`.
+    pub tempo_dir: PathBuf,
+    /// Open-Meteo's geocoding (`sun::search`, the house's place by name): a setting so the
+    /// tests point it at a local stub.
+    pub geocoding_url: String,
     /// The scenes (`scenes.rs`).
     pub scenes_path: PathBuf,
     /// The Zigbee radio (`ZIGBEE_*`, `zigbee/config.rs`).
@@ -79,6 +85,13 @@ impl Config {
             var(name)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| source_root.join(default))
+        };
+        // a service's address, without the trailing slash its paths are joined after
+        let url = |name: &str, default: &str| {
+            var(name)
+                .unwrap_or_else(|| default.to_string())
+                .trim_end_matches('/')
+                .to_string()
         };
         let flag = |name: &str, default: bool| {
             var(name).map_or(default, |v| {
@@ -141,22 +154,20 @@ impl Config {
             // Development only: accept the CSA test roots (matter.js / chip example devices)
             // instead of the production ones.
             matter_test_roots: flag("MATTER_TEST_ROOTS", false),
-            tempo_rte_url: var("TEMPO_RTE_URL")
-                .unwrap_or_else(|| "https://www.services-rte.com/cms/open_data/v1".to_string()),
-            tempo_rte_api_url: var("TEMPO_RTE_API_URL")
-                .unwrap_or_else(|| "https://digital.iservices.rte-france.com".to_string()),
+            tempo_rte_url: url("TEMPO_RTE_URL", "https://www.services-rte.com/cms/open_data/v1"),
+            tempo_rte_api_url: url("TEMPO_RTE_API_URL", "https://digital.iservices.rte-france.com"),
             rte_client_id: var("RTE_CLIENT_ID"),
             rte_client_secret: var("RTE_CLIENT_SECRET"),
-            tempo_fallback_url: var("TEMPO_FALLBACK_URL")
-                .unwrap_or_else(|| "https://www.api-couleur-tempo.fr".to_string()),
-            tempo_edf_url: var("TEMPO_EDF_URL")
-                .unwrap_or_else(|| "https://api-commerce.edf.fr/commerce-activet/api/v1".to_string()),
+            tempo_fallback_url: url("TEMPO_FALLBACK_URL", "https://www.api-couleur-tempo.fr"),
+            tempo_edf_url: url("TEMPO_EDF_URL", "https://api-commerce.edf.fr/commerce-activet/api/v1"),
+            // a whole request (its query included): taken as it is
             tempo_tarifs_url: var("TEMPO_TARIFS_URL").unwrap_or_else(|| {
                 "https://tabular-api.data.gouv.fr/api/resources/0c3d1d36-c412-4620-8566-e5cbb4fa2b5a/data/?page_size=1&P_SOUSCRITE__exact=6&__id__sort=desc".to_string()
             }),
-            tempo_odre_url: var("TEMPO_ODRE_URL")
-                .unwrap_or_else(|| "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets".to_string()),
-            open_meteo_url: var("OPEN_METEO_URL").unwrap_or_else(|| "https://api.open-meteo.com".to_string()),
+            tempo_odre_url: url("TEMPO_ODRE_URL", "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets"),
+            open_meteo_url: url("OPEN_METEO_URL", "https://api.open-meteo.com"),
+            tempo_dir: path("TEMPO_CACHE_DIR", "cache/tempo"),
+            geocoding_url: url("GEOCODING_URL", "https://geocoding-api.open-meteo.com"),
             scenes_path: path("SCENES_JSON_PATH", "scenes.json"),
             zigbee: crate::zigbee::ZigbeeConfig::load(&var),
             source_root,
@@ -267,5 +278,17 @@ mod tests {
                 .permit_join_seconds,
             60
         );
+    }
+
+    #[test]
+    fn a_service_address_loses_its_trailing_slash_once_here() {
+        let config = with(&[
+            ("TEMPO_EDF_URL", "http://edf.example/api/"),
+            ("GEOCODING_URL", "http://geo.example//"),
+        ]);
+        assert_eq!(config.tempo_edf_url, "http://edf.example/api");
+        assert_eq!(config.geocoding_url, "http://geo.example");
+        assert_eq!(config.open_meteo_url, "https://api.open-meteo.com");
+        assert_eq!(config.tempo_dir, PathBuf::from("/x/cache/tempo"));
     }
 }
