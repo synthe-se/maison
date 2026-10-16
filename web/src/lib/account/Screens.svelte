@@ -4,7 +4,8 @@
 	// the house's Wi-Fi), in a sheet; removing one asks first (§ 6), then the focus goes to the
 	// list's title. A code refused is said under its field, a name taken under the name.
 	import { m } from '#lib/paraglide/messages.js';
-	import { ApiError, MAX_NAME } from '#lib/api.ts';
+	import { ApiError } from '#lib/api.ts';
+	import { MAX_NAME, SCREEN_CODE_LENGTH } from '#lib/limits.ts';
 	import { longDate, when } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
@@ -91,7 +92,7 @@
 					bind:this={codeField}
 					bind:value={form.code}
 					oninput={() => (codeError = '')}
-					maxlength={9}
+					maxlength={SCREEN_CODE_LENGTH}
 					autocomplete="off"
 					autocapitalize="characters"
 					spellcheck="false"

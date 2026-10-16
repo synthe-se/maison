@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { m } from '#lib/paraglide/messages.js';
 import { ApiError } from './api.ts';
 import { Gesture, pending, unavailable } from './gesture.svelte.ts';
 import { ui } from './ui.svelte.ts';
@@ -33,8 +34,8 @@ describe('Gesture', () => {
 		const field = document.createElement('input');
 		document.body.append(field);
 		const g = new Gesture();
-		await g.run(() => Promise.reject(new Error('Code refusé')), undefined, 'pair', { field: () => field });
-		expect(g.error).toBe('Code refusé');
+		await g.run(() => Promise.reject(new ApiError('Bad code', 400, 'invalid')), undefined, 'pair', { field: () => field });
+		expect(g.error).toBe(m.code_invalid());
 		expect(fail).not.toHaveBeenCalled();
 		expect(document.activeElement).toBe(field);
 		// the next try starts clean
@@ -80,8 +81,8 @@ describe('Gesture', () => {
 		const button = document.createElement('button');
 		document.body.append(button);
 		button.focus();
-		await g.run(() => Promise.reject(new Error('Clé refusée')), undefined, 'signin', { inline: true });
-		expect(g.error).toBe('Clé refusée');
+		await g.run(() => Promise.reject(new ApiError('Rejected', 400, 'passkey_rejected')), undefined, 'signin', { inline: true });
+		expect(g.error).toBe(m.code_passkey_rejected());
 		expect(fail).not.toHaveBeenCalled();
 		expect(document.activeElement).toBe(button);
 		button.remove();

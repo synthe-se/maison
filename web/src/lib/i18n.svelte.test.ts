@@ -12,7 +12,6 @@ import {
 	locale,
 	localeName,
 	list,
-	localDay,
 	locales,
 	longDate,
 	longDay,
@@ -23,8 +22,12 @@ import {
 	shortDay,
 	switchLocale,
 	weekday,
-	when
+	when,
+	formatDuration,
+	formatMinutes,
+	unreachableSince
 } from './i18n.svelte.ts';
+import { time } from './clock.svelte.ts';
 
 const NNBSP = '\u202f';
 
@@ -93,8 +96,7 @@ describe('formats (French)', () => {
 	});
 
 	it('says only the time for today, the day and time otherwise', () => {
-		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(new Date(2026, 9, 2, 21, 0));
+		time.now = new Date(2026, 9, 2, 21, 0);
 		expect(when(new Date(2026, 9, 2, 18, 2))).toBe('18:02');
 		expect(when(new Date(2026, 9, 2, 18, 2).toISOString())).toBe('18:02');
 		const other = when(new Date(2026, 9, 1, 21, 4).getTime());
@@ -106,28 +108,24 @@ describe('formats (French)', () => {
 describe('calendar days', () => {
 	afterEach(() => vi.useRealTimers());
 
-	it('reads « 2026-11-12 » as local midnight, not UTC', () => {
-		const d = localDay('2026-11-12');
-		expect([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()]).toEqual([2026, 10, 12, 0]);
-		expect(localDay('2026-11-12T23:00:00Z').getDate()).toBe(12);
+	it('reads « 2026-11-12 » as a local day, not UTC', () => {
+		expect(longDate('2026-11-12T23:00:00Z')).toBe('12 novembre 2026');
+		expect(shortDay('2026-11-12')).toBe('jeu. 12 nov.');
 	});
 
 	it('writes a local day back, zero-padded', () => {
 		expect(isoDay(new Date(2026, 0, 5, 23, 30))).toBe('2026-01-05');
-		expect(isoDay(localDay('2026-11-12'))).toBe('2026-11-12');
 	});
 
 	it('counts days from today across a month end', () => {
-		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(new Date(2026, 9, 31, 22, 0));
+		time.now = new Date(2026, 9, 31, 22, 0);
 		expect(dayFromToday(0)).toBe('2026-10-31');
 		expect(dayFromToday(1)).toBe('2026-11-01');
 		expect(dayFromToday(-31)).toBe('2026-09-30');
 	});
 
 	it('says today, tomorrow, else the weekday', () => {
-		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(new Date(2026, 9, 2, 9, 0)); // a Friday
+		time.now = new Date(2026, 9, 2, 9, 0); // a Friday
 		expect(dayLabel('2026-10-02')).toBe(m.day_today());
 		expect(dayLabel('2026-10-03')).toBe(m.day_tomorrow());
 		expect(dayLabel('2026-10-05')).toBe('lundi');
@@ -164,5 +162,53 @@ describe('calendar days', () => {
 		expect(pageTitle('Salon')).toBe(`Salon · ${m.branding_name()}`);
 		expect(pageTitle(m.branding_name())).toBe(m.branding_name());
 		expect(pageTitle()).toBe(m.branding_name());
+	});
+});
+
+describe('formatDuration', () => {
+	it('says seconds under a minute, rounded, never negative', () => {
+		expect(formatDuration(45)).toBe(m.duration_seconds({ s: 45 }));
+		expect(formatDuration(12.6)).toBe(m.duration_seconds({ s: 13 }));
+		expect(formatDuration(-5)).toBe(m.duration_seconds({ s: 0 }));
+	});
+
+	it('says minutes, with the seconds only when there are some', () => {
+		expect(formatDuration(180)).toBe(m.duration_minutes({ m: 3 }));
+		expect(formatDuration(200)).toBe(m.duration_minutes_seconds({ m: 3, s: 20 }));
+	});
+
+	it('says hours, with the minutes padded to two digits', () => {
+		expect(formatDuration(7200)).toBe(m.duration_hours({ h: 2 }));
+		expect(formatDuration(3600 + 5 * 60)).toBe(m.duration_hours_minutes({ h: 1, m: 5, mm: '05' }));
+		expect(formatDuration(3600 + 5 * 60)).toMatch(/^1\sh\s05$/);
+	});
+
+	it('says days, with the hours only when there are some; two units at most', () => {
+		expect(formatDuration(86_400)).toBe(m.duration_days({ d: 1 }));
+		expect(formatDuration(2 * 86_400 + 4 * 3600 + 59)).toBe(m.duration_days_hours({ d: 2, h: 4 }));
+	});
+});
+
+describe('formatMinutes', () => {
+	it('reads a counter in minutes', () => {
+		expect(formatMinutes(90)).toBe(formatDuration(5400));
+		expect(formatMinutes(0.5)).toBe(m.duration_seconds({ s: 30 }));
+	});
+});
+
+describe('unreachableSince', () => {
+	it('within the hour: « depuis 12 min »; then the time it was last heard', () => {
+		const now = time.now.getTime();
+		expect(unreachableSince(now - 12 * 60_000)).toBe(m.state_unreachable_for({ duration: m.duration_minutes({ m: 12 }) }));
+		expect(unreachableSince(new Date(now - 30_000).toISOString())).toBe(
+			m.state_unreachable_for({ duration: m.duration_minutes({ m: 1 }) })
+		);
+		const old = now - 3 * 3_600_000;
+		expect(unreachableSince(old)).toBe(m.state_unreachable_since({ when: when(old) }));
+	});
+
+	it('never heard: says so', () => {
+		expect(unreachableSince(0)).toBe(m.state_unreachable());
+		expect(unreachableSince(null)).toBe(m.state_unreachable());
 	});
 });

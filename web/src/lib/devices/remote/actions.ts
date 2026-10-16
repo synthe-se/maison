@@ -95,6 +95,8 @@ export interface Sources {
  */
 export function liveSources(): { readonly current: Sources } {
 	const lamps = live(zigbee.list);
+	// the stats say whether the server has Bluetooth at all (else the Hue list is not polled)
+	live(hue.stats);
 	const hueLamps = live(hue.list);
 	const covers = live(coverList);
 	const plugs = live(plugList);

@@ -103,7 +103,7 @@ describe('account page', () => {
 		await expect.element(page.getByRole('heading', { name: m.keys_title() })).toHaveFocus();
 		await page.getByRole('button', { name: m.keys_remove_label({ name: m.keys_unnamed() }) }).click();
 		await page.getByRole('alertdialog').getByRole('button', { name: m.keys_remove_action() }).click();
-		await expect.poll(() => ui.toasts.some((t) => t.warn && t.text.includes(m.pk_last()))).toBe(true);
+		await expect.poll(() => ui.toasts.some((t) => t.warn && t.text.includes(m.code_last_passkey()))).toBe(true);
 		expect(api.sent('DELETE', '/passkeys/k2')).toHaveLength(1);
 	});
 
@@ -291,11 +291,11 @@ describe('account page', () => {
 		await code.fill('ABCD-EFGH');
 		await name.fill('Salon');
 		await sheet.getByRole('button', { name: m.screens_pair() }).click();
-		await expect.element(code).toHaveAccessibleDescription(m.screens_pairing_elsewhere());
+		await expect.element(code).toHaveAccessibleDescription(m.code_pairing_elsewhere());
 		await expect.element(code).toHaveAttribute('aria-invalid', 'true');
 		api.routes['POST /screens'] = refusal('screen_exists', 409);
 		await sheet.getByRole('button', { name: m.screens_pair() }).click();
-		await expect.element(name).toHaveAccessibleDescription(m.screens_exists());
+		await expect.element(name).toHaveAccessibleDescription(m.code_screen_exists());
 		await expect.element(sheet).toBeVisible();
 	});
 

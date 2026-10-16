@@ -5,7 +5,7 @@
 	import type { Snippet } from 'svelte';
 	import { m } from '#lib/paraglide/messages.js';
 	import { when } from '#lib/i18n.svelte.ts';
-	import { ApiError } from '#lib/api.ts';
+	import { isNotFound } from '#lib/api.ts';
 	import type { Loadable } from '#lib/live.svelte.ts';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
@@ -29,7 +29,7 @@
 		children?: Snippet<[Lamp]>;
 	}
 	let { lamp, status, driver, rows = [], color, notes, children }: Props = $props();
-	const missing = $derived(status.error instanceof ApiError && status.error.status === 404);
+	const missing = $derived(isNotFound(status.error));
 	const title = $derived(
 		lamp?.name ?? (status.loading ? m.common_loading() : missing || !status.failed ? m.lamps_not_found() : m.lamps_lamp())
 	);

@@ -17,7 +17,7 @@
 	import Toggle from '#lib/components/Toggle.svelte';
 	import { feederApi, type MealPlanEntry } from './api.ts';
 	import { mealPlan } from './data.ts';
-	import { MAX_MEALS } from './tuya.svelte.ts';
+	import { MAX_MEALS } from '#lib/limits.ts';
 	import MealEditor from './MealEditor.svelte';
 	import { describeDays, formOf, type MealForm } from './meals.ts';
 

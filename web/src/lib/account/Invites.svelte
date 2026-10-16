@@ -4,7 +4,8 @@
 	// after asking (§ 6). A name already someone's (`person_exists`): their access back (a new
 	// passkey for them), or another name.
 	import { m } from '#lib/paraglide/messages.js';
-	import { MAX_NAME, ApiError } from '#lib/api.ts';
+	import { ApiError } from '#lib/api.ts';
+	import { MAX_NAME } from '#lib/limits.ts';
 	import { longDate } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';

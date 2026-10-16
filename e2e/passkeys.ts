@@ -39,7 +39,7 @@ await p.getByRole('link', { name: fr.account_title() }).click();
 await title(p, fr.account_title());
 check('one passkey listed', (await keyRows(p).count()) === 1);
 await p.getByRole('button', { name: fr.keys_add() }).click();
-await toast(p, fr.pk_exists());
+await toast(p, fr.code_passkey_exists());
 check('the same device cannot register twice, said plainly', true);
 // another device: a second authenticator, the first one put away
 await device.cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId: device.authenticatorId });
@@ -61,7 +61,7 @@ await toast(p, fr.keys_removed());
 await p.waitForFunction(() => document.activeElement?.id === 'keys-title');
 check('after removing a passkey, the focus is on its list’s title', await p.evaluate(() => document.activeElement?.id === 'keys-title'));
 await removeKey();
-await toast(p, fr.pk_last());
+await toast(p, fr.code_last_passkey());
 check('the last passkey cannot be removed', (await keyRows(p).count()) === 1);
 
 // an admin invites someone: a link to copy
@@ -119,7 +119,7 @@ await r.goto(`${BASE}/remote`);
 await title(r, fr.remote_title());
 check(
 	'a member configures no remote key',
-	(await r.getByRole('button', { name: fr.remote_add_binding() }).count()) === 0 && (await r.getByText(fr.admin_only()).count()) > 0
+	(await r.getByRole('button', { name: fr.remote_add_binding() }).count()) === 0 && (await r.getByText(fr.code_forbidden()).count()) > 0
 );
 
 checkNoErrors();

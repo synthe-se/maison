@@ -16,7 +16,7 @@
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import LampTile from './lamps/LampTile.svelte';
 	import ZigbeePairing from './lamps/ZigbeePairing.svelte';
-	import { fromHue, fromZigbee, hue, zigbee, type Lamp, type LampDriver } from './lamps/lamp.ts';
+	import { fromHue, fromZigbee, hue, isLit, zigbee, type Lamp, type LampDriver } from './lamps/lamp.ts';
 	import { everyone, sayOutcome } from './everyone.ts';
 
 	const hueStats = live(hue.stats);
@@ -32,7 +32,7 @@
 	);
 	type Row = { lamp: Lamp; driver: LampDriver };
 	const rows: Row[] = $derived(families.flatMap((f) => f.lamps.map((lamp) => ({ lamp, driver: f.driver }))));
-	const lit = $derived(rows.filter((r) => r.lamp.reachable && r.lamp.isOn));
+	const lit = $derived(rows.filter((r) => isLit(r.lamp)));
 
 	/** The two lists read as one: loading while one is, failed when one did and nothing is
 	 * known (never « no lamp » because a radio did not answer), old when one is (or one failed

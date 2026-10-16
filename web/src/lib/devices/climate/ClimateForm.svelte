@@ -4,7 +4,7 @@
 	// for whoever debugs), and « Envoyer ». The form belongs to the tile (`form`, bound): its
 	// order is what « Allumer » sends, settings open or not.
 	import { m } from '#lib/paraglide/messages.js';
-	import { formatMinutes } from '#lib/format.ts';
+	import { formatMinutes } from '#lib/i18n.svelte.ts';
 	import { options } from '#lib/options.ts';
 	import { pending, unavailable } from '#lib/gesture.svelte.ts';
 	import Disclosure from '#lib/components/Disclosure.svelte';

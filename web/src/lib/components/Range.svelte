@@ -4,8 +4,8 @@
 	// touched anywhere. Two uses:
 	// - a form value: `oncommit` on release (or on each key press);
 	// - a device: `send` on release, and with `live` also while dragging, at most every
-	//   EVERY ms (a lamp, a volume); the thumb keeps the sent value until the device reports it (± `near`) or
-	//   `hold` ms pass, so a slow device never makes it jump back; `settle` reads the device
+	//   SLIDER_THROTTLE_MS (a lamp, a volume); the thumb keeps the sent value until the device
+	//   reports it (± `near`: let go at once) or SLIDER_HOLD_MS pass, so a slow device never makes it jump back; `settle` reads the device
 	//   again after the gesture. Without `live` (a shutter's motor), keys do not send one
 	//   target each: the last one goes KEYS_SETTLE ms after the last key (§ 3).
 	// `send` is the device call itself (it rejects on failure): the slider sends through a gesture
@@ -14,11 +14,10 @@
 	// One that cannot act stays in place, not operable, and says why (`reason`).
 	import { Slider } from 'bits-ui';
 	import { Gesture, unavailable } from '#lib/gesture.svelte.ts';
+	// how long the thumb trusts the sent value over a device that has not caught up, and how
+	// often a `live` slider sends while dragging (doc § 3)
+	import { SLIDER_HOLD_MS, SLIDER_THROTTLE_MS } from '#lib/paces.ts';
 
-	/** How long the thumb trusts the sent value over a device that has not caught up. */
-	const HOLD = 3_000;
-	/** While dragging a `live` slider, at most one send per this many ms (doc § 3). */
-	const EVERY = 300;
 	/** A device sent on release only gets its target this long after the last key (§ 3). */
 	const KEYS_SETTLE = 400;
 
@@ -71,6 +70,8 @@
 	let sends = 0;
 
 	let held = $state<number | null>(null);
+	/** The gesture is over: `held` waits only for the device to report it. */
+	let releasing = $state(false);
 	const shown = $derived(held !== null && Math.abs(value - held) > near ? held : value);
 	// a local value while dragging; the device's value wins again when it changes
 	let draft = $derived(shown);
@@ -83,6 +84,15 @@
 	/** The gesture comes from the keyboard (until a pointer takes over). */
 	let keyed = false;
 	let settling: ReturnType<typeof setTimeout> | undefined;
+	// the device reports the sent value: the thumb follows it again at once, not after the hold
+	$effect(() => {
+		if (releasing && held !== null && Math.abs(value - held) <= near) letGo();
+	});
+	function letGo() {
+		clearTimeout(release);
+		releasing = false;
+		held = null;
+	}
 	$effect(() => () => {
 		clearTimeout(gate);
 		clearTimeout(release);
@@ -97,6 +107,7 @@
 		if (!final && !live) return;
 		if (final && !live && keyed) {
 			held = v;
+			releasing = false;
 			clearTimeout(settling);
 			settling = setTimeout(() => {
 				keyed = false;
@@ -106,6 +117,7 @@
 		}
 		held = v;
 		clearTimeout(release);
+		releasing = false;
 		if (gate) queued = { v, final };
 		else void fire(v, final);
 	}
@@ -117,7 +129,7 @@
 				const next = queued;
 				queued = null;
 				if (next) void fire(next.v, next.final);
-			}, EVERY);
+			}, SLIDER_THROTTLE_MS);
 		}
 		let failed = false;
 		if (v !== lastSent) {
@@ -133,7 +145,8 @@
 		}
 		if (final && !failed) {
 			await settle?.();
-			release = setTimeout(() => (held = null), HOLD);
+			releasing = true;
+			release = setTimeout(letGo, SLIDER_HOLD_MS);
 		}
 	}
 

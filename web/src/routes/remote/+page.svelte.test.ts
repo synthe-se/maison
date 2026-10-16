@@ -58,7 +58,7 @@ describe('remote page', () => {
 		site();
 		await render(RemotePage);
 		await expect.element(bindings()).toHaveLength(2);
-		await expect.element(page.getByText(m.admin_only())).toBeVisible();
+		await expect.element(page.getByText(m.code_forbidden())).toBeVisible();
 		await expect.element(page.getByRole('button', { name: m.remote_add_binding() })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: m.remote_edit_binding({ key: keyName(115) }) })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: m.remote_key_mapped({ key: 'OK', label: 'Taichi' }) })).not.toBeInTheDocument();

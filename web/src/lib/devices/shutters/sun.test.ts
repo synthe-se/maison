@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import { formatMinutes } from '#lib/format.ts';
-import { clock } from '#lib/i18n.svelte.ts';
+import { clock, formatMinutes } from '#lib/i18n.svelte.ts';
 import { shutter } from '#lib/test/shutters.ts';
 import { DEFAULT_OFFSET, moveSentence, nextEvent, nextMove, OFFSET_VALUES, OFFSETS, offsetLabel, skipLabel, toggled } from './sun.ts';
 

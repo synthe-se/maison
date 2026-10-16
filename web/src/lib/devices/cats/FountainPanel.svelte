@@ -2,7 +2,7 @@
 	// The fountain's page: its settings as switches (§ 2, case 2), its levels and counters; a
 	// counter reset asks first (§ 6).
 	import { m } from '#lib/paraglide/messages.js';
-	import { formatMinutes, formatDuration } from '#lib/format.ts';
+	import { formatMinutes, formatDuration } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
 	import { options } from '#lib/options.ts';

@@ -15,13 +15,12 @@
 	import Icon from '#lib/components/Icon.svelte';
 	import { broadlinkApi } from './climate/api.ts';
 	import { CLIMATE_OFF } from './climate/command.ts';
-	import { blasters, climateState, searchOver, SEARCH_FOR_MS } from './climate/data.ts';
+	import { blasters, climateState, searchOver } from './climate/data.ts';
+	import { BROADLINK_SEARCH_FOR_MS } from '#lib/paces.ts';
+	import { CLIMATE_MODEL } from '#lib/limits.ts';
 	import { commandOf, formFrom, INITIAL } from './climate/form.ts';
 	import { degrees, modeLabel } from './climate/labels.ts';
 	import ClimateForm from './climate/ClimateForm.svelte';
-
-	/** The model the backend encodes for (the living-room unit). */
-	const MODEL = 'msz-hj5va';
 
 	const found = live(blasters);
 	const stored = live(climateState);
@@ -43,7 +42,7 @@
 	let over = $state(false);
 	$effect(() => {
 		if (remote) return void (over = false);
-		const left = found.since + SEARCH_FOR_MS - Date.now();
+		const left = found.since + BROADLINK_SEARCH_FOR_MS - Date.now();
 		over = searchOver(found.data, found.since);
 		if (over) return;
 		const t = setTimeout(() => (over = true), left);
@@ -54,7 +53,7 @@
 		if (!remote) return;
 		const { host } = remote;
 		return sending.run(
-			() => broadlinkApi.sendMitsubishiCommand(host, cmd, MODEL),
+			() => broadlinkApi.sendMitsubishiCommand(host, cmd, CLIMATE_MODEL),
 			async () => {
 				ui.say(m.climate_command_sent());
 				await stored.refresh();

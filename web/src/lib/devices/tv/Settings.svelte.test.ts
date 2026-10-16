@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from '#lib/api.ts';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
@@ -51,10 +52,10 @@ describe('tv/Settings', () => {
 		await button.click();
 		// busy: said so, still focusable
 		await expect.element(button).toHaveAttribute('aria-busy', 'true');
-		reject(new Error('TV unreachable'));
+		reject(new ApiError('TV unreachable', 503, 'device_unreachable'));
 		await expect.element(button).not.toHaveAttribute('aria-busy');
 		const first = page.getByLabelText(fields[0].label);
-		await expect.element(first).toHaveAccessibleDescription('TV unreachable');
+		await expect.element(first).toHaveAccessibleDescription(m.code_device_unreachable());
 		await expect.element(first).toHaveFocus();
 		expect(fail).not.toHaveBeenCalled();
 		expect(onsaved).not.toHaveBeenCalled();

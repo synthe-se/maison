@@ -3,7 +3,7 @@
 	// remote configurator's own list, ActionList: a scene never holds another scene), saved
 	// whole; an existing scene can be deleted (confirmed: it cannot be undone, § 6).
 	import { m } from '#lib/paraglide/messages.js';
-	import { MAX_NAME } from '#lib/api.ts';
+	import { MAX_ACTIONS, MAX_NAME } from '#lib/limits.ts';
 	import type { Draft } from '#lib/draft.svelte.ts';
 	import { options } from '#lib/options.ts';
 	import { scenesApi, type Scene } from './api.ts';
@@ -19,7 +19,6 @@
 	import { SCENE_ICONS, slug, type SceneForm } from './scenes.ts';
 
 	/** The backend keeps 1 to 20 actions per scene. */
-	const MAX_ACTIONS = 20;
 
 	interface Props {
 		/** The scene to edit, or a template / a blank one to create (`isNew`). */

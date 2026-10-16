@@ -12,6 +12,7 @@
 	import StatusRow from '#lib/components/StatusRow.svelte';
 	import type { Device } from './api.ts';
 	import { status } from './data.ts';
+	import { FEED_MAX_PORTIONS } from '#lib/limits.ts';
 	import { feed, served } from './tuya.svelte.ts';
 	import { lastMeal } from './alerts.ts';
 	import DeviceTabs from './DeviceTabs.svelte';
@@ -24,8 +25,6 @@
 		Battery: m.feeder_power_battery,
 		Unknown: m.common_unknown
 	};
-	/** Portions in one manual serving. */
-	const MAX_PORTIONS = 10;
 
 	/** `device`: what the page knows of it (its connection); without it, taken as connected. */
 	let { id, device }: { id: string; device?: Pick<Device, 'id' | 'name' | 'connected'> } = $props();
@@ -48,7 +47,7 @@
 				label={m.feeder_portions()}
 				value={portions}
 				min={1}
-				max={MAX_PORTIONS}
+				max={FEED_MAX_PORTIONS}
 				valueText={(count) => m.feeder_portion({ count })}
 				oncommit={(v) => (portions = v)}
 			/>

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { time } from '#lib/clock.svelte.ts';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { longDate, dayLabel, percent } from '#lib/i18n.svelte.ts';
+import { list, longDate, dayLabel, percent } from '#lib/i18n.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { tempoForecast } from '#lib/test/tempo.ts';
 import TempoPage from './+page.svelte';
@@ -18,9 +19,11 @@ describe('Tempo page', () => {
 	beforeEach(() => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2026-12-10T12:00:00'));
+		time.now = new Date();
 	});
 	afterEach(() => {
 		vi.useRealTimers();
+		time.now = new Date();
 	});
 
 	it('says it is loading', async () => {
@@ -53,7 +56,9 @@ describe('Tempo page', () => {
 		await expect
 			.element(table.getByRole('row').filter({ hasText: m.tempo_horizon_day({ n: 2 }) }))
 			.toMatchTextContent(percent(horizon.accuracy));
-		await expect.element(page.getByText(m.tempo_reliability_hint({ seasons: '2024-2025, 2025-2026', blue: percent(0.818) }))).toBeVisible();
+		await expect
+			.element(page.getByText(m.tempo_reliability_hint({ seasons: list(['2024-2025', '2025-2026']), blue: percent(0.818) })))
+			.toBeVisible();
 	});
 
 	it('says when the weather forecast is old, and when the forecast stops short', async () => {

@@ -8,7 +8,7 @@
 	import type { Snippet } from 'svelte';
 	import { m } from '#lib/paraglide/messages.js';
 	import type { Loadable } from '#lib/live.svelte.ts';
-	import { ApiError } from '#lib/api.ts';
+	import { isNotFound } from '#lib/api.ts';
 	import { errorText } from '#lib/errors.ts';
 	import { refocus, sectionHeading } from '#lib/focus.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
@@ -31,7 +31,7 @@
 	let { value, empty = false, emptyText, emptyHint, missing, skeletons = 0, children }: Props = $props();
 	const g = new Gesture();
 	let box = $state<HTMLElement>();
-	const gone = $derived(!!missing && value.failed && value.error instanceof ApiError && value.error.status === 404);
+	const gone = $derived(!!missing && value.failed && isNotFound(value.error));
 
 	function retry() {
 		return g.run(

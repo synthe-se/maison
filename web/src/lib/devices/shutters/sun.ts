@@ -3,8 +3,7 @@
 
 import { m } from '#lib/paraglide/messages.js';
 import type { Shutter, SunSchedule } from './api.ts';
-import { formatMinutes } from '#lib/format.ts';
-import { clock, dayFromToday, dayLabel, isoDay, lower } from '#lib/i18n.svelte.ts';
+import { clock, dayFromToday, dayLabel, formatMinutes, isoDay, lower } from '#lib/i18n.svelte.ts';
 
 /** Minutes before (negative) or after the sun: quarter hours near it, then half hours, ± 3 h. */
 export const OFFSETS = [-180, -120, -90, -60, -45, -30, -15, 0, 15, 30, 45, 60, 90, 120, 180] as const;

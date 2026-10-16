@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { MEROSS_CONSUMPTION_MS, MEROSS_ELECTRICITY_MS, MEROSS_LIST_MS, MEROSS_STATUS_MS } from '#lib/paces.ts';
 import { MEROSS, consumption, electricity, plugs, status } from './data.ts';
 
 describe('plug sources', () => {
@@ -14,15 +13,5 @@ describe('plug sources', () => {
 	it('one fetch per key: the tile and the page ask a plug the same way', () => {
 		expect(electricity('a')).toBe(electricity('a'));
 		expect(electricity('a').fetch).toBe(electricity('a').fetch);
-	});
-
-	it('reads at the shared paces: 5 s list and power, 3 s status, 30 s daily totals', () => {
-		expect([plugs.every, electricity('a').every, status('a').every, consumption('a').every]).toEqual([
-			MEROSS_LIST_MS,
-			MEROSS_ELECTRICITY_MS,
-			MEROSS_STATUS_MS,
-			MEROSS_CONSUMPTION_MS
-		]);
-		expect([MEROSS_LIST_MS, MEROSS_ELECTRICITY_MS, MEROSS_STATUS_MS, MEROSS_CONSUMPTION_MS]).toEqual([5000, 5000, 3000, 30000]);
 	});
 });

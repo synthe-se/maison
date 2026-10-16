@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { formatDuration } from '#lib/format.ts';
+import { formatDuration } from '#lib/i18n.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { deferred, stubApi } from '#lib/test/api.ts';
 import { fact, facts } from '#lib/test/facts.ts';

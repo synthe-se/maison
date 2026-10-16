@@ -3,7 +3,7 @@
 // test sets `time.now` to the moment it needs.
 
 /** Often enough for a price that changes at 06:00 and 22:00 sharp. */
-export const TICK = 30_000;
+const TICK = 30_000;
 
 export const time = $state({ now: new Date() });
 

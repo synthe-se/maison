@@ -166,6 +166,19 @@ describe('Range', () => {
 			expect(said()).toBe('Ouvert à 79 %');
 		});
 
+		it('lets go of the sent value as soon as the device reports it, before the 3 s', async () => {
+			vi.useFakeTimers();
+			const send = vi.fn(async (_v: number) => {});
+			const { rerender } = await render(Range, { ...base, send, near: 2 });
+			press(0.8);
+			release();
+			await tick();
+			await rerender({ value: 80 });
+			// someone else moves it at once: the device's value is shown, nothing holds it
+			await rerender({ value: 30 });
+			expect(said()).toBe('Ouvert à 30 %');
+		});
+
 		it('gives up holding after 3 s of a device that does not follow', async () => {
 			vi.useFakeTimers();
 			const send = vi.fn(async (_v: number) => {});

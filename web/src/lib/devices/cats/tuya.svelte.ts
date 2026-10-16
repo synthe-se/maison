@@ -9,9 +9,6 @@ import { CONFIRM, haptic } from '#lib/haptics.ts';
 import type { IconName } from '#lib/components/Icon.svelte';
 import type { Kind } from './data.ts';
 
-/** Meals the feeder keeps in its own memory. */
-export const MAX_MEALS = 10;
-
 export const ICON: Record<Kind, IconName> = { feeder: 'utensils', fountain: 'droplets', 'litter-box': 'trash', unknown: 'power' };
 export const TYPE_LABEL: Record<Kind, () => string> = {
 	feeder: m.device_types_feeder,

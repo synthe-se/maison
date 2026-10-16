@@ -51,7 +51,7 @@ describe('invitation page', () => {
 	it('a spent or unknown link says so, and offers nothing to press', async () => {
 		site({ 'GET /invites/tok': json({ error: 'x', code: 'invite_invalid' }, 404) });
 		await render(InvitePage);
-		await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_invite_invalid());
+		await expect.element(page.getByRole('alert')).toHaveTextContent(m.code_invite_invalid());
 		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_invalid_title() })).toBeVisible();
 		await expect.element(page.getByRole('button')).not.toBeInTheDocument();
 	});

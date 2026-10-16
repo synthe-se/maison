@@ -4,7 +4,7 @@
 	// stays in place but unavailable, said why with a « Reconnecter » (§ 2); the delay and
 	// « J'ai rempli » wait for the connection (nothing that looks operable and is not).
 	import { m } from '#lib/paraglide/messages.js';
-	import { formatDuration } from '#lib/format.ts';
+	import { formatDuration } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
 	import Icon, { type IconName } from '#lib/components/Icon.svelte';

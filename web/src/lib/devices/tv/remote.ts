@@ -1,5 +1,5 @@
-// What both remotes (the Philips TV and the Android TV box) share: the poll interval, the
-// repeat-on-hold rule and the keys a pad knows.
+// What both remotes (the Philips TV and the Android TV box) share: the repeat-on-hold rule and
+// the keys a pad knows (their pace is TV_MS, paces.ts: data.ts).
 
 import { m } from '#lib/paraglide/messages.js';
 import { CONFIRM, TAP } from '#lib/haptics.ts';
@@ -7,20 +7,12 @@ import type { Gesture } from '#lib/gesture.svelte.ts';
 import type { IconName } from '#lib/components/Icon.svelte';
 
 /**
- * Both are read once a minute (docs/ux.md § 4). Deliberately slow for the TV:
- * its JointSPACE HTTP server is single-threaded and dies for good under bursts (only a mains
- * power cycle revives it), so the dashboard asks rarely and the backend spaces every call it
- * makes (900 ms between two, a status read is four of them). Never poll it faster.
- */
-export const REMOTE_POLL = 60_000;
-
-/**
  * Repeat on hold (docs/ux.md § 7, NSStepper.autorepeat): one step on press,
  * then after 500 ms ten steps a second. Volume is capped at five a second, what the TV follows.
  */
-export const REPEAT_DELAY = 500;
-export const REPEAT_EVERY = 100;
-export const REPEAT_EVERY_VOLUME = 200;
+const REPEAT_DELAY = 500;
+const REPEAT_EVERY = 100;
+const REPEAT_EVERY_VOLUME = 200;
 /** A press stays visible at least this long, the only feedback on an iPhone (no web vibration). */
 export const PRESSED_MIN = 100;
 

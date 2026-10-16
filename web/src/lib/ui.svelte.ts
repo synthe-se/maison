@@ -5,6 +5,9 @@ import { haptic, FAILURE } from '#lib/haptics.ts';
 import { errorText } from '#lib/errors.ts';
 import { stored, text as words } from '#lib/stored.ts';
 import { PUBLIC_THEME_KEY } from '$app/env/public';
+// how long a toast stays once nothing holds it (WCAG 2.2.1); one with an action longer
+// (Material snackbar: 4 to 10 s), the time to reach it
+import { ACTION_TOAST_MS, TOAST_MS } from '#lib/paces.ts';
 
 /** `sun`: light from sunrise to sunset at the house, dark the rest (SunTheme). */
 export type Theme = 'system' | 'light' | 'dark' | 'sun';
@@ -20,18 +23,13 @@ export interface ToastAction {
 	back?: () => HTMLElement | null | undefined;
 }
 
-export interface ToastOptions {
+interface ToastOptions {
 	/** A failure: assertive, and it stays until dismissed. */
 	warn?: boolean;
 	action?: ToastAction;
 }
 
 type Toast = { id: number; text: string; warn: boolean; action?: ToastAction };
-
-/** How long a toast stays once nothing holds it (WCAG 2.2.1); one with an action longer
- * (Material snackbar: 4 to 10 s), the time to reach it. */
-export const TOAST_MS = 5_000;
-export const ACTION_TOAST_MS = 10_000;
 
 // « system » is nothing kept: the page follows the system
 const keptTheme = stored<Theme>(PUBLIC_THEME_KEY, 'system', words(THEMES.filter((t) => t !== 'system')));

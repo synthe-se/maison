@@ -3,9 +3,8 @@
 // captured (as the React page did).
 
 import { source } from '#lib/live.svelte.ts';
+import { IR_CAPTURE_MS } from '#lib/paces.ts';
 import { irApi } from './api.ts';
 
-export const CAPTURE_EVERY_MS = 1_000;
-
 export const keymap = source('ir:keymap', irApi.keymap);
-export const recent = source('ir:recent', irApi.recent, CAPTURE_EVERY_MS);
+export const recent = source('ir:recent', irApi.recent, IR_CAPTURE_MS);

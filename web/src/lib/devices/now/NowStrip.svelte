@@ -11,7 +11,7 @@
 	import { TEMPO } from '#lib/devices/tempo/colors.ts';
 	import { today } from '#lib/devices/tempo/data.ts';
 	import { priceNow, redPeak } from '#lib/devices/tempo/price.ts';
-	import { hue, zigbee } from '#lib/devices/lamps/lamp.ts';
+	import { fromHue, fromZigbee, hue, isLit, zigbee } from '#lib/devices/lamps/lamp.ts';
 	import { plugs as plugList } from '#lib/devices/meross/data.ts';
 	import { devices } from '#lib/devices/cats/data.ts';
 	import { covers as coverList } from '#lib/devices/shutters/data.ts';
@@ -22,6 +22,8 @@
 	import PlugChip from './PlugChip.svelte';
 
 	const tempo = live(today);
+	// the stats say whether the server has Bluetooth at all (else the Hue list is not polled)
+	live(hue.stats);
 	const hueList = live(hue.list);
 	const zigbeeList = live(zigbee.list);
 	const plugs = live(plugList);
@@ -30,11 +32,9 @@
 
 	const price = $derived(tempo.data ? priceNow(time.now, tempo.data) : null);
 
-	const lamps = $derived([
-		...(hueList.data?.lamps ?? []).map((l) => ({ on: l.state.isOn, reachable: l.connected })),
-		...(zigbeeList.data?.lamps ?? []).map((l) => ({ on: l.state.isOn, reachable: l.reachable }))
-	]);
-	const lit = $derived(lamps.filter((l) => l.on && l.reachable).length);
+	const lit = $derived(
+		[...(hueList.data?.lamps ?? []).map(fromHue), ...(zigbeeList.data?.lamps ?? []).map(fromZigbee)].filter(isLit).length
+	);
 
 	/** The soonest scheduled move not skipped, across the shutters. */
 	const next = $derived(
