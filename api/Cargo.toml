@@ -1,0 +1,15 @@
+[package]
+name = "maison-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "What Maison's HTTP API answers and reads, said once: the backend serves these types, the wall frame's native interface reads them"
+publish = false
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"] }
+chrono-tz = "0.10.4"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"

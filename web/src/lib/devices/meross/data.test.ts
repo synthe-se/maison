@@ -1,15 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-	CONSUMPTION_EVERY_MS,
-	ELECTRICITY_EVERY_MS,
-	LIST_EVERY_MS,
-	MEROSS,
-	STATUS_EVERY_MS,
-	consumption,
-	electricity,
-	plugs,
-	status
-} from './data.ts';
+import { MEROSS_CONSUMPTION_MS, MEROSS_ELECTRICITY_MS, MEROSS_LIST_MS, MEROSS_STATUS_MS } from '#lib/paces.ts';
+import { MEROSS, consumption, electricity, plugs, status } from './data.ts';
 
 describe('plug sources', () => {
 	it('every key starts with « meross », so one refresh after a gesture asks them all again', () => {
@@ -25,7 +16,13 @@ describe('plug sources', () => {
 		expect(electricity('a').fetch).toBe(electricity('a').fetch);
 	});
 
-	it('keeps the old cadences: 5 s list and power, 3 s status, 30 s daily totals', () => {
-		expect([LIST_EVERY_MS, ELECTRICITY_EVERY_MS, STATUS_EVERY_MS, CONSUMPTION_EVERY_MS]).toEqual([5000, 5000, 3000, 30000]);
+	it('reads at the shared paces: 5 s list and power, 3 s status, 30 s daily totals', () => {
+		expect([plugs.every, electricity('a').every, status('a').every, consumption('a').every]).toEqual([
+			MEROSS_LIST_MS,
+			MEROSS_ELECTRICITY_MS,
+			MEROSS_STATUS_MS,
+			MEROSS_CONSUMPTION_MS
+		]);
+		expect([MEROSS_LIST_MS, MEROSS_ELECTRICITY_MS, MEROSS_STATUS_MS, MEROSS_CONSUMPTION_MS]).toEqual([5000, 5000, 3000, 30000]);
 	});
 });

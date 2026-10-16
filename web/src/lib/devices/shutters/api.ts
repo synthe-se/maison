@@ -1,7 +1,7 @@
 // The Matter shutters' API (Sonoff Orb-RBS, backend/src/matter/).
 
 import { get, post, put, patch, del, path } from '#lib/api.ts';
-import type { NextSun } from '#lib/sun.ts';
+import type { NextSun } from '#lib/sun/api.ts';
 // Positions are "how open": 100 = fully open, 0 = closed; null until the switch is calibrated.
 
 export type ShutterMotion = 'stopped' | 'opening' | 'closing';

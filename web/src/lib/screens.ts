@@ -5,6 +5,7 @@
 import { del, get, path, post } from '#lib/api.ts';
 import { isLocale, switchLocale } from '#lib/i18n.svelte.ts';
 import { source } from '#lib/live.svelte.ts';
+import { isTheme, ui } from '#lib/ui.svelte.ts';
 
 /** A pairing, as the screen shows it: the code, the secret it claims with, how long it waits
  * and how often it asks. */
@@ -39,11 +40,15 @@ export const screensApi = {
 // what the account page reads; it changes only from that page, which reads it again
 export const screensData = source('account:screens', screensApi.list);
 
-/** The language a screen's address names (`#lang=fr`), taken and wiped from the address: a
- * wall screen's browser may say another (the frame's WPE says en-US, whatever its system). */
-export function takeLanguage(location: Location = window.location, history: History = window.history) {
-	const lang = new URLSearchParams(location.hash.slice(1)).get('lang');
-	if (lang === null) return;
-	if (isLocale(lang)) switchLocale(lang);
+/** What a screen's address names, taken and wiped from the address: its language (`#lang=fr`: a
+ * wall screen's browser may say another, the frame's WPE says en-US whatever its system), and its
+ * theme (`theme=sun`: nobody is there to choose one). Nothing secret rides there. */
+export function takeAddress(location: Location = window.location, history: History = window.history) {
+	const fragment = new URLSearchParams(location.hash.slice(1));
+	const lang = fragment.get('lang');
+	const theme = fragment.get('theme');
+	if (lang === null && theme === null) return;
+	if (lang !== null && isLocale(lang)) switchLocale(lang);
+	if (theme !== null && isTheme(theme)) ui.setTheme(theme);
 	history.replaceState(history.state, '', location.pathname + location.search);
 }

@@ -4,21 +4,15 @@
 //! network at the moment it acts: a shutter still opens at dawn when the internet is down.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sunrise::{Coordinates, SolarDay, SolarEvent};
 
 use crate::error::AppError;
 
 const GEOCODING_API: &str = "https://geocoding-api.open-meteo.com/v1/search";
 
-/// A named place: what the person picked, and its coordinates.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Place {
-    pub name: String,
-    pub latitude: f64,
-    pub longitude: f64,
-}
+/// A named place, and the side the sun says: the API crate's, shared with the frame.
+pub use maison_api::sun::{Place, Side};
 
 /// Sunrise and sunset on a local calendar day; `None` in a polar day or night.
 pub fn sun_times(place: &Place, day: NaiveDate) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
@@ -30,6 +24,20 @@ pub fn sun_times(place: &Place, day: NaiveDate) -> (Option<DateTime<Utc>>, Optio
         solar.event_time(SolarEvent::Sunrise),
         solar.event_time(SolarEvent::Sunset),
     )
+}
+
+/// The side now, from the next sunrise and sunset: dark when the sun rises next, light when it
+/// sets next; a polar day or night has only one of the two ahead. `None` when neither is.
+pub fn side(
+    next_sunrise: Option<DateTime<Utc>>,
+    next_sunset: Option<DateTime<Utc>>,
+) -> Option<Side> {
+    match (next_sunrise, next_sunset) {
+        (Some(rise), Some(set)) => Some(if rise < set { Side::Dark } else { Side::Light }),
+        (None, Some(_)) => Some(Side::Light),
+        (Some(_), None) => Some(Side::Dark),
+        (None, None) => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +99,16 @@ fn place_of(r: GeocodingResult) -> Place {
 mod tests {
     use super::*;
     use chrono::Timelike;
+
+    #[test]
+    fn the_sun_says_dark_when_it_rises_next_and_light_when_it_sets_next() {
+        let at = |h: u32| DateTime::<Utc>::from_timestamp(i64::from(h) * 3600, 0);
+        assert_eq!(side(at(5), at(17)), Some(Side::Dark));
+        assert_eq!(side(at(29), at(17)), Some(Side::Light));
+        assert_eq!(side(None, at(2)), Some(Side::Light), "a polar day");
+        assert_eq!(side(at(2), None), Some(Side::Dark), "a polar night");
+        assert_eq!(side(None, None), None);
+    }
 
     fn paris() -> Place {
         Place {

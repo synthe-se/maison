@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use crate::{
     auth::AdminUser,
     error::AppError,
-    ir::SwitchState,
-    routes::{Answer, SimpleResponse},
+    ir::{Resolve, SwitchState},
+    routes::{Answer, Reply, SimpleResponse},
     tv::{self, TvConfig, TvKey, TvStatus},
     AppState,
 };

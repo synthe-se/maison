@@ -10,12 +10,13 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use maison_api::lamps::{BrightnessRequest, LampList, PowerRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     error::AppError,
     lamps::{LampState, LampStats},
-    routes::SimpleResponse,
+    routes::{Answer, Reply, SimpleResponse},
     AppState,
 };
 
@@ -53,16 +54,6 @@ pub trait LampBackend: Send + Sync + 'static {
 }
 
 #[derive(Debug, Serialize)]
-struct ListResponse<V> {
-    success: bool,
-    lamps: Vec<V>,
-    total: usize,
-    connected: usize,
-    reachable: usize,
-    message: String,
-}
-
-#[derive(Debug, Serialize)]
 struct StatsResponse {
     success: bool,
     #[serde(flatten)]
@@ -95,16 +86,6 @@ impl ActionResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct PowerBody {
-    enabled: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct BrightnessBody {
-    brightness: u8,
-}
-
-#[derive(Debug, Deserialize)]
 struct TemperatureBody {
     temperature: u8,
 }
@@ -126,10 +107,9 @@ pub fn router<B: LampBackend>() -> Router<AppState> {
         .route("/{lamp_id}/rename", post(rename::<B>))
 }
 
-async fn list<B: LampBackend>(State(state): State<AppState>) -> Json<ListResponse<B::View>> {
+async fn list<B: LampBackend>(State(state): State<AppState>) -> Json<Answer<LampList<B::View>>> {
     let (lamps, stats) = B::of(&state).listing().await;
-    Json(ListResponse {
-        success: true,
+    Answer::ok(LampList {
         lamps,
         total: stats.total,
         connected: stats.connected,
@@ -164,7 +144,7 @@ async fn lamp<B: LampBackend>(
 async fn power<B: LampBackend>(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
-    Json(body): Json<PowerBody>,
+    Json(body): Json<PowerRequest>,
 ) -> Result<Json<ActionResponse>, AppError> {
     let lamp_state = B::of(&state).set_power(&lamp_id, body.enabled).await?;
     Ok(ActionResponse::ok(
@@ -176,7 +156,7 @@ async fn power<B: LampBackend>(
 async fn brightness<B: LampBackend>(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
-    Json(body): Json<BrightnessBody>,
+    Json(body): Json<BrightnessRequest>,
 ) -> Result<Json<ActionResponse>, AppError> {
     let lamp_state = B::of(&state)
         .set_brightness(&lamp_id, body.brightness)

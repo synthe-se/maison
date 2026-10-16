@@ -39,6 +39,7 @@ describe('layout', () => {
 		session.user = null;
 		session.screen = null;
 		ui.setTheme('system');
+		localStorage.removeItem('maison-sun');
 	});
 
 	it('says it is loading while the session is checked, with a skip link', async () => {
@@ -175,7 +176,7 @@ describe('layout', () => {
 		return {
 			success: true,
 			place: { name: 'Paris', latitude: 48.85, longitude: 2.35 },
-			sun: { sunriseMs: now + (night ? h : 13 * h), sunsetMs: now + (night ? 12 * h : 2 * h) }
+			sun: { sunriseMs: now + (night ? h : 13 * h), sunsetMs: now + (night ? 12 * h : 2 * h), side: night ? 'dark' : 'light' }
 		};
 	};
 
@@ -196,6 +197,32 @@ describe('layout', () => {
 		// a theme chosen on the screen is kept over the sun
 		ui.setTheme('dark');
 		await expect.poll(() => document.documentElement.dataset.theme).toBe('dark');
+	});
+
+	it('signed out, a page following the sun asks for the side alone, and keeps it for the next first paint', async () => {
+		const refused = new Response('{}', { status: 401 });
+		stubApi({ 'POST /auth/verify': refused, 'POST /auth/refresh': refused, 'GET /sun': { success: true, side: 'dark' } });
+		ui.setTheme('sun');
+		await show();
+		await expect.element(page.getByRole('heading', { level: 1, name: m.pk_signin_title() })).toBeVisible();
+		await expect.poll(() => document.documentElement.dataset.theme).toBe('dark');
+		const kept = JSON.parse(localStorage.getItem('maison-sun') ?? 'null');
+		expect(kept.side).toBe('dark');
+		expect(kept.untilMs).toBeGreaterThan(Date.now());
+		// back to the system's: the side is forgotten, nothing applied at the next first paint
+		ui.setTheme('system');
+		await expect.poll(() => localStorage.getItem('maison-sun')).toBeNull();
+		await expect.poll(() => document.documentElement.dataset.theme).toBeUndefined();
+	});
+
+	it('no daylight flash at night while the session is checked: the side last said stands', async () => {
+		localStorage.setItem('maison-sun', JSON.stringify({ side: 'dark', untilMs: Date.now() + 3_600_000 }));
+		ui.setTheme('sun');
+		stubApi({ 'POST /auth/verify': () => new Promise(() => {}) });
+		await show();
+		await expect.element(page.getByRole('main')).toHaveTextContent(m.common_loading());
+		expect(document.documentElement.dataset.theme).toBe('dark');
+		expect(localStorage.getItem('maison-sun')).not.toBeNull();
 	});
 
 	it('someone may choose the sun too; with no place set it is the system’s', async () => {

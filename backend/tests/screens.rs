@@ -421,4 +421,29 @@ async fn the_place_says_when_the_sun_next_rises_and_sets() {
         set < rise,
         "one comes first: night when it is the sunrise"
     );
+    assert_eq!(v["sun"]["side"], if rise < set { "dark" } else { "light" });
+}
+
+/// Signed out (a screen waiting to be paired), a page learns the side alone: no place, no hours.
+#[tokio::test]
+async fn signed_out_a_page_learns_only_whether_it_is_day_or_night() {
+    let app = common::app(common::isolated_config("maison-screens-sun-public"));
+    let (s, v) = common::send(&app, Method::GET, "/api/sun", None, None).await;
+    assert_eq!(
+        (s, &v["side"]),
+        (StatusCode::OK, &Value::Null),
+        "no place, nothing said"
+    );
+
+    let paris = json!({ "name": "Paris", "latitude": 48.8566, "longitude": 2.3522 });
+    let (_, place) = common::send_authed(&app, Method::PUT, "/api/matter/place", Some(paris)).await;
+    let (s, v) = common::send(&app, Method::GET, "/api/sun", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v["side"], place["sun"]["side"],
+        "the same side as those signed in see"
+    );
+    let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["side", "success"], "the side only: {v}");
 }

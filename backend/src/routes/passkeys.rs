@@ -34,7 +34,7 @@ use crate::{
     },
     routes::{
         auth::{end_sessions, open_session},
-        Answer,
+        Answer, Reply,
     },
     util::{hash_secret, now_ms, random_id, random_secret},
     AppState,

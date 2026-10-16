@@ -9,7 +9,7 @@ use crate::{
     auth::AdminUser,
     error::AppError,
     nabaztag::{NabaztagConfig, TempoPushResult},
-    routes::{Answer, SimpleResponse},
+    routes::{Answer, Reply, SimpleResponse},
     AppState,
 };
 

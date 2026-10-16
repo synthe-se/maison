@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { json, sentBody, stubFetch } from '#lib/test/fetch.ts';
 import { hueLamp, zigbeeLamp } from '#lib/test/lamps.ts';
-import { DETAIL_EVERY, LIST_EVERY, fromHue, fromZigbee, hue, lampState, zigbee } from './lamp.ts';
+import { LAMP_DETAIL_MS, LAMP_LIST_MS } from '#lib/paces.ts';
+import { fromHue, fromZigbee, hue, lampState, zigbee } from './lamp.ts';
 
 describe('one lamp, whatever its radio', () => {
 	it('a Hue lamp is reachable when its Bluetooth link is up', () => {
@@ -16,7 +17,7 @@ describe('one lamp, whatever its radio', () => {
 	});
 
 	it('polls the list every 5 s, a lamp’s page every 3 s', () => {
-		expect([LIST_EVERY, DETAIL_EVERY]).toEqual([5000, 3000]);
+		expect([hue.list.every, zigbee.list.every, hue.detail('a').every]).toEqual([LAMP_LIST_MS, LAMP_LIST_MS, LAMP_DETAIL_MS]);
 	});
 });
 

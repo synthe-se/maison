@@ -11,7 +11,6 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
 use time::Duration as CookieDuration;
 
 use crate::{
@@ -19,7 +18,7 @@ use crate::{
     error::AppError,
     passkey::{client_ip, Refusal},
     people::{Scope, TokenKind},
-    routes::{auth::cookie, Answer, SimpleResponse},
+    routes::{auth::cookie, Answer, Reply, SimpleResponse},
     screens::{Claim, Waiting, PAIRING_TTL, POLL},
     util::now_ms,
     AppState,
@@ -38,71 +37,14 @@ pub fn router() -> Router<AppState> {
         .route("/me", get(me))
 }
 
-/// A pairing, as the screen shows it: its code, the secret it claims with (kept in the page's
-/// memory, never in an address), how long it waits and how often it asks.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Pairing {
-    code: String,
-    secret: String,
-    expires_in_ms: u128,
-    poll_ms: u128,
-}
+// The answers and requests: the API crate's, shared with the frame.
+use maison_api::screens::{
+    ClaimAnswer, ClaimRequest, Me, PairRequest, Paired, Pairing, Screen, ScreenName, Screens,
+};
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaimRequest {
-    secret: String,
-}
-
-/// What a claim found: `paired` with the screen's name (its cookie set), or not yet.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaimAnswer {
-    paired: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    screen: Option<ScreenName>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ScreenName {
-    name: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Me {
-    screen: ScreenName,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PairRequest {
-    code: String,
-    name: String,
-}
-
-/// A screen as « Mon compte » lists it.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Screen {
-    id: String,
-    name: String,
-    created_ms: i64,
-    last_used_ms: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Screens {
-    screens: Vec<Screen>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Paired {
-    screen: ScreenName,
+/// A duration as the API says it, in whole milliseconds.
+fn millis(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn too_many(retry_after_s: u64) -> AppError {
@@ -137,8 +79,8 @@ async fn start(
     Ok(Answer::ok(Pairing {
         code,
         secret,
-        expires_in_ms: PAIRING_TTL.as_millis(),
-        poll_ms: POLL.as_millis(),
+        expires_in_ms: millis(PAIRING_TTL),
+        poll_ms: millis(POLL),
     }))
 }
 

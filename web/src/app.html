@@ -14,8 +14,10 @@
 		<script>
 			try {
 				const t = localStorage.getItem('%sveltekit.env.PUBLIC_THEME_KEY%');
-				// « sun » waits for the house's sun (SunTheme): the system's until then
-				if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+				// following the sun: the side it last said, while it holds (SunTheme keeps it)
+				const sun = JSON.parse(localStorage.getItem('%sveltekit.env.PUBLIC_SUN_KEY%') || 'null');
+				const side = t === 'light' || t === 'dark' ? t : sun && Date.now() < sun.untilMs ? sun.side : null;
+				if (side === 'light' || side === 'dark') document.documentElement.dataset.theme = side;
 			} catch {}
 		</script>
 		%sveltekit.head%

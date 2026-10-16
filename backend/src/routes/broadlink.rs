@@ -13,7 +13,7 @@ use crate::{
     error::AppError,
     mitsubishi_ir::ClimateSettings,
     passkey::Refusal,
-    routes::{Answer, SimpleResponse},
+    routes::{Answer, Reply, SimpleResponse},
     AppState,
 };
 use serde_json::{json, Value};

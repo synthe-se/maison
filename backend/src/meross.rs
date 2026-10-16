@@ -27,17 +27,6 @@ pub struct MerossDeviceConfig {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MerossDeviceListEntry {
-    pub id: String,
-    pub name: String,
-    pub ip: String,
-    pub is_online: bool,
-    pub is_on: bool,
-    pub last_ping: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MerossStatus {
     pub online: bool,
     pub on: bool,
@@ -79,29 +68,10 @@ pub struct MerossWifi {
     pub signal: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct MerossElectricityFormatted {
-    pub voltage: String,
-    pub current: String,
-    pub power: String,
-    pub raw: MerossElectricityRaw,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MerossElectricityRaw {
-    pub channel: i32,
-    pub current: i32,
-    pub voltage: i32,
-    pub power: i32,
-    pub config: Option<MerossElectricityConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MerossElectricityConfig {
-    pub voltage_ratio: i32,
-    pub electricity_ratio: i32,
-}
+pub use maison_api::meross::{
+    Electricity as MerossElectricityFormatted, ElectricityConfig as MerossElectricityConfig,
+    ElectricityRaw as MerossElectricityRaw, Plug as MerossDeviceListEntry,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerossConsumptionEntry {

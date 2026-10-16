@@ -13,7 +13,7 @@ pub mod rules;
 pub mod source;
 pub mod tariffs;
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc};
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Serialize;
@@ -111,147 +111,37 @@ struct State {
     load_asked: Option<Asked>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Day {
-    pub date: NaiveDate,
-    pub color: Option<Color>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-pub struct Count {
-    pub used: u32,
-    pub total: u32,
-    pub remaining: u32,
-}
+pub use maison_api::tempo::{
+    Count, Day, Forecast, ForecastDay, Hours, ModelInfo, Probabilities, Reliability, SeasonStock,
+    Today,
+};
 
 /// A season's days per colour: used (published, tomorrow included), quota, left.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct SeasonStock {
-    pub season: String,
-    pub blue: Count,
-    pub white: Count,
-    pub red: Count,
-}
-
-impl SeasonStock {
-    fn new(start_year: i32, history: &History, quotas: Quotas) -> Self {
-        let (first, last) = season_bounds(start_year);
-        let used = |color: Color| {
-            history
-                .range(first..=last)
-                .filter(|(_, c)| **c == color)
-                .count() as u32
-        };
-        let count = |color: Color, total: u32| Count {
-            used: used(color),
-            total,
-            remaining: total.saturating_sub(used(color)),
-        };
-        Self {
-            season: season_name(start_year),
-            blue: count(Color::Blue, blue_days(start_year, quotas.red, quotas.white)),
-            white: count(Color::White, quotas.white),
-            red: count(Color::Red, quotas.red),
-        }
+fn season_stock(start_year: i32, history: &History, quotas: Quotas) -> SeasonStock {
+    let (first, last) = season_bounds(start_year);
+    let used = |color: Color| {
+        history
+            .range(first..=last)
+            .filter(|(_, c)| **c == color)
+            .count() as u32
+    };
+    let count = |color: Color, total: u32| Count {
+        used: used(color),
+        total,
+        remaining: total.saturating_sub(used(color)),
+    };
+    SeasonStock {
+        season: season_name(start_year),
+        blue: count(Color::Blue, blue_days(start_year, quotas.red, quotas.white)),
+        white: count(Color::White, quotas.white),
+        red: count(Color::Red, quotas.red),
     }
-}
-
-/// Peak hours (« heures pleines »), local time: the rest is off-peak. A Tempo day runs
-/// 06:00 to 06:00: before 06:00 the colour in force is the day before's.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Hours {
-    pub peak_start: &'static str,
-    pub peak_end: &'static str,
 }
 
 pub const HOURS: Hours = Hours {
-    peak_start: "06:00",
-    peak_end: "22:00",
+    peak_start: Cow::Borrowed("06:00"),
+    peak_end: Cow::Borrowed("22:00"),
 };
-
-/// Yesterday (in force until 06:00), today, tomorrow (`None` until RTE publishes it), the
-/// prices and their hours, and the days left.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Today {
-    pub yesterday: Day,
-    pub today: Day,
-    pub tomorrow: Day,
-    pub tariffs: Option<Tariffs>,
-    pub hours: Hours,
-    pub stock: SeasonStock,
-    /// When the colours were last fetched (`None`: only from the file so far).
-    pub last_updated: Option<DateTime<Utc>>,
-    /// The last ask failed: what is shown is older.
-    pub cached: bool,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
-pub struct Probabilities {
-    #[serde(rename = "BLUE")]
-    pub blue: f64,
-    #[serde(rename = "WHITE")]
-    pub white: f64,
-    #[serde(rename = "RED")]
-    pub red: f64,
-}
-
-impl From<[f64; 3]> for Probabilities {
-    fn from([blue, white, red]: [f64; 3]) -> Self {
-        Self { blue, white, red }
-    }
-}
-
-/// How the model did at this horizon on past seasons (`model.json`).
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Reliability {
-    pub accuracy: f64,
-    pub winter_accuracy: f64,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ForecastDay {
-    pub date: NaiveDate,
-    /// Days after today.
-    pub horizon: u32,
-    /// RTE's colour, not a forecast.
-    pub official: bool,
-    pub color: Color,
-    pub probabilities: Probabilities,
-    /// The colour's probability.
-    pub confidence: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reliability: Option<Reliability>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelInfo {
-    pub version: String,
-    pub fitted_through: NaiveDate,
-    /// How it did on past seasons, by horizon (what « reliability » is said from).
-    pub backtest: forecast::Backtest,
-}
-
-/// The days after today up to J+7: RTE's when published, the forecast's after.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Forecast {
-    pub issued: NaiveDate,
-    /// The day of the weather forecast used (older than today: Open-Meteo is down, the
-    /// errors are counted from that day).
-    pub weather_issued: Option<NaiveDate>,
-    pub stale: bool,
-    pub model: Option<ModelInfo>,
-    pub days: Vec<ForecastDay>,
-    pub stock: SeasonStock,
-    /// Why the forecast stops short of J+7.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -447,7 +337,7 @@ impl TempoService {
             tomorrow: day(today + Duration::days(1)),
             tariffs,
             hours: HOURS,
-            stock: SeasonStock::new(season_start_year(today), &history, quotas),
+            stock: season_stock(season_start_year(today), &history, quotas),
             last_updated: state.current.filter(|a| a.ok).map(|a| a.at),
             cached: state.current.is_some_and(|a| !a.ok),
         })
@@ -468,7 +358,7 @@ impl TempoService {
         let (now, today) = (Utc::now(), house_today());
         let history = self.current_season(state, today, now, false).await?;
         let quotas = self.quotas(state, today, &history).await;
-        let stock = SeasonStock::new(season_start_year(today), &history, quotas);
+        let stock = season_stock(season_start_year(today), &history, quotas);
         let Some(model) = self.inner.model.as_ref() else {
             let (days, _) = outlook(&Model::empty(), &history, quotas, None, None, today);
             return Ok(Forecast {
@@ -558,7 +448,7 @@ impl TempoService {
         Ok(Calendar {
             season: season_name(start),
             calendar,
-            stock: SeasonStock::new(start, &history, quotas),
+            stock: season_stock(start, &history, quotas),
         })
     }
 
@@ -697,7 +587,7 @@ impl TempoService {
         let quotas = match source::edf_season(&self.inner.client, &self.inner.edf_url, today).await
         {
             Ok((quotas, used)) => {
-                let ours = SeasonStock::new(season_start_year(today), history, quotas);
+                let ours = season_stock(season_start_year(today), history, quotas);
                 let counted = [ours.blue.used, ours.white.used, ours.red.used];
                 // EDF counts tomorrow from when it is published: one day of difference is no news
                 if used
@@ -1007,7 +897,7 @@ mod tests {
     #[test]
     fn the_stock_counts_published_days_only() {
         let history = known_until(day(2026, 1, 13));
-        let stock = SeasonStock::new(2025, &history, Quotas::default());
+        let stock = season_stock(2025, &history, Quotas::default());
         assert_eq!(
             stock.red,
             Count {

@@ -20,9 +20,9 @@ class TargetTest {
 	}
 
 	@Test
-	fun `nothing rides in the address it opens`() {
-		assertEquals("https://maison.example/", Target.parse("https://maison.example/#token=old")!!.startUrl)
-		assertEquals("https://maison.example/salon", Target.parse("https://maison.example/salon")!!.startUrl)
+	fun `nothing but the sun's theme rides in the address it opens`() {
+		assertEquals("https://maison.example/#theme=sun", Target.parse("https://maison.example/#token=old")!!.startUrl)
+		assertEquals("https://maison.example/salon#theme=sun", Target.parse("https://maison.example/salon")!!.startUrl)
 	}
 
 	@Test

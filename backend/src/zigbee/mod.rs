@@ -55,24 +55,7 @@ const SAVE_PERIOD: Duration = Duration::from_secs(2);
 /// After a command, the lamp's time to apply it before its state is read back.
 const SETTLE_AFTER_COMMAND: Duration = Duration::from_millis(250);
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ZigbeeLampView {
-    pub id: String,
-    pub name: String,
-    pub address: String,
-    pub friendly_name: String,
-    pub interview_completed: bool,
-    pub model: Option<String>,
-    pub manufacturer: String,
-    pub connected: bool,
-    pub reachable: bool,
-    pub supports_brightness: bool,
-    pub supports_temperature: bool,
-    pub supports_color: bool,
-    pub state: LampState,
-    pub last_seen: Option<String>,
-}
+pub use maison_api::lamps::ZigbeeLamp as ZigbeeLampView;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

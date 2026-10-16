@@ -7,7 +7,7 @@ import { ApiError, UNREACHABLE, onUnauthorized } from '#lib/api.ts';
 import { authApi, type User } from '#lib/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import * as passkeys from '#lib/passkeys.ts';
-import { screensApi, takeLanguage } from '#lib/screens.ts';
+import { screensApi, takeAddress } from '#lib/screens.ts';
 
 class Session {
 	/** `unreachable`: no answer, or the tunnel's 502 while the Pi restarts. `revoked`: a screen
@@ -23,7 +23,7 @@ class Session {
 	}
 
 	async verify() {
-		takeLanguage();
+		takeAddress();
 		// someone signed in, else a paired screen, else nobody: a refusal moves on to the next,
 		// anything else (no answer, a 5xx, a renewal that got no answer) is the server not being
 		// there to ask

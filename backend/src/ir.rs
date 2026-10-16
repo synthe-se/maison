@@ -72,32 +72,19 @@ const MIN_PRESS_DEBOUNCE: Duration = Duration::from_millis(50);
 /// colliding with the blaster's frame and corrupting it.
 const CLIMATE_KEY_RELEASE: Duration = Duration::from_millis(1200);
 
-/// What a `cover` action asks of a shutter (Matter's own commands, said as the API says them).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CoverOrder {
-    Open,
-    Close,
-    Stop,
-    /// To the action's `position`, an open percentage (0 closed, 100 open).
-    Position,
-}
+pub use maison_api::remote::{CoverOrder, IrAction, SwitchState};
 
-/// What a switch-like action does to the device: force a state, or flip
-/// whatever the current state is — the remote-control default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SwitchState {
-    On,
-    Off,
-    #[default]
-    Toggle,
-}
-
-impl SwitchState {
+/// Whether a switch-like action leaves the device on.
+pub(crate) trait Resolve {
     /// Whether the device should end up on. `current` (is it on now?) is only asked for a
     /// toggle, so forcing a state costs no round trip.
-    pub async fn resolve<F>(self, current: impl FnOnce() -> F) -> Result<bool, AppError>
+    async fn resolve<F>(self, current: impl FnOnce() -> F) -> Result<bool, AppError>
+    where
+        F: Future<Output = Result<bool, AppError>>;
+}
+
+impl Resolve for SwitchState {
+    async fn resolve<F>(self, current: impl FnOnce() -> F) -> Result<bool, AppError>
     where
         F: Future<Output = Result<bool, AppError>>,
     {
@@ -107,125 +94,6 @@ impl SwitchState {
             Self::Toggle => Ok(!current().await?),
         }
     }
-}
-
-/// The `action` values are snake_case, the fields camelCase like the rest of the API. The
-/// keymap and scenes written before kept snake_case fields: each renamed one reads its old
-/// name too.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "action",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase"
-)]
-pub enum IrAction {
-    Nabaztag {
-        command: String,
-    },
-    ZigbeePower {
-        lamp: String,
-        #[serde(default)]
-        state: SwitchState,
-    },
-    ZigbeeBrightness {
-        lamp: String,
-        brightness: u8,
-    },
-    /// A Hue Bluetooth lamp, as `zigbee_power` drives a Zigbee one.
-    HuePower {
-        lamp: String,
-        #[serde(default)]
-        state: SwitchState,
-    },
-    /// A Hue Bluetooth lamp's brightness (1–100).
-    HueBrightness {
-        lamp: String,
-        brightness: u8,
-    },
-    /// A Matter shutter: opened, closed, stopped or sent to `position` (an open percentage,
-    /// 0 closed, 100 open; only with `position`).
-    Cover {
-        cover: String,
-        command: CoverOrder,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        position: Option<u8>,
-    },
-    BroadlinkCode {
-        host: String,
-        #[serde(alias = "code_id")]
-        code_id: String,
-    },
-    MerossPower {
-        device: String,
-        #[serde(default)]
-        state: SwitchState,
-    },
-    /// Powers the Philips TV through JointSPACE. `switchToBox` also routes
-    /// the set to the Android box's HDMI input on power-on, since the TV
-    /// otherwise comes back on whatever source it was last left on.
-    TvPower {
-        #[serde(default)]
-        state: SwitchState,
-        #[serde(default = "crate::util::default_true", alias = "switch_to_box")]
-        switch_to_box: bool,
-    },
-    /// Sends one remote-control key to the TV.
-    TvKey {
-        key: crate::tv::TvKey,
-    },
-    /// Absolute volume on the TV, preferred over repeated volume keys.
-    TvVolume {
-        level: u8,
-    },
-    TvAmbilight {
-        #[serde(default)]
-        state: SwitchState,
-    },
-    /// Launches an app on the Android TV box, powering the television on and
-    /// routing it to the box first — a remote button that lights up a dark
-    /// room's screen is the whole point.
-    #[serde(rename = "androidtv_app")]
-    AndroidTvApp {
-        package: String,
-        #[serde(default = "crate::util::default_true", alias = "ensure_tv_on")]
-        ensure_tv_on: bool,
-    },
-    /// Sends one key to the Android TV box (D-pad, media, volume).
-    #[serde(rename = "androidtv_key")]
-    AndroidTvKey {
-        key: crate::androidtv::AndroidKey,
-    },
-    /// Toggles the Mitsubishi AC through the Broadlink blaster: if the last
-    /// commanded state left it on, sends `state-off`; otherwise sends
-    /// `onCommand` (a structured `state-…` command, e.g.
-    /// `state-cool-16-fan-4-vane-swing`).
-    /// Same reversibility for the AC, driven by the last commanded state
-    /// (IR is one-way, so that is the best approximation available).
-    ClimateToggle {
-        host: String,
-        #[serde(alias = "on_command")]
-        on_command: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-    },
-    /// Switches the Mitsubishi AC off (`state-off`), recorded as off like any order.
-    ClimateOff {
-        host: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-    },
-    /// Switches the Mitsubishi AC back on with the last settings it was given (from its page,
-    /// a toggle or a binding), without their sleep timer: that was for then, not now.
-    ClimateOn {
-        host: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-    },
-    /// Runs a saved scene's actions (`scenes.rs`). Only from a key or a test: a scene may
-    /// not hold another scene.
-    Scene {
-        scene: String,
-    },
 }
 
 /// Config-time validation so a typo'd binding fails at save, not at keypress.

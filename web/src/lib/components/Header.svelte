@@ -6,7 +6,7 @@
 	import { page } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
 	import { session } from '#lib/session.svelte.ts';
-	import { ui, type Theme } from '#lib/ui.svelte.ts';
+	import { ui, type Theme, THEMES } from '#lib/ui.svelte.ts';
 	import { locale, localeName, locales, switchLocale, type Locale } from '#lib/i18n.svelte.ts';
 	import { options } from '#lib/options.ts';
 	import Brand from './Brand.svelte';
@@ -18,7 +18,6 @@
 		{ href: '/tempo-predictions', label: m.nav_tempo, icon: 'zap', match: (p) => p.startsWith('/tempo') },
 		{ href: '/remote', label: m.nav_remote, icon: 'radio', match: (p) => p.startsWith('/remote') }
 	];
-	const THEMES = ['system', 'light', 'dark', 'sun'] as const;
 	const THEME_LABEL: Record<Theme, () => string> = { system: m.theme_system, light: m.theme_light, dark: m.theme_dark, sun: m.theme_sun };
 	const name = $derived(session.user?.name ?? '');
 	let open = $state(false);

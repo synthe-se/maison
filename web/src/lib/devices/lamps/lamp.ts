@@ -15,10 +15,7 @@ import {
 } from './api.ts';
 import { unreachableSince } from '#lib/format.ts';
 import { source, sources, type Source } from '#lib/live.svelte.ts';
-
-/** Polling, as the React app did: the dashboard lists every 5 s, a lamp's page every 3 s. */
-export const LIST_EVERY = 5_000;
-export const DETAIL_EVERY = 3_000;
+import { LAMP_DETAIL_MS, LAMP_LIST_MS } from '#lib/paces.ts';
 
 export interface Lamp {
 	id: string;
@@ -82,9 +79,9 @@ export const ZIGBEE = 'zigbee-lamp';
 
 export const hue: LampFamily<HueLampsResponse, HueLampStatusResponse> = {
 	key: HUE,
-	list: source(`${HUE}:list`, hueLampsApi.list, LIST_EVERY),
+	list: source(`${HUE}:list`, hueLampsApi.list, LAMP_LIST_MS),
 	stats: source(`${HUE}:stats`, hueLampsApi.stats),
-	detail: sources((id: string) => source(`${HUE}:detail:${id}`, () => hueLampsApi.status(id), DETAIL_EVERY)),
+	detail: sources((id: string) => source(`${HUE}:detail:${id}`, () => hueLampsApi.status(id), LAMP_DETAIL_MS)),
 	href: (id) => `/hue-lamp/${id}`,
 	power: hueLampsApi.power,
 	brightness: hueLampsApi.brightness,
@@ -105,9 +102,9 @@ const kelvin = (percent: number) => {
 
 export const zigbee: LampFamily<ZigbeeLampsResponse, ZigbeeLampStatusResponse> = {
 	key: ZIGBEE,
-	list: source(`${ZIGBEE}:list`, zigbeeLampsApi.list, LIST_EVERY),
+	list: source(`${ZIGBEE}:list`, zigbeeLampsApi.list, LAMP_LIST_MS),
 	stats: source(`${ZIGBEE}:stats`, zigbeeLampsApi.stats),
-	detail: sources((id: string) => source(`${ZIGBEE}:detail:${id}`, () => zigbeeLampsApi.status(id), DETAIL_EVERY)),
+	detail: sources((id: string) => source(`${ZIGBEE}:detail:${id}`, () => zigbeeLampsApi.status(id), LAMP_DETAIL_MS)),
 	href: (id) => `/zigbee-lamp/${id}`,
 	power: zigbeeLampsApi.power,
 	brightness: zigbeeLampsApi.brightness,

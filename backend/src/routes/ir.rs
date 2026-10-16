@@ -12,7 +12,7 @@ use crate::{
     auth::{AdminUser, AuthenticatedUser, MachineClient},
     error::AppError,
     ir::{self, IrAction, IrBinding, IrEventLog},
-    routes::{Answer, SimpleResponse},
+    routes::{Answer, Reply, SimpleResponse},
     AppState,
 };
 
@@ -24,34 +24,15 @@ struct KeyEvent {
     value: i32,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct KeyResponse {
-    success: bool,
-    message: String,
-    /// One entry per executed action ("ok: ..." / "failed: ..."); empty for a key press,
-    /// whose actions run after the answer.
-    results: Vec<String>,
+/// What running actions answers: maison-api's, in a JSON body.
+pub(crate) use maison_api::remote::KeyResponse;
+
+fn nothing(message: String) -> Json<KeyResponse> {
+    Json(KeyResponse::nothing(message))
 }
 
-impl KeyResponse {
-    fn nothing(message: String) -> Json<Self> {
-        Json(Self {
-            success: true,
-            message,
-            results: Vec::new(),
-        })
-    }
-
-    /// What a run said, action by action: the answer of `/test` and of a scene's `/run`.
-    pub(crate) fn ran(results: Vec<String>) -> Json<Self> {
-        let failures = results.iter().filter(|r| r.starts_with("failed")).count();
-        Json(Self {
-            success: failures == 0,
-            message: format!("{}/{} actions ok", results.len() - failures, results.len()),
-            results,
-        })
-    }
+pub(crate) fn ran(results: Vec<String>) -> Json<KeyResponse> {
+    Json(KeyResponse::ran(results))
 }
 
 #[derive(Debug, Serialize)]
@@ -93,14 +74,14 @@ async fn key_event(
         tracing::info!(code = event.code, value = event.value, "unmapped IR key");
         return Ok((
             StatusCode::OK,
-            KeyResponse::nothing(format!("Key {} is not mapped", event.code)),
+            nothing(format!("Key {} is not mapped", event.code)),
         ));
     };
 
     let fire = event.value == 1 || (event.value == 2 && binding.repeat);
     if !fire {
         let message = format!("Key {} ignored (value {})", event.code, event.value);
-        return Ok((StatusCode::OK, KeyResponse::nothing(message)));
+        return Ok((StatusCode::OK, nothing(message)));
     }
 
     // Phantom double-press filter (marginal IR reception splits one hold
@@ -109,7 +90,7 @@ async fn key_event(
         tracing::info!(code = event.code, "IR press debounced (phantom double)");
         return Ok((
             StatusCode::OK,
-            KeyResponse::nothing(format!("Key {} debounced", event.code)),
+            nothing(format!("Key {} debounced", event.code)),
         ));
     }
 
@@ -132,12 +113,12 @@ async fn key_event(
         // 200 like a debounced press: a held key outrunning its actions is no error
         return Ok((
             StatusCode::OK,
-            KeyResponse::nothing(format!("Key {code} dropped: still busy")),
+            nothing(format!("Key {code} dropped: still busy")),
         ));
     }
     Ok((
         StatusCode::ACCEPTED,
-        KeyResponse::nothing(format!("Key {code} accepted")),
+        nothing(format!("Key {code} accepted")),
     ))
 }
 
@@ -202,7 +183,5 @@ async fn test_actions(
         return Err(AppError::bad_request("Nothing to test"));
     }
     ir::validate_actions(&body.actions).map_err(AppError::bad_request)?;
-    Ok(KeyResponse::ran(
-        ir::run_actions(&state, &body.actions).await,
-    ))
+    Ok(ran(ir::run_actions(&state, &body.actions).await))
 }

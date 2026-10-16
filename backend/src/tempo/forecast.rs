@@ -74,32 +74,7 @@ pub struct Model {
     pub backtest: Backtest,
 }
 
-/// The model replayed on past seasons with the weather forecasts of the time.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Backtest {
-    pub seasons: Vec<String>,
-    pub horizons: Vec<HorizonScore>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct HorizonScore {
-    pub horizon: u32,
-    pub days: u32,
-    /// Share of days right, every day / November to March only.
-    pub accuracy: f64,
-    #[serde(alias = "winter_accuracy")]
-    pub winter_accuracy: f64,
-    #[serde(alias = "red_f1")]
-    pub red_f1: f64,
-    #[serde(alias = "white_f1")]
-    pub white_f1: f64,
-    /// Brier score of the probabilities (0 is perfect).
-    pub brier: f64,
-    /// « Always blue » on the same days, for scale.
-    #[serde(alias = "always_blue")]
-    pub always_blue: f64,
-}
+pub use maison_api::tempo::{Backtest, HorizonScore};
 
 impl Model {
     /// The error at `horizon` days; beyond the measured ones it keeps growing.

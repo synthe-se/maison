@@ -5,29 +5,11 @@
 //! prices change on the first of a month), its end dates the usual way.
 
 use chrono::NaiveDate;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
 
 use crate::error::AppError;
 
-/// One colour's prices: off-peak (« heures creuses », HC) and peak (« heures pleines », HP).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Price {
-    pub off_peak: f64,
-    pub peak: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tariffs {
-    pub blue: Price,
-    pub white: Price,
-    pub red: Price,
-    /// The yearly subscription, tax included (€).
-    pub subscription: Option<f64>,
-    /// When these prices came into force.
-    pub starts_on: NaiveDate,
-}
+pub use maison_api::tempo::{Price, Tariffs};
 
 #[derive(Deserialize)]
 struct Page {

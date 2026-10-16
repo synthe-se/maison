@@ -52,7 +52,7 @@ use tokio::{
 use crate::{
     broadlink::BroadlinkManager,
     error::AppError,
-    ir::SwitchState,
+    ir::{Resolve, SwitchState},
     json_config::{Checked, JsonConfig},
     net::{self, device_host, device_ipv4, unreachable},
     philips_ir,
@@ -123,42 +123,16 @@ impl Endpoint {
     }
 }
 
-/// Remote-control keys accepted by `/6/input/key`. Kept as an enum for the same
-/// reason as `Endpoint`: an unknown key name is a rejected request, and a
-/// rejected request is a step towards a dead server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TvKey {
-    Standby,
-    Back,
-    Home,
-    Source,
-    WatchTv,
-    Confirm,
-    CursorUp,
-    CursorDown,
-    CursorLeft,
-    CursorRight,
-    VolumeUp,
-    VolumeDown,
-    Mute,
-    ChannelStepUp,
-    ChannelStepDown,
-    PlayPause,
-    Pause,
-    Stop,
-    FastForward,
-    Rewind,
-    Next,
-    Previous,
-    Info,
-    Options,
-    Subtitle,
-    Teletext,
-    AmbilightOnOff,
+/// Remote-control keys accepted by `/6/input/key`: an enum, as `Endpoint`, so an unknown key
+/// name is a rejected request (a step towards a dead server), never sent.
+pub use maison_api::remote::TvKey;
+
+/// A key's wire name.
+trait Wire {
+    fn wire_name(self) -> &'static str;
 }
 
-impl TvKey {
+impl Wire for TvKey {
     /// The wire name, which is CamelCase and not always the obvious casing
     /// (`WatchTV`, not `WatchTv`).
     fn wire_name(self) -> &'static str {

@@ -2247,6 +2247,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "maison-api"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "serde",
+]
+
+[[package]]
 name = "maison-backend"
 version = "0.1.0"
 dependencies = [
@@ -2263,6 +2272,7 @@ dependencies = [
  "futures",
  "heapless",
  "jsonwebtoken",
+ "maison-api",
  "matter-codec",
  "matter-controller",
  "md5",

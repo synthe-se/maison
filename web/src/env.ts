@@ -10,7 +10,7 @@ export const STORAGE = {
 	theme: 'maison-theme',
 	locale: 'maison-locale',
 	tvOrder: 'maison-tv-last-order',
-	screenToken: 'maison-screen-token'
+	sun: 'maison-sun'
 } as const;
 
 export const variables = defineEnvVars({
@@ -26,6 +26,6 @@ export const variables = defineEnvVars({
 	PUBLIC_LOCALE_KEY: { public: true, static: true, schema: () => STORAGE.locale },
 	/** The TV's last power order, said while its state is assumed. */
 	PUBLIC_TV_ORDER_KEY: { public: true, static: true, schema: () => STORAGE.tvOrder },
-	/** A wall screen's service token (`#lib/screen.ts`). */
-	PUBLIC_SCREEN_TOKEN_KEY: { public: true, static: true, schema: () => STORAGE.screenToken }
+	/** The side the house's sun last said, and until when (SunTheme): read before first paint. */
+	PUBLIC_SUN_KEY: { public: true, static: true, schema: () => STORAGE.sun }
 });

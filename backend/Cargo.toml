@@ -11,6 +11,8 @@ bluetooth = ["dep:btleplug"]
 live-runtime-tests = []
 
 [dependencies]
+# what the API answers and reads, shared with the wall frame's native interface (frame/ui)
+maison-api = { path = "../api" }
 # passkeys (docs/passkeys.md): usernameless sign-in needs `conditional-ui`
 webauthn-rs = { version = "0.5.5", default-features = false, features = ["conditional-ui"] }
 webauthn-rs-proto = "0.5.5"   # the same version webauthn-rs pins; for the options it builds

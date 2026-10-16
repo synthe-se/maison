@@ -2,9 +2,8 @@
 
 use sha2::{Digest, Sha256};
 
-/// The house's time zone: a schedule « at sunset », a Tempo day (RTE's days are French
-/// days). Said here and never as `chrono::Local`: the Pi has no tzdata, its Local is UTC.
-pub const HOUSE_TZ: chrono_tz::Tz = chrono_tz::Europe::Paris;
+/// The house's time zone (never `chrono::Local`: UTC on the Pi), said once in the API crate.
+pub use maison_api::HOUSE_TZ;
 
 /// Today, in the house.
 pub fn house_today() -> chrono::NaiveDate {

@@ -46,39 +46,17 @@ const DEFAULT_ADB_PORT: u16 = 5555;
 /// unpaired box would otherwise cost an RSA handshake on every status poll.
 const REMOTE_RETRY_AFTER: Duration = Duration::from_secs(60);
 
-/// Remote-control keys, mapped to Android keycodes. An enum rather than a
-/// string so no caller can smuggle shell syntax into `input keyevent`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AndroidKey {
-    Up,
-    Down,
-    Left,
-    Right,
-    Ok,
-    Back,
-    Home,
-    Menu,
-    Search,
-    VolumeUp,
-    VolumeDown,
-    Mute,
-    PlayPause,
-    Play,
-    Pause,
-    Stop,
-    Next,
-    Previous,
-    Rewind,
-    FastForward,
-    ChannelUp,
-    ChannelDown,
-    Power,
-    Sleep,
-    Wakeup,
+/// Remote-control keys, mapped to Android keycodes: an enum, so no caller can smuggle shell
+/// syntax into `input keyevent`.
+pub use maison_api::remote::AndroidKey;
+
+/// A key's spellings.
+trait Codes {
+    fn codes(self) -> (&'static str, i64);
+    fn adb_command(self) -> String;
 }
 
-impl AndroidKey {
+impl Codes for AndroidKey {
     /// The key's two spellings, said once: the symbolic name ADB's `input keyevent`
     /// takes, and the numeric Android keycode the Remote v2 protocol carries. One table,
     /// so a button cannot behave differently depending on whether the box is paired.

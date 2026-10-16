@@ -15,57 +15,7 @@ use crate::{
     store::{self, Access, Corrupt},
 };
 
-/// A lamp's light, as the API shows it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LampState {
-    pub is_on: bool,
-    /// 0–100.
-    pub brightness: u8,
-    /// 0 (warm) – 100 (cool).
-    pub temperature: Option<u8>,
-    pub temperature_min: Option<u8>,
-    pub temperature_max: Option<u8>,
-    /// Zigbee lamps only (Hue Bluetooth ones have no colour): absent, not null, for Hue.
-    #[serde(flatten)]
-    pub colour: Option<LampColour>,
-}
-
-/// A colour lamp's CIE 1931 point and ZCL colour mode (0 HS, 1 XY, 2 temperature).
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LampColour {
-    pub color_x: Option<f32>,
-    pub color_y: Option<f32>,
-    pub color_mode: Option<u8>,
-}
-
-/// A Hue Bluetooth lamp, as the API shows it (with or without Bluetooth built in).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HueLampView {
-    pub id: String,
-    pub name: String,
-    pub address: String,
-    pub model: Option<String>,
-    pub manufacturer: String,
-    pub firmware: Option<String>,
-    pub connected: bool,
-    pub connecting: bool,
-    pub reachable: bool,
-    pub state: LampState,
-    pub last_seen: Option<String>,
-}
-
-/// How many lamps there are, and whether the family works at all.
-#[derive(Debug, Clone, Serialize)]
-pub struct LampStats {
-    pub total: usize,
-    pub connected: usize,
-    pub reachable: usize,
-    pub disabled: bool,
-    pub message: Option<String>,
-}
+pub use maison_api::lamps::{HueLamp as HueLampView, LampColour, LampState, LampStats};
 
 /// A lamp record kept in a lamps file.
 pub trait LampRecord:

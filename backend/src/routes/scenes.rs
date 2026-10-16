@@ -3,21 +3,20 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use maison_api::scenes::SceneList;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::AdminUser,
     error::AppError,
     ir::{self, IrAction},
-    routes::{ir::KeyResponse, Answer, SimpleResponse},
+    routes::{
+        ir::{ran, KeyResponse},
+        Answer, Reply, SimpleResponse,
+    },
     scenes::Scene,
     AppState,
 };
-
-#[derive(Debug, Serialize)]
-struct Scenes {
-    scenes: Vec<Scene>,
-}
 
 #[derive(Debug, Serialize)]
 struct One {
@@ -39,8 +38,8 @@ pub fn router() -> Router<AppState> {
         .route("/{id}/run", post(run))
 }
 
-async fn list(State(state): State<AppState>) -> Json<Answer<Scenes>> {
-    Answer::ok(Scenes {
+async fn list(State(state): State<AppState>) -> Json<Answer<SceneList>> {
+    Answer::ok(SceneList {
         scenes: state.scenes.list().await,
     })
 }
@@ -75,9 +74,7 @@ async fn run(
     Path(id): Path<String>,
 ) -> Result<Json<KeyResponse>, AppError> {
     let scene = state.scenes.get(&id).await.ok_or_else(unknown_scene)?;
-    Ok(KeyResponse::ran(
-        ir::run_actions(&state, &scene.actions).await,
-    ))
+    Ok(ran(ir::run_actions(&state, &scene.actions).await))
 }
 
 fn unknown_scene() -> AppError {

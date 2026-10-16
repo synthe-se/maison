@@ -6,9 +6,10 @@ import java.net.URI
  * HttpOnly cookie Maison set once an admin paired it (docs/passkeys.md « Wall screens »): no
  * token here, nothing to provision but the address. */
 class Target private constructor(val url: URI) {
-	/** The page to open, without a fragment: nothing rides in the address. */
+	/** The page to open: nothing secret rides in the address, only the sun's theme (nobody is
+	 * there to choose one; web/src/lib/screens.ts). */
 	val startUrl: String
-		get() = url.toString().substringBefore('#')
+		get() = url.toString().substringBefore('#') + "#theme=sun"
 
 	/** Only Maison's own origin loads: same scheme, host and port. */
 	fun allows(uri: String): Boolean {

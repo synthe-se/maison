@@ -5,29 +5,22 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use maison_api::matter::{Covers, OneCover, PositionRequest};
+use maison_api::sun::{NextSun, Where};
+
 use crate::{
     auth::AdminUser,
     error::AppError,
     matter::{CoverCommand, CoverView, SunSchedule},
-    routes::{Answer, SimpleResponse},
-    sun::Place,
+    routes::{Answer, Reply, SimpleResponse},
+    sun::{self, Place},
     AppState,
 };
 
-#[derive(Debug, Serialize)]
-struct Covers {
-    covers: Vec<CoverView>,
-}
-
-#[derive(Debug, Serialize)]
-struct One {
-    cover: CoverView,
-}
-
-type CoverAnswer = Result<Json<Answer<One>>, AppError>;
+type CoverAnswer = Result<Json<Answer<OneCover>>, AppError>;
 
 fn cover(cover: CoverView) -> CoverAnswer {
-    Ok(Answer::ok(One { cover }))
+    Ok(Answer::ok(OneCover { cover }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,33 +37,23 @@ struct RenameRequest {
     name: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Where {
-    place: Option<Place>,
-    /// When the sun next rises and sets there (ms): the wall screens' theme follows it.
-    sun: Option<NextSun>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NextSun {
-    sunrise_ms: Option<i64>,
-    sunset_ms: Option<i64>,
-}
-
-async fn where_now(state: &AppState) -> Where {
-    let sun = state
+/// When the sun next rises and sets at the house, and the side it says now; `None` with no place.
+pub(crate) async fn sun_now(state: &AppState) -> Option<NextSun> {
+    state
         .matter
         .next_sun(chrono::Utc::now())
         .await
         .map(|(rise, set)| NextSun {
             sunrise_ms: rise.map(|t| t.timestamp_millis()),
             sunset_ms: set.map(|t| t.timestamp_millis()),
-        });
+            side: sun::side(rise, set),
+        })
+}
+
+async fn where_now(state: &AppState) -> Where {
     Where {
         place: state.matter.place().await,
-        sun,
+        sun: sun_now(state).await,
     }
 }
 
@@ -98,13 +81,6 @@ struct SkipRequest {
     /// so a wrong one is a 400, not serde's 422.
     event: String,
     skip: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PositionRequest {
-    /// 0 = closed, 100 = fully open.
-    open_percent: u8,
 }
 
 pub fn router() -> Router<AppState> {

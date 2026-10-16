@@ -14,7 +14,6 @@ use std::{
 };
 
 use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -26,14 +25,7 @@ use crate::{
 /// A scene is something one taps: past twenty actions it is a script.
 pub const MAX_ACTIONS: usize = 20;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Scene {
-    pub id: String,
-    pub name: String,
-    /// One of the web's icon names.
-    pub icon: String,
-    pub actions: Vec<IrAction>,
-}
+pub use maison_api::scenes::Scene;
 
 /// An id as kept: 1 to 32 of `a-z`, `0-9` and `-` (it goes in URLs and in the keymap).
 pub fn valid_id(id: &str) -> bool {

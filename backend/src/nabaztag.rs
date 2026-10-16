@@ -28,6 +28,32 @@ const CTL_PORT: u16 = 9998;
 const CTL_MAGIC: &str = "grn1 ";
 /// Rabbit HTTP status endpoint timeout.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+/// A Tempo colour on the rabbit.
+trait OnRabbit {
+    /// Its LED colour, as RGB hex (the belly).
+    fn led_hex(self) -> &'static str;
+    /// Its ear position (0 to 16: down, level, up).
+    fn ear_position(self) -> u8;
+}
+
+impl OnRabbit for Color {
+    fn led_hex(self) -> &'static str {
+        match self {
+            Color::Blue => "0000ff",
+            Color::White => "ffffff",
+            Color::Red => "ff0000",
+        }
+    }
+
+    fn ear_position(self) -> u8 {
+        match self {
+            Color::Blue => 0,
+            Color::White => 8,
+            Color::Red => 16,
+        }
+    }
+}
+
 /// Pause between the LED and ear commands of a Tempo push, so the firmware
 /// processes them as distinct events.
 const PUSH_STEP_DELAY: Duration = Duration::from_millis(300);

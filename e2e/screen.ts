@@ -1,17 +1,31 @@
 // A wall screen (the frame, frame/android and frame/linux), paired as a TV signs in: signed out,
 // its browser asks for a code; an admin, signed in on their phone, gives it from « Mon compte »;
-// the screen opens by itself, its language from its address (the frame's WPE says en-US), the
-// house's pages with nobody signed in. No token in its address, its storage nor its scripts'
-// cookies. Removed by the admin, it says so and offers to pair again, never a passkey.
+// the screen opens by itself, its language and the sun's theme from its address (the frame's WPE
+// says en-US and light), the house's pages with nobody signed in. No token in its address, its
+// storage nor its scripts' cookies. Removed by the admin, it says so and offers to pair again, never a passkey.
 import { BASE, check, checkNoErrors, done, fr, launch, open, signIn, title, toast } from './lib.ts';
 
 const browser = await launch();
 const screen = await open(browser, { viewport: { width: 800, height: 1280 }, locale: 'en-US' });
 const phone = await open(browser);
 
-await screen.goto(`${BASE}/#lang=fr`);
+// the admin, on their phone: the house's place is set (the shutters' sun schedule)
+await signIn(phone, '/account');
+await phone.evaluate(() =>
+	fetch('/api/matter/place', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ name: 'Paris', latitude: 48.8566, longitude: 2.3522 })
+	})
+);
+const side = await phone.evaluate(async () => (await (await fetch('/api/sun')).json()).side as string);
+
+// the frame opens Maison as its kiosk does: its language and the sun's theme in the address
+await screen.goto(`${BASE}/#lang=fr&theme=sun`);
 await title(screen, fr.pk_signin_title());
 check('the screen speaks the language its address names', (await screen.evaluate(() => document.documentElement.lang)) === 'fr');
+await screen.waitForFunction((want) => document.documentElement.dataset.theme === want, side);
+check(`signed out, the screen already follows the sun: ${side} now`, true);
 await screen.getByRole('button', { name: fr.screen_pair_button() }).click();
 const shown = screen.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
 await shown.waitFor();
@@ -19,7 +33,6 @@ const code = (await shown.textContent())!;
 check('the screen shows a code to give', /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code), code);
 
 // the admin, on their phone, in the house: « Mon compte », Écrans, Associer un écran
-await signIn(phone, '/account');
 await phone.getByRole('button', { name: fr.screens_pair() }).click();
 const sheet = phone.getByRole('dialog', { name: fr.screens_pair() });
 await sheet.getByLabel(fr.screens_code()).fill(code.toLowerCase());
@@ -43,22 +56,11 @@ check(
 	`httpOnly ${cookie?.httpOnly}, sameSite ${cookie?.sameSite}`
 );
 
-// its theme follows the sun at the house once the place is set: dark when the sun rises next
-await phone.evaluate(() =>
-	fetch('/api/matter/place', {
-		method: 'PUT',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ name: 'Paris', latitude: 48.8566, longitude: 2.3522 })
-	})
-);
+// signed in, it follows the sun from the house's place (and its hours)
 await screen.reload();
 await title(screen, fr.nav_home());
-const sun = await screen.evaluate(
-	async () => (await (await fetch('/api/matter/place')).json()).sun as { sunriseMs: number; sunsetMs: number }
-);
-const side = sun.sunriseMs < sun.sunsetMs ? 'dark' : 'light';
 await screen.waitForFunction((want) => document.documentElement.dataset.theme === want, side);
-check(`the screen's theme follows the sun with nothing chosen: ${side} now`, true);
+check(`signed in, the screen follows the sun: ${side} now`, true);
 
 await screen.getByRole('link', { name: fr.nav_tempo() }).first().click();
 await title(screen, fr.nav_tempo());

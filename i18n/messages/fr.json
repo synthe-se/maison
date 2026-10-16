@@ -928,7 +928,7 @@
 	"shutters_day_time": "{day} à {time}",
 	"shutters_fact_close": "Fermeture {time}",
 	"shutters_fact_open": "Ouverture {time}",
-	"shutters_going_to": "va à {percent} %",
+	"shutters_going_to": "va à {percent} %",
 	"shutters_name_missing": "Donne-lui un nom, par exemple « Salon ».",
 	"shutters_name_placeholder": "Salon",
 	"shutters_next_close": "Prochaine fermeture : {when}",
