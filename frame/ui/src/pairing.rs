@@ -16,6 +16,7 @@ use maison_api::screens::{ClaimAnswer, ClaimRequest, Me, Pairing};
 
 use crate::client::{Client, Failure};
 use crate::paths;
+use ureq::config::IpFamily;
 
 /// How long before asking again after a failure (the Wi-Fi a moment away, a refusal).
 const RETRY: [Duration; 4] = [
@@ -210,6 +211,15 @@ fn pair(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> 
         }
         let claim = ClaimRequest { secret: p.secret };
         let every = Duration::from_millis(p.poll_ms.max(500));
+        // a house on both IPv4 and IPv6 reaches the server by either, the admin's phone by the
+        // other maybe: the claims take turns over each, so the server knows both of the
+        // screen's addresses (its secret proves them) and the admin pairs it from either
+        let over = [
+            client.clone(),
+            client.over(IpFamily::Ipv4Only),
+            client.over(IpFamily::Ipv6Only),
+        ];
+        let mut turn = 0;
         let expired = loop {
             match wait(asks, every) {
                 Waited::Gone => return Paired::Gone,
@@ -220,8 +230,9 @@ fn pair(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> 
             if Instant::now() >= until {
                 break true;
             }
-            match client.post::<maison_api::Answer<ClaimAnswer>>(paths::PAIRING_CLAIM, Some(&claim))
-            {
+            let (by, one_family) = (&over[turn % over.len()], turn % over.len() > 0);
+            turn += 1;
+            match by.post::<maison_api::Answer<ClaimAnswer>>(paths::PAIRING_CLAIM, Some(&claim)) {
                 Ok(a) if a.body.paired => return Paired::Yes,
                 Ok(_) => {}
                 // its time is over on the server's side
@@ -229,6 +240,8 @@ fn pair(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> 
                     code: Some(Code::PairingUnknown),
                     ..
                 }) => break true,
+                // a family the house lacks: nothing to prove there
+                Err(_) if one_family => {}
                 // anything else (the Wi-Fi a moment away): asked again at the next round
                 Err(f) => eprintln!("pairing claim: {f}"),
             }

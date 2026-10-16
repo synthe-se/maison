@@ -14,6 +14,7 @@ use maison_api::screens::{COOKIE, COOKIE_SECURE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use ureq::Agent;
+use ureq::config::IpFamily;
 
 /// The cookie a paired screen holds, by the backend's names for it (`__Host-` over HTTPS).
 const COOKIE_NAMES: [&str; 2] = [COOKIE_SECURE, COOKIE];
@@ -186,25 +187,41 @@ pub struct Client {
     agent: Agent,
     api: String,
     jar: Arc<Jar>,
+    timeout: Duration,
+}
+
+/// The agent every request goes through, over `family` (`Any` but for a waiting screen's
+/// claims, which prove both its addresses).
+fn agent(timeout: Duration, family: IpFamily) -> Agent {
+    Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .timeout_connect(Some(timeout.min(Duration::from_secs(5))))
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .user_agent(concat!("maison-frame-ui/", env!("CARGO_PKG_VERSION")))
+        // straight to Maison: no proxy from the environment sees the screen's cookie
+        .proxy(None)
+        .ip_family(family)
+        .build()
+        .into()
 }
 
 impl Client {
     /// `origin`: `https://maison.example`; the cookie kept in `state_dir`.
     pub fn new(origin: &str, state_dir: &Path, timeout: Duration) -> Self {
-        let agent: Agent = Agent::config_builder()
-            .timeout_global(Some(timeout))
-            .timeout_connect(Some(timeout.min(Duration::from_secs(5))))
-            .max_redirects(0)
-            .http_status_as_error(false)
-            .user_agent(concat!("maison-frame-ui/", env!("CARGO_PKG_VERSION")))
-            // straight to Maison: no proxy from the environment sees the screen's cookie
-            .proxy(None)
-            .build()
-            .into();
         Self {
-            agent,
+            agent: agent(timeout, IpFamily::Any),
             api: format!("{origin}/api"),
             jar: Arc::new(Jar::open(state_dir, origin)),
+            timeout,
+        }
+    }
+
+    /// The same client (its cookie too) over `family` alone.
+    pub fn over(&self, family: IpFamily) -> Self {
+        Self {
+            agent: agent(self.timeout, family),
+            ..self.clone()
         }
     }
 

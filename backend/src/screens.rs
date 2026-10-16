@@ -10,13 +10,16 @@
 //!
 //! The admin pairs from the screen's own network: the same public address (an IPv6 one counts
 //! as its /64). A code sent from elsewhere (« type this code in Maison ») pairs nothing: a
-//! browser across the internet never becomes one of the house's screens.
+//! browser across the internet never becomes one of the house's screens. A house on IPv4 and
+//! IPv6 is two addresses, and the phone may take the family the screen did not: a screen's
+//! claim from its other family (its secret proves it is the screen) adds that address, and the
+//! admin may stand at either.
 
 use std::{net::IpAddr, sync::Mutex, time::Duration};
 
 use crate::{
     passkey::Limiter,
-    util::{hash_secret, ip_group, lock, random_secret, Bounded, Caps},
+    util::{hash_secret, ip_group, lock, random_secret, Bounded, Caps, Held},
 };
 
 /// How long a screen waits for an admin.
@@ -44,6 +47,8 @@ const CLAIMS_PER_MINUTE: u32 = 40;
 
 struct Pending {
     code: String,
+    /// The screen's address in its other family (IPv4 or IPv6), once a claim came from it.
+    also: Option<IpAddr>,
     /// Once an admin paired it: the token and the screen's name, for its next claim.
     granted: Option<(String, String)>,
 }
@@ -127,6 +132,7 @@ impl Pairings {
             ip,
             Pending {
                 code: code.clone(),
+                also: None,
                 granted: None,
             },
         );
@@ -143,7 +149,7 @@ impl Pairings {
             .map
             .find(|h| h.value.code == code && h.value.granted.is_none())
         {
-            Some(h) if h.from == ip_group(admin) => Waiting::Here,
+            Some(h) if from_here(h, ip_group(admin)) => Waiting::Here,
             Some(_) => Waiting::Elsewhere,
             None => Waiting::No,
         }
@@ -158,7 +164,7 @@ impl Pairings {
         let mut waits = lock(&self.waits);
         match waits
             .map
-            .find_mut(|h| h.value.code == code && h.from == admin && h.value.granted.is_none())
+            .find_mut(|h| h.value.code == code && from_here(h, admin) && h.value.granted.is_none())
         {
             Some(h) => {
                 h.value.granted = Some((token, name));
@@ -175,7 +181,13 @@ impl Pairings {
         let mut waits = lock(&self.waits);
         match waits.map.get_mut(&key) {
             None => return Ok(Claim::Gone),
-            Some(h) if h.value.granted.is_none() => return Ok(Claim::Waiting),
+            Some(h) if h.value.granted.is_none() => {
+                let here = ip_group(ip);
+                if here.is_ipv4() != h.from.is_ipv4() {
+                    h.value.also = Some(here);
+                }
+                return Ok(Claim::Waiting);
+            }
             Some(_) => {}
         }
         Ok(match waits.map.take(&key).and_then(|h| h.value.granted) {
@@ -192,6 +204,12 @@ impl Pairings {
         waits.forget(gone);
         std::mem::take(&mut waits.orphans)
     }
+}
+
+/// Whether an admin at `group` stands where the screen `h` waits: its first address, or the
+/// one its other family showed.
+fn from_here(h: &Held<Pending>, group: IpAddr) -> bool {
+    h.from == group || h.value.also == Some(group)
 }
 
 fn new_code() -> String {
@@ -305,6 +323,48 @@ mod tests {
         assert!(
             pairings.start(ip("198.51.100.8")).is_ok(),
             "another address is not limited by it"
+        );
+    }
+
+    #[test]
+    fn a_house_on_both_families_pairs_from_either_once_the_screen_showed_both() {
+        let pairings = Pairings::default();
+        // the screen asks over IPv6; the admin's phone reaches the server over the house's IPv4
+        let (secret, code) = pairings.start(ip("2a01:db8:ed5:7590::10")).unwrap();
+        let phone = ip("88.187.0.7");
+        assert_eq!(pairings.waiting(&code, phone), Waiting::Elsewhere);
+        // the screen's claim over IPv4, with its secret: the house's IPv4 is the screen's too
+        assert_eq!(pairings.claim(phone, &secret), Ok(Claim::Waiting));
+        assert_eq!(pairings.waiting(&code, phone), Waiting::Here);
+        assert_eq!(
+            pairings.waiting(&code, ip("2a01:db8:ed5:7590::abcd")),
+            Waiting::Here,
+            "its first address still counts"
+        );
+        assert_eq!(
+            pairings.waiting(&code, ip("203.0.113.9")),
+            Waiting::Elsewhere,
+            "only the address the screen itself showed"
+        );
+        assert!(pairings.grant(&code, phone, "maison_x".into(), "Salon".into()));
+        assert!(matches!(
+            pairings.claim(ip("2a01:db8:ed5:7590::10"), &secret),
+            Ok(Claim::Paired { .. })
+        ));
+    }
+
+    #[test]
+    fn a_claim_from_its_own_family_adds_nothing() {
+        let pairings = Pairings::default();
+        let (secret, code) = pairings.start(ip("198.51.100.4")).unwrap();
+        // another IPv4 never stands in for the first (a secret seen elsewhere pairs nothing)
+        assert_eq!(
+            pairings.claim(ip("203.0.113.9"), &secret),
+            Ok(Claim::Waiting)
+        );
+        assert_eq!(
+            pairings.waiting(&code, ip("203.0.113.9")),
+            Waiting::Elsewhere
         );
     }
 
