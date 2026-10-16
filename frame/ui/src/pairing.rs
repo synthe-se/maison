@@ -1,5 +1,5 @@
 //! Who the frame is, as the web app's ScreenPairing and session say it: a screen holding its
-//! cookie asks `GET /screens/me` (its cookie renewed); refused, or holding none, it shows a code
+//! cookie asks `POST /screens/me` (who it is, its cookie renewed); refused, or holding none, it shows a code
 //! (`POST /screens/pairing`) and asks every `pollMs` whether an admin paired it
 //! (`POST /screens/pairing/claim`, the secret kept in this thread's memory only), until the
 //! code's time is over (a new one is one tap away). Paired, the house shows; a later 401 (the
@@ -110,7 +110,7 @@ fn run(
         if client.has_cookie() {
             let mut tries = 0;
             let me = loop {
-                match client.get::<maison_api::Answer<Me>>(paths::SCREEN_ME) {
+                match client.post::<maison_api::Answer<Me>>(paths::SCREEN_ME, None::<&()>) {
                     Ok(_) => break true,
                     Err(Failure::SignedOut) => break false,
                     Err(f) => {
@@ -296,7 +296,7 @@ mod tests {
                 }
             }
             l if l.starts_with("POST /api/screens/pairing") => (200, vec![], PAIRING.into()),
-            l if l.starts_with("GET /api/screens/me") => {
+            l if l.starts_with("POST /api/screens/me") => {
                 if *r.lock().unwrap() {
                     (401, vec![], r#"{"code":"not_signed_in"}"#.into())
                 } else {
@@ -334,7 +334,7 @@ mod tests {
     fn a_kept_cookie_opens_the_house_and_a_refused_one_shows_a_code() {
         let dir = temp_dir("pairing-kept");
         let stub = serve(|line| match line {
-            l if l.starts_with("GET /api/screens/me") => (
+            l if l.starts_with("POST /api/screens/me") => (
                 200,
                 vec![],
                 r#"{"success":true,"screen":{"name":"Entrée"}}"#.into(),
@@ -354,7 +354,7 @@ mod tests {
 
         let dir = temp_dir("pairing-refused");
         let stub = serve(|line| match line {
-            l if l.starts_with("GET /api/screens/me") => (401, vec![], "{}".into()),
+            l if l.starts_with("POST /api/screens/me") => (401, vec![], "{}".into()),
             l if l.starts_with("POST /api/screens/pairing/claim") => {
                 (200, vec![], r#"{"success":true,"paired":false}"#.into())
             }
