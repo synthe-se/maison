@@ -33,6 +33,13 @@ pub struct Config {
     pub adb_key_path: PathBuf,
     pub atv_identity_path: PathBuf,
     pub ir_api_token: Option<String>,
+    /// Whether an app's service token may come over the LAN's plain HTTP (`ALLOW_LAN_TOKENS`,
+    /// off by default): the token would cross the Wi-Fi in clear. Tailscale (encrypted) and
+    /// loopback are always allowed; the IR bridge's own token is not concerned.
+    pub allow_lan_tokens: bool,
+    /// A wall screen not seen for this many days is revoked (`SCREEN_IDLE_DAYS`, default 90;
+    /// 0 keeps them forever): a frame thrown away or stolen stops opening the house.
+    pub screen_idle_days: u32,
     pub matter_state_dir: PathBuf,
     pub matter_trust_dir: PathBuf,
     pub matter_test_roots: bool,
@@ -94,6 +101,14 @@ impl Config {
             })
         };
 
+        // an address as kept: without its trailing slash, said once here
+        let url = |name: &str, default: &str| {
+            var(name)
+                .unwrap_or_else(|| default.to_string())
+                .trim_end_matches('/')
+                .to_string()
+        };
+
         Self {
             host: var("HOST").unwrap_or_else(|| "0.0.0.0".to_string()),
             port: parsed(&var, if var("PORT").is_some() { "PORT" } else { "API_PORT" }, 3033),
@@ -102,7 +117,8 @@ impl Config {
             auth_cookie_name: var("AUTH_COOKIE_NAME").unwrap_or_else(|| "maison_session".to_string()),
             auth_cookie_secure: flag("AUTH_COOKIE_SECURE", true),
             public_url: var("PUBLIC_URL")
-                .or_else(|| var("CLOUDFLARE_PUBLIC_HOSTNAME").map(|host| format!("https://{host}"))),
+                .or_else(|| var("CLOUDFLARE_PUBLIC_HOSTNAME").map(|host| format!("https://{host}")))
+                .map(|url| url.trim_end_matches('/').to_string()),
             disable_bluetooth: flag("DISABLE_BLUETOOTH", false),
             // A directory of its own, like matter/: the file is replaced by temp-file +
             // rename, so the service user must own the directory (the app dir is root's).
@@ -132,6 +148,8 @@ impl Config {
             atv_identity_path: path("ATV_IDENTITY_PATH", "atv-identity"),
             // Machine token for the STB IR bridge (kird); unset = IR API off.
             ir_api_token: var("IR_API_TOKEN"),
+            allow_lan_tokens: flag("ALLOW_LAN_TOKENS", false),
+            screen_idle_days: parsed(&var, "SCREEN_IDLE_DAYS", 90),
             // Matter fabric keys + commissioned covers. A directory, not a file: the
             // controller saves by temp-file + rename, so the service user must own the
             // directory itself.
@@ -141,22 +159,21 @@ impl Config {
             // Development only: accept the CSA test roots (matter.js / chip example devices)
             // instead of the production ones.
             matter_test_roots: flag("MATTER_TEST_ROOTS", false),
-            tempo_rte_url: var("TEMPO_RTE_URL")
-                .unwrap_or_else(|| "https://www.services-rte.com/cms/open_data/v1".to_string()),
-            tempo_rte_api_url: var("TEMPO_RTE_API_URL")
-                .unwrap_or_else(|| "https://digital.iservices.rte-france.com".to_string()),
+            tempo_rte_url: url("TEMPO_RTE_URL", "https://www.services-rte.com/cms/open_data/v1"),
+            tempo_rte_api_url: url("TEMPO_RTE_API_URL", "https://digital.iservices.rte-france.com"),
             rte_client_id: var("RTE_CLIENT_ID"),
             rte_client_secret: var("RTE_CLIENT_SECRET"),
-            tempo_fallback_url: var("TEMPO_FALLBACK_URL")
-                .unwrap_or_else(|| "https://www.api-couleur-tempo.fr".to_string()),
-            tempo_edf_url: var("TEMPO_EDF_URL")
-                .unwrap_or_else(|| "https://api-commerce.edf.fr/commerce-activet/api/v1".to_string()),
-            tempo_tarifs_url: var("TEMPO_TARIFS_URL").unwrap_or_else(|| {
-                "https://tabular-api.data.gouv.fr/api/resources/0c3d1d36-c412-4620-8566-e5cbb4fa2b5a/data/?page_size=1&P_SOUSCRITE__exact=6&__id__sort=desc".to_string()
-            }),
-            tempo_odre_url: var("TEMPO_ODRE_URL")
-                .unwrap_or_else(|| "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets".to_string()),
-            open_meteo_url: var("OPEN_METEO_URL").unwrap_or_else(|| "https://api.open-meteo.com".to_string()),
+            tempo_fallback_url: url("TEMPO_FALLBACK_URL", "https://www.api-couleur-tempo.fr"),
+            tempo_edf_url: url("TEMPO_EDF_URL", "https://api-commerce.edf.fr/commerce-activet/api/v1"),
+            tempo_tarifs_url: url(
+                "TEMPO_TARIFS_URL",
+                "https://tabular-api.data.gouv.fr/api/resources/0c3d1d36-c412-4620-8566-e5cbb4fa2b5a/data/?page_size=1&P_SOUSCRITE__exact=6&__id__sort=desc",
+            ),
+            tempo_odre_url: url(
+                "TEMPO_ODRE_URL",
+                "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets",
+            ),
+            open_meteo_url: url("OPEN_METEO_URL", "https://api.open-meteo.com"),
             scenes_path: path("SCENES_JSON_PATH", "scenes.json"),
             zigbee: crate::zigbee::ZigbeeConfig::load(&var),
             source_root,
@@ -237,6 +254,32 @@ mod tests {
                 .find(|(k, _)| *k == name)
                 .map(|(_, v)| v.to_string())
         })
+    }
+
+    #[test]
+    fn addresses_lose_their_trailing_slash_once_here() {
+        let c = with(&[
+            ("PUBLIC_URL", "https://home.example.com/"),
+            ("OPEN_METEO_URL", "http://127.0.0.1:9/"),
+        ]);
+        assert_eq!(c.public_url.as_deref(), Some("https://home.example.com"));
+        assert_eq!(c.open_meteo_url, "http://127.0.0.1:9");
+        assert_eq!(
+            with(&[("CLOUDFLARE_PUBLIC_HOSTNAME", "home.example.com")])
+                .public_url
+                .as_deref(),
+            Some("https://home.example.com")
+        );
+    }
+
+    #[test]
+    fn lan_tokens_are_off_and_screens_go_after_ninety_idle_days_by_default() {
+        let c = with(&[]);
+        assert!(!c.allow_lan_tokens);
+        assert_eq!(c.screen_idle_days, 90);
+        let c = with(&[("ALLOW_LAN_TOKENS", "yes"), ("SCREEN_IDLE_DAYS", "0")]);
+        assert!(c.allow_lan_tokens);
+        assert_eq!(c.screen_idle_days, 0);
     }
 
     #[test]

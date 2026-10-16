@@ -186,3 +186,56 @@ async fn people_still_sign_in_as_before() {
         (StatusCode::UNAUTHORIZED, Some("not_signed_in"))
     );
 }
+
+/// Over the house's Wi-Fi the token would travel in clear: refused unless `ALLOW_LAN_TOKENS`.
+#[tokio::test]
+async fn over_the_plain_lan_an_apps_token_needs_allow_lan_tokens() {
+    let (config, token) = config_with_token().await;
+    let on_the_wifi = |config: Config| {
+        maison_backend::build_app_parts_from_config(Arc::new(config))
+            .unwrap()
+            .0
+            .layer(MockConnectInfo(SocketAddr::from(([192, 168, 1, 20], 4000))))
+    };
+    let (s, v) = common::send(
+        &on_the_wifi(config.clone()),
+        Method::GET,
+        "/api/meross",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("use_public_address"))
+    );
+    let allowed = Config {
+        allow_lan_tokens: true,
+        ..config
+    };
+    let (s, v) = common::send(
+        &on_the_wifi(allowed),
+        Method::GET,
+        "/api/meross",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn guessing_service_tokens_makes_the_address_wait() {
+    let (config, token) = config_with_token().await;
+    let app = common::app(config);
+    for n in 0..10 {
+        let forged = format!("maison_{n:0>43}");
+        let (s, _) = common::send(&app, Method::GET, "/api/meross", Some(&forged), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    let (s, v) = common::send(&app, Method::GET, "/api/meross", Some(&token), None).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("too_many_attempts"))
+    );
+}

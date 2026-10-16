@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -23,21 +23,39 @@ use webauthn_rs::prelude::{
     DiscoverableAuthentication, PasskeyRegistration, Url, Uuid, Webauthn, WebauthnBuilder,
 };
 
-use crate::{config::Config, error::AppError, util::random_secret};
+use crate::{
+    config::Config,
+    error::AppError,
+    util::{ip_group, lock, random_secret, Bounded, Caps},
+};
 
 /// How long a ceremony may take, from options to answer; also the browser's timeout.
 pub const CEREMONY_TTL: Duration = Duration::from_secs(300);
-/// Ceremonies in flight at most; the oldest goes first.
-const CEREMONY_CAP: usize = 10_000;
-/// Ceremonies in flight per address at most; its oldest goes first.
-const CEREMONIES_PER_ADDRESS: usize = 20;
+/// Ceremonies in flight at most, per address, and per prefix (`util::Bounded` says who loses
+/// one when full).
+const CEREMONY_CAPS: Caps = Caps {
+    total: 10_000,
+    per_address: 20,
+    per_prefix: 200,
+};
 /// Failures per address and window on the endpoints that verify something.
 const ATTEMPTS: u32 = 10;
 const ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
 /// Ceremonies started signed out, per address and window, successful or not.
 const STARTS: u32 = 30;
-/// How long an invitation link stays good.
+/// How long an invitation link stays good: a week for a member, three days for an admin (a
+/// link that makes an admin is the house's keys: it should not lie around).
 pub const INVITE_DAYS: i64 = 7;
+pub const ADMIN_INVITE_HOURS: i64 = 72;
+
+/// How long an invitation for `admin` or not stays good, in ms.
+pub fn invite_lifetime_ms(admin: bool) -> i64 {
+    if admin {
+        ADMIN_INVITE_HOURS * 3_600_000
+    } else {
+        INVITE_DAYS * 86_400_000
+    }
+}
 
 // ---------- refusals ----------
 
@@ -48,57 +66,31 @@ pub use crate::error::Refusal;
 
 /// Values kept server-side for a short while, each taken at most once.
 pub struct Ceremonies<T> {
-    ttl: Duration,
-    cap: usize,
-    per_address: usize,
-    map: Mutex<HashMap<String, (Instant, IpAddr, T)>>,
+    map: Mutex<Bounded<T>>,
 }
 
 impl<T> Ceremonies<T> {
-    pub fn new(ttl: Duration, cap: usize, per_address: usize) -> Self {
+    pub fn new(ttl: Duration, caps: Caps) -> Self {
         Self {
-            ttl,
-            cap,
-            per_address,
-            map: Mutex::new(HashMap::new()),
+            map: Mutex::new(Bounded::new(ttl, caps)),
         }
     }
 
     /// Keeps `value`, started from `ip`; returns the id to give back with the answer.
     pub fn put(&self, ip: IpAddr, value: T) -> String {
         let id = random_secret();
-        let from = address_key(ip);
-        let mut map = self.map.lock().expect("ceremonies");
-        map.retain(|_, (t, _, _)| t.elapsed() < self.ttl);
-        let oldest = |map: &HashMap<String, (Instant, IpAddr, T)>, only: Option<IpAddr>| {
-            map.iter()
-                .filter(|(_, (_, a, _))| only.is_none_or(|o| *a == o))
-                .min_by_key(|(_, (t, _, _))| *t)
-                .map(|(k, _)| k.clone())
-        };
-        if map.values().filter(|(_, a, _)| *a == from).count() >= self.per_address {
-            if let Some(k) = oldest(&map, Some(from)) {
-                map.remove(&k);
-            }
-        }
-        if map.len() >= self.cap {
-            if let Some(k) = oldest(&map, None) {
-                map.remove(&k);
-            }
-        }
-        map.insert(id.clone(), (Instant::now(), from, value));
+        lock(&self.map).insert(id.clone(), ip, value);
         id
     }
 
     /// The value, once, if it is still fresh.
     pub fn take(&self, id: &str) -> Option<T> {
-        let (t, _, v) = self.map.lock().expect("ceremonies").remove(id)?;
-        (t.elapsed() < self.ttl).then_some(v)
+        lock(&self.map).take(id).map(|held| held.value)
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.map.lock().expect("ceremonies").len()
+        lock(&self.map).len()
     }
 }
 
@@ -122,8 +114,8 @@ impl Limiter {
 
     /// `Err(seconds)` when the address has failed too often and must wait.
     pub fn check(&self, ip: IpAddr) -> Result<(), u64> {
-        let map = self.map.lock().expect("limiter");
-        match map.get(&address_key(ip)) {
+        let map = lock(&self.map);
+        match map.get(&ip_group(ip)) {
             Some((start, n)) if *n >= self.max && start.elapsed() < self.window => {
                 Err(self.wait(*start))
             }
@@ -144,12 +136,12 @@ impl Limiter {
     }
 
     fn count(&self, ip: IpAddr) {
-        let mut map = self.map.lock().expect("limiter");
+        let mut map = lock(&self.map);
         if map.len() > 10_000 {
             map.retain(|_, (t, _)| t.elapsed() < self.window);
         }
         let now = Instant::now();
-        let e = map.entry(address_key(ip)).or_insert((now, 0));
+        let e = map.entry(ip_group(ip)).or_insert((now, 0));
         if e.0.elapsed() >= self.window {
             *e = (now, 0);
         }
@@ -158,14 +150,6 @@ impl Limiter {
 
     fn wait(&self, start: Instant) -> u64 {
         self.window.saturating_sub(start.elapsed()).as_secs().max(1)
-    }
-}
-
-/// What counts as one address: an IPv4 address, or an IPv6 /64 (one household's prefix).
-pub fn address_key(ip: IpAddr) -> IpAddr {
-    match ip.to_canonical() {
-        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from_bits(v6.to_bits() & (u128::MAX << 64))),
-        v4 => v4,
     }
 }
 
@@ -217,15 +201,11 @@ impl PasskeyState {
         match built {
             Ok(webauthn) => Some(Self {
                 webauthn,
-                ceremonies: Ceremonies::new(CEREMONY_TTL, CEREMONY_CAP, CEREMONIES_PER_ADDRESS),
+                ceremonies: Ceremonies::new(CEREMONY_TTL, CEREMONY_CAPS),
                 limiter: Limiter::new(ATTEMPTS, ATTEMPT_WINDOW),
                 starts: Limiter::new(STARTS, ATTEMPT_WINDOW),
-                public_url: config
-                    .public_url
-                    .clone()
-                    .unwrap_or_default()
-                    .trim_end_matches('/')
-                    .to_string(),
+                // trimmed of its slash once, in `Config::load`
+                public_url: config.public_url.clone().unwrap_or_default(),
             }),
             Err(error) => {
                 tracing::warn!(%error, "passkeys off: nobody can sign in");
@@ -325,16 +305,24 @@ pub fn device_label(user_agent: &str) -> &'static str {
 mod tests {
     use super::*;
 
+    fn caps(total: usize, per_address: usize) -> Caps {
+        Caps {
+            total,
+            per_address,
+            per_prefix: total,
+        }
+    }
+
     #[test]
     fn ceremonies_are_single_use_and_expire() {
         let ip: IpAddr = "100.64.0.1".parse().unwrap();
-        let c = Ceremonies::new(Duration::from_secs(60), 3, 3);
+        let c = Ceremonies::new(Duration::from_secs(60), caps(3, 3));
         let a = c.put(ip, 1);
         assert_eq!(c.take(&a), Some(1));
         assert_eq!(c.take(&a), None, "single use");
         assert_eq!(c.take("nope"), None);
 
-        let expired = Ceremonies::new(Duration::ZERO, 3, 3);
+        let expired = Ceremonies::new(Duration::ZERO, caps(3, 3));
         let b = expired.put(ip, 2);
         assert_eq!(expired.take(&b), None, "older than its time limit");
 
@@ -347,7 +335,7 @@ mod tests {
         assert_eq!(c.take(&ids[3]), Some(3));
 
         // one address has a few at most: its own oldest goes, not someone else's
-        let c = Ceremonies::new(Duration::from_secs(60), 100, 2);
+        let c = Ceremonies::new(Duration::from_secs(60), caps(100, 2));
         let other = c.put("100.64.0.9".parse().unwrap(), 0);
         let ids: Vec<_> = (1..=3).map(|n| c.put(ip, n)).collect();
         assert_eq!(c.len(), 3);
@@ -366,10 +354,12 @@ mod tests {
         assert!(l.hit(same_prefix).is_ok());
         assert!(l.hit(a).is_err(), "an IPv6 /64 is one address");
         assert!(l.hit(other).is_ok());
-        assert_eq!(
-            address_key("::ffff:192.0.2.1".parse().unwrap()),
-            "192.0.2.1".parse::<IpAddr>().unwrap()
-        );
+    }
+
+    #[test]
+    fn an_admin_invitation_lives_three_days_a_members_a_week() {
+        assert_eq!(invite_lifetime_ms(true), 72 * 3_600_000);
+        assert_eq!(invite_lifetime_ms(false), 7 * 86_400_000);
     }
 
     #[test]

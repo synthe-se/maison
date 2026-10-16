@@ -181,10 +181,16 @@ async fn a_screen_drives_the_devices_never_people_and_goes_when_revoked() {
 
     let (s, headers, v) = with_cookie(&app, Method::GET, "/api/screens/me", &cookie).await;
     assert_eq!((s, &v["screen"]["name"]), (StatusCode::OK, &json!("Salon")));
+    assert!(
+        headers.get(header::SET_COOKIE).is_none(),
+        "a read sets nothing"
+    );
+    let (s, headers, _) = with_cookie(&app, Method::POST, "/api/screens/me", &cookie).await;
+    assert_eq!(s, StatusCode::OK);
     assert_eq!(
         screen_cookie(&headers).0,
         cookie,
-        "renewed at each start of its page"
+        "renewed at each start of its page, by a POST"
     );
     for path in [
         "/api/meross",
@@ -274,17 +280,19 @@ async fn a_name_pairs_one_screen_and_an_app_is_no_screen() {
         (StatusCode::CONFLICT, Some("screen_exists"))
     );
 
-    // an app's token in a screen's cookie drives nothing more, and is not a screen
+    // an app's token in a screen's cookie drives nothing, and is not a screen
     let achi = issue_service_token(&people, "achi", Scope::Devices, TokenKind::App)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        with_cookie(&app, Method::GET, "/api/screens/me", &achi)
-            .await
-            .0,
-        StatusCode::UNAUTHORIZED
-    );
+    for path in ["/api/screens/me", "/api/meross"] {
+        let (s, _, v) = with_cookie(&app, Method::GET, path, &achi).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::UNAUTHORIZED, Some("not_signed_in")),
+            "{path}: an app's token comes as a bearer only"
+        );
+    }
     let (_, v) = common::send_authed(&app, Method::GET, "/api/screens", None).await;
     assert_eq!(
         v["screens"].as_array().unwrap().len(),
@@ -446,4 +454,75 @@ async fn signed_out_a_page_learns_only_whether_it_is_day_or_night() {
     let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     keys.sort();
     assert_eq!(keys, ["side", "success"], "the side only: {v}");
+}
+
+#[tokio::test]
+async fn a_screen_drives_but_changes_no_setting_and_its_token_is_no_bearer() {
+    let app = common::app(common::isolated_config("maison-screens-settings"));
+    let cookie = paired(&app, "Salon").await;
+    for (method, path) in [
+        (Method::POST, "/api/zigbee/lamps/x/rename"),
+        (Method::POST, "/api/hue-lamps/x/rename"),
+        (Method::PATCH, "/api/matter/covers/x"),
+        (Method::PUT, "/api/matter/covers/x/schedule"),
+        (Method::POST, "/api/matter/covers/x/skip"),
+    ] {
+        let (s, _, v) = with_cookie(&app, method, path, &cookie).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("not_for_screens")),
+            "{path}"
+        );
+    }
+    // the rabbit: its tricks, yes; its reboot, no
+    let mut reboot = common::request(
+        Method::POST,
+        "/api/nabaztag/ctl",
+        None,
+        Some(json!({ "command": "reboot" })),
+    );
+    reboot.headers_mut().insert(
+        header::COOKIE,
+        format!("{COOKIE}={cookie}").parse().unwrap(),
+    );
+    let (s, _, v) = common::respond(&app, reboot).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("not_for_screens"))
+    );
+    // a screen's token sent as a bearer header (copied off the frame): not signed in
+    let (s, v) = common::send(&app, Method::GET, "/api/meross", Some(&cookie), None).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("not_signed_in"))
+    );
+    // a member renames, as before
+    let (s, v) = common::send(
+        &app,
+        Method::POST,
+        "/api/zigbee/lamps/x/rename",
+        Some(&common::member_token()),
+        Some(json!({ "name": "Salon" })),
+    )
+    .await;
+    assert_ne!(s, StatusCode::FORBIDDEN, "{v}");
+}
+
+#[tokio::test]
+async fn pairing_a_screen_wants_a_recent_passkey_sign_in() {
+    let app = common::app(common::isolated_config("maison-screens-reauth"));
+    let (_, start) = common::send(&app, Method::POST, "/api/screens/pairing", None, None).await;
+    let stale = common::token_signed_in_ago("leonard", 6 * 60 * 1000);
+    let (s, v) = common::send(
+        &app,
+        Method::POST,
+        "/api/screens",
+        Some(&stale),
+        Some(json!({ "code": start["code"], "name": "Salon" })),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("reauth_needed"))
+    );
 }

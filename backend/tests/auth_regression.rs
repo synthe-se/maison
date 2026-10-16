@@ -219,7 +219,7 @@ async fn admins_see_everyone_and_remove_someone_but_never_themselves() {
     let app = house();
     let (s, people) = common::send_authed(&app, Method::GET, "/api/people", None).await;
     assert_eq!(s, StatusCode::OK);
-    let ids: Vec<&str> = people
+    let ids: Vec<&str> = people["people"]
         .as_array()
         .unwrap()
         .iter()
@@ -229,7 +229,14 @@ async fn admins_see_everyone_and_remove_someone_but_never_themselves() {
     let (s, v) = common::send_authed(&app, Method::DELETE, "/api/people/leonard", None).await;
     assert_eq!(
         (s, v["code"].as_str()),
-        (StatusCode::FORBIDDEN, Some("forbidden"))
+        (StatusCode::CONFLICT, Some("not_yourself"))
+    );
+    // a session alone, its passkey sign-in long ago, removes nobody
+    let stale = common::token_signed_in_ago("leonard", 6 * 60 * 1000);
+    let (s, v) = common::send(&app, Method::DELETE, "/api/people/alex", Some(&stale), None).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("reauth_needed"))
     );
     let alex = common::member_token();
     assert_eq!(
@@ -395,4 +402,240 @@ async fn the_lan_reaches_only_the_ir_bridge() {
     );
     let (s, _, _) = common::respond(&app, key).await;
     assert_ne!(s, StatusCode::FORBIDDEN, "the IR bridge passes the guard");
+}
+
+#[tokio::test]
+async fn an_admins_or_a_recovery_invitation_wants_a_recent_passkey_sign_in() {
+    let app = house();
+    let stale = common::token_signed_in_ago("leonard", 6 * 60 * 1000);
+    for body in [
+        json!({ "name": "Eve", "admin": true }),
+        json!({ "name": "Alex", "person": "alex" }),
+    ] {
+        let (s, v) =
+            common::send(&app, Method::POST, "/api/invites", Some(&stale), Some(body)).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("reauth_needed")),
+            "a stolen session cookie plants no passkey and makes no admin"
+        );
+    }
+    let (s, v) = common::send(
+        &app,
+        Method::POST,
+        "/api/invites",
+        Some(&stale),
+        Some(json!({ "name": "Eve" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "a member's invitation: {v}");
+    let (s, v) = common::send_authed(
+        &app,
+        Method::POST,
+        "/api/invites",
+        Some(json!({ "name": "Zoé", "admin": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let hours =
+        (v["expiresMs"].as_i64().unwrap() - chrono::Utc::now().timestamp_millis()) / 3_600_000;
+    assert!(
+        (71..=72).contains(&hours),
+        "an admin's link: three days ({hours} h)"
+    );
+}
+
+#[tokio::test]
+async fn an_admin_ends_someones_sessions_and_their_passkeys_stay() {
+    let app = house();
+    let alex = common::member_token();
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let (s, _) =
+        common::send_authed(&app, Method::POST, "/api/people/alex/sessions/end", None).await;
+    assert_eq!(s, StatusCode::OK);
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    assert_eq!(
+        common::send(&app, Method::POST, "/api/auth/verify", Some(&alex), None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, v) =
+        common::send_authed(&app, Method::POST, "/api/people/nobody/sessions/end", None).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("not_found"))
+    );
+    let (s, _) = common::send(
+        &app,
+        Method::POST,
+        "/api/people/leonard/sessions/end",
+        Some(&common::member_token()),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an admin's");
+}
+
+#[tokio::test]
+async fn signing_out_everywhere_clears_the_browser() {
+    let app = house();
+    let (s, headers, _) = common::respond(
+        &app,
+        common::request(
+            Method::POST,
+            "/api/auth/logout-everywhere",
+            Some(&common::member_token()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        headers.get("clear-site-data").and_then(|v| v.to_str().ok()),
+        Some("\"cookies\", \"storage\"")
+    );
+}
+
+#[tokio::test]
+async fn sessions_are_mine_to_list_and_end() {
+    let app = house();
+    let (s, v) = common::send_authed(&app, Method::GET, "/api/auth/sessions", None).await;
+    assert_eq!((s, &v["sessions"]), (StatusCode::OK, &json!([])), "{v}");
+    let (s, v) = common::send_authed(
+        &app,
+        Method::DELETE,
+        "/api/auth/sessions/0123456789abcdef",
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("not_found"))
+    );
+}
+
+#[tokio::test]
+async fn what_a_route_cannot_read_is_a_coded_refusal() {
+    let app = house();
+    let mut bad = common::request(
+        Method::POST,
+        "/api/invites",
+        Some(&common::test_token()),
+        None,
+    );
+    *bad.body_mut() = Body::from("{not json");
+    bad.headers_mut()
+        .insert("content-type", "application/json".parse().unwrap());
+    let (s, headers, v) = common::respond(&app, bad).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid")),
+        "{v}"
+    );
+    assert_eq!(
+        headers.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json")
+    );
+    let (s, v) = common::send_authed(
+        &app,
+        Method::POST,
+        "/api/invites",
+        Some(json!({ "name": 3 })),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid"))
+    );
+    let (s, v) = common::send_authed(&app, Method::POST, "/api/invites", None).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::UNSUPPORTED_MEDIA_TYPE, Some("invalid")),
+        "no JSON at all"
+    );
+}
+
+#[tokio::test]
+async fn a_change_whose_origin_is_not_this_site_is_refused_without_a_host_too() {
+    let app = house();
+    let mut r = raw(
+        Method::POST,
+        "/api/auth/logout",
+        &[("origin", "https://evil.example")],
+    );
+    r.headers_mut().remove("host");
+    let (s, headers, v) = common::respond(&app, r).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("cross_site"))
+    );
+    assert!(
+        headers.get("content-security-policy").is_some(),
+        "a guard's refusal carries the security headers too"
+    );
+    let (s, _, _) = common::respond(
+        &app,
+        raw(
+            Method::POST,
+            "/api/auth/logout",
+            &[("origin", "https://maison.example.com")],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "PUBLIC_URL's origin");
+}
+
+#[tokio::test]
+async fn the_ir_bridge_is_refused_through_the_tunnel() {
+    let app = house();
+    let mut key = common::request(
+        Method::POST,
+        "/api/ir/key",
+        Some(common::TEST_IR_TOKEN),
+        Some(json!({"code": 1, "value": 1})),
+    );
+    key.headers_mut()
+        .insert("cf-connecting-ip", "203.0.113.9".parse().unwrap());
+    let (s, _, v) = common::respond(&app, key).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("lan_only"))
+    );
+}
+
+#[tokio::test]
+async fn wrong_machine_tokens_make_the_address_wait() {
+    let app = house();
+    for _ in 0..10 {
+        let (s, _) = common::send(
+            &app,
+            Method::POST,
+            "/api/ir/key",
+            Some("wrong"),
+            Some(json!({"code": 1, "value": 1})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    let (s, v) = common::send(
+        &app,
+        Method::POST,
+        "/api/ir/key",
+        Some(common::TEST_IR_TOKEN),
+        Some(json!({"code": 1, "value": 1})),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("too_many_attempts")),
+        "even the right token waits"
+    );
+}
+
+#[tokio::test]
+async fn the_api_says_no_version() {
+    let (s, v) = common::send(&house(), Method::GET, "/api", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v.get("version").is_none(), "{v}");
 }

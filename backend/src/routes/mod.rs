@@ -18,6 +18,7 @@ pub mod zigbee;
 
 /// The answer of a command that only says it was done: `{success: true, message}`.
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SimpleResponse {
     pub success: bool,
     pub message: String,

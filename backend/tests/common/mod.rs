@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 /// The machine token the test config accepts on `/api/ir`.
-pub const TEST_IR_TOKEN: &str = "test-ir-token";
+pub const TEST_IR_TOKEN: &str = "test-ir-token-of-32-characters-at-least";
 
 /// The repository root: the parent of the backend crate. Read only (the live tests'
 /// device files, the vendored Tempo data): a test writes under `temp_root`.
@@ -97,6 +97,7 @@ pub fn token_signed_in_ago(person: &str, age_ms: i64) -> String {
         user_id: person.to_string(),
         issued_ms: now,
         auth_ms: now - age_ms,
+        sid: String::new(),
         exp: 4_102_444_800,
     };
     encode(

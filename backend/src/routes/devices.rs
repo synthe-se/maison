@@ -488,9 +488,18 @@ async fn update_feeder_meal_plan(
 
 async fn update_litter_box_settings(
     State(state): State<AppState>,
+    client: crate::auth::DeviceClient,
     Path(device_id): DeviceId,
     Json(body): Json<LitterBoxSettingsRequest>,
 ) -> Result<Json<Answer<DeviceAnswer<Value>>>, AppError> {
+    // a factory reset forgets the box's whole setup: an admin's
+    let factory_reset = body
+        .actions
+        .as_ref()
+        .is_some_and(|a| a.reset_factory_settings == Some(true));
+    if factory_reset && !client.is_admin() {
+        return Err(crate::error::Refusal::Forbidden.into());
+    }
     let updates = litter_box_updates(body)?;
     let updated_settings = updates.len();
     let device = state

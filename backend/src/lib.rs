@@ -45,16 +45,15 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use broadlink::BroadlinkManager;
 use config::Config;
-use error::AppError;
+use error::{AppError, Refusal};
 use hue::HueManager;
 use ir::IrManager;
 use matter::MatterManager;
 use meross::MerossManager;
 use nabaztag::NabaztagManager;
-use passkey::PasskeyState;
+use passkey::{Limiter, PasskeyState};
 use people::People;
 use scenes::ScenesManager;
-use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -69,6 +68,9 @@ pub struct AppState {
     /// `None` without a usable `PUBLIC_URL`: nobody can sign in (said in the log).
     pub(crate) passkeys: Option<Arc<PasskeyState>>,
     pub(crate) refresh_store: RefreshTokenStore,
+    /// Failed machine authentications (the IR bridge's token, unknown service tokens), per
+    /// address: past the limit, the address waits.
+    pub(crate) auth_failures: Arc<Limiter>,
     /// Wall screens waiting for an admin to pair them.
     pub(crate) pairings: Arc<screens::Pairings>,
     pub(crate) broadlink: BroadlinkManager,
@@ -121,6 +123,10 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         people,
         passkeys,
         refresh_store,
+        auth_failures: Arc::new(Limiter::new(
+            AUTH_FAILURES_PER_MINUTE,
+            std::time::Duration::from_secs(60),
+        )),
         pairings: Arc::new(screens::Pairings::default()),
         broadlink,
         hue,
@@ -139,17 +145,32 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
     let startup_tuya = state.tuya.clone();
     tokio::spawn(async move { startup_tuya.connect_all_devices().await });
 
-    // A screen paired but never back for its cookie leaves no token behind.
-    let pairings = (state.pairings.clone(), state.people.clone());
+    // A screen paired but never back for its cookie leaves no token behind; a screen unseen
+    // for `SCREEN_IDLE_DAYS` (thrown away, stolen) is revoked.
+    let pairings = (
+        state.pairings.clone(),
+        state.people.clone(),
+        i64::from(state.config.screen_idle_days) * 86_400_000,
+    );
     every(
-        "unclaimed screen tokens",
+        "screen tokens",
         std::time::Duration::from_secs(60),
         move || {
-            let (pairings, people) = pairings.clone();
+            let (pairings, people, idle_ms) = pairings.clone();
             async move {
                 for name in pairings.expired_grants() {
                     if let Err(error) = people.revoke_token(&name).await {
                         tracing::warn!(%error, screen = %name, "an unclaimed screen token was not revoked");
+                    }
+                }
+                if idle_ms > 0 {
+                    match people.revoke_idle_screens(util::now_ms(), idle_ms).await {
+                        Ok(names) => {
+                            for name in names {
+                                tracing::warn!(screen = %name, "a wall screen unseen for too long: revoked");
+                            }
+                        }
+                        Err(error) => tracing::warn!(%error, "idle wall screens not swept"),
                     }
                 }
             }
@@ -244,9 +265,13 @@ where
     })
 }
 
+/// Failed machine authentications per address and minute, before it waits.
+const AUTH_FAILURES_PER_MINUTE: u32 = 10;
+
 /// The device and settings routers, under `/api`: anyone signed in drives them, and so does a
-/// service token (`auth::DeviceClient`, the LAN included). Admin-only routes inside add
-/// `AdminUser`, which a service token never is.
+/// service token (`auth::DeviceClient`: an app's from the LAN too when allowed, a wall
+/// screen's through the tunnel). Admin-only routes inside add `AdminUser`, which a service
+/// token never is; settings add `SettingsClient`, which a wall screen never is.
 const DEVICE_ROUTES: [(&str, DeviceRouter); 11] = [
     ("/broadlink", routes::broadlink::router),
     ("/devices", routes::devices::router),
@@ -276,8 +301,10 @@ fn is_device_path(path: &str) -> bool {
 pub fn build_app(state: AppState) -> Router {
     // Every device and settings route needs someone signed in (or a service token), said
     // once here: a handler never has to remember it. Admin-only ones add `AdminUser`.
-    // Signing in itself (`auth`, `passkeys`), `/health` and the IR bridge's machine route
-    // (`ir`, whose handlers name their own extractor) stay outside.
+    // Outside: signing in and the sessions (`auth`, `passkeys`), the wall screens' pairing
+    // (`/screens`, whose handlers name their own extractor), `/health`, the signed-out
+    // `/api/sun` (day or night, for a page's theme) and the IR bridge (`ir`: its machine
+    // route, and the keymap behind `AuthenticatedUser`).
     let signed_in = DEVICE_ROUTES
         .into_iter()
         .fold(Router::<AppState>::new(), |router, (prefix, routes)| {
@@ -310,13 +337,22 @@ pub fn build_app(state: AppState) -> Router {
         app.merge(routes::root::router())
     };
 
-    // CORS: reject all cross-origin requests. The frontend is served from the
-    // same origin so legitimate requests never need CORS.
+    // No CORS layer: no answer ever carries `Access-Control-Allow-Origin`, so a page elsewhere
+    // cannot read one; a change it would send is refused by the guard. Inside out: the guard,
+    // the extractors' rejections coded, the security headers (on the guard's refusals too),
+    // the refusals logged.
+    let gate = Gate {
+        public_origin: state.config.public_url.clone(),
+        allow_lan_tokens: state.config.allow_lan_tokens,
+    };
     app.layer(middleware::from_fn(move |request, next| {
+        guard_request(request, next, gate.clone())
+    }))
+    .layer(middleware::from_fn(coded_rejections))
+    .layer(middleware::from_fn(move |request, next| {
         security_headers(request, next, csp.clone())
     }))
-    .layer(middleware::from_fn(guard_request))
-    .layer(CorsLayer::new())
+    .layer(middleware::from_fn(audit))
     // Last-resort guard so no request can hang a connection forever; the
     // limit sits above every legitimate long operation (IR learning,
     // device discovery, Zigbee command reply timeout of 120s).
@@ -336,53 +372,77 @@ pub fn build_app(state: AppState) -> Router {
     .with_state(state)
 }
 
+/// What the request guard knows of the setup.
+#[derive(Debug, Clone, Default)]
+struct Gate {
+    /// `PUBLIC_URL`, an origin (`https://home.example.com`): where the app's own pages are.
+    public_origin: Option<String>,
+    /// `ALLOW_LAN_TOKENS`: an app's token over the LAN's plain HTTP.
+    allow_lan_tokens: bool,
+}
+
 /// What a request may do before any route sees it (`request_allowed`).
-async fn guard_request(request: axum::extract::Request, next: Next) -> Response {
-    use axum::extract::{connect_info::MockConnectInfo, ConnectInfo};
-    // the server's peer address, or the one a test mocks (as axum's ConnectInfo reads it)
-    let extensions = request.extensions();
-    let peer = extensions
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|c| c.0)
-        .or_else(|| {
-            extensions
-                .get::<MockConnectInfo<std::net::SocketAddr>>()
-                .map(|m| m.0)
-        })
-        .map(|addr| addr.ip());
+async fn guard_request(request: axum::extract::Request, next: Next, gate: Gate) -> Response {
+    let peer = auth::peer_addr(request.extensions()).map(|addr| addr.ip());
     match request_allowed(
         peer,
         request.method(),
         request.uri().path(),
         request.headers(),
+        &gate,
     ) {
         Ok(()) => next.run(request).await,
-        Err(why) => {
-            tracing::warn!(?peer, path = %loggable_path(request.uri().path()), why, "request refused");
-            AppError::forbidden(why).into_response()
-        }
+        // said in the log by `audit`, with the code
+        Err(why) => AppError::from(why).into_response(),
     }
 }
 
-/// Two rules, before routing:
+/// Whether `ip` is a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48): WireGuard
+/// carries it encrypted, whatever the LAN.
+fn is_tailscale(ip: std::net::IpAddr) -> bool {
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(v4) => (v4.to_bits() & 0xffc0_0000) == 0x6440_0000,
+        std::net::IpAddr::V6(v6) => (v6.to_bits() >> 80) == 0xfd7a_115c_a1e0,
+    }
+}
+
+/// Three rules, before routing:
 /// - From the LAN (not loopback, where cloudflared and the dev proxy are), only `/health`,
-///   the IR bridge's `/api/ir/key`, and the device routes for a service token (a companion
-///   app on the LAN or Tailscale; the token is checked by the route layer): everything else
-///   goes through the tunnel's HTTPS. Passkeys cannot sign in over the LAN address anyway;
-///   this also keeps people's sessions and cookies off cleartext HTTP.
+///   the IR bridge's `/api/ir/key`, and the device routes for an app's service token: over
+///   Tailscale always, over the LAN's plain HTTP only with `ALLOW_LAN_TOKENS` (the token would
+///   cross the Wi-Fi in clear). Everything else goes through the tunnel's HTTPS (`Use the
+///   public address`). Passkeys cannot sign in over the LAN address anyway; this also keeps
+///   people's sessions and cookies off cleartext HTTP.
+/// - The IR bridge's `/api/ir/key` comes from the house only: through the tunnel (loopback,
+///   with cloudflared's `CF-Connecting-IP`, or any proxy's forwarding header) it is refused,
+///   whatever the token (`lan_only`).
 /// - A request that changes something must come from this site: a browser says where it
-///   comes from (`Sec-Fetch-Site`, else `Origin` against `Host`); a sibling subdomain is
+///   comes from (`Sec-Fetch-Site`, else `Origin`, which must be `PUBLIC_URL`'s origin or
+///   match `Host`; an `Origin` with neither is refused, fail closed); a sibling subdomain is
 ///   « same-site » but not this site. Clients that say nothing (kird, curl) pass.
 fn request_allowed(
     peer: Option<std::net::IpAddr>,
     method: &axum::http::Method,
     path: &str,
     headers: &axum::http::HeaderMap,
-) -> Result<(), &'static str> {
+    gate: &Gate,
+) -> Result<(), Refusal> {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let local = peer.is_none_or(|ip| ip.to_canonical().is_loopback());
-    let machine = || auth::has_service_token(headers) && is_device_path(path);
+    let forwarded = ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"]
+        .iter()
+        .any(|name| headers.contains_key(*name));
+    if path == "/api/ir/key" && local && forwarded {
+        return Err(Refusal::LanOnly);
+    }
+    let encrypted = peer.is_some_and(is_tailscale);
+    let machine = || {
+        auth::has_service_token(headers)
+            && is_device_path(path)
+            && (encrypted || gate.allow_lan_tokens)
+    };
     if !local && !matches!(path, "/health" | "/api/ir/key") && !machine() {
-        return Err("Use the public address");
+        return Err(Refusal::UsePublicAddress);
     }
     if matches!(
         *method,
@@ -390,19 +450,82 @@ fn request_allowed(
     ) {
         return Ok(());
     }
-    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     match header("sec-fetch-site") {
         Some("same-origin" | "none") => Ok(()),
-        Some(_) => Err("Cross-site request refused"),
-        None => match (header("origin"), header("host")) {
-            (Some(origin), Some(host))
-                if origin.split_once("://").map(|(_, h)| h) != Some(host) =>
-            {
-                Err("Cross-origin request refused")
+        Some(_) => Err(Refusal::CrossSite),
+        None => match header("origin") {
+            None => Ok(()),
+            Some(origin) => {
+                let ours = gate.public_origin.as_deref() == Some(origin);
+                let same_host = header("host")
+                    .is_some_and(|host| origin.split_once("://").map(|(_, h)| h) == Some(host));
+                if ours || same_host {
+                    Ok(())
+                } else {
+                    Err(Refusal::CrossSite)
+                }
             }
-            _ => Ok(()),
         },
     }
+}
+
+/// Every request notes who asked (`auth::Principal`, filled by the extractors); every 401 and
+/// 403 is logged with its code, the path, who and the client's address (never a secret: the
+/// path is `loggable_path`'s, a token is named, never shown).
+async fn audit(mut request: axum::extract::Request, next: Next) -> Response {
+    let path = loggable_path(request.uri().path()).into_owned();
+    let ip = auth::request_ip(request.extensions(), request.headers());
+    let principal = auth::Principal::default();
+    request.extensions_mut().insert(principal.clone());
+    let response = next.run(request).await;
+    let status = response.status();
+    if matches!(status.as_u16(), 401 | 403) {
+        let code = response
+            .extensions()
+            .get::<error::Refused>()
+            .map_or("uncoded", |r| r.0);
+        tracing::warn!(
+            status = status.as_u16(),
+            code,
+            %path,
+            who = principal.who().as_deref().unwrap_or("nobody"),
+            %ip,
+            "refused"
+        );
+    }
+    response
+}
+
+/// An extractor's own refusal (a body that is not the JSON a route reads, a path or a query
+/// that does not parse, a body too large) is axum's plain text: under `/api` it becomes the
+/// coded answer every refusal is (`invalid`, `too_large`), with axum's status, its detail in
+/// the log only.
+async fn coded_rejections(request: axum::extract::Request, next: Next) -> Response {
+    let api = request.uri().path().starts_with("/api");
+    let response = next.run(request).await;
+    let status = response.status().as_u16();
+    let plain = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.starts_with("text/plain"));
+    if !api || !plain || !matches!(status, 400 | 413 | 415 | 422) {
+        return response;
+    }
+    let detail = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    tracing::debug!(status, %detail, "a request the route could not read");
+    let code = if status == 413 {
+        Refusal::TooLarge
+    } else {
+        Refusal::Invalid
+    };
+    // axum's status stays (422: the JSON's types; 415: no JSON at all): the code says the rest
+    let status =
+        axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST);
+    AppError::coded(status, code.as_str(), code.message()).into_response()
 }
 
 /// How long a response may be kept, by Cloudflare's edge and by the browser. Said for
@@ -422,12 +545,18 @@ fn cache_policy(path: &str) -> &'static str {
 }
 
 /// A path as logs keep it: an invitation's token is a secret (the query string, a town
-/// searched for, is left out altogether).
+/// searched for, is left out altogether). Today's links carry it in their fragment, which no
+/// request holds; the old `/invite/<token>` pages and `/api/invites/<token>` reads are still
+/// redacted, should one come.
 fn loggable_path(path: &str) -> std::borrow::Cow<'_, str> {
-    match path.strip_prefix("/api/invites/") {
-        Some(rest) if rest.len() > 16 => "/api/invites/…".into(),
-        _ => path.into(),
+    for prefix in ["/api/invites/", "/invite/"] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            if rest.len() > 16 {
+                return format!("{prefix}…").into();
+            }
+        }
     }
+    path.into()
 }
 
 async fn security_headers(
@@ -467,7 +596,19 @@ async fn security_headers(
 /// paint), allowed by their SHA-256 — never `'unsafe-inline'`. Styles keep `'unsafe-inline'`:
 /// Svelte's `style:` directives write inline styles (a progress bar's width, a colour swatch).
 fn content_security_policy(dist_dir: &std::path::Path) -> header::HeaderValue {
-    let page = std::fs::read_to_string(dist_dir.join("index.html")).unwrap_or_default();
+    let index = dist_dir.join("index.html");
+    let page = match std::fs::read_to_string(&index) {
+        Ok(page) => page,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(path = %index.display(), "no built web app: the CSP allows no inline script");
+            String::new()
+        }
+        Err(error) => {
+            // the page would be served and its boot script refused: said loudly
+            tracing::error!(%error, path = %index.display(), "index.html unreadable: the CSP allows none of its inline scripts, the web app will not start");
+            String::new()
+        }
+    };
     let hashes: String = inline_scripts(&page)
         .map(|script| {
             use base64::Engine;
@@ -497,12 +638,14 @@ fn inline_scripts(page: &str) -> impl Iterator<Item = &str> {
 
 impl AppState {
     pub fn validate_runtime_security(&self) -> Result<(), AppError> {
-        jwt_secret_problem(&self.config.jwt_secret).map_or(Ok(()), |why| {
-            Err(AppError::http(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Refusing to start: {why}"),
-            ))
-        })
+        jwt_secret_problem(&self.config.jwt_secret)
+            .or_else(|| ir_token_problem(self.config.ir_api_token.as_deref()))
+            .map_or(Ok(()), |why| {
+                Err(AppError::http(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Refusing to start: {why}"),
+                ))
+            })
     }
 
     /// Before the process ends: the radios and the device sessions are closed cleanly.
@@ -531,6 +674,15 @@ fn jwt_secret_problem(secret: &str) -> Option<&'static str> {
     }
 }
 
+/// Why `token` cannot open the IR route: it fires scenes, the AC, the TV and the shutters, so
+/// a guessable one is a remote control for anyone on the Wi-Fi. At least 32 characters; unset
+/// (or empty) turns the route off.
+fn ir_token_problem(token: Option<&str>) -> Option<&'static str> {
+    token.filter(|t| t.len() < 32).map(|_| {
+        "IR_API_TOKEN is shorter than 32 characters; set a random one in .env and kird.conf (openssl rand -hex 32), or leave it empty to turn the IR route off"
+    })
+}
+
 #[cfg(test)]
 mod guard_tests {
     use super::*;
@@ -544,23 +696,84 @@ mod guard_tests {
         h
     }
 
+    fn allowed(
+        peer: Option<std::net::IpAddr>,
+        method: &Method,
+        path: &str,
+        headers: &HeaderMap,
+    ) -> Result<(), Refusal> {
+        request_allowed(peer, method, path, headers, &Gate::default())
+    }
+
     #[test]
     fn the_lan_reaches_only_health_and_the_ir_bridge() {
         let lan = Some("192.168.1.20".parse().unwrap());
         let tunnel = Some("127.0.0.1".parse().unwrap());
         let none = HeaderMap::new();
-        assert!(request_allowed(lan, &Method::POST, "/api/ir/key", &none).is_ok());
-        assert!(request_allowed(lan, &Method::GET, "/health", &none).is_ok());
-        assert!(request_allowed(lan, &Method::GET, "/api/meross", &none).is_err());
-        assert!(request_allowed(lan, &Method::GET, "/", &none).is_err());
-        assert!(request_allowed(tunnel, &Method::GET, "/api/meross", &none).is_ok());
-        assert!(request_allowed(
+        assert!(allowed(lan, &Method::POST, "/api/ir/key", &none).is_ok());
+        assert!(allowed(lan, &Method::GET, "/health", &none).is_ok());
+        assert_eq!(
+            allowed(lan, &Method::GET, "/api/meross", &none),
+            Err(Refusal::UsePublicAddress)
+        );
+        assert!(allowed(lan, &Method::GET, "/", &none).is_err());
+        assert!(allowed(tunnel, &Method::GET, "/api/meross", &none).is_ok());
+        assert!(allowed(
             Some("::ffff:127.0.0.1".parse().unwrap()),
             &Method::GET,
             "/x",
             &none
         )
         .is_ok());
+    }
+
+    #[test]
+    fn the_ir_bridge_is_refused_through_the_tunnel() {
+        let tunnel = Some("127.0.0.1".parse().unwrap());
+        let from_cloudflare = headers(&[("cf-connecting-ip", "203.0.113.9")]);
+        assert_eq!(
+            allowed(tunnel, &Method::POST, "/api/ir/key", &from_cloudflare),
+            Err(Refusal::LanOnly)
+        );
+        let proxied = headers(&[("x-forwarded-for", "203.0.113.9")]);
+        assert_eq!(
+            allowed(tunnel, &Method::POST, "/api/ir/key", &proxied),
+            Err(Refusal::LanOnly)
+        );
+        assert!(
+            allowed(tunnel, &Method::POST, "/api/ir/key", &HeaderMap::new()).is_ok(),
+            "kird on the Pi itself"
+        );
+    }
+
+    #[test]
+    fn an_apps_token_comes_over_tailscale_and_over_the_lan_only_when_allowed() {
+        let service = headers(&[("authorization", "Bearer maison_abc")]);
+        let wifi = Some("192.168.1.20".parse().unwrap());
+        assert_eq!(
+            allowed(wifi, &Method::GET, "/api/meross", &service),
+            Err(Refusal::UsePublicAddress),
+            "the token would cross the Wi-Fi in clear"
+        );
+        let lan_ok = Gate {
+            allow_lan_tokens: true,
+            ..Gate::default()
+        };
+        assert!(request_allowed(wifi, &Method::GET, "/api/meross", &service, &lan_ok).is_ok());
+        for tailscale in ["100.64.0.7", "100.127.255.1", "fd7a:115c:a1e0::5"] {
+            assert!(
+                allowed(
+                    Some(tailscale.parse().unwrap()),
+                    &Method::GET,
+                    "/api/meross",
+                    &service
+                )
+                .is_ok(),
+                "{tailscale}"
+            );
+        }
+        assert!(!is_tailscale("100.128.0.1".parse().unwrap()));
+        assert!(!is_tailscale("fd7a:115c:a1e1::1".parse().unwrap()));
     }
 
     #[test]
@@ -576,11 +789,11 @@ mod guard_tests {
             "/api/scenes/x/run",
         ] {
             assert!(
-                request_allowed(lan, &Method::POST, path, &service).is_ok(),
+                allowed(lan, &Method::POST, path, &service).is_ok(),
                 "{path}"
             );
             assert!(
-                request_allowed(lan, &Method::POST, path, &session).is_err(),
+                allowed(lan, &Method::POST, path, &session).is_err(),
                 "{path}: a session goes through the tunnel"
             );
         }
@@ -594,7 +807,7 @@ mod guard_tests {
             "/",
         ] {
             assert!(
-                request_allowed(lan, &Method::GET, path, &service).is_err(),
+                allowed(lan, &Method::GET, path, &service).is_err(),
                 "{path}"
             );
         }
@@ -604,10 +817,13 @@ mod guard_tests {
     fn a_change_must_come_from_this_site() {
         let local = Some("127.0.0.1".parse().unwrap());
         let post = |h: &[(&'static str, &str)]| {
-            request_allowed(local, &Method::POST, "/api/meross/x/toggle", &headers(h))
+            allowed(local, &Method::POST, "/api/meross/x/toggle", &headers(h))
         };
         assert!(post(&[("sec-fetch-site", "same-origin")]).is_ok());
-        assert!(post(&[("sec-fetch-site", "cross-site")]).is_err());
+        assert_eq!(
+            post(&[("sec-fetch-site", "cross-site")]),
+            Err(Refusal::CrossSite)
+        );
         assert!(
             post(&[("sec-fetch-site", "same-site")]).is_err(),
             "a sibling subdomain is not this site"
@@ -624,7 +840,31 @@ mod guard_tests {
         .is_ok());
         assert!(post(&[]).is_ok(), "kird and curl say nothing");
         assert!(
-            request_allowed(
+            post(&[("origin", "https://home.kahn.studio")]).is_err(),
+            "an origin and no host to compare it with: refused"
+        );
+        assert!(post(&[("origin", "null")]).is_err());
+        let public = Gate {
+            public_origin: Some("https://home.kahn.studio".into()),
+            ..Gate::default()
+        };
+        let with_public = |h: &[(&'static str, &str)]| {
+            request_allowed(local, &Method::POST, "/api/x", &headers(h), &public)
+        };
+        assert!(
+            with_public(&[("origin", "https://home.kahn.studio")]).is_ok(),
+            "PUBLIC_URL's origin, no Host needed (HTTP/2)"
+        );
+        assert_eq!(
+            with_public(&[
+                ("origin", "https://evil.example"),
+                ("host", "home.kahn.studio")
+            ]),
+            Err(Refusal::CrossSite)
+        );
+        assert!(with_public(&[("origin", "https://evil.example")]).is_err());
+        assert!(
+            allowed(
                 local,
                 &Method::GET,
                 "/api/x",
@@ -633,6 +873,13 @@ mod guard_tests {
             .is_ok(),
             "reads are harmless"
         );
+    }
+
+    #[test]
+    fn a_short_ir_token_is_refused_and_none_turns_the_route_off() {
+        assert!(ir_token_problem(Some("test-ir-token")).is_some());
+        assert!(ir_token_problem(Some(&"k".repeat(32))).is_none());
+        assert!(ir_token_problem(None).is_none());
     }
 
     #[test]
@@ -660,6 +907,11 @@ mod guard_tests {
             loggable_path("/api/invites/0123456789abcdef"),
             "/api/invites/0123456789abcdef",
             "an invitation's id is not secret"
+        );
+        assert_eq!(
+            loggable_path(&format!("/invite/{}", "a".repeat(43))),
+            "/invite/…",
+            "an old link's page"
         );
         assert_eq!(loggable_path("/api/meross"), "/api/meross");
     }

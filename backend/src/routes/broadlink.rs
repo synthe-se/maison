@@ -197,11 +197,34 @@ async fn save_code(
     ))
 }
 
+/// A blaster's address from a client: an admin's goes (it sets the house up); anyone else's
+/// must be a blaster the house knows, discovered or last used for the AC, never any address
+/// on the LAN (`not_a_device`).
+async fn known_blaster(
+    state: &AppState,
+    client: &DeviceClient,
+    host: &str,
+) -> Result<(), AppError> {
+    if client.is_admin() {
+        return Ok(());
+    }
+    let wanted = host.trim();
+    let discovered = state.broadlink.discover(None, false).await?;
+    let last = state.broadlink.climate_state().await.map(|c| c.host);
+    if discovered.iter().any(|d| d.host == wanted) || last.as_deref() == Some(wanted) {
+        Ok(())
+    } else {
+        Err(Refusal::NotADevice.into())
+    }
+}
+
 async fn send_code(
     State(state): State<AppState>,
+    client: DeviceClient,
     Path(code_id): Path<String>,
     Json(body): Json<SendCodeRequest>,
 ) -> Result<Json<Answer<Done<SendResult>>>, AppError> {
+    known_blaster(&state, &client, &body.host).await?;
     let result = state
         .broadlink
         .send_saved_code(body.host, body.local_ip, code_id)
@@ -236,8 +259,10 @@ async fn get_climate_state(State(state): State<AppState>) -> Json<Answer<Value>>
 
 async fn send_mitsubishi_command(
     State(state): State<AppState>,
+    client: DeviceClient,
     Json(body): Json<MitsubishiCommandRequest>,
 ) -> Result<Json<Answer<Done<SendResult>>>, AppError> {
+    known_blaster(&state, &client, &body.host).await?;
     let broadlink = &state.broadlink;
     let result = match (body.command, body.settings) {
         (Some(command), None) => {

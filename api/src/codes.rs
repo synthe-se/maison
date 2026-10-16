@@ -97,6 +97,14 @@ codes! {
     ServiceUnreachable = ("service_unreachable", 503, "Service unreachable");
     /// Our own failure: the detail is in the backend's log.
     Internal = ("internal", 500, "Internal server error");
+    /// From the LAN: this goes through the public (HTTPS) address only.
+    UsePublicAddress = ("use_public_address", 403, "Use the public address");
+    /// A change asked from another site (a page elsewhere, a sibling subdomain).
+    CrossSite = ("cross_site", 403, "Cross-site request refused");
+    /// From the house's own network only (the IR bridge), never through the tunnel.
+    LanOnly = ("lan_only", 403, "From the house's network only");
+    /// A request body too large for its route.
+    TooLarge = ("too_large", 413, "Too large");
 }
 
 /// The web app's module, as `web/src/lib/codes.ts` holds it.

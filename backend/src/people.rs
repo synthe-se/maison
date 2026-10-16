@@ -20,6 +20,61 @@ use crate::{
     util::constant_time_eq,
 };
 
+/// What a name may be, said once in `util` (people, passkeys, screens and devices alike).
+pub use crate::util::{clean_name, MAX_NAME};
+
+/// An enum kept as one word (in `auth.json`, on the CLI): its words said once, in `as_str`,
+/// which serde and `FromStr` read.
+macro_rules! words {
+    ($(#[$meta:meta])* pub enum $name:ident { $($(#[$vmeta:meta])* $variant:ident = $word:literal,)* }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum $name {
+            $($(#[$vmeta])* $variant,)*
+        }
+
+        impl $name {
+            pub const ALL: &[Self] = &[$(Self::$variant),*];
+
+            /// The word the file and the CLI say.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $word,)*
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|s| s.as_str() == value)
+                    .ok_or_else(|| {
+                        let known: Vec<&str> = Self::ALL.iter().map(|s| s.as_str()).collect();
+                        format!("unknown {} « {value} » (known: {})", stringify!($name), known.join(", "))
+                    })
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                String::deserialize(deserializer)?
+                    .parse()
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
 /// What someone may do: an admin invites and configures, a member uses the house.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -27,9 +82,6 @@ pub enum Role {
     Admin,
     Member,
 }
-
-/// Characters in a name (a person's, a passkey's), at most.
-pub const MAX_NAME: usize = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -107,61 +159,26 @@ pub struct Invite {
     pub expires_ms: i64,
 }
 
-/// What a service token may do. One scope for now: the devices, as a member drives them
-/// (never people, passkeys, invitations, tokens nor admin settings).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Scope {
-    Devices,
-}
-
-impl Scope {
-    pub const ALL: [Self; 1] = [Self::Devices];
-
-    /// The word the file and the CLI say.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Devices => "devices",
-        }
+words! {
+    /// What a service token may do. One scope for now: the devices, as a member drives them
+    /// (never people, passkeys, invitations, tokens nor admin settings).
+    pub enum Scope {
+        Devices = "devices",
     }
 }
 
-impl std::str::FromStr for Scope {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|s| s.as_str() == value)
-            .ok_or_else(|| {
-                format!(
-                    "unknown scope « {value} » (known: {})",
-                    Self::ALL.map(Self::as_str).join(", ")
-                )
-            })
-    }
-}
-
-/// What carries a service token, and so where it comes from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TokenKind {
-    /// A companion app, its token made from the CLI and sent as `Authorization: Bearer`.
-    /// Tokens kept before kinds existed are apps.
-    #[default]
-    App,
-    /// A wall screen, paired by an admin (`screens.rs`): its token lives in an HttpOnly
-    /// cookie of the browser that asked, never in a script's reach.
-    Screen,
-}
-
-impl TokenKind {
-    /// The word the file and the CLI say.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::App => "app",
-            Self::Screen => "screen",
-        }
+words! {
+    /// What carries a service token, and so where it comes from. `auth::DeviceClient` holds each
+    /// kind to its carrier: an app's token only as a bearer header, a screen's only in its cookie.
+    #[derive(Default)]
+    pub enum TokenKind {
+        /// A companion app, its token made from the CLI and sent as `Authorization: Bearer`.
+        /// Tokens kept before kinds existed are apps.
+        #[default]
+        App = "app",
+        /// A wall screen, paired by an admin (`screens.rs`): its token lives in an HttpOnly
+        /// cookie of the browser that asked, never in a script's reach.
+        Screen = "screen",
     }
 }
 
@@ -611,7 +628,48 @@ impl People {
         .await
     }
 
+    /// The token with id `id`, when it is of `kind`, goes at once (checked and removed in one
+    /// edit). False when there is no such token.
+    pub async fn revoke_token_of(&self, id: &str, kind: TokenKind) -> Result<bool, AppError> {
+        let id = id.to_string();
+        self.edit(move |b| {
+            let before = b.tokens.len();
+            b.tokens.retain(|t| !(t.id == id && t.kind == kind));
+            let gone = b.tokens.len() != before;
+            (gone, gone)
+        })
+        .await
+    }
+
+    /// Every screen not seen for `idle_ms` (never seen: since it was paired) goes: their names.
+    pub async fn revoke_idle_screens(
+        &self,
+        now_ms: i64,
+        idle_ms: i64,
+    ) -> Result<Vec<String>, AppError> {
+        let idle = move |t: &StoredToken| {
+            t.kind == TokenKind::Screen && now_ms - t.last_used_ms.unwrap_or(t.created_ms) > idle_ms
+        };
+        // read first: the sweep runs every minute, and nearly always finds nothing to write
+        if !self.read(|b| b.tokens.iter().any(idle)).await? {
+            return Ok(Vec::new());
+        }
+        self.edit(move |b| {
+            let names: Vec<String> = b
+                .tokens
+                .iter()
+                .filter(|t| idle(t))
+                .map(|t| t.name.clone())
+                .collect();
+            b.tokens.retain(|t| !idle(t));
+            let changed = !names.is_empty();
+            (names, changed)
+        })
+        .await
+    }
+
     /// The token named `name_or_id` (by its name or its id) goes, at once. False when unknown.
+    /// The CLI's (`token revoke`), where a person types either.
     pub async fn revoke_token(&self, name_or_id: &str) -> Result<bool, AppError> {
         let key = name_or_id.to_string();
         self.edit(move |b| {
@@ -679,14 +737,6 @@ pub fn slug(name: &str) -> String {
         }
     }
     out.trim_end_matches('-').to_string()
-}
-
-/// A name as kept: trimmed, not empty, `MAX_NAME` characters at most, no control characters.
-pub fn clean_name(name: &str) -> Option<&str> {
-    let name = name.trim();
-    let ok =
-        !name.is_empty() && name.chars().count() <= MAX_NAME && !name.chars().any(char::is_control);
-    ok.then_some(name)
 }
 
 #[cfg(test)]
@@ -907,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn scopes_are_words() {
+    fn scopes_and_kinds_are_words() {
         assert_eq!(serde_json::to_value(Scope::Devices).unwrap(), "devices");
         assert_eq!("devices".parse::<Scope>(), Ok(Scope::Devices));
         for scope in Scope::ALL {
@@ -918,6 +968,66 @@ mod tests {
             );
         }
         assert!("admin".parse::<Scope>().is_err());
+        assert_eq!(serde_json::to_value(TokenKind::Screen).unwrap(), "screen");
+        assert_eq!(
+            serde_json::from_value::<TokenKind>("app".into()).unwrap(),
+            TokenKind::App
+        );
+        assert!(serde_json::from_value::<TokenKind>("robot".into()).is_err());
+        assert_eq!(
+            TokenKind::default(),
+            TokenKind::App,
+            "tokens kept before kinds"
+        );
+        let old: StoredToken = serde_json::from_value(serde_json::json!({
+            "id": "t", "name": "achi", "scope": "devices", "tokenHash": "h", "createdMs": 0, "lastUsedMs": null
+        }))
+        .unwrap();
+        assert_eq!(old.kind, TokenKind::App);
+    }
+
+    #[tokio::test]
+    async fn a_screen_is_revoked_by_its_id_and_kind_and_after_long_idleness() {
+        let (_dir, p) = people();
+        let screen = |id: &str, name: &str, created: i64, used: Option<i64>| StoredToken {
+            kind: TokenKind::Screen,
+            created_ms: created,
+            last_used_ms: used,
+            ..token(id, name, id)
+        };
+        p.create_token(token("a1", "achi", "s")).await.unwrap();
+        p.create_token(screen("s1", "Salon", 0, Some(900)))
+            .await
+            .unwrap();
+        p.create_token(screen("s2", "Cuisine", 0, None))
+            .await
+            .unwrap();
+        p.create_token(screen("s3", "Entrée", 0, Some(1_900)))
+            .await
+            .unwrap();
+        assert!(
+            !p.revoke_token_of("a1", TokenKind::Screen).await.unwrap(),
+            "an app is no screen"
+        );
+        assert_eq!(
+            p.revoke_idle_screens(2_000, 1_000).await.unwrap(),
+            ["Salon", "Cuisine"],
+            "unseen for longer than allowed"
+        );
+        assert!(p
+            .revoke_idle_screens(2_000, 1_000)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(p.revoke_token_of("s3", TokenKind::Screen).await.unwrap());
+        let left: Vec<String> = p
+            .tokens()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(left, ["achi"]);
     }
 
     /// The file keeps the words it always had.
@@ -935,9 +1045,7 @@ mod tests {
     fn names_and_ids() {
         assert_eq!(slug(" Léonard "), "leonard");
         assert_eq!(slug("Marie-Hélène D."), "marie-helene-d");
-        assert_eq!(clean_name("  iPhone "), Some("iPhone"));
         assert_eq!(clean_name("   "), None);
-        assert_eq!(clean_name(&"x".repeat(MAX_NAME + 1)), None);
         assert_eq!(hash_secret("a").len(), 64);
         assert_ne!(random_secret(), random_secret());
     }

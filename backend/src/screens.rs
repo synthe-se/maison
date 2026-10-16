@@ -12,24 +12,26 @@
 //! as its /64). A code sent from elsewhere (« type this code in Maison ») pairs nothing: a
 //! browser across the internet never becomes one of the house's screens.
 
-use std::{
-    collections::HashMap,
-    net::IpAddr,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::{net::IpAddr, sync::Mutex, time::Duration};
 
 use crate::{
-    passkey::{address_key, Limiter},
-    util::{hash_secret, random_secret},
+    passkey::Limiter,
+    util::{hash_secret, ip_group, lock, random_secret, Bounded, Caps},
 };
 
 /// How long a screen waits for an admin.
 pub const PAIRING_TTL: Duration = Duration::from_secs(10 * 60);
 /// How often the screen asks whether it is paired.
 pub const POLL: Duration = Duration::from_secs(3);
-/// Pairings waiting at once, in all and from one address (an IPv6 address counts as its /64).
-const CAP: usize = 100;
+/// Pairings waiting at once: in all, from one address (an IPv6 address counts as its /64), and
+/// from one prefix (an IPv4 /24, an IPv6 /48: neighbours behind one operator's NAT share it).
+/// Full, the most crowded prefix loses its oldest (`util::Bounded`): someone with many addresses
+/// evicts their own pairings, not the one the house's screen waits with.
+const CAPS: Caps = Caps {
+    total: 100,
+    per_address: PER_ADDRESS,
+    per_prefix: 20,
+};
 const PER_ADDRESS: usize = 3;
 /// Letters and digits nobody misreads (no 0/O, no 1/I/L): 8 of them, about 40 bits. Guessing
 /// one gains nothing: only an admin can use a code, and it pairs the screen that showed it.
@@ -42,10 +44,24 @@ const CLAIMS_PER_MINUTE: u32 = 40;
 
 struct Pending {
     code: String,
-    from: IpAddr,
-    at: Instant,
     /// Once an admin paired it: the token and the screen's name, for its next claim.
     granted: Option<(String, String)>,
+}
+
+struct Waits {
+    map: Bounded<Pending>,
+    /// The names of screens granted then pushed out before their claim: their tokens to revoke.
+    orphans: Vec<String>,
+}
+
+impl Waits {
+    /// Pairings that went (stale or pushed out) while granted: their screens' names, kept.
+    fn forget(&mut self, gone: Vec<Pending>) {
+        self.orphans.extend(
+            gone.into_iter()
+                .filter_map(|p| p.granted.map(|(_, name)| name)),
+        );
+    }
 }
 
 /// Whether a screen waits with a code, for an admin asking from an address.
@@ -70,8 +86,7 @@ pub enum Claim {
 
 /// The pairings waiting for an admin, by `hash_secret` of the screen's secret.
 pub struct Pairings {
-    ttl: Duration,
-    map: Mutex<HashMap<String, Pending>>,
+    waits: Mutex<Waits>,
     starts: Limiter,
     claims: Limiter,
 }
@@ -86,8 +101,10 @@ impl Pairings {
     pub fn new(ttl: Duration) -> Self {
         let minute = Duration::from_secs(60);
         Self {
-            ttl,
-            map: Mutex::new(HashMap::new()),
+            waits: Mutex::new(Waits {
+                map: Bounded::new(ttl, CAPS),
+                orphans: Vec::new(),
+            }),
             starts: Limiter::new(STARTS_PER_MINUTE, minute),
             claims: Limiter::new(CLAIMS_PER_MINUTE, minute),
         }
@@ -97,41 +114,23 @@ impl Pairings {
     /// `Err(seconds)` when the address asks too often.
     pub fn start(&self, ip: IpAddr) -> Result<(String, String), u64> {
         self.starts.hit(ip)?;
-        let from = address_key(ip);
         let secret = random_secret();
-        let mut map = self.map.lock().expect("pairings");
-        map.retain(|_, p| p.at.elapsed() < self.ttl);
-        let oldest = |map: &HashMap<String, Pending>, only: Option<IpAddr>| {
-            map.iter()
-                .filter(|(_, p)| only.is_none_or(|o| p.from == o))
-                .min_by_key(|(_, p)| p.at)
-                .map(|(k, _)| k.clone())
-        };
-        if map.values().filter(|p| p.from == from).count() >= PER_ADDRESS {
-            if let Some(k) = oldest(&map, Some(from)) {
-                map.remove(&k);
-            }
-        }
-        if map.len() >= CAP {
-            if let Some(k) = oldest(&map, None) {
-                map.remove(&k);
-            }
-        }
+        let mut waits = lock(&self.waits);
         let code = loop {
             let code = new_code();
-            if !map.values().any(|p| p.code == code) {
+            if waits.map.find(|h| h.value.code == code).is_none() {
                 break code;
             }
         };
-        map.insert(
+        let gone = waits.map.insert(
             hash_secret(&secret),
+            ip,
             Pending {
                 code: code.clone(),
-                from,
-                at: Instant::now(),
                 granted: None,
             },
         );
+        waits.forget(gone);
         Ok((secret, shown(&code)))
     }
 
@@ -139,12 +138,12 @@ impl Pairings {
     /// asking from `admin`.
     pub fn waiting(&self, code: &str, admin: IpAddr) -> Waiting {
         let code = typed(code);
-        let map = self.map.lock().expect("pairings");
-        match map
-            .values()
-            .find(|p| p.code == code && p.granted.is_none() && p.at.elapsed() < self.ttl)
+        let waits = lock(&self.waits);
+        match waits
+            .map
+            .find(|h| h.value.code == code && h.value.granted.is_none())
         {
-            Some(p) if p.from == address_key(admin) => Waiting::Here,
+            Some(h) if h.from == ip_group(admin) => Waiting::Here,
             Some(_) => Waiting::Elsewhere,
             None => Waiting::No,
         }
@@ -155,13 +154,14 @@ impl Pairings {
     /// the caller's to revoke.
     pub fn grant(&self, code: &str, admin: IpAddr, token: String, name: String) -> bool {
         let code = typed(code);
-        let admin = address_key(admin);
-        let mut map = self.map.lock().expect("pairings");
-        match map.values_mut().find(|p| {
-            p.code == code && p.from == admin && p.granted.is_none() && p.at.elapsed() < self.ttl
-        }) {
-            Some(p) => {
-                p.granted = Some((token, name));
+        let admin = ip_group(admin);
+        let mut waits = lock(&self.waits);
+        match waits
+            .map
+            .find_mut(|h| h.value.code == code && h.from == admin && h.value.granted.is_none())
+        {
+            Some(h) => {
+                h.value.granted = Some((token, name));
                 true
             }
             None => false,
@@ -172,36 +172,25 @@ impl Pairings {
     pub fn claim(&self, ip: IpAddr, secret: &str) -> Result<Claim, u64> {
         self.claims.hit(ip)?;
         let key = hash_secret(secret);
-        let mut map = self.map.lock().expect("pairings");
-        let Some(p) = map.get(&key) else {
-            return Ok(Claim::Gone);
-        };
-        if p.at.elapsed() >= self.ttl {
-            map.remove(&key);
-            return Ok(Claim::Gone);
+        let mut waits = lock(&self.waits);
+        match waits.map.get_mut(&key) {
+            None => return Ok(Claim::Gone),
+            Some(h) if h.value.granted.is_none() => return Ok(Claim::Waiting),
+            Some(_) => {}
         }
-        if p.granted.is_none() {
-            return Ok(Claim::Waiting);
-        }
-        let (token, name) = map.remove(&key).and_then(|p| p.granted).expect("granted");
-        Ok(Claim::Paired { token, name })
+        Ok(match waits.map.take(&key).and_then(|h| h.value.granted) {
+            Some((token, name)) => Claim::Paired { token, name },
+            None => Claim::Gone,
+        })
     }
 
     /// Every token granted and never claimed, now forgotten: the caller revokes them. A paired
     /// screen that never came back for its cookie leaves no token behind.
     pub fn expired_grants(&self) -> Vec<String> {
-        let mut map = self.map.lock().expect("pairings");
-        let mut names = Vec::new();
-        map.retain(|_, p| {
-            let fresh = p.at.elapsed() < self.ttl;
-            if !fresh {
-                if let Some((_, name)) = &p.granted {
-                    names.push(name.clone());
-                }
-            }
-            fresh
-        });
-        names
+        let mut waits = lock(&self.waits);
+        let gone = waits.map.expired();
+        waits.forget(gone);
+        std::mem::take(&mut waits.orphans)
     }
 }
 
@@ -351,6 +340,41 @@ mod tests {
             "maison_x".into(),
             "Salon".into()
         ));
+    }
+
+    #[test]
+    fn a_flood_from_many_addresses_pushes_out_its_own_pairings_not_the_screens() {
+        let pairings = Pairings::default();
+        let (secret, _) = pairings.start(ip("198.51.100.7")).unwrap();
+        // many addresses in one /24, each under its own start limit
+        for n in 0..=255u8 {
+            for _ in 0..2 {
+                pairings.start(IpAddr::from([203, 0, 113, n])).unwrap();
+            }
+        }
+        // and many /24s, one pairing each, past the cap: the crowded /24 pays. (More distinct
+        // prefixes than the cap would evict the oldest of all: a residual, a pairing DoS only.)
+        for n in 0..90u8 {
+            pairings.start(IpAddr::from([192, 0, n, 1])).unwrap();
+        }
+        assert_eq!(
+            pairings.claim(ip("198.51.100.7"), &secret),
+            Ok(Claim::Waiting),
+            "the house's screen still waits"
+        );
+    }
+
+    #[test]
+    fn a_granted_pairing_pushed_out_before_its_claim_has_its_token_revoked() {
+        let pairings = Pairings::default();
+        let home = ip("198.51.100.7");
+        let (_, code) = pairings.start(home).unwrap();
+        assert!(pairings.grant(&code, home, "maison_x".into(), "Salon".into()));
+        // the same address starts three more: its oldest (the granted one) goes
+        for _ in 0..PER_ADDRESS {
+            pairings.start(home).unwrap();
+        }
+        assert_eq!(pairings.expired_grants(), vec!["Salon".to_string()]);
     }
 
     #[test]

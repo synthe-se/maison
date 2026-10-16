@@ -31,7 +31,11 @@ export const CODES = [
 	'unsupported',
 	'device_unreachable',
 	'service_unreachable',
-	'internal'
+	'internal',
+	'use_public_address',
+	'cross_site',
+	'lan_only',
+	'too_large'
 ] as const;
 
 /** A refusal's name. */
