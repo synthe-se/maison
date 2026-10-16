@@ -8,7 +8,8 @@ use crate::theme::{px, ty};
 use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
 use crate::ui::layout::{
-    CODE_SPACING, Ctx, Drawn, GROUP_HEAD, MARK, MARK_SVG, P, STALE_ICON, TOUCH, columns, margin,
+    CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP, HEADER_MARK, MARK,
+    MARK_SVG, P, STALE_ICON, TOUCH, balance, columns, margin,
 };
 use crate::ui::model::{Body, Button, Group, Screen};
 
@@ -16,13 +17,11 @@ impl P<'_, '_, '_, '_> {
     /// A group at (x, y), `w` wide (Group.svelte); its height.
     fn group(&mut self, g: &Group, x: f32, y: f32, w: f32) -> Result<f32, Error> {
         self.group_head(g, x, y, w)?;
-        let mut cy = y + GROUP_HEAD + px::S_1;
+        let mut cy = y + GROUP_HEAD + HEAD_GAP;
         if let Some((said, retry)) = &g.stale {
-            cy += px::S_3;
             self.stale(said, retry, x, cy, w)?;
-            cy += TOUCH;
+            cy += TOUCH + HEAD_GAP;
         }
-        cy += px::S_3;
         cy += self.body(&g.body, x, cy, w)?;
         Ok(cy - y)
     }
@@ -90,17 +89,15 @@ impl P<'_, '_, '_, '_> {
         )
     }
 
-    /// Loaded's states, then the tiles in the grid or the buttons; its height.
+    /// Loaded's states, then the devices (one framed list of rows) or the buttons; its height.
     fn body(&mut self, body: &Body, x: f32, y: f32, w: f32) -> Result<f32, Error> {
         let pal = self.c.pal;
         let mut cy = y;
         match body {
             Body::Loading => {
-                // a tile's place, held (Loaded's skeleton)
-                let cols = columns(w);
-                let tw = (w - px::S_5 * (cols as f32 - 1.0)) / cols as f32;
-                let th = 2.0 * px::S_4 + px::TILE_ICON;
-                self.rounded(x, cy, tw, th, px::RADIUS_L, pal.ground_raised)?;
+                // a row's place, held (Loaded's skeleton: a gesture and its padding)
+                let th = px::TILE_ICON + 2.0 * px::S_1;
+                self.rounded(x, cy, w, th, px::RADIUS_L, pal.ground_raised)?;
                 cy += th;
             }
             Body::Failed { text, retry } => {
@@ -116,55 +113,77 @@ impl P<'_, '_, '_, '_> {
             }
             Body::Buttons(buttons) => cy += self.flow(buttons, x, cy, w)?,
             Body::Tiles(tiles) => {
-                let cols = columns(w);
-                let tw = (w - px::S_5 * (cols as f32 - 1.0)) / cols as f32;
-                for row in tiles.chunks(cols) {
-                    let mut rh: f32 = 0.0;
-                    for t in row {
-                        rh = rh.max(self.tile_height(t, tw)?);
-                    }
-                    if self.visible(cy, rh) {
-                        for (i, t) in row.iter().enumerate() {
-                            let th = self.tile_height(t, tw)?;
-                            self.tile(t, x + i as f32 * (tw + px::S_5), cy, tw, th)?;
-                        }
-                    }
-                    cy += rh + px::S_5;
+                let mut hs = Vec::with_capacity(tiles.len());
+                for t in tiles {
+                    hs.push(self.tile_height(t, w)?);
                 }
-                if !tiles.is_empty() {
-                    cy -= px::S_5;
+                let total: f32 = hs.iter().sum();
+                self.framed((x, cy, w, total), px::RADIUS_L, pal.surface, pal.line)?;
+                let hair = 1.0 / self.s();
+                for (i, (t, th)) in tiles.iter().zip(&hs).enumerate() {
+                    if i > 0 {
+                        // a line between two rows (`.tile + .tile`'s inset shadow)
+                        self.rounded(x + hair, cy, w - 2.0 * hair, hair, 0.0, pal.line)?;
+                    }
+                    if self.visible(cy, *th) {
+                        self.tile(t, x, cy, w, *th)?;
+                    }
+                    cy += th;
                 }
             }
         }
         Ok(cy - y)
     }
 
-    /// The house: its groups down the scrolled column, the header over them; the column's
-    /// height in the panel's pixels.
+    /// The house: its groups in columns (the dashboard's), the header over them; the
+    /// columns' height in the panel's pixels.
     fn house(&mut self, groups: &[Group], wcss: f32) -> Result<f32, Error> {
         let pal = self.c.pal;
         let m = margin(wcss);
-        let mut y = px::HEADER_H + px::S_5;
-        for (i, g) in groups.iter().enumerate() {
-            if i > 0 {
-                y += px::S_5;
-            }
-            y += self.group(g, m, y, wcss - 2.0 * m)?;
+        let inner = wcss - 2.0 * m;
+        let cols = columns(inner);
+        let cw = (inner - COLUMN_GAP * (cols as f32 - 1.0)) / cols as f32;
+        // each group's height, from the code that draws it
+        let measuring = std::mem::replace(&mut self.measuring, true);
+        let mut hs = Vec::with_capacity(groups.len());
+        for g in groups {
+            hs.push(self.group(g, 0.0, 0.0, cw)?);
         }
-        let content = (y + px::S_6) * self.s();
-        // the header stays: the brand, a line under it
+        self.measuring = measuring;
+        let starts = balance(&hs, cols, GROUP_GAP);
+        let top = px::HEADER_H + px::S_5;
+        let mut bottom = top;
+        for (c, &from) in starts.iter().enumerate() {
+            let to = starts.get(c + 1).copied().unwrap_or(groups.len());
+            let x = m + c as f32 * (cw + COLUMN_GAP);
+            let mut y = top;
+            for (g, h) in groups[from..to].iter().zip(&hs[from..to]) {
+                self.group(g, x, y, cw)?;
+                y += h + GROUP_GAP;
+            }
+            bottom = bottom.max(y - GROUP_GAP);
+        }
+        let content = (bottom + px::S_5) * self.s();
+        // the header stays: the mark and the name (Header.svelte's brand), a line under it
         self.dy = 0.0;
         self.rounded(0.0, 0.0, wcss, px::HEADER_H, 0.0, pal.ground)?;
         let hair = 1.0 / self.s();
         self.rounded(0.0, px::HEADER_H - hair, wcss, hair, 0.0, pal.line)?;
+        let my = (px::HEADER_H - HEADER_MARK) / 2.0;
+        if self.visible(my, HEADER_MARK) {
+            let mark = self.d(HEADER_MARK).max(1) as u32;
+            self.d
+                .picture(MARK_SVG, self.d(m), self.y(my), mark, mark)?;
+        }
+        let bx = m + HEADER_MARK + px::S_2;
         let brand = self.c.words.s(k::BRANDING_NAME);
         self.line(
             &brand,
             ty::BRAND,
             pal.ink,
-            m,
+            bx,
             (px::HEADER_H - ty::BRAND.line) / 2.0,
-            wcss - 2.0 * m,
+            wcss - bx - m,
         )?;
         Ok(content)
     }
@@ -281,6 +300,7 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
         c,
         hits: Vec::new(),
         dy: -c.scroll,
+        measuring: false,
     };
     let wcss = c.width / c.scale;
     let content = match screen {
@@ -443,6 +463,7 @@ mod tests {
                 c: &ctx,
                 hits: Vec::new(),
                 dy: 0.0,
+                measuring: false,
             };
             let Body::Tiles(tiles) = &group.body else {
                 panic!("tiles")

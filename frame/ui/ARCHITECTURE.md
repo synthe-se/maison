@@ -81,6 +81,11 @@ frame/ui/
    gestures (today a static ring).
 3. Not on the frame: device pages, settings, admin, the keymap.
 
+The house is laid out as the web dashboard is (+page.svelte's `.dashboard`): the groups in
+balanced columns at least 22rem wide (two on the panel), each group whole, its devices one
+framed list of rows; heights come from the drawing code itself in a measuring pass
+(`P::measuring`), so the balance never disagrees with what is drawn. The header wears the mark.
+
 ## Quality and simulation
 
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo deny check` (no GPL; the

@@ -86,8 +86,6 @@ pub const TITLE: Type = ty::BODY.weight(600);
 pub const ICON: f32 = 18.0;
 /// DeviceTile's gesture icon.
 pub const GLYPH_ICON: f32 = 22.0;
-/// A tile's column at least this wide (app.css `.tiles`: `minmax(min(20rem, 100%), 1fr)`).
-pub const TILE_MIN: f32 = 320.0;
 /// The ring of a gesture's disc (DeviceTile `.gesture`: 1.5 px).
 pub const RING: f32 = 1.5;
 /// The ring of a slider's thumb (Range `.thumb`: 2 px).
@@ -103,15 +101,70 @@ pub const MARK: f32 = 88.0;
 /// Maison's mark, the web app's own (`web/static/brand.svg`), drawn in its colors.
 pub const MARK_SVG: &str = include_str!("../../../../web/static/brand.svg");
 
+// The dashboard's measures (+page.svelte's `.dashboard`): the groups in columns at least 22rem
+// wide, six at most, each group whole, read down a column then the next; 12 px between two
+// groups, 24 between columns; a group's head 36 px (a finger's on the frame: TOUCH), 8 px over
+// its body; its devices one framed list of rows, 4 px above and below each, 12 at its sides,
+// 12 below one with a control, a line between two. All of it on the panel: the house at a glance.
+/// A column of groups at least this wide (`columns: 22rem 6`).
+pub const GROUP_COLUMN: f32 = 352.0;
+pub const MAX_COLUMNS: usize = 6;
+pub const COLUMN_GAP: f32 = px::S_5;
+pub const GROUP_GAP: f32 = px::S_3;
+pub const HEAD_GAP: f32 = px::S_2;
+/// A row's padding above and below (`.tile`: `var(--s-1) var(--s-3)`), and at its sides.
+pub const ROW_PAD_Y: f32 = px::S_1;
+pub const ROW_PAD_X: f32 = px::S_3;
+/// Under a row that has a control below its head (`.tile:has(> :nth-child(2))`).
+pub const ROW_PAD_BOTTOM: f32 = px::S_3;
+/// Between a row's head and each control under it (`.tile`'s gap).
+pub const PART_GAP: f32 = px::S_2;
+/// Header.svelte's mark, before the name.
+pub const HEADER_MARK: f32 = 28.0;
+
 /// The page margin for the panel's width in CSS pixels (tokens.css `--page-margin` and its
 /// media queries).
 pub fn margin(width_css: f32) -> f32 {
     theme::at_width(px::PAGE_MARGIN, wide::PAGE_MARGIN, width_css)
 }
 
-/// How many tiles side by side in `inner` CSS pixels (`repeat(auto-fill, minmax(20rem, 1fr))`).
+/// How many columns of groups in `inner` CSS pixels (`columns: 22rem 6`, `column-gap: --s-5`).
 pub fn columns(inner: f32) -> usize {
-    (((inner + px::S_5) / (TILE_MIN + px::S_5)).floor() as usize).max(1)
+    (((inner + COLUMN_GAP) / (GROUP_COLUMN + COLUMN_GAP)).floor() as usize).clamp(1, MAX_COLUMNS)
+}
+
+/// CSS columns' balance: the groups' heights `hs`, in order, into at most `cols` columns, each
+/// group whole, `gap` between two in a column; where each column starts (indices), the
+/// shortest tallest column first found.
+pub fn balance(hs: &[f32], cols: usize, gap: f32) -> Vec<usize> {
+    // the columns `limit` high that the groups need, read in order
+    let starts = |limit: f32| {
+        let (mut starts, mut used) = (vec![0], 0.0);
+        for (i, h) in hs.iter().enumerate() {
+            let add = if used > 0.0 { gap + h } else { *h };
+            if used > 0.0 && used + add > limit {
+                starts.push(i);
+                used = *h;
+            } else {
+                used += add;
+            }
+        }
+        starts
+    };
+    let (mut lo, mut hi) = (
+        hs.iter().copied().fold(0.0, f32::max),
+        hs.iter().sum::<f32>() + gap * hs.len() as f32,
+    );
+    // to a pixel: the least height in which they fit `cols` columns
+    while hi - lo > 1.0 {
+        let mid = (lo + hi) / 2.0;
+        if starts(mid).len() <= cols {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    starts(hi)
 }
 
 /// The painter: a drawing's canvas, what it reads, the hits it leaves.
@@ -121,6 +174,9 @@ pub struct P<'d, 'a, 't, 'c> {
     pub hits: Vec<Hit>,
     /// Added to every y: the column's scroll (negative), or 0 for what stays put.
     pub dy: f32,
+    /// Measuring only: nothing drawn, no hit left, every height said (the columns' balance
+    /// asks each group's height of the same code that draws it).
+    pub measuring: bool,
 }
 
 impl P<'_, '_, '_, '_> {
@@ -139,6 +195,9 @@ impl P<'_, '_, '_, '_> {
 
     /// Whether (y, h) in CSS px is on the panel at all.
     pub fn visible(&self, y: f32, h: f32) -> bool {
+        if self.measuring {
+            return false;
+        }
         let top = y * self.s() + self.dy;
         top + h * self.s() >= 0.0 && top <= self.c.height
     }
@@ -363,10 +422,23 @@ mod tests {
         assert_eq!(margin(800.0), 24.0);
         assert_eq!(margin(400.0), 16.0);
         assert_eq!(margin(1600.0), 32.0);
-        assert_eq!(columns(752.0), 2);
+        // the panel's 800 less its margins: two columns of groups, as the web app's
+        assert_eq!(columns(800.0 - 2.0 * margin(800.0)), 2);
         assert_eq!(columns(320.0), 1);
-        assert_eq!(columns(200.0), 1);
         assert_eq!(columns(1300.0), 3);
+        assert_eq!(columns(9000.0), MAX_COLUMNS);
+    }
+
+    #[test]
+    fn groups_balance_down_the_columns_in_order() {
+        // the web's: scenes, Tempo, lamps, cats, climate | shutters, plugs, rabbit, TV
+        let hs = [92.0, 116.0, 330.0, 214.0, 162.0, 278.0, 214.0, 120.0, 194.0];
+        let starts = balance(&hs, 2, 12.0);
+        assert_eq!(starts, vec![0, 5]);
+        assert_eq!(balance(&hs, 1, 12.0), vec![0]);
+        assert_eq!(balance(&[], 2, 12.0), vec![0]);
+        // never more columns than groups need
+        assert_eq!(balance(&[10.0, 10.0], 6, 12.0), vec![0, 1]);
     }
 
     #[test]

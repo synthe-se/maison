@@ -6,7 +6,10 @@ use crate::i18n::k;
 use crate::theme::{Rgba, hatch, px, ty};
 use crate::ui::gfx::Error;
 use crate::ui::icon;
-use crate::ui::layout::{GLYPH_ICON, ICON, P, RING, SWATCH_RING, THUMB_RING, TITLE, TOUCH, Target};
+use crate::ui::layout::{
+    GLYPH_ICON, ICON, P, PART_GAP, RING, ROW_PAD_BOTTOM, ROW_PAD_X, ROW_PAD_Y, SWATCH_RING,
+    THUMB_RING, TITLE, TOUCH, Target,
+};
 use crate::ui::model::{Act, Button, Lead, Part, Slider, Tile};
 use maison_api::tempo::Color;
 
@@ -177,7 +180,7 @@ impl P<'_, '_, '_, '_> {
 
     /// The fact's width and the title's column, for a tile `w` wide.
     fn head_columns(&mut self, t: &Tile, w: f32) -> Result<(f32, f32), Error> {
-        let inner = w - 2.0 * px::S_4;
+        let inner = w - 2.0 * ROW_PAD_X;
         let fact_w = match &t.fact {
             Some(f) => self.width(f, ty::META)?.min(inner / 3.0),
             None => 0.0,
@@ -194,13 +197,18 @@ impl P<'_, '_, '_, '_> {
         Ok(px::TILE_ICON.max(name_h + ty::SECONDARY.line))
     }
 
+    /// A row's height (the dashboard's `.tile`): its head, each control under it, its padding.
     pub fn tile_height(&mut self, t: &Tile, w: f32) -> Result<f32, Error> {
-        let inner = w - 2.0 * px::S_4;
-        let mut h = 2.0 * px::S_4 + self.head_height(t, w)?;
+        let inner = w - 2.0 * ROW_PAD_X;
+        let mut h = ROW_PAD_Y + self.head_height(t, w)?;
         for p in &t.parts {
-            h += px::S_4 + self.part_height(p, inner)?;
+            h += PART_GAP + self.part_height(p, inner)?;
         }
-        Ok(h)
+        Ok(h + if t.parts.is_empty() {
+            ROW_PAD_Y
+        } else {
+            ROW_PAD_BOTTOM
+        })
     }
 
     /// The tile's state line, as its gesture says it (DeviceTile's `line`): « Pas de réponse »
@@ -351,15 +359,14 @@ impl P<'_, '_, '_, '_> {
         self.d.picture(&svg, px_, py, pw, pw)
     }
 
+    /// One row of a group's list at (x, y), `w` wide and `h` high (its frame is the list's).
     pub fn tile(&mut self, t: &Tile, x: f32, y: f32, w: f32, h: f32) -> Result<(), Error> {
-        let pal = self.c.pal;
-        self.framed((x, y, w, h), px::RADIUS_L, pal.surface, pal.line)?;
-        let (ix, iy) = (x + px::S_4, y + px::S_4);
-        let inner = w - 2.0 * px::S_4;
+        let (ix, iy) = (x + ROW_PAD_X, y + ROW_PAD_Y);
+        let inner = w - 2.0 * ROW_PAD_X;
         let head_h = self.tile_head(t, ix, iy, w)?;
         let mut py = iy + head_h;
         for p in &t.parts {
-            py += px::S_4;
+            py += PART_GAP;
             let ph = self.part_height(p, inner)?;
             if py > y + h {
                 break;
@@ -374,7 +381,7 @@ impl P<'_, '_, '_, '_> {
     /// line (with « Réessayer » once late), the fact; its height.
     fn tile_head(&mut self, t: &Tile, ix: f32, iy: f32, w: f32) -> Result<f32, Error> {
         let pal = self.c.pal;
-        let inner = w - 2.0 * px::S_4;
+        let inner = w - 2.0 * ROW_PAD_X;
         let (fact_w, tw) = self.head_columns(t, w)?;
         let head_h = self.head_height(t, w)?;
         // the head's row centres its items (`.tile-head`: align-items center)
