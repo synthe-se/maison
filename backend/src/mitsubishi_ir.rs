@@ -273,7 +273,22 @@ pub fn encode_mitsubishi_command(
 pub fn current_clock_ticks() -> u8 {
     use chrono::Timelike;
     let now = chrono::Utc::now().with_timezone(&crate::util::HOUSE_TZ);
-    (now.hour() * 6 + now.minute() / 10) as u8
+    clock_ticks(now.hour() * 60 + now.minute())
+}
+
+/// Minutes since midnight as the unit's clock: 10-minute ticks (the minutes below ten
+/// dropped).
+fn clock_ticks(minutes_of_day: u32) -> u8 {
+    // below 24 × 60: 143 at most
+    (minutes_of_day % (24 * 60) / 10) as u8
+}
+
+/// A clock byte read back as `(hours, minutes)`; 0 is « unset ».
+pub fn clock_of(ticks: u8) -> Option<(u8, u8)> {
+    (ticks != 0).then(|| {
+        let minutes = u16::from(ticks) * 10;
+        ((minutes / 60) as u8, (minutes % 60) as u8)
+    })
 }
 
 /// The settings encoded in a structured `state-*` command, in API-friendly form. This is
@@ -491,28 +506,17 @@ fn parse_toggle(token: Option<&str>, label: &str) -> Result<bool, String> {
     }
 }
 
+/// `HH-MM` (`start-06-00`), a time the unit's 10-minute clock can hold.
 fn parse_clock(tokens: &[&str], index: &mut usize) -> Result<u8, String> {
-    let hours = tokens
-        .get(*index)
-        .ok_or_else(|| "missing clock hour".to_string())?
-        .parse::<u8>()
-        .map_err(|_| "invalid clock hour".to_string())?;
-    *index += 1;
-    let minutes = tokens
-        .get(*index)
-        .ok_or_else(|| "missing clock minute".to_string())?
-        .parse::<u8>()
-        .map_err(|_| "invalid clock minute".to_string())?;
-    *index += 1;
-
-    if hours > 23 || minutes > 59 || minutes % 10 != 0 {
-        return Err(format!(
-            "unsupported clock value {:02}:{:02}",
-            hours, minutes
-        ));
-    }
-
-    Ok(hours * 6 + minutes / 10)
+    let (hours, minutes) = match tokens.get(*index..*index + 2) {
+        Some([hours, minutes]) => (*hours, *minutes),
+        _ => return Err("a clock time is HH-MM".to_string()),
+    };
+    *index += 2;
+    let minutes = crate::util::minutes_of_day(&format!("{hours}:{minutes}"))
+        .filter(|minutes| minutes % 10 == 0)
+        .ok_or_else(|| format!("unsupported clock value {hours}:{minutes}"))?;
+    Ok(clock_ticks(u32::from(minutes)))
 }
 
 fn parse_stop_in_minutes(token: Option<&str>) -> Result<u8, String> {
@@ -541,7 +545,7 @@ fn build_state_bytes(state: MitsubishiState) -> [u8; MITSUBISHI_STATE_LEN] {
     bytes[..5].copy_from_slice(&[0x23, 0xCB, 0x26, 0x01, 0x00]);
     bytes[5] = if state.power { 0x20 } else { 0x00 };
     bytes[6] = (state.mode.code() << 3) | if state.i_see { 0x40 } else { 0x00 };
-    bytes[7] = state.temperature_c.saturating_sub(16);
+    bytes[7] = state.temperature_c.saturating_sub(MIN_TEMPERATURE_C);
     bytes[8] = (state.wide_vane.code() << 4) | mode_nibble(state.mode);
     // bit 6: the vane is set
     bytes[9] = state.fan.code() | 0x40 | (state.vane.code() << 3);
@@ -637,12 +641,28 @@ pub struct ReadState {
     pub fan: Option<Fan>,
     pub vane: Option<Vane>,
     pub wide_vane: Option<WideVane>,
-    /// The clock bytes, in 10-minute ticks (0: unset).
+    /// The clock bytes, in 10-minute ticks (0: unset; `clock_of` reads them).
     pub clock: u8,
     pub stop_clock: u8,
     pub start_clock: u8,
     pub timer: Option<TimerMode>,
     pub econo: bool,
+    /// What only captures have shown so far: read, never sent by the backend.
+    pub weekly_timer: bool,
+    /// 0b01 indirect, 0b11 direct, 0b00 off.
+    pub direct_indirect: u8,
+    pub absence_detect: bool,
+    pub i_save_10c: bool,
+    pub natural_flow: bool,
+    pub left_vane: Option<Vane>,
+}
+
+impl ReadState {
+    /// The setpoint in °C (half degrees as the remote sends them; the encoder sends whole
+    /// ones: 16 + byte 7).
+    pub fn temperature_c(&self) -> f32 {
+        f32::from(MIN_TEMPERATURE_C) + f32::from(self.temperature_half_degrees) / 2.0
+    }
 }
 
 pub fn read_state(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> ReadState {
@@ -663,6 +683,12 @@ pub fn read_state(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> ReadState {
         start_clock: bytes[12],
         timer: TimerMode::from_code(bytes[13] & 0x07),
         econo: bytes[14] & 0x20 != 0,
+        weekly_timer: bytes[13] & 0x08 != 0,
+        direct_indirect: bytes[15] & 0x03,
+        absence_detect: bytes[15] & 0x04 != 0,
+        i_save_10c: bytes[15] & 0x20 != 0,
+        natural_flow: bytes[16] & 0x02 != 0,
+        left_vane: Vane::from_code((bytes[16] >> 3) & 0x07),
     }
 }
 
@@ -949,6 +975,34 @@ mod tests {
         bad.temperature = 21;
         bad.stop_in_minutes = Some(15);
         assert!(bad.command().is_err());
+    }
+
+    /// The clock and the setpoint read back as they were written, and the timers' times
+    /// are what the unit's 10-minute clock can hold.
+    #[test]
+    fn clocks_and_setpoints_read_back_as_written() {
+        let state = read_state(&build_state_bytes(
+            parse_state_command("state-heat-23-fan-auto-vane-auto-start-06-30-stop-23-50").unwrap(),
+        ));
+        assert_eq!(clock_of(state.start_clock), Some((6, 30)));
+        assert_eq!(clock_of(state.stop_clock), Some((23, 50)));
+        assert_eq!(state.temperature_c(), 23.0);
+        assert_eq!(clock_of(0), None, "unset");
+        assert_eq!(
+            clock_ticks(7 * 60 + 39),
+            45,
+            "the minutes below ten dropped"
+        );
+        for bad in ["06-35", "24-00", "6-30", "06"] {
+            let command = format!("state-heat-23-fan-auto-vane-auto-start-{bad}");
+            assert!(parse_state_command(&command).is_err(), "{bad}");
+        }
+        let half = ReadState {
+            temperature_half_degrees: 9,
+            ..state
+        };
+        assert_eq!(half.temperature_c(), 20.5);
+        assert!(!state.weekly_timer && state.left_vane == Some(Vane::Auto));
     }
 
     #[test]

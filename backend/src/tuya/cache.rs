@@ -49,26 +49,6 @@ fn merge_cache_updates(entry: &mut HashMap<String, Value>, updates: Vec<(String,
 }
 
 impl TuyaManager {
-    /// The cached values `merged` lacks (a status read that missed them).
-    pub(super) async fn merge_cached_dps(
-        &self,
-        merged: &mut Map<String, Value>,
-        device_type: TuyaDeviceType,
-        device_id: &str,
-    ) {
-        let cache = self.cache.read().await;
-        let Some(cached) = cache.0.get(device_id) else {
-            return;
-        };
-        for dps_id in cacheable_dps_keys(device_type) {
-            if let Some(value) = cached.get(*dps_id) {
-                merged
-                    .entry((*dps_id).to_string())
-                    .or_insert_with(|| value.clone());
-            }
-        }
-    }
-
     pub(super) async fn store_cacheable_dps(
         &self,
         device_id: &str,
@@ -165,7 +145,7 @@ mod tests {
         );
         let listed = manager.list_devices().await;
         assert_eq!(listed[0].last_data.dps.get("1"), Some(&json!("BQgeAgE=")));
-        assert_eq!(listed[0].device_type, TuyaDeviceType::Feeder);
+        assert_eq!(listed[0].r#type, TuyaDeviceType::Feeder);
 
         let (manager, root) = make(json!([config("f", "Feeder", "")]), Some("{torn"));
         assert!(manager.list_devices().await[0].last_data.dps.is_empty());

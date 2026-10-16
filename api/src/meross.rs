@@ -44,7 +44,7 @@ pub struct ElectricityConfig {
     pub electricity_ratio: i32,
 }
 
-/// The reading in words with its unit (« 42.0W »), and the raw one numbers come from.
+/// The reading in words with its unit (« 42W »), and the raw one numbers come from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Electricity {
@@ -55,9 +55,37 @@ pub struct Electricity {
 }
 
 impl ElectricityRaw {
+    /// The voltage in volts.
+    pub fn volts(&self) -> f64 {
+        f64::from(self.voltage) / 10.0
+    }
+
+    /// The current in amperes.
+    pub fn amperes(&self) -> f64 {
+        f64::from(self.current) / 1000.0
+    }
+
     /// The power in watts.
     pub fn watts(&self) -> f64 {
         f64::from(self.power) / 1000.0
+    }
+
+    /// The reading in words with its units (« 230.1V », « 12W »).
+    pub fn said(self) -> Electricity {
+        /// A whole number without its « .0 ».
+        fn unit(value: f64, suffix: &str) -> String {
+            if value.fract() == 0.0 {
+                format!("{}{suffix}", value.trunc() as i64)
+            } else {
+                format!("{value}{suffix}")
+            }
+        }
+        Electricity {
+            voltage: unit(self.volts(), "V"),
+            current: unit(self.amperes(), "A"),
+            power: unit(self.watts(), "W"),
+            raw: self,
+        }
     }
 }
 
@@ -88,10 +116,32 @@ mod tests {
         let l: Answer<PlugList> = serde_json::from_str(list).unwrap();
         assert!(l.body.devices[0].is_online);
         assert_eq!(serde_json::to_string(&l).unwrap(), list);
-        let reading = r#"{"success":true,"device":{"id":"p1","name":"Bureau"},"message":"Electricity data retrieved","electricity":{"voltage":"230.1V","current":"0.183A","power":"42.0W","raw":{"channel":0,"current":183,"voltage":2301,"power":42000,"config":{"voltageRatio":188,"electricityRatio":100}}}}"#;
+        let reading = r#"{"success":true,"device":{"id":"p1","name":"Bureau"},"message":"Electricity data retrieved","electricity":{"voltage":"230.1V","current":"0.183A","power":"42W","raw":{"channel":0,"current":183,"voltage":2301,"power":42000,"config":{"voltageRatio":188,"electricityRatio":100}}}}"#;
         let e: Answer<ElectricityAnswer> = serde_json::from_str(reading).unwrap();
         assert_eq!(e.body.electricity.raw.watts(), 42.0);
         assert_eq!(serde_json::to_string(&e).unwrap(), reading);
+        let said = e.body.electricity.raw.clone().said();
+        assert_eq!(said, e.body.electricity, "the words are the raw reading's");
+        let whole = ElectricityRaw {
+            channel: 0,
+            current: 1500,
+            voltage: 2300,
+            power: 12000,
+            config: None,
+        };
+        assert_eq!(
+            (whole.volts(), whole.amperes(), whole.watts()),
+            (230.0, 1.5, 12.0)
+        );
+        let said = whole.said();
+        assert_eq!(
+            (
+                said.voltage.as_str(),
+                said.current.as_str(),
+                said.power.as_str()
+            ),
+            ("230V", "1.5A", "12W")
+        );
         assert_eq!(
             serde_json::to_string(&ToggleRequest { on: true }).unwrap(),
             r#"{"on":true}"#

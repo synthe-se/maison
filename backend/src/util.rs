@@ -473,6 +473,27 @@ pub fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// The coded refusal `code`, with why in the log (the app words the code, the reason is the
+/// owner's).
+pub fn refused(
+    code: crate::error::Refusal,
+    reason: impl std::fmt::Display,
+) -> crate::error::AppError {
+    tracing::info!(code = code.as_str(), %reason, "refused");
+    code.into()
+}
+
+/// `HH:MM` as minutes since midnight (`00:00` to `23:59`).
+pub fn minutes_of_day(value: &str) -> Option<u16> {
+    let (hours, minutes) = value.split_once(':')?;
+    let digits = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(hours) || !digits(minutes) {
+        return None;
+    }
+    let (hours, minutes) = (hours.parse::<u16>().ok()?, minutes.parse::<u16>().ok()?);
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+}
+
 #[cfg(test)]
 mod device_helper_tests {
     use super::*;
@@ -533,5 +554,29 @@ mod device_helper_tests {
         assert!(mutex.is_poisoned());
         *lock(&mutex) += 1;
         assert_eq!(*lock(&mutex), 2);
+    }
+
+    #[test]
+    fn clock_times_read_as_minutes() {
+        assert_eq!(minutes_of_day("00:00"), Some(0));
+        assert_eq!(minutes_of_day("07:30"), Some(450));
+        assert_eq!(minutes_of_day("23:59"), Some(1439));
+        for bad in [
+            "24:00", "12:60", "7:30", "07:3", "0730", "aa:bb", "-1:00", "07:30 ",
+        ] {
+            assert_eq!(minutes_of_day(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_code() {
+        let error = refused(crate::error::Refusal::Invalid, "why");
+        assert!(matches!(
+            error,
+            crate::error::AppError::Coded {
+                code: "invalid",
+                ..
+            }
+        ));
     }
 }

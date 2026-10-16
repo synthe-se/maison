@@ -1,25 +1,10 @@
 //! What the devices say, read: their payloads merged into data points (DPS), and the data
 //! points of each device type named for the web.
 
-use crate::util::HOUSE_TZ;
-use chrono::{DateTime, Utc};
 use rust_async_tuyapi::{mesparse::Message, Payload};
 use serde_json::{json, Map, Value};
 
 use super::{dps, TuyaDeviceType};
-use crate::error::AppError;
-
-/// `"HH:MM"` (00:00 to 23:59) as hours and minutes.
-pub fn parse_hhmm(value: &str) -> Result<(u8, u8), AppError> {
-    let invalid = || AppError::bad_request("Invalid time format. Use HH:MM");
-    let (hours, minutes) = value.split_once(':').ok_or_else(invalid)?;
-    let hours = hours.parse::<u8>().map_err(|_| invalid())?;
-    let minutes = minutes.parse::<u8>().map_err(|_| invalid())?;
-    if hours > 23 || minutes > 59 {
-        return Err(invalid());
-    }
-    Ok((hours, minutes))
-}
 
 /// `messages`' data points over `current`.
 pub(super) fn merge_messages_into_dps(
@@ -63,30 +48,20 @@ pub(super) fn parse_device_data(device_type: TuyaDeviceType, dps: &Map<String, V
 }
 
 /// The feeder's last-meal report, `R:<left> C:<count> T:<unix seconds>`: every field
-/// optional, in any order, separated by spaces.
+/// optional, in any order, separated by spaces. The time goes as said: the apps write it in
+/// their reader's words.
 fn parse_feeder_history(history: &str) -> Value {
     let field = |prefix: &str| {
         history
             .split_whitespace()
             .find_map(|part| part.strip_prefix(prefix))
     };
-    let timestamp = field("T:");
-    let readable = timestamp
-        .and_then(|t| t.parse::<i64>().ok())
-        .and_then(|t| DateTime::<Utc>::from_timestamp(t, 0))
-        .map(|t| {
-            t.with_timezone(&HOUSE_TZ)
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        })
-        .unwrap_or_default();
     json!({
         "raw": history,
         "parsed": {
             "remaining": field("R:").unwrap_or_default(),
             "count": field("C:"),
-            "timestamp": timestamp,
-            "timestampReadable": readable,
+            "timestamp": field("T:"),
         }
     })
 }
@@ -218,20 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn times_of_day_are_checked() {
-        assert_eq!(parse_hhmm("00:00").unwrap(), (0, 0));
-        assert_eq!(parse_hhmm("08:30").unwrap(), (8, 30));
-        assert_eq!(parse_hhmm("23:59").unwrap(), (23, 59));
-        for bad in ["24:00", "12:60", "bad", "08", "08:30:00", "-1:00", "300:00"] {
-            assert_eq!(
-                parse_hhmm(bad).unwrap_err().to_string(),
-                "Invalid time format. Use HH:MM",
-                "{bad}"
-            );
-        }
-    }
-
-    #[test]
     fn feeder_status_maps_its_data_points() {
         let parsed = parse_feeder_status(&map(json!({
             "101": 2, "105": 1, "14": 0, "103": false, "107": "10.0.0.2",
@@ -265,22 +226,18 @@ mod tests {
     }
 
     /// The real feeder separates the fields with one space (the legacy parser wanted two,
-    /// and read everything as « remaining »); the time is said in the house's time zone.
+    /// and read everything as « remaining »); the time goes as the feeder said it.
     #[test]
     fn the_feeder_history_is_read_field_by_field() {
         let history = parse_feeder_history("R:0 C:3 T:1773270006");
         assert_eq!(
             history["parsed"],
-            json!({ "remaining": "0", "count": "3", "timestamp": "1773270006", "timestampReadable": "2026-03-12 00:00:06" })
+            json!({ "remaining": "0", "count": "3", "timestamp": "1773270006" })
         );
         let partial = parse_feeder_history("C:1");
         assert_eq!(
             partial["parsed"],
-            json!({ "remaining": "", "count": "1", "timestamp": null, "timestampReadable": "" })
-        );
-        assert_eq!(
-            parse_feeder_history("T:soon")["parsed"]["timestampReadable"],
-            ""
+            json!({ "remaining": "", "count": "1", "timestamp": null })
         );
     }
 

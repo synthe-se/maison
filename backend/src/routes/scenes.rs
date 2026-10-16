@@ -3,27 +3,26 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use maison_api::scenes::SceneList;
+use maison_api::{remote::KeyResponse, scenes::SceneList, Message};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::AdminUser,
-    error::AppError,
+    error::{AppError, Refusal},
     ir::{self, IrAction},
-    routes::{
-        ir::{ran, KeyResponse},
-        Answer, Reply, SimpleResponse,
-    },
+    routes::{Answer, Reply},
     scenes::Scene,
     AppState,
 };
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct One {
     scene: Scene,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SceneRequest {
     name: String,
     icon: String,
@@ -61,11 +60,11 @@ async fn remove(
     State(state): State<AppState>,
     _admin: AdminUser,
     Path(id): Path<String>,
-) -> Result<Json<SimpleResponse>, AppError> {
+) -> Result<Json<Answer<Message>>, AppError> {
     if !state.scenes.remove(&id).await? {
-        return Err(unknown_scene());
+        return Err(Refusal::NotFound.into());
     }
-    Ok(SimpleResponse::ok(format!("Scene {id} removed")))
+    Ok(Json(Answer::said(format!("Scene {id} removed"))))
 }
 
 /// Run inside the request: the person waits on it and sees each action's result.
@@ -73,10 +72,8 @@ async fn run(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<KeyResponse>, AppError> {
-    let scene = state.scenes.get(&id).await.ok_or_else(unknown_scene)?;
-    Ok(ran(ir::run_actions(&state, &scene.actions).await))
-}
-
-fn unknown_scene() -> AppError {
-    AppError::not_found("Unknown scene")
+    let scene = state.scenes.get(&id).await.ok_or(Refusal::NotFound)?;
+    Ok(Json(KeyResponse::ran(
+        ir::run_actions(&state, &scene.actions, None).await,
+    )))
 }

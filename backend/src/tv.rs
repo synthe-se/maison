@@ -51,7 +51,7 @@ use tokio::{
 
 use crate::{
     broadlink::BroadlinkManager,
-    error::AppError,
+    error::{AppError, Refusal},
     ir::{Resolve, SwitchState},
     json_config::{Checked, JsonConfig},
     net::{self, device_host, device_ipv4, unreachable},
@@ -83,13 +83,8 @@ const WAKE_POLL_GAP: Duration = Duration::from_secs(3);
 /// It acknowledges the write well before `powerstate` reflects it.
 const POWER_SETTLE: Duration = Duration::from_secs(6);
 const POWER_POLL_GAP: Duration = Duration::from_millis(900);
-/// DIAL on the Android box. Waking the box makes it assert CEC One Touch Play,
-/// which powers the TV on *and* switches it to the box's HDMI input.
-const BOX_DIAL_PORT: u16 = 8008;
 /// JointSPACE answers are a few hundred bytes; anything far larger is not the set.
 const MAX_ANSWER_BYTES: usize = 64 * 1024;
-/// What the box wakes over DIAL when none is configured.
-const DEFAULT_WAKE_APP: &str = "YouTube";
 
 /// Every endpoint this module is allowed to touch, verified against the set.
 /// Adding a variant means having verified it answers on Saphi — see the module
@@ -102,8 +97,6 @@ enum Endpoint {
     InputKey,
     AmbilightPower,
     AmbilightMode,
-    AmbilightTopology,
-    AmbilightSupportedStyles,
     AmbilightCurrentConfiguration,
 }
 
@@ -116,8 +109,6 @@ impl Endpoint {
             Self::InputKey => "input/key",
             Self::AmbilightPower => "ambilight/power",
             Self::AmbilightMode => "ambilight/mode",
-            Self::AmbilightTopology => "ambilight/topology",
-            Self::AmbilightSupportedStyles => "ambilight/supportedstyles",
             Self::AmbilightCurrentConfiguration => "ambilight/currentconfiguration",
         }
     }
@@ -168,8 +159,8 @@ impl Wire for TvKey {
     }
 }
 
-/// How awake the set is. The distinction is diagnostic only now that power
-/// goes over infrared, which reaches the set at either depth.
+/// How awake the set is. Every toggle reads it (on: switch off; else: switch on); power
+/// itself goes over infrared, which reaches the set at either depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TvPower {
@@ -213,32 +204,19 @@ pub struct TvConfig {
     /// it the set cannot be powered on or off at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ir_blaster_host: Option<String>,
-    /// Android TV box address. Used to force the HDMI input via CEC.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub box_host: Option<String>,
-    /// DIAL app woken on the box to trigger CEC One Touch Play.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub box_wake_app: Option<String>,
 }
 
-/// Blank fields are absent; every address must be a LAN device (the set and the box are
-/// reached over HTTP, the blaster over Broadlink's IPv4-only protocol) and the DIAL app a
-/// plain name, since it goes into the URL path.
+/// Blank fields are absent; every address must be a LAN device (the set is reached over
+/// HTTP, the blaster over Broadlink's IPv4-only protocol). The box's address is the box's
+/// own setting (`androidtv`): files that kept a `boxHost` and `boxWakeApp` here still load,
+/// those two left out.
 impl Checked for TvConfig {
     fn checked(self) -> Result<Self, AppError> {
-        let host = |value: Option<String>| non_blank(value).map(|v| device_host(&v)).transpose();
-        let ir_blaster_host = non_blank(self.ir_blaster_host)
-            .map(|v| device_ipv4(&v).map(|ip| ip.to_string()))
-            .transpose()?;
-        let box_wake_app = non_blank(self.box_wake_app);
-        if let Some(app) = &box_wake_app {
-            crate::androidtv::validate_package(app)?;
-        }
         Ok(Self {
-            host: host(self.host)?,
-            ir_blaster_host,
-            box_host: host(self.box_host)?,
-            box_wake_app,
+            host: non_blank(self.host).map(|v| device_host(&v)).transpose()?,
+            ir_blaster_host: non_blank(self.ir_blaster_host)
+                .map(|v| device_ipv4(&v).map(|ip| ip.to_string()))
+                .transpose()?,
         })
     }
 }
@@ -343,7 +321,7 @@ impl TvManager {
         self.config()
             .await
             .host
-            .ok_or_else(|| AppError::service_unavailable("No TV configured"))
+            .ok_or_else(|| Refusal::NotConfigured.into())
     }
 
     /// Waits out the inter-request gap, then reports the moment the caller may
@@ -360,51 +338,45 @@ impl TvManager {
         gate
     }
 
-    async fn get(&self, endpoint: Endpoint) -> Result<serde_json::Value, AppError> {
+    /// One call through the gate: a GET, or a POST of `body`; the answer (a POST's is not
+    /// read).
+    async fn call(
+        &self,
+        endpoint: Endpoint,
+        body: Option<serde_json::Value>,
+    ) -> Result<reqwest::Response, AppError> {
         let host = self.host().await?;
         let _guard = self.acquire().await;
         let url = format!("http://{host}:{API_PORT}/6/{}", endpoint.path());
-        let response = self
-            .client
-            .get(&url)
+        let request = match &body {
+            Some(body) => self.client.post(&url).json(body),
+            None => self.client.get(&url),
+        };
+        let response = request
             .send()
             .await
             .map_err(|error| unreachable("TV", error))?;
         if !response.status().is_success() {
-            return Err(AppError::service_unavailable(format!(
-                "TV refused GET {} ({})",
-                endpoint.path(),
-                response.status()
-            )));
+            return Err(unreachable(
+                "TV",
+                format!("{} refused ({})", endpoint.path(), response.status()),
+            ));
         }
+        Ok(response)
+    }
+
+    async fn get(&self, endpoint: Endpoint) -> Result<serde_json::Value, AppError> {
+        let response = self.call(endpoint, None).await?;
         let body = net::read_capped(response, MAX_ANSWER_BYTES, "TV").await?;
         serde_json::from_slice(&body).map_err(|error| unreachable("TV", error))
     }
 
     async fn post(&self, endpoint: Endpoint, body: serde_json::Value) -> Result<(), AppError> {
-        let host = self.host().await?;
-        let _guard = self.acquire().await;
-        let url = format!("http://{host}:{API_PORT}/6/{}", endpoint.path());
-        let response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| unreachable("TV", error))?;
-        if !response.status().is_success() {
-            return Err(AppError::service_unavailable(format!(
-                "TV refused POST {} ({})",
-                endpoint.path(),
-                response.status()
-            )));
-        }
-        Ok(())
+        self.call(endpoint, Some(body)).await.map(drop)
     }
 
-    /// Is the API port answering? A plain TCP connect, so it costs the HTTP
-    /// server nothing and tells light standby from deep standby.
-    /// One TCP connect, read for everything it says.
+    /// Is the API port answering? One TCP connect, read for everything it says: it costs
+    /// the HTTP server nothing and tells light standby from deep standby.
     ///
     /// Collapsing this to a bool loses the distinction that matters most on a
     /// bad day: a refused connection means the set is powered up and only its
@@ -482,11 +454,19 @@ impl TvManager {
         Ok(TvVolume::from_json(&self.get(Endpoint::AudioVolume).await?))
     }
 
-    /// Absolute volume. Preferred over repeated `VolumeUp` keys: the key path
-    /// is fire-and-forget and its effect lags the readback by about a step.
-    pub async fn set_volume(&self, level: u8, muted: Option<bool>) -> Result<TvVolume, AppError> {
+    /// Absolute volume and mute, each kept as it is when not given (a mute alone goes
+    /// through the same write, at the current level). Preferred over repeated `VolumeUp`
+    /// keys: the key path is fire-and-forget and its effect lags the readback by a step.
+    pub async fn set_volume(
+        &self,
+        level: Option<u8>,
+        muted: Option<bool>,
+    ) -> Result<TvVolume, AppError> {
         let current = self.volume().await?;
-        let level = current.clamp(level);
+        if level.is_none() && muted.is_none() {
+            return Ok(current);
+        }
+        let level = current.clamp(level.unwrap_or(current.current));
         self.post(
             Endpoint::AudioVolume,
             json!({ "muted": muted.unwrap_or(current.muted), "current": level }),
@@ -535,14 +515,6 @@ impl TvManager {
         .await
     }
 
-    pub async fn ambilight_styles(&self) -> Result<serde_json::Value, AppError> {
-        self.get(Endpoint::AmbilightSupportedStyles).await
-    }
-
-    pub async fn ambilight_topology(&self) -> Result<serde_json::Value, AppError> {
-        self.get(Endpoint::AmbilightTopology).await
-    }
-
     /// Powers the set on, whatever depth it is sleeping at. Routing it to the box's
     /// input is the caller's next step (`power_on_and_route`), over CEC first.
     ///
@@ -559,16 +531,12 @@ impl TvManager {
         // precondition: a discrete power-on code cannot have left the set
         // anywhere but on, and reporting failure because the API stayed quiet
         // would be reporting on the wrong thing.
-        let reachable = self.await_api(POWER_CONFIRM_BUDGET).await;
-        if !reachable {
+        if !self.await_api(POWER_CONFIRM_BUDGET).await {
             tracing::info!(
                 "TV switched on over infrared; JointSPACE has not answered yet. \
                  If it stays silent the embedded server has crashed and needs a \
                  mains power cycle."
             );
-        }
-
-        if !reachable {
             return Ok(TvPower::On);
         }
 
@@ -603,10 +571,11 @@ impl TvManager {
 
     /// Fires one Philips RC5 power code through the configured blaster.
     async fn send_power_code(&self, command: u8) -> Result<(), AppError> {
-        let host =
-            self.config().await.ir_blaster_host.ok_or_else(|| {
-                AppError::service_unavailable("No IR blaster configured for the TV")
-            })?;
+        let host = self
+            .config()
+            .await
+            .ir_blaster_host
+            .ok_or(Refusal::NotConfigured)?;
 
         // RC5 wants the toggle bit to flip between presses; a receiver seeing
         // it unchanged reads the second frame as a held key and drops it.
@@ -634,39 +603,6 @@ impl TvManager {
     pub async fn power_off(&self) -> Result<TvPower, AppError> {
         self.send_power_code(philips_ir::TV_POWER_OFF).await?;
         Ok(TvPower::Standby)
-    }
-
-    /// Nudges the Android box awake over DIAL so it asserts CEC One Touch
-    /// Play, which both powers the set and routes it to the box's HDMI input.
-    ///
-    /// This is what fixes "the TV came up on the wrong input": JointSPACE
-    /// cannot switch sources at all on Saphi (`/6/sources` is `Forbidden`), so
-    /// the input has to be driven from the HDMI side.
-    pub async fn switch_to_box(&self) -> Result<(), AppError> {
-        let config = self.config().await;
-        let host = config
-            .box_host
-            .ok_or_else(|| AppError::service_unavailable("No Android TV box configured"))?;
-        let app = config
-            .box_wake_app
-            .unwrap_or_else(|| DEFAULT_WAKE_APP.to_string());
-        let url = format!("http://{host}:{BOX_DIAL_PORT}/apps/{app}");
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "text/plain; charset=utf-8")
-            .body("")
-            .send()
-            .await
-            .map_err(|error| unreachable("Android TV box", error))?;
-        if !response.status().is_success() {
-            return Err(AppError::service_unavailable(format!(
-                "box refused the DIAL wake ({})",
-                response.status()
-            )));
-        }
-        Ok(())
     }
 }
 
@@ -709,14 +645,15 @@ pub async fn tv_power(
 /// sleeping box turns the television on to a black screen, which then powers
 /// itself back off for want of a signal. `wake()` does both, in that order.
 ///
-/// The DIAL fallback works by *launching an app*, so it would yank the viewer
-/// out of what they were watching — it is only worth it when ADB is down.
+/// JointSPACE cannot switch sources at all on Saphi (`/6/sources` is `Forbidden`), so the
+/// input is driven from the HDMI side. The DIAL fallback works by *launching an app*, so it
+/// would yank the viewer out of what they were watching: only when ADB is down.
 pub async fn route_to_box(state: &AppState) -> Result<(), AppError> {
     match state.androidtv.wake().await {
         Ok(()) => Ok(()),
         Err(error) => {
             tracing::debug!(%error, "CEC route failed, falling back to DIAL");
-            state.tv.switch_to_box().await
+            state.androidtv.dial_wake().await
         }
     }
 }
@@ -800,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_hand_edited_file_is_checked_on_load() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("tv.json");
         std::fs::write(&path, r#"{"host": "169.254.169.254"}"#).expect("written");
         assert!(TvManager::new(&path, test_broadlink(&dir)).is_err());
@@ -827,8 +764,6 @@ mod tests {
             "input/key",
             "ambilight/power",
             "ambilight/mode",
-            "ambilight/topology",
-            "ambilight/supportedstyles",
             "ambilight/currentconfiguration",
         ];
         for endpoint in [
@@ -838,8 +773,6 @@ mod tests {
             Endpoint::InputKey,
             Endpoint::AmbilightPower,
             Endpoint::AmbilightMode,
-            Endpoint::AmbilightTopology,
-            Endpoint::AmbilightSupportedStyles,
             Endpoint::AmbilightCurrentConfiguration,
         ] {
             assert!(
@@ -852,7 +785,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_config_file_is_an_empty_config_not_an_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let manager =
             TvManager::new(&dir.path().join("tv.json"), test_broadlink(&dir)).expect("manager");
         assert!(manager.config().await.host.is_none());
@@ -861,7 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_config_persists_and_rejects_bad_mac() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("tv.json");
         let manager = TvManager::new(&path, test_broadlink(&dir)).expect("manager");
 
@@ -869,8 +802,6 @@ mod tests {
             .set_config(TvConfig {
                 host: Some("192.168.1.52".to_string()),
                 ir_blaster_host: Some("192.168.1.73".to_string()),
-                box_host: Some("192.168.1.153".to_string()),
-                box_wake_app: None,
             })
             .await
             .expect("saved");
@@ -880,22 +811,34 @@ mod tests {
             .config()
             .await;
         assert_eq!(reloaded.host.as_deref(), Some("192.168.1.52"));
-        assert_eq!(reloaded.box_host.as_deref(), Some("192.168.1.153"));
+        assert_eq!(reloaded.ir_blaster_host.as_deref(), Some("192.168.1.73"));
 
         let rejected = manager
             .set_config(TvConfig {
                 host: Some("192.168.1.52".to_string()),
                 ir_blaster_host: Some("nope".to_string()),
-                box_host: None,
-                box_wake_app: None,
             })
             .await;
         assert!(rejected.is_err());
     }
 
+    /// A file that kept the box's address here (it is the box's setting now) still loads.
     #[tokio::test]
-    async fn every_address_and_the_wake_app_are_checked() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    async fn an_older_file_with_the_box_still_loads() {
+        let dir = crate::util::test_dir();
+        let path = dir.path().join("tv.json");
+        std::fs::write(
+            &path,
+            r#"{"host": "192.168.1.52", "boxHost": "192.168.1.153", "boxWakeApp": "YouTube"}"#,
+        )
+        .unwrap();
+        let manager = TvManager::new(&path, test_broadlink(&dir)).expect("loads");
+        assert_eq!(manager.config().await.host.as_deref(), Some("192.168.1.52"));
+    }
+
+    #[tokio::test]
+    async fn every_address_is_checked() {
+        let dir = crate::util::test_dir();
         let manager =
             TvManager::new(&dir.path().join("tv.json"), test_broadlink(&dir)).expect("manager");
         let base = TvConfig {
@@ -912,23 +855,7 @@ mod tests {
                 ..base.clone()
             },
             TvConfig {
-                box_host: Some("169.254.169.254".into()),
-                ..base.clone()
-            },
-            TvConfig {
-                box_host: Some("box.example.com".into()),
-                ..base.clone()
-            },
-            TvConfig {
                 ir_blaster_host: Some("blaster.local".into()),
-                ..base.clone()
-            },
-            TvConfig {
-                box_wake_app: Some("../../admin".into()),
-                ..base.clone()
-            },
-            TvConfig {
-                box_wake_app: Some("YouTube?x=1".into()),
                 ..base.clone()
             },
         ];
@@ -942,8 +869,6 @@ mod tests {
             .set_config(TvConfig {
                 host: Some(" tv.local ".into()),
                 ir_blaster_host: Some("".into()),
-                box_host: Some("192.168.1.153".into()),
-                box_wake_app: Some("YouTube".into()),
             })
             .await
             .expect("saved");
@@ -976,9 +901,9 @@ mod tests {
 
     /// The gate is the other half of the safety story: bursts are what killed
     /// the server, so two consecutive acquisitions must be spaced.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn request_gate_spaces_consecutive_calls() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let manager =
             TvManager::new(&dir.path().join("tv.json"), test_broadlink(&dir)).expect("manager");
 

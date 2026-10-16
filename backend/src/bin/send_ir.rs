@@ -7,7 +7,7 @@
 //!
 //!     cargo run --bin send_ir -- <blaster-ip> <packet-base64> [local-ip]
 
-use maison_backend::broadlink::BroadlinkManager;
+use maison_backend::{broadlink::BroadlinkManager, config::Config};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,13 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let packet = args.next().ok_or("missing packet-base64")?;
     let local_ip = args.next();
 
-    // The manager only needs somewhere to look for state; sending a raw packet
-    // touches neither the code store nor the climate state.
-    let scratch = std::env::temp_dir();
-    let manager = BroadlinkManager::new(
-        &scratch.join("send-ir-codes.json"),
-        &scratch.join("send-ir-climate.json"),
-    )?;
+    // The backend's own files (read, never written: a raw packet touches neither the code
+    // store nor the climate state).
+    let config = Config::from_env();
+    let manager = BroadlinkManager::new(&config.broadlink_codes_path, &config.climate_state_path)?;
 
     let result = manager
         .send_packet(host, local_ip, packet, None, None)

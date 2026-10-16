@@ -142,8 +142,11 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         zigbee,
     };
 
+    // The cats' devices connect at start, each then kept connected by its own worker.
     let startup_tuya = state.tuya.clone();
-    tokio::spawn(async move { startup_tuya.connect_all_devices().await });
+    supervised("tuya connect", async move {
+        startup_tuya.connect_all_devices().await
+    });
 
     // A screen paired but never back for its cookie leaves no token behind; a screen unseen
     // for `SCREEN_IDLE_DAYS` (thrown away, stolen) is revoked.

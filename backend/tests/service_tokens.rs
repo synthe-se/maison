@@ -89,8 +89,8 @@ async fn a_service_token_never_administers() {
     }
     let (s, v) = common::send(
         &app,
-        Method::GET,
-        "/api/broadlink/discover?forceRefresh=true",
+        Method::POST,
+        "/api/broadlink/discover",
         Some(&token),
         None,
     )

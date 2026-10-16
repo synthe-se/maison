@@ -1,7 +1,10 @@
 //! Reads the Mitsubishi codes learnt into `broadlink-codes.json` back into their fields,
-//! to reverse-engineer the protocol from captures.
+//! to reverse-engineer the protocol from captures: the frames are read by `mitsubishi_ir`,
+//! with the tables its encoder writes with; this only prints them.
 //!
 //!     cargo run --bin decode_mitsubishi_ir -- [path/to/broadlink-codes.json]
+//!
+//! Without a path: the backend's own (`BROADLINK_CODES_JSON_PATH`, else the repository's).
 
 use std::{env, path::PathBuf};
 
@@ -9,8 +12,9 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use maison_backend::{
     broadlink::{self, BroadlinkCodeEntry},
     broadlink_ir,
+    config::Config,
     mitsubishi_ir::{
-        self, MitsubishiFrame, Setting, Vane, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US,
+        self, MitsubishiFrame, Setting, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US,
         MITSUBISHI_HDR_SPACE_US, MITSUBISHI_ONE_SPACE_US, MITSUBISHI_REPEAT_GAP_US,
         MITSUBISHI_STATE_LEN, MITSUBISHI_ZERO_SPACE_US,
     },
@@ -35,7 +39,7 @@ fn run() -> Result<(), String> {
     let path = env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(default_codes_path);
+        .unwrap_or_else(|| Config::from_env().broadlink_codes_path);
     let codes =
         broadlink::read_codes(&path).map_err(|error| format!("{}: {error}", path.display()))?;
 
@@ -55,14 +59,6 @@ fn run() -> Result<(), String> {
     }
 
     Ok(())
-}
-
-fn default_codes_path() -> PathBuf {
-    ["broadlink-codes.json", "../broadlink-codes.json"]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|candidate| candidate.exists())
-        .unwrap_or_else(|| PathBuf::from("broadlink-codes.json"))
 }
 
 fn decode_packet(packet_base64: &str) -> Result<DecodedPacket, String> {
@@ -124,17 +120,13 @@ fn print_code_report(code: &BroadlinkCodeEntry, packet: &DecodedPacket) {
 
     let bytes = &first_frame.bytes;
     let state = mitsubishi_ir::read_state(bytes);
-    let extras = read_extras(bytes);
     println!("  power: {}", on_off(state.power));
     println!(
         "  mode: {} (0b{:03b})",
         name(state.mode),
         (bytes[6] >> 3) & 0x07
     );
-    println!(
-        "  temperature: {} C",
-        format_temperature(state.temperature_half_degrees)
-    );
+    println!("  temperature: {} C", state.temperature_c());
     println!("  fan: {} (byte 9 = {:02X})", name(state.fan), bytes[9]);
     println!(
         "  vane vertical: {} (bit={})",
@@ -152,17 +144,17 @@ fn print_code_report(code: &BroadlinkCodeEntry, packet: &DecodedPacket) {
         format_clock_value(state.clock),
         format_clock_value(state.start_clock),
         format_clock_value(state.stop_clock),
-        on_off(extras.weekly_timer)
+        on_off(state.weekly_timer)
     );
     println!(
         "  extras: i-see={}, econo={}, natural-flow={}, absence={}, i-save-10c={}, direct-indirect={}, left-vane={}",
         on_off(state.i_see),
         on_off(state.econo),
-        on_off(extras.natural_flow),
-        on_off(extras.absence_detect),
-        on_off(extras.i_save_10c),
-        direct_indirect_name(extras.direct_indirect),
-        name(extras.left_vane)
+        on_off(state.natural_flow),
+        on_off(state.absence_detect),
+        on_off(state.i_save_10c),
+        direct_indirect_name(state.direct_indirect),
+        name(state.left_vane)
     );
     println!();
 }
@@ -170,28 +162,6 @@ fn print_code_report(code: &BroadlinkCodeEntry, packet: &DecodedPacket) {
 /// A value's command token, as the tables say it.
 fn name<T: Setting>(value: Option<T>) -> &'static str {
     value.map_or("unknown", Setting::token)
-}
-
-/// The bits only captures have shown so far: read here, never sent by the backend.
-#[derive(Debug)]
-struct Extras {
-    weekly_timer: bool,
-    direct_indirect: u8,
-    absence_detect: bool,
-    i_save_10c: bool,
-    natural_flow: bool,
-    left_vane: Option<Vane>,
-}
-
-fn read_extras(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> Extras {
-    Extras {
-        weekly_timer: bytes[13] & 0x08 != 0,
-        direct_indirect: bytes[15] & 0x03,
-        absence_detect: bytes[15] & 0x04 != 0,
-        i_save_10c: bytes[15] & 0x20 != 0,
-        natural_flow: bytes[16] & 0x02 != 0,
-        left_vane: Vane::from_code((bytes[16] >> 3) & 0x07),
-    }
 }
 
 fn join_u32(values: &[u32]) -> String {
@@ -219,22 +189,9 @@ fn direct_indirect_name(code: u8) -> &'static str {
     }
 }
 
-fn format_clock_value(raw_value: u8) -> String {
-    if raw_value == 0 {
-        return "--:--".to_string();
-    }
-
-    let total_minutes = (raw_value as u16) * 10;
-    let hours = total_minutes / 60;
-    let minutes = total_minutes % 60;
-    format!("{hours:02}:{minutes:02}")
-}
-
-fn format_temperature(half_degrees: u8) -> String {
-    let whole = 16 + (half_degrees / 2);
-    if half_degrees.is_multiple_of(2) {
-        whole.to_string()
-    } else {
-        format!("{whole}.5")
-    }
+fn format_clock_value(ticks: u8) -> String {
+    mitsubishi_ir::clock_of(ticks).map_or_else(
+        || "--:--".to_string(),
+        |(hours, minutes)| format!("{hours:02}:{minutes:02}"),
+    )
 }

@@ -2,11 +2,11 @@
 //! the device pushes and runs the commands it is handed, and reconnects with a back-off
 //! when the device drops. Its state is published on the device's `watch` channel
 //! ([`Link`]), cleared by a guard when the worker ends however it ends (a panic too), and a
-//! supervisor starts a fresh worker after a panic.
+//! supervisor starts a fresh worker after a panic. What the device says (a status read, a
+//! push, a command's echo) goes into the device's status (`TuyaManager::absorb`).
 
 use std::{
     net::IpAddr,
-    str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -21,22 +21,23 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{
-    parse::{merge_messages_into_dps, parse_device_data},
-    ManagedTuyaDevice, TuyaDeviceConfig, TuyaManager,
-};
-use crate::{error::AppError, net};
+use super::{parse::merge_messages_into_dps, ManagedTuyaDevice, TuyaManager, DEVICE};
+use crate::{error::AppError, net, util::capped_backoff};
 
 pub(super) const STATUS_TIMEOUT: Duration = Duration::from_millis(12_000);
+/// The protocol says no end of answer: what comes within this after a status read is part
+/// of it.
 const MESSAGE_DRAIN_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// A command's echo comes within this, and the next command waits that long anyway (the
+/// device takes one data point at a time).
 const COMMAND_SETTLE_TIMEOUT: Duration = Duration::from_millis(400);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(30_000);
 pub(super) const COMMAND_REPLY_TIMEOUT: Duration = Duration::from_millis(20_000);
-const RECONNECT_BASE_DELAY_MS: u64 = 1_000;
-const RECONNECT_MAX_DELAY_MS: u64 = 60_000;
+const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
+const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
 
-/// How errors from the device library name the device to the client (the detail is logged).
-const DEVICE: &str = "Tuya device";
+/// What the device library hands the session: the device's messages, as they come.
+type Messages = mpsc::Receiver<rust_async_tuyapi::Result<Vec<Message>>>;
 
 /// A device's connection, as its worker publishes it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,6 +69,14 @@ pub(super) struct WorkerParts {
     wake: Arc<Notify>,
     stop: StopSignal,
     _exit: WorkerExit,
+}
+
+#[cfg(test)]
+impl WorkerParts {
+    /// What the worker would be handed (a test plays the worker).
+    pub(super) fn commands(&mut self) -> &mut mpsc::Receiver<WorkerCommand> {
+        &mut self.commands
+    }
 }
 
 /// Fires when the manager drops the worker's handle.
@@ -108,8 +117,11 @@ impl Drop for WorkerExit {
 
 #[derive(Debug)]
 pub(super) enum WorkerCommand {
+    /// Reads the device's whole status into it, unless the session already did and no
+    /// `refresh` is asked (two callers that found it unread wait for one read).
     FetchStatus {
-        reply: oneshot::Sender<Result<Map<String, Value>, AppError>>,
+        refresh: bool,
+        reply: oneshot::Sender<Result<(), AppError>>,
     },
     SetValues {
         updates: Vec<(String, Value)>,
@@ -153,7 +165,10 @@ impl TuyaManager {
     /// Runs the worker, under a supervisor.
     pub(super) fn spawn_worker(&self, device: &ManagedTuyaDevice, parts: WorkerParts) {
         let id = parts.id;
-        let worker = tokio::spawn(self.clone().run_device_worker(device.config.clone(), parts));
+        let worker = tokio::spawn(
+            self.clone()
+                .run_device_worker(device.config.id.clone(), parts),
+        );
         tokio::spawn(self.clone().supervise(device.config.id.clone(), id, worker));
     }
 
@@ -174,11 +189,11 @@ impl TuyaManager {
         };
         tokio::time::sleep(reconnect_delay(attempts)).await;
         let still_dead = self
-            .runtime
+            .workers
             .read()
             .await
             .get(&device_id)
-            .is_some_and(|state| state.worker.as_ref().is_some_and(|handle| handle.id == id));
+            .is_some_and(|handle| handle.id == id);
         if still_dead {
             if let Err(error) = self.connect_device(&device_id).await {
                 tracing::warn!(%device_id, %error, "tuya device not connected after a worker panic");
@@ -188,26 +203,29 @@ impl TuyaManager {
 
     /// Changes the device's link only while `worker` still owns it: a cancelled worker
     /// finishing late must not mark a disconnected device connected.
-    fn update_own_link(&self, device_id: &str, worker: u64, change: impl FnOnce(&mut Link)) {
-        if let Ok(device) = self.device(device_id) {
-            device.link.send_if_modified(|link| {
-                if link.worker != Some(worker) {
-                    return false;
-                }
-                change(link);
-                true
-            });
-        }
+    fn update_own_link(
+        &self,
+        device: &ManagedTuyaDevice,
+        worker: u64,
+        change: impl FnOnce(&mut Link),
+    ) {
+        device.link.send_if_modified(|link| {
+            if link.worker != Some(worker) {
+                return false;
+            }
+            change(link);
+            true
+        });
     }
 
-    fn mark_failed(&self, device_id: &str, worker: u64) {
-        self.update_own_link(device_id, worker, |link| {
+    fn mark_failed(&self, device: &ManagedTuyaDevice, worker: u64) {
+        self.update_own_link(device, worker, |link| {
             link.connected = false;
             link.connecting = false;
         });
     }
 
-    async fn run_device_worker(self, config: TuyaDeviceConfig, parts: WorkerParts) {
+    async fn run_device_worker(self, device_id: String, parts: WorkerParts) {
         let WorkerParts {
             id,
             mut commands,
@@ -215,16 +233,17 @@ impl TuyaManager {
             mut stop,
             _exit,
         } = parts;
+        let Ok(device) = self.device(&device_id) else {
+            return;
+        };
         loop {
             // Dropping the session on stop drops the device, which closes its socket.
             tokio::select! {
                 _ = stop.wait() => return,
-                _ = self.run_device_worker_session(&config, id, &mut commands) => {}
+                _ = self.run_device_worker_session(device, id, &mut commands) => {}
             }
 
-            let attempts = self
-                .device(&config.id)
-                .map_or(1, |device| device.link.borrow().reconnect_attempts);
+            let attempts = device.link.borrow().reconnect_attempts;
             let nudged = tokio::select! {
                 _ = stop.wait() => return,
                 _ = tokio::time::sleep(reconnect_delay(attempts)) => false,
@@ -232,7 +251,7 @@ impl TuyaManager {
             };
             // A nudge already counted its attempt.
             if !nudged {
-                self.update_own_link(&config.id, id, |link| {
+                self.update_own_link(device, id, |link| {
                     link.connecting = true;
                     link.reconnect_attempts += 1;
                 });
@@ -240,180 +259,216 @@ impl TuyaManager {
         }
     }
 
-    /// One session: connect, then serve heartbeats, pushed values and commands until the
-    /// device fails (the caller then waits and retries).
+    /// One session: connect, read the status, then serve heartbeats, pushed values and
+    /// commands until the device fails (the caller then waits and retries).
     async fn run_device_worker_session(
         &self,
-        config: &TuyaDeviceConfig,
+        device: &ManagedTuyaDevice,
         worker: u64,
         commands: &mut mpsc::Receiver<WorkerCommand>,
     ) {
-        let Ok(device_type) = self.device(&config.id).map(|device| device.device_type) else {
-            return;
+        let config = &device.config;
+        let Some(ip) = device.address else {
+            return self.mark_failed(device, worker);
         };
-        let Ok(ip) = IpAddr::from_str(&config.ip) else {
-            tracing::warn!(device = %config.name, ip = %config.ip, "tuya device has an invalid IP address");
-            return self.mark_failed(&config.id, worker);
+        // a new session has read nothing yet
+        device
+            .status
+            .send_if_modified(|status| std::mem::replace(&mut status.read, false));
+        let mut tuya = match TuyaDevice::new(
+            &config.version,
+            &config.id,
+            Some(&config.key),
+            IpAddr::V4(ip),
+        ) {
+            Ok(tuya) => tuya,
+            Err(error) => {
+                tracing::warn!(device = %config.name, %error, "tuya device not set up (its version or key?)");
+                return self.mark_failed(device, worker);
+            }
         };
-        let Ok(mut device) = TuyaDevice::new(&config.version, &config.id, Some(&config.key), ip)
-        else {
-            return self.mark_failed(&config.id, worker);
-        };
-        let Ok(Ok(mut rx)) = tokio::time::timeout(STATUS_TIMEOUT, device.connect()).await else {
-            return self.mark_failed(&config.id, worker);
+        let mut rx = match tokio::time::timeout(STATUS_TIMEOUT, tuya.connect()).await {
+            Ok(Ok(rx)) => rx,
+            Ok(Err(error)) => {
+                tracing::debug!(device = %config.name, %error, "tuya device did not connect");
+                return self.mark_failed(device, worker);
+            }
+            Err(_) => {
+                tracing::debug!(device = %config.name, "tuya device did not connect in time");
+                return self.mark_failed(device, worker);
+            }
         };
 
-        self.update_own_link(&config.id, worker, |link| {
+        self.update_own_link(device, worker, |link| {
             link.connected = true;
             link.connecting = false;
             link.reconnect_attempts = 0;
         });
-        if let Ok(dps) = worker_fetch_status(&mut device, &mut rx, config).await {
-            self.store_cacheable_dps(&config.id, device_type, &dps)
-                .await;
-            self.record_dps(&config.id, device_type, &dps).await;
-        }
+        // a status not read is logged by read_status; the next read asks again
+        self.read_status(device, &mut tuya, &mut rx).await.ok();
 
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
-                    if device.heartbeat().await.is_err() {
+                    if let Err(error) = tuya.heartbeat().await {
+                        tracing::debug!(device = %config.name, %error, "tuya heartbeat failed");
                         break;
                     }
                 }
                 messages = rx.recv() => {
-                    let Some(Ok(messages)) = messages else { break };
-                    let current = {
-                        let runtime = self.runtime.read().await;
-                        runtime.get(&config.id).map(|state| state.last_data.clone()).unwrap_or_default()
+                    let messages = match messages {
+                        Some(Ok(messages)) => messages,
+                        Some(Err(error)) => {
+                            tracing::debug!(device = %config.name, %error, "tuya session broke");
+                            break;
+                        }
+                        None => break,
                     };
-                    let merged = merge_messages_into_dps(current, messages);
-                    self.store_cacheable_dps(&config.id, device_type, &merged).await;
-                    self.record_dps(&config.id, device_type, &merged).await;
+                    self.absorb(device, merge_messages_into_dps(Map::new(), messages), false).await;
                 }
                 command = commands.recv() => match command {
                     // a caller that gave up waiting has dropped its receiver: nothing to tell it
-                    Some(WorkerCommand::FetchStatus { reply }) => {
-                        reply.send(worker_fetch_status(&mut device, &mut rx, config).await).ok();
+                    Some(WorkerCommand::FetchStatus { refresh, reply }) => {
+                        let read = if !refresh && device.status.borrow().read {
+                            Ok(())
+                        } else {
+                            self.read_status(device, &mut tuya, &mut rx).await
+                        };
+                        reply.send(read).ok();
                     }
                     Some(WorkerCommand::SetValues { updates, reply }) => {
-                        reply.send(worker_send_commands(&mut device, &mut rx, config, &updates).await).ok();
+                        let sent = self.set_values(device, &mut tuya, &mut rx, updates).await;
+                        reply.send(sent).ok();
                     }
                     None => break,
                 },
             }
         }
-        self.mark_failed(&config.id, worker);
-        if let Err(error) = device.disconnect().await {
+        self.mark_failed(device, worker);
+        if let Err(error) = tuya.disconnect().await {
             tracing::debug!(device = %config.name, %error, "tuya session closed uncleanly");
         }
     }
 
-    /// The device's latest values, as the list shows them.
-    pub(super) async fn record_dps(
+    /// The device's whole status, read into it.
+    async fn read_status(
         &self,
-        device_id: &str,
-        device_type: super::TuyaDeviceType,
-        dps: &Map<String, Value>,
-    ) {
-        let mut runtime = self.runtime.write().await;
-        if let Some(state) = runtime.get_mut(device_id) {
-            state.last_data = dps.clone();
-            state.parsed_data = parse_device_data(device_type, dps);
+        device: &ManagedTuyaDevice,
+        tuya: &mut TuyaDevice,
+        rx: &mut Messages,
+    ) -> Result<(), AppError> {
+        let read = fetch_status(tuya, rx, &device.config.id).await;
+        match read {
+            Ok(dps) => {
+                self.absorb(device, dps, true).await;
+                Ok(())
+            }
+            Err(error) => {
+                tracing::debug!(device = %device.config.name, %error, "tuya status not read");
+                Err(net::unreachable(DEVICE, error))
+            }
         }
+    }
+
+    /// Sets each data point in turn; what was set, then what the device echoes, goes into
+    /// its status.
+    async fn set_values(
+        &self,
+        device: &ManagedTuyaDevice,
+        tuya: &mut TuyaDevice,
+        rx: &mut Messages,
+        updates: Vec<(String, Value)>,
+    ) -> Result<(), AppError> {
+        for (dps, value) in updates {
+            match tokio::time::timeout(
+                STATUS_TIMEOUT,
+                tuya.set_values(command_payload(&dps, &value)),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => return Err(net::unreachable(DEVICE, error)),
+                Err(_) => {
+                    return Err(net::unreachable(
+                        DEVICE,
+                        format!("{}: no answer to a command", device.config.name),
+                    ))
+                }
+            }
+            self.absorb(device, Map::from_iter([(dps, value)]), false)
+                .await;
+            // the device's echo (what it really set), if it says one
+            if let Ok(Some(Ok(echo))) =
+                tokio::time::timeout(COMMAND_SETTLE_TIMEOUT, rx.recv()).await
+            {
+                self.absorb(device, merge_messages_into_dps(Map::new(), echo), false)
+                    .await;
+            }
+        }
+        Ok(())
     }
 }
 
 pub(super) fn reconnect_delay(attempts: i32) -> Duration {
-    let exponent = u32::try_from(attempts.max(1) - 1).unwrap_or(0);
-    let delay_ms = RECONNECT_BASE_DELAY_MS
-        .saturating_mul(2_u64.saturating_pow(exponent))
-        .min(RECONNECT_MAX_DELAY_MS);
-    Duration::from_millis(delay_ms)
+    // util's attempts count from 1: the first waits the base
+    let attempt = u32::try_from(attempts.max(1)).unwrap_or(u32::MAX);
+    capped_backoff(RECONNECT_BASE_DELAY, attempt, RECONNECT_MAX_DELAY)
 }
 
-async fn worker_fetch_status(
-    device: &mut TuyaDevice,
-    rx: &mut mpsc::Receiver<rust_async_tuyapi::Result<Vec<Message>>>,
-    config: &TuyaDeviceConfig,
-) -> Result<Map<String, Value>, AppError> {
-    let timeout =
-        || AppError::service_unavailable(format!("Status request timeout for {}", config.name));
+/// A status read: the answer, the refresh's, and what follows within the drain windows.
+async fn fetch_status(
+    tuya: &mut TuyaDevice,
+    rx: &mut Messages,
+    id: &str,
+) -> Result<Map<String, Value>, String> {
     // the protocol's `t` is a u32 of seconds: a clock past 2106 sends none
     let now = u32::try_from(chrono::Utc::now().timestamp()).ok();
 
     let payload = Payload::Struct(PayloadStruct {
-        gw_id: Some(config.id.clone()),
-        dev_id: config.id.clone(),
-        uid: Some(config.id.clone()),
+        gw_id: Some(id.to_string()),
+        dev_id: id.to_string(),
+        uid: Some(id.to_string()),
         t: now.map(|t| t.to_string()),
         dp_id: None,
         dps: Some(json!({})),
     });
 
-    tokio::time::timeout(STATUS_TIMEOUT, device.get(payload))
+    tokio::time::timeout(STATUS_TIMEOUT, tuya.get(payload))
         .await
-        .map_err(|_| timeout())?
-        .map_err(|error| net::unreachable(DEVICE, error))?;
+        .map_err(|_| "status request timed out".to_string())?
+        .map_err(|error| error.to_string())?;
 
     let received = tokio::time::timeout(STATUS_TIMEOUT, rx.recv())
         .await
-        .map_err(|_| timeout())?
-        .ok_or_else(|| AppError::service_unavailable(format!("No response from {}", config.name)))?
-        .map_err(|error| net::unreachable(DEVICE, error))?;
+        .map_err(|_| "no status in time".to_string())?
+        .ok_or_else(|| "the session closed".to_string())?
+        .map_err(|error| error.to_string())?;
 
     let refresh_payload = Payload::new(
-        config.id.clone(),
-        Some(config.id.clone()),
-        Some(config.id.clone()),
+        id.to_string(),
+        Some(id.to_string()),
+        Some(id.to_string()),
         now,
         Some(DpId::Higher),
         None,
     );
     // Best effort: a device that ignores the refresh still answered the status.
     if let Ok(Err(error)) =
-        tokio::time::timeout(STATUS_TIMEOUT, device.refresh(refresh_payload)).await
+        tokio::time::timeout(STATUS_TIMEOUT, tuya.refresh(refresh_payload)).await
     {
-        tracing::debug!(device = %config.name, %error, "tuya refresh refused");
+        tracing::debug!(%id, %error, "tuya refresh refused");
     }
-    let maybe_refresh = tokio::time::timeout(MESSAGE_DRAIN_TIMEOUT, rx.recv())
-        .await
-        .ok();
 
     let mut merged = merge_messages_into_dps(Map::new(), received);
-    if let Some(Some(Ok(messages))) = maybe_refresh {
+    if let Ok(Some(Ok(messages))) = tokio::time::timeout(MESSAGE_DRAIN_TIMEOUT, rx.recv()).await {
         merged = merge_messages_into_dps(merged, messages);
     }
     while let Ok(Some(Ok(messages))) = tokio::time::timeout(COMMAND_SETTLE_TIMEOUT, rx.recv()).await
     {
         merged = merge_messages_into_dps(merged, messages);
     }
-
     Ok(merged)
-}
-
-async fn worker_send_commands(
-    device: &mut TuyaDevice,
-    rx: &mut mpsc::Receiver<rust_async_tuyapi::Result<Vec<Message>>>,
-    config: &TuyaDeviceConfig,
-    updates: &[(String, Value)],
-) -> Result<(), AppError> {
-    for (dps, value) in updates {
-        tokio::time::timeout(
-            STATUS_TIMEOUT,
-            device.set_values(command_payload(dps, value)),
-        )
-        .await
-        .map_err(|_| AppError::service_unavailable(format!("Command timeout for {}", config.name)))?
-        .map_err(|error| net::unreachable(DEVICE, error))?;
-
-        // the device's echo, if any, is read by the session afterwards
-        tokio::time::timeout(COMMAND_SETTLE_TIMEOUT, rx.recv())
-            .await
-            .ok();
-    }
-    Ok(())
 }
 
 /// What a device is sent to set one data point: `{"<dps>": value}`.
