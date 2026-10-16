@@ -153,6 +153,8 @@ pub struct Live {
     drawing: u64,
     /// The last read said the screen is not signed in.
     signed_out: bool,
+    /// Wakes the event stream's thread from its wait (the screen was just paired).
+    reopen: Option<Sender<()>>,
 }
 
 impl Live {
@@ -163,6 +165,7 @@ impl Live {
             client,
             pushed: Arc::new(AtomicBool::new(false)),
             entries: HashMap::new(),
+            reopen: None,
             tx,
             rx,
             wake,
@@ -312,7 +315,10 @@ impl Live {
 
     /// Opens the server's event stream on its own thread, for the app's life: each change
     /// read again at once; while it is open, the pushed sources' polls slow to a safety net.
-    pub fn listen(&self) {
+    /// Closed or refused, it waits (doubling, 32 s at most) or until `reopen()`.
+    pub fn listen(&mut self) {
+        let (poke, poked) = mpsc::channel();
+        self.reopen = Some(poke);
         let (client, tx, wake, pushed) = (
             self.client.clone(),
             self.tx.clone(),
@@ -349,11 +355,24 @@ impl Live {
                         }
                     }
                     attempt = attempt.saturating_add(1);
-                    std::thread::sleep(Duration::from_secs(2u64.saturating_pow(attempt.min(5))));
+                    let wait = Duration::from_secs(2u64.saturating_pow(attempt.min(5)));
+                    if let Err(mpsc::RecvTimeoutError::Disconnected) = poked.recv_timeout(wait) {
+                        return;
+                    }
                 }
             });
         if let Err(e) = spawned {
             eprintln!("the event stream could not start: {e}");
+        }
+    }
+}
+
+impl Live {
+    /// Opens the event stream again now, without its wait (the screen was just paired: until
+    /// then it was refused).
+    pub fn reopen(&self) {
+        if let Some(poke) = &self.reopen {
+            let _ = poke.send(());
         }
     }
 }

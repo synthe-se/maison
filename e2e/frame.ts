@@ -37,6 +37,9 @@ const readAgain = (path: string, timeout = 15_000) => {
 	return until(() => readSince(path, now), timeout * SLOW);
 };
 
+/** How many event streams the backend opened for the app (a 200 on GET /api/events). */
+let streamsOpened = 0;
+
 // the proxy: the house answers its routes, the backend the rest (its cookies passed both ways)
 const proxy = createServer(async (req, res) => {
 	const chunks: Buffer[] = [];
@@ -56,11 +59,15 @@ const proxy = createServer(async (req, res) => {
 	}
 	const headers = new Headers();
 	for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers.set(k, v);
+	// the app gone (an event stream it closed): the backend's answer is let go too
+	const left = new AbortController();
+	res.on('close', () => left.abort());
 	const back = await fetch(BASE + url.pathname + url.search, {
 		method: req.method,
 		headers,
 		body: text || undefined,
-		redirect: 'manual'
+		redirect: 'manual',
+		signal: left.signal
 	});
 	const out: Record<string, string | string[]> = {};
 	back.headers.forEach((v, k) => {
@@ -68,7 +75,15 @@ const proxy = createServer(async (req, res) => {
 	});
 	const cookies = back.headers.getSetCookie();
 	if (cookies.length) out['set-cookie'] = cookies;
-	res.writeHead(back.status, out).end(Buffer.from(await back.arrayBuffer()));
+	if (url.pathname === '/api/events' && back.status === 200) streamsOpened++;
+	// passed on as it comes: the event stream is an answer that never ends
+	res.writeHead(back.status, out);
+	try {
+		if (back.body) for await (const chunk of back.body) res.write(chunk);
+	} catch {
+		// the app closed it
+	}
+	res.end();
 });
 await new Promise<void>((r) => proxy.listen(0, r));
 const port = (proxy.address() as AddressInfo).port;
@@ -111,6 +126,19 @@ async function tell(command: string, answered = (l: string) => l === `ok ${comma
 	const line = said.slice(from).find(answered);
 	if (!line || line.startsWith('error')) throw new Error(`${command}: ${line ?? 'no answer'}`);
 }
+/** Tells `command` once its control is drawn: a read answered is not yet a drawing (emulated, the
+ * app takes its time), so a « no control » or « no slider » is asked again, within tell's wait. */
+async function shown(command: string) {
+	const deadline = Date.now() + 10_000 * SLOW;
+	for (;;) {
+		try {
+			return await tell(command);
+		} catch (e) {
+			if (Date.now() > deadline || !/: no (control|slider) /.test(String(e))) throw e;
+			await new Promise((r) => setTimeout(r, 200));
+		}
+	}
+}
 async function saidLine(pred: (l: string) => boolean, timeout = 10_000) {
 	await until(() => said.some(pred) || gone, timeout * SLOW);
 	return said.some(pred);
@@ -137,6 +165,7 @@ await pairScreen(phone, code, 'Cadre natif');
 
 // it opens by itself, and reads the house
 check('paired, the app shows the house', await saidLine((l) => l === 'screen house', 15_000));
+check('paired, it follows the server’s changes at once', await until(() => streamsOpened === 1, 3_000 * SLOW), `${streamsOpened} opened`);
 check(
 	'it reads the lamps, the plugs, the shutters and Tempo',
 	await until(() => ['/api/hue-lamps', '/api/meross', '/api/matter/covers'].every((p) => state.asked.includes(p)), 10_000 * SLOW),
@@ -157,7 +186,7 @@ check('and on again', await sent('POST /api/hue-lamps/hue-01/power {"enabled":tr
 await until(() => state.hue[0].state.isOn, 5_000 * SLOW);
 // the next read of the lamps shows it on, with its slider
 check('the app reads the lamp on again', await readAgain('/api/hue-lamps'));
-await tell('slide hue-lamp:hue-01:brightness 0.25');
+await shown('slide hue-lamp:hue-01:brightness 0.25');
 check('the brightness slider sends where it is let go', await sent('POST /api/hue-lamps/hue-01/brightness'), state.sent.join(' | '));
 await tell('press meross:plug-1:toggle');
 check('the plug turns off', await sent('POST /api/meross/plug-1/toggle {"on":false}'));
@@ -177,6 +206,10 @@ const pressed = Date.now();
 await until(() => readSince('/api/hue-lamps', pressed + LAMP_LIMIT_MS * SLOW), 15_000 * SLOW);
 await picture('no-answer');
 state.silent.delete('hue');
+
+// the server's changes: one stream, opened once paired and kept open all along (never a loop of
+// reconnections)
+check('the app follows the event stream, kept open', streamsOpened === 1, `${streamsOpened} opened`);
 
 // removed in « Mon compte »: the app says so, then offers a new code
 await removeScreen(phone, 'Cadre natif');

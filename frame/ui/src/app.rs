@@ -57,7 +57,7 @@ pub struct App {
 impl App {
     pub fn new(config: &Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let client = Client::new(&config.origin, &config.state_dir, HTTP_WAIT);
-        let live = Live::new(client.clone(), wake.clone());
+        let mut live = Live::new(client.clone(), wake.clone());
         // what the server says changed: read again at once, the polls a safety net
         live.listen();
         Self {
@@ -80,7 +80,12 @@ impl App {
 
     /// What the threads said since; the screen is drawn again if anything changed.
     pub fn take(&mut self) {
+        let paired = self.session.screen == Who::Paired;
         let mut changed = self.session.take();
+        if !paired && self.session.screen == Who::Paired {
+            // refused until now: the event stream opens at once, not after its wait
+            self.live.reopen();
+        }
         let read = self.live.take();
         changed |= !read.is_empty();
         for (key, asked) in &read {
