@@ -55,9 +55,10 @@ export async function until(cond: () => boolean | Promise<boolean>, timeout = 5_
 }
 
 /** Waits for a page to be still: its fonts loaded, no skeleton nor busy list left, two frames
- * painted (what an axe audit, a measure or a screenshot needs). */
+ * painted (what an axe audit, a measure or a screenshot needs). A page that never settles fails
+ * the run (Playwright's timeout, with what it waited for), never measured half-loaded. */
 export async function settled(page: Page, timeout = 15_000) {
-	await page.waitForFunction(() => !document.querySelector('.skeleton, [aria-busy="true"]'), undefined, { timeout }).catch(() => {});
+	await page.waitForFunction(() => !document.querySelector('.skeleton, [aria-busy="true"]'), undefined, { timeout });
 	await page.evaluate(async () => {
 		await document.fonts.ready;
 		await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -142,6 +143,51 @@ export async function signIn(page: Page, path = '/') {
 /** Scrolls sideways: wider than the window. */
 export const sideways = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
+/** The screens a scenario visits, each with its name: every page of the app (look.ts, a11y.ts). */
+export const SCREENS: [path: string, name: string][] = [
+	['/', 'home'],
+	['/remote', 'remote'],
+	['/tempo-predictions', 'tempo'],
+	['/device/feeder-1', 'feeder'],
+	['/hue-lamp/hue-01', 'lamp'],
+	['/meross/plug-1', 'plug'],
+	['/tv', 'tv'],
+	['/androidtv', 'box'],
+	['/account', 'account']
+];
+
+/** Opens `path` and waits for it: its title, then a still page (`settled`). */
+export async function visit(page: Page, path: string) {
+	await page.goto(BASE + path);
+	await page.locator('main h1').first().waitFor();
+	await settled(page);
+}
+
+// ---- wall screens
+
+/** A wall screen's pairing code, as the backend makes it (backend screens.rs). */
+export const PAIRING_CODE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
+
+/** On an admin's phone, in « Mon compte »: pairs the screen showing `code` as `name`. */
+export async function pairScreen(phone: Page, code: string, name: string) {
+	await phone.getByRole('button', { name: fr.screens_pair() }).click();
+	const sheet = phone.getByRole('dialog', { name: fr.screens_pair() });
+	await sheet.getByLabel(fr.screens_code()).fill(code);
+	await sheet.getByLabel(fr.screens_name()).fill(name);
+	await sheet.getByRole('button', { name: fr.screens_pair() }).click();
+	await toast(phone, fr.screens_paired({ name }));
+}
+
+/** On an admin's phone, in « Mon compte »: removes the screen `name`, once confirmed. */
+export async function removeScreen(phone: Page, name: string) {
+	await phone.getByRole('button', { name: fr.common_remove_named({ name }) }).click();
+	await phone
+		.getByRole('alertdialog', { name: fr.screens_remove_title({ name }) })
+		.getByRole('button', { name: fr.screens_remove_action() })
+		.click();
+	await toast(phone, fr.screens_removed({ name }));
+}
+
 /** Waits for a toast saying `text`. */
 export async function toast(page: Page, text: string | RegExp) {
 	const t = page.locator('.toast', { hasText: text });
@@ -161,10 +207,16 @@ export async function shot(target: Page | Locator, name: string, full = false) {
 let axeSource: string | undefined;
 type Violation = { id: string; impact: string; help: string; nodes: { target: unknown }[] };
 
-/** axe-core on the page as it is, restricted to `tags`. */
-export async function axe(page: Page, tags: string[]): Promise<Violation[]> {
+/** What every audit checks: WCAG 2.2 AA and its earlier levels, and axe's best practices. */
+const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'];
+
+/** axe-core on the page as it is (the page opened with `bypassCSP`: axe is injected inline,
+ * which the app's CSP rightly refuses): `label: no axe violations`, each one printed. */
+export async function audit(page: Page, label: string) {
 	axeSource ??= readFileSync(new URL('node_modules/axe-core/axe.min.js', import.meta.url), 'utf8');
 	await page.addScriptTag({ content: axeSource });
 	// @ts-expect-error injected
-	return page.evaluate(async (runOnly) => (await window.axe.run(document, { runOnly })).violations, tags);
+	const found: Violation[] = await page.evaluate(async (runOnly) => (await window.axe.run(document, { runOnly })).violations, AXE_TAGS);
+	check(`${label}: no axe violations`, found.length === 0);
+	for (const v of found) console.log(`  ${v.impact} ${v.id}: ${v.help} (${v.nodes.length}) e.g. ${v.nodes[0]?.target}`);
 }

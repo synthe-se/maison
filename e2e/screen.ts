@@ -3,7 +3,7 @@
 // the screen opens by itself, its language and the sun's theme from its address (the frame's WPE
 // says en-US and light), the house's pages with nobody signed in. No token in its address, its
 // storage nor its scripts' cookies. Removed by the admin, it says so and offers to pair again, never a passkey.
-import { BASE, check, checkNoErrors, done, fr, launch, open, signIn, title, toast } from './lib.ts';
+import { BASE, PAIRING_CODE, check, checkNoErrors, done, fr, launch, open, pairScreen, removeScreen, signIn, title } from './lib.ts';
 
 const browser = await launch();
 const screen = await open(browser, { viewport: { width: 800, height: 1280 }, locale: 'en-US' });
@@ -27,18 +27,14 @@ check('the screen speaks the language its address names', (await screen.evaluate
 await screen.waitForFunction((want) => document.documentElement.dataset.theme === want, side);
 check(`signed out, the screen already follows the sun: ${side} now`, true);
 await screen.getByRole('button', { name: fr.screen_pair_button() }).click();
-const shown = screen.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+const shown = screen.getByText(PAIRING_CODE);
 await shown.waitFor();
 const code = (await shown.textContent())!;
-check('the screen shows a code to give', /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code), code);
+check('the screen shows a code to give', PAIRING_CODE.test(code), code);
 
 // the admin, on their phone, in the house: « Mon compte », Écrans, Associer un écran
-await phone.getByRole('button', { name: fr.screens_pair() }).click();
-const sheet = phone.getByRole('dialog', { name: fr.screens_pair() });
-await sheet.getByLabel(fr.screens_code()).fill(code.toLowerCase());
-await sheet.getByLabel(fr.screens_name()).fill('Cadre');
-await sheet.getByRole('button', { name: fr.screens_pair() }).click();
-await toast(phone, fr.screens_paired({ name: 'Cadre' }));
+// typed in lower case: the code is read as the screen shows it
+await pairScreen(phone, code.toLowerCase(), 'Cadre');
 check('the screen is listed', await phone.getByRole('region', { name: fr.screens_title() }).getByText('Cadre').isVisible());
 
 // the screen opens by itself at its next question (every 3 s)
@@ -70,12 +66,7 @@ check('a reload keeps the screen in', true);
 
 // removed by the admin: the screen's next request says so
 await phone.reload();
-await phone.getByRole('button', { name: fr.common_remove_named({ name: 'Cadre' }) }).click();
-await phone
-	.getByRole('alertdialog', { name: fr.screens_remove_title({ name: 'Cadre' }) })
-	.getByRole('button', { name: fr.screens_remove_action() })
-	.click();
-await toast(phone, fr.screens_removed({ name: 'Cadre' }));
+await removeScreen(phone, 'Cadre');
 await screen.goto(`${BASE}/`);
 await title(screen, fr.pk_signin_title());
 check(

@@ -3,13 +3,22 @@
 // removed, an admin invites someone who is no admin, sign out and in again with the passkey.
 // axe on each screen.
 import type { Page } from 'playwright';
-import { BASE, USER, authenticator, axe, check, checkNoErrors, done, fr, invitation, launch, open, settled, title, toast } from './lib.ts';
-
-async function audit(p: Page, label: string) {
-	const v = (await axe(p, ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])).map((x) => `${x.id} ${x.nodes[0]?.target}`);
-	check(`${label}: no axe violations`, v.length === 0);
-	if (v.length) console.log(v);
-}
+import {
+	BASE,
+	USER,
+	audit,
+	authenticator,
+	check,
+	checkNoErrors,
+	done,
+	fr,
+	invitation,
+	launch,
+	open,
+	settled,
+	title,
+	toast
+} from './lib.ts';
 const keyRows = (p: Page) => p.getByRole('region', { name: fr.keys_title() }).getByRole('listitem');
 
 const link = invitation();

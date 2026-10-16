@@ -1,30 +1,7 @@
 // axe on each screen, light and dark, desktop and phone (WCAG 2.2 AA tags) — docs/ux.md
 // « Checks ».
-import type { Page } from 'playwright';
-import { BASE, PHONE, axe, done, fr, invitation, launch, open, settled, signIn } from './lib.ts';
+import { BASE, PAIRING_CODE, PHONE, SCREENS, audit, done, fr, invitation, launch, open, signIn, visit } from './lib.ts';
 import { house } from './house.ts';
-
-let failures = 0;
-
-async function audit(p: Page, label: string) {
-	const r = (await axe(p, ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'])).map(
-		(v) => `${v.impact} ${v.id}: ${v.help} (${v.nodes.length}) e.g. ${v.nodes[0]?.target}`
-	);
-	failures += r.length;
-	console.log(`${label}: ${r.length ? '\n  ' + r.join('\n  ') : 'no violations'}`);
-}
-
-const SCREENS: [string, string][] = [
-	['/', 'home'],
-	['/remote', 'remote'],
-	['/tempo-predictions', 'tempo'],
-	['/device/feeder-1', 'feeder'],
-	['/hue-lamp/hue-01', 'lamp'],
-	['/meross/plug-1', 'plug'],
-	['/tv', 'tv'],
-	['/androidtv', 'box'],
-	['/account', 'account']
-];
 
 const browser = await launch();
 for (const scheme of ['light', 'dark'] as const) {
@@ -38,7 +15,7 @@ for (const scheme of ['light', 'dark'] as const) {
 		await audit(p, `${where} sign-in`);
 		// a wall screen's pairing: its code shown, read out
 		await p.getByRole('button', { name: fr.screen_pair_button() }).click();
-		await p.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/).waitFor();
+		await p.getByText(PAIRING_CODE).waitFor();
 		await audit(p, `${where} screen pairing`);
 		// the invitation, in the same door (a link made for the audit, never used)
 		await p.goto(invitation('door', 'Porte', false));
@@ -46,14 +23,11 @@ for (const scheme of ['light', 'dark'] as const) {
 		await audit(p, `${where} invitation`);
 		await signIn(p);
 		for (const [path, name] of SCREENS) {
-			await p.goto(BASE + path);
-			await p.locator('main h1').first().waitFor();
-			await settled(p);
+			await visit(p, path);
 			await audit(p, `${where} ${name}`);
 		}
 		// the session panel, opened
-		await p.goto(BASE + '/');
-		await p.locator('main h1').first().waitFor();
+		await visit(p, '/');
 		await p.getByRole('button', { name: fr.session_menu({ name: 'E2E' }) }).click();
 		await audit(p, `${where} session panel`);
 		await p.keyboard.press('Escape');
@@ -68,4 +42,4 @@ for (const scheme of ['light', 'dark'] as const) {
 		await p.context().close();
 	}
 }
-await done(browser, failures === 0);
+await done(browser);
