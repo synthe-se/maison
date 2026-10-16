@@ -8,12 +8,15 @@ use ezsp::{
     Configuration, Networking, Security,
 };
 use silizium::zigbee::security::man as security_man;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use super::{
     context::EzspContext,
-    device::{normalize_device_id, DiscoveredDevice, ZigbeeDeviceInfo},
-    discovery::{refresh_device_state, request_active_endpoints, should_probe_active_endpoints},
+    device::{normalize_device_id, DiscoveredDevice, Hex, ZigbeeDeviceInfo},
+    discovery::{
+        configure_reporting, refresh_device_state, request_active_endpoints,
+        should_probe_active_endpoints,
+    },
     driver::{EZSP_COMMAND_TIMEOUT, TOUCHLINK_COMMAND_TIMEOUT},
     error::DriverError,
     network::ZIGBEE_ALLIANCE09_LINK_KEY,
@@ -31,7 +34,6 @@ pub enum DriverCommand {
     PermitJoin {
         seconds: u16,
     },
-    DiscoverDevices,
     SetPower {
         lamp_id: String,
         enabled: bool,
@@ -75,10 +77,6 @@ pub async fn handle_command(
 ) -> Result<(), DriverError> {
     match command {
         DriverCommand::PermitJoin { seconds } => permit_join(context, seconds).await,
-        DriverCommand::DiscoverDevices => {
-            discover_devices(context).await;
-            Ok(())
-        }
         DriverCommand::SetPower { lamp_id, enabled } => set_power(context, &lamp_id, enabled).await,
         DriverCommand::SetBrightness {
             lamp_id,
@@ -104,7 +102,8 @@ async fn permit_join(context: &mut EzspContext, seconds: u16) -> Result<(), Driv
         NetworkDuration::Disable
     } else {
         NetworkDuration::try_from(Duration::from_secs(u64::from(seconds))).map_err(|error| {
-            DriverError::Unsupported(format!("Invalid permit-join duration {seconds}: {error}"))
+            warn!(seconds, %error, "not a permit-join duration");
+            DriverError::Unsupported("Not a permit-join duration".to_string())
         })?
     };
     context
@@ -176,33 +175,31 @@ async fn close_to_joins(context: &mut EzspContext) {
     }
 }
 
-/// Probes every known device: its endpoints when not interviewed, its state otherwise.
-/// No timeout around each call: EZSP over UART is strictly request-response, and dropping a
-/// `communicate()` future mid-receive orphans the answer and desynchronises every later
-/// command. A slow NCP is waited for.
-async fn discover_devices(context: &mut EzspContext) {
+/// Probes every known device: its endpoints when not interviewed, else its state, and asks
+/// a lamp to report by itself. No timeout around each call: EZSP over UART is strictly
+/// request-response, and dropping a `communicate()` future mid-receive orphans the answer
+/// and desynchronises every later command. A slow NCP is waited for. Each failure is noted
+/// (it counts toward a rebuild).
+pub async fn discover_devices(context: &mut EzspContext) {
     let targets = context.joined_devices.clone();
     info!(
         known_devices = targets.len(),
-        "native zigbee discovery requested"
+        "zigbee discovery of the known devices"
     );
     for target in targets {
-        let (node_id, eui64) = (format!("0x{:04x}", target.node_id), &target.info.eui64);
-        info!(%node_id, %eui64, endpoint = ?target.info.endpoint, "probing known Zigbee device");
+        let node_id = target.node_id;
+        info!(node_id = %Hex(node_id), eui64 = %target.info.eui64, endpoint = ?target.info.endpoint, "probing known Zigbee device");
         if should_probe_active_endpoints(&target) {
-            if let Err(error) = request_active_endpoints(context, target.node_id).await {
-                warn!(%node_id, %eui64, %error, "native zigbee active endpoint probe failed");
+            let probed = request_active_endpoints(context, node_id).await;
+            if !context.note(node_id, "Active_EP_req", probed) {
                 continue;
             }
         }
         if target.info.endpoint.is_some() {
-            if let Err(error) = refresh_device_state(context, &target).await {
-                warn!(%node_id, %eui64, %error, "native zigbee state refresh failed during discovery");
-            }
+            let refreshed = refresh_device_state(context, &target).await;
+            context.note(node_id, "state refresh", refreshed);
+            configure_reporting(context, &target).await;
         }
-    }
-    if context.joined_devices.is_empty() {
-        debug!("native zigbee discovery skipped because no joined devices are known yet");
     }
 }
 
@@ -218,7 +215,7 @@ fn find_target_device<'a>(
         .find(|device| {
             device.info.eui64 == lamp_id
                 || normalize_device_id(&device.info.eui64, device.node_id) == wanted
-                || format!("{:016x}", device.node_id) == wanted
+                || normalize_device_id("", device.node_id) == wanted
         })
         .ok_or_else(|| DriverError::UnknownDevice(lamp_id.to_string()))
 }
@@ -281,10 +278,10 @@ async fn set_brightness(
             |sequence| build_brightness_command_payload(brightness, sequence),
         )
         .await?;
+    // Move to Level with On/Off at a level of 1 or more: on
     if let Some(device) = context.device_mut(node_id) {
-        let brightness = brightness.min(100);
         device.light.brightness = brightness;
-        device.light.is_on = brightness > 0;
+        device.light.is_on = true;
         device.desired.brightness = Some(brightness);
     }
     Ok(())
@@ -307,9 +304,8 @@ async fn set_temperature(
         )
         .await?;
     if let Some(device) = context.device_mut(node_id) {
-        let temperature = temperature.min(100);
         device.light.temperature = Some(temperature);
-        device.light.colour.color_mode = Some(COLOR_MODE_TEMPERATURE);
+        device.light.color.color_mode = Some(COLOR_MODE_TEMPERATURE);
         device.desired.temperature = Some(temperature);
         // in temperature mode now: a stale colour restored later would switch it back
         device.desired.color = None;
@@ -335,10 +331,9 @@ async fn set_color(
         )
         .await?;
     if let Some(device) = context.device_mut(node_id) {
-        let (x, y) = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        device.light.colour.color_x = Some(x);
-        device.light.colour.color_y = Some(y);
-        device.light.colour.color_mode = Some(COLOR_MODE_XY);
+        device.light.color.color_x = Some(x);
+        device.light.color.color_y = Some(y);
+        device.light.color.color_mode = Some(COLOR_MODE_XY);
         device.desired.color = Some((x, y));
         // in colour mode now: a stale temperature restored later would switch it back
         device.desired.temperature = None;

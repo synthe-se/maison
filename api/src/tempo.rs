@@ -44,6 +44,7 @@ impl Color {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Day {
     pub date: NaiveDate,
     /// `None` until RTE publishes it.
@@ -51,6 +52,7 @@ pub struct Day {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Count {
     pub used: u32,
     pub total: u32,
@@ -59,6 +61,7 @@ pub struct Count {
 
 /// A season's days per colour: used (published, tomorrow included), quota, left.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SeasonStock {
     pub season: String,
     pub blue: Count,
@@ -66,13 +69,52 @@ pub struct SeasonStock {
     pub red: Count,
 }
 
-/// Peak hours (« heures pleines », « HH:MM »), local time: the rest is off-peak. A Tempo day
-/// runs 06:00 to 06:00: before 06:00 the colour in force is the day before's.
+/// The hour (house time) a Tempo day starts, said once: a Tempo day runs 06:00 to 06:00, and
+/// before 06:00 the colour in force is the day before's. The peak hours start with it.
+pub const DAY_START_HOUR: u32 = 6;
+
+/// Peak hours (« heures pleines », « HH:MM »), local time: the rest is off-peak. They start
+/// with the Tempo day ([`DAY_START_HOUR`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hours {
     pub peak_start: Cow<'static, str>,
     pub peak_end: Cow<'static, str>,
+}
+
+/// The regulated Tempo's peak hours: 06:00 to 22:00.
+pub const HOURS: Hours = Hours {
+    peak_start: Cow::Borrowed("06:00"),
+    peak_end: Cow::Borrowed("22:00"),
+};
+
+/// Peak or off-peak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Period {
+    Peak,
+    OffPeak,
+}
+
+/// The price in force at a moment ([`Today::price_at`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriceNow {
+    pub color: Color,
+    pub period: Period,
+    /// €/kWh.
+    pub price: f64,
+    /// When the period ends (« 22:00 »).
+    pub until: String,
+    /// False before the peak hours start: the colour in force is still yesterday's, and
+    /// today's (`next`) starts at `until`.
+    pub day_started: bool,
+    pub next: Option<Color>,
+}
+
+/// « HH:MM » as minutes after midnight (0 when it does not read).
+fn minutes(hhmm: &str) -> u32 {
+    chrono::NaiveTime::parse_from_str(hhmm, "%H:%M").map_or(0, |t| {
+        chrono::Timelike::hour(&t) * 60 + chrono::Timelike::minute(&t)
+    })
 }
 
 /// One colour's prices (€/kWh, tax included): off-peak (HC) and peak (HP).
@@ -123,6 +165,44 @@ pub struct Today {
     pub cached: bool,
 }
 
+impl Today {
+    /// What a kWh costs at `now` (read at the house): the colour in force (yesterday's
+    /// until the peak hours start), peak or off-peak, until when. `None` without prices or
+    /// without the colour in force.
+    pub fn price_at(&self, now: DateTime<Utc>) -> Option<PriceNow> {
+        let local = now.with_timezone(&crate::HOUSE_TZ);
+        let t = chrono::Timelike::hour(&local) * 60 + chrono::Timelike::minute(&local);
+        let (start, end) = (
+            minutes(&self.hours.peak_start),
+            minutes(&self.hours.peak_end),
+        );
+        let day_started = t >= start;
+        let period = if day_started && t < end {
+            Period::Peak
+        } else {
+            Period::OffPeak
+        };
+        let color = if day_started {
+            self.today.color
+        } else {
+            self.yesterday.color
+        }?;
+        let prices = self.tariffs.as_ref()?.of(color);
+        let (price, until) = match period {
+            Period::Peak => (prices.peak, &self.hours.peak_end),
+            Period::OffPeak => (prices.off_peak, &self.hours.peak_start),
+        };
+        Some(PriceNow {
+            color,
+            period,
+            price,
+            until: until.to_string(),
+            day_started,
+            next: if day_started { None } else { self.today.color },
+        })
+    }
+}
+
 /// A forecast's chances per color, keyed as the colors are said (`BLUE`, `WHITE`, `RED`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -165,6 +245,7 @@ pub struct ForecastDay {
 /// The model replayed on past seasons with the weather forecasts of the time. Also in
 /// `model.json` (persisted: the snake_case aliases read a file from before).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Backtest {
     pub seasons: Vec<String>,
     pub horizons: Vec<HorizonScore>,
@@ -243,6 +324,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.red_f1, 1.0);
+    }
+
+    fn today() -> Today {
+        let json = r#"{"yesterday":{"date":"2026-10-15","color":"RED"},"today":{"date":"2026-10-16","color":"WHITE"},"tomorrow":{"date":"2026-10-17","color":null},"tariffs":{"blue":{"offPeak":0.13,"peak":0.16},"white":{"offPeak":0.15,"peak":0.19},"red":{"offPeak":0.16,"peak":0.73},"subscription":null,"startsOn":"2026-08-01"},"hours":{"peakStart":"06:00","peakEnd":"22:00"},"stock":{"season":"2026-2027","blue":{"used":0,"total":300,"remaining":300},"white":{"used":0,"total":43,"remaining":43},"red":{"used":0,"total":22,"remaining":22}},"lastUpdated":null,"cached":false}"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// Paris is UTC+2 on 16 October 2026.
+    fn paris(hhmm: &str) -> DateTime<Utc> {
+        format!("2026-10-16T{hhmm}:00+02:00").parse().unwrap()
+    }
+
+    #[test]
+    fn the_price_in_force_follows_the_tempo_day() {
+        let data = today();
+        let early = data.price_at(paris("05:59")).unwrap();
+        assert_eq!(
+            (early.color, early.period, early.price, early.until.as_str()),
+            (Color::Red, Period::OffPeak, 0.16, "06:00"),
+            "before 06:00: yesterday's, off-peak"
+        );
+        assert!(!early.day_started && early.next == Some(Color::White));
+        let peak = data.price_at(paris("06:00")).unwrap();
+        assert_eq!(
+            (peak.color, peak.period, peak.price, peak.until.as_str()),
+            (Color::White, Period::Peak, 0.19, "22:00")
+        );
+        assert!(peak.day_started && peak.next.is_none());
+        let night = data.price_at(paris("22:00")).unwrap();
+        assert_eq!(
+            (night.color, night.period, night.price),
+            (Color::White, Period::OffPeak, 0.15)
+        );
+        let unpriced = Today {
+            tariffs: None,
+            ..data
+        };
+        assert_eq!(unpriced.price_at(paris("12:00")), None);
+        // the day starts with the peak hours, said once
+        assert_eq!(minutes(&HOURS.peak_start), DAY_START_HOUR * 60);
     }
 
     #[test]

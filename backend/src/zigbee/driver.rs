@@ -1,7 +1,8 @@
 //! The driver: one task owns the dongle (serial → ASH → EZSP) and serves the commands queued
-//! to it. It never dies: a panic is a restart after a pause, a failing link a rebuild, a
-//! missing dongle a retry with backoff. [`Driver`] is the handle the manager holds; it shares
-//! the devices through a watch channel, so the manager only syncs what changed.
+//! to it, and the callbacks as they come. It never dies: a panic is a restart after a pause,
+//! a failing link a rebuild, a missing dongle a retry with backoff. [`Driver`] is the handle
+//! the manager holds; it shares the devices through a watch channel, so the manager only
+//! syncs what changed.
 
 use std::{
     sync::{Arc, Mutex as StdMutex},
@@ -9,16 +10,16 @@ use std::{
 };
 
 use tokio::{
-    sync::{mpsc, oneshot, watch, Mutex, RwLock},
+    sync::{mpsc, oneshot, watch, RwLock},
     task::JoinHandle,
     time::{interval, timeout, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info, warn};
 
 use super::{
-    availability::{check_availability, AVAILABILITY_CHECK_INTERVAL_TICKS},
-    callbacks::drain_callbacks,
-    commands::{handle_command, DriverCommand},
+    availability::check_availability,
+    callbacks::on_callback,
+    commands::{discover_devices, handle_command, DriverCommand},
     config::ZigbeeConfig,
     context::EzspContext,
     device::{DiscoveredDevice, ZigbeeDevice, ZigbeeDeviceInfo},
@@ -26,10 +27,16 @@ use super::{
     error::{DriverError, Link},
     network::{bring_up, check_link, teardown_context, NetworkState},
 };
-use crate::error::AppError;
+use crate::{
+    error::{AppError, Refusal},
+    util::{capped_backoff, lock},
+};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
-const DISCOVERY_RETRY_INTERVAL_TICKS: u32 = 10;
+/// How often the chores run (link health, availability): callbacks and commands are served
+/// as they come, never on this tick.
+const CHORES_INTERVAL: Duration = Duration::from_secs(1);
+/// Uninterviewed devices are asked again every this many chores.
+const INTERVIEW_RETRY_CHORES: u32 = 10;
 /// Per-EZSP-step timeout. Past it the pipeline is presumed dead and rebuilt: safe ONLY
 /// because a desynchronised EZSP channel is never reused.
 pub const EZSP_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -119,8 +126,6 @@ pub struct Driver {
     command_tx: mpsc::Sender<DriverRequest>,
     command_rx: StdMutex<Option<mpsc::Receiver<DriverRequest>>>,
     task: StdMutex<Option<JoinHandle<()>>>,
-    /// The first discovery ran (once the network is up).
-    discovered: Mutex<bool>,
     config: ZigbeeConfig,
     known_devices: Vec<(u16, ZigbeeDeviceInfo)>,
 }
@@ -138,7 +143,6 @@ impl Driver {
             command_tx,
             command_rx: StdMutex::new(Some(command_rx)),
             task: StdMutex::new(None),
-            discovered: Mutex::new(false),
             config,
             known_devices,
         }
@@ -153,80 +157,15 @@ impl Driver {
         self.shared.devices.subscribe()
     }
 
-    /// Starts the driver, and runs the first discovery once the radio is up. Never waits:
-    /// while the dongle is starting, unplugged or not on a network, it returns at once (the
-    /// save loop and every request call it; they must not queue behind a dead radio), and a
-    /// later call does the discovery.
-    pub async fn ensure_initialized(&self) {
-        self.start_task_if_needed();
-        if *self.shared.lifecycle.read().await != DriverLifecycle::Ready
-            || *self.shared.network.read().await != NetworkState::Joined
-        {
-            return;
-        }
-        // another caller is running the discovery: no need to wait for it
-        let Ok(mut discovered) = self.discovered.try_lock() else {
-            return;
-        };
-        if *discovered {
-            return;
-        }
-        if let Err(error) = self.send(DriverCommand::DiscoverDevices).await {
-            warn!(%error, "native zigbee first discovery failed");
-            self.shared
-                .say(Some(
-                    "Zigbee discovery failed; it is tried again".to_string(),
-                ))
-                .await;
-            return;
-        }
-        *discovered = true;
-    }
-
-    pub async fn send(&self, command: DriverCommand) -> Result<(), AppError> {
-        self.start_task_if_needed();
-        match *self.shared.lifecycle.read().await {
-            DriverLifecycle::Starting => {
-                return Err(AppError::service_unavailable(
-                    "The Zigbee radio is still starting",
-                ))
-            }
-            DriverLifecycle::Failed(reason) => return Err(AppError::service_unavailable(reason)),
-            DriverLifecycle::Ready => {}
-        }
-
-        let (reply_tx, reply_rx) = oneshot::channel();
-        // both steps bounded: a caller never hangs, even on a wedged driver reporting Ready
-        timeout(
-            COMMAND_ENQUEUE_TIMEOUT,
-            self.command_tx.send(DriverRequest { command, reply_tx }),
-        )
-        .await
-        .map_err(|_| {
-            AppError::service_unavailable("The Zigbee radio is not taking commands (queue full)")
-        })?
-        .map_err(|_| AppError::service_unavailable("The Zigbee radio is not running"))?;
-        timeout(COMMAND_REPLY_TIMEOUT, reply_rx)
-            .await
-            .map_err(|_| AppError::service_unavailable("The Zigbee radio did not answer in time"))?
-            .map_err(|_| AppError::service_unavailable("The Zigbee radio dropped the command"))?
-            .map_err(DriverError::into_client)
-    }
-
-    fn start_task_if_needed(&self) {
-        let mut task = self
-            .task
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    /// Starts the driver task, once; it runs the first discovery itself, when its network is
+    /// up. Never waits: the save loop and every request call it, and must not queue behind a
+    /// dead radio.
+    pub fn start(&self) {
+        let mut task = lock(&self.task);
         if task.is_some() {
             return;
         }
-        let Some(command_rx) = self
-            .command_rx
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        else {
+        let Some(command_rx) = lock(&self.command_rx).take() else {
             return;
         };
         let (config, known, shared) = (
@@ -248,13 +187,48 @@ impl Driver {
         )));
     }
 
-    pub fn shutdown(&self) {
-        if let Some(handle) = self
-            .task
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+    /// Runs `command` on the radio. Refused, coded, while the radio is not ready
+    /// (`not_configured` without a serial port, `device_unreachable` else, the reason in the
+    /// log); the driver's own refusals as [`DriverError::into_client`] says them.
+    pub async fn send(&self, command: DriverCommand) -> Result<(), AppError> {
+        self.start();
+        let down = |reason: &'static str| -> AppError {
+            if reason == NO_SERIAL_PORT {
+                DriverError::NotConfigured(reason).into_client()
+            } else {
+                DriverError::Unavailable(reason).into_client()
+            }
+        };
+        match *self.shared.lifecycle.read().await {
+            DriverLifecycle::Starting => return Err(down("The Zigbee radio is still starting")),
+            DriverLifecycle::Failed(reason) => return Err(down(reason)),
+            DriverLifecycle::Ready => {}
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        // both steps bounded: a caller never hangs, even on a wedged driver reporting Ready
+        match timeout(
+            COMMAND_ENQUEUE_TIMEOUT,
+            self.command_tx.send(DriverRequest { command, reply_tx }),
+        )
+        .await
         {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(down("The Zigbee radio is not running")),
+            Err(_) => {
+                warn!("the Zigbee radio is not taking commands (queue full)");
+                return Err(Refusal::Busy.into());
+            }
+        }
+        timeout(COMMAND_REPLY_TIMEOUT, reply_rx)
+            .await
+            .map_err(|_| down("The Zigbee radio did not answer in time"))?
+            .map_err(|_| down("The Zigbee radio dropped the command"))?
+            .map_err(DriverError::into_client)
+    }
+
+    pub fn shutdown(&self) {
+        if let Some(handle) = lock(&self.task).take() {
             handle.abort();
         }
     }
@@ -309,7 +283,9 @@ async fn supervise_driver<F>(
         shared.set_lifecycle(DriverLifecycle::Failed(CRASHED)).await;
         shared.say(Some(CRASHED.to_string())).await;
         // requests queued meanwhile would wait for the reply timeout: answer them now
-        drain_pending_requests(&mut command_rx, "The Zigbee radio is restarting");
+        drain_pending_requests(&mut command_rx, || {
+            DriverError::Unavailable("The Zigbee radio is restarting")
+        });
         tokio::time::sleep(delay).await;
         shared.set_lifecycle(DriverLifecycle::Starting).await;
     }
@@ -318,9 +294,7 @@ async fn supervise_driver<F>(
 /// 1 s, 2 s, 4 s… up to [`MAX_RESTART_DELAY`]: a driver that panics at once every time
 /// must not spin the Pi's single core.
 fn restart_delay(crashes: u32) -> Duration {
-    Duration::from_secs(1)
-        .saturating_mul(1_u32 << crashes.saturating_sub(1).min(6))
-        .min(MAX_RESTART_DELAY)
+    capped_backoff(Duration::from_secs(1), crashes, MAX_RESTART_DELAY)
 }
 
 /// Opens the pipeline, serves commands until the link fails, rebuilds it, forever; returns
@@ -337,7 +311,7 @@ async fn run_driver(
         shared
             .set_lifecycle(DriverLifecycle::Failed(NO_SERIAL_PORT))
             .await;
-        drain_pending_requests(command_rx, NO_SERIAL_PORT);
+        drain_pending_requests(command_rx, || DriverError::NotConfigured(NO_SERIAL_PORT));
         return;
     };
     // the kept devices first; after a rebuild, the old pipeline's (desired state included)
@@ -346,6 +320,9 @@ async fn run_driver(
         .map(|(node_id, info)| DiscoveredDevice::known(node_id, info))
         .collect::<Vec<_>>();
     let mut attempts: u32 = 0;
+    // the known devices are probed once, the first time the network is up (a rebuild keeps
+    // what the old pipeline knew of them)
+    let mut discovered = false;
     loop {
         let mut context = match bring_up(&config, &serial_port, &shared, &devices).await {
             Ok(context) => context,
@@ -359,7 +336,7 @@ async fn run_driver(
         attempts = 0;
         shared.set_lifecycle(DriverLifecycle::Ready).await;
 
-        let Some(reason) = event_loop(&mut context, command_rx).await else {
+        let Some(reason) = event_loop(&mut context, command_rx, &mut discovered).await else {
             teardown_context(context).await;
             return;
         };
@@ -371,27 +348,33 @@ async fn run_driver(
     }
 }
 
-/// Serves commands and runs the chores until the queue closes (`None`) or the link fails
-/// (why).
+/// Serves commands and callbacks as they come, and runs the chores every
+/// [`CHORES_INTERVAL`], until the queue closes (`None`) or the link fails (why).
 async fn event_loop(
     context: &mut EzspContext,
     command_rx: &mut mpsc::Receiver<DriverRequest>,
+    discovered: &mut bool,
 ) -> Option<String> {
-    let mut tick = interval(POLL_INTERVAL);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut tick_count: u32 = 0;
+    let mut chores = interval(CHORES_INTERVAL);
+    chores.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut chore_count: u32 = 0;
     loop {
         let outcome = tokio::select! {
             request = command_rx.recv() => match request {
                 Some(request) => serve(context, request).await,
                 None => return None,
             },
-            _ = tick.tick() => {
-                tick_count = tick_count.wrapping_add(1);
-                on_tick(context, tick_count).await
+            Some(callback) = context.callbacks_rx.recv() => on_callback(context, callback)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            _ = chores.tick() => {
+                chore_count = chore_count.wrapping_add(1);
+                on_chores(context, chore_count, discovered).await
             }
         };
-        if let Err(reason) = outcome {
+        // an exchange made outside a command (an interview, a ping) may say the link is gone
+        if let Some(reason) = outcome.err().or_else(|| context.rebuild.take()) {
             return Some(reason);
         }
     }
@@ -429,22 +412,29 @@ async fn serve(context: &mut EzspContext, request: DriverRequest) -> Result<(), 
     rebuild.map_or(Ok(()), Err)
 }
 
-/// The chores of one tick: link health, callbacks, interview retries, availability.
-async fn on_tick(context: &mut EzspContext, tick_count: u32) -> Result<(), String> {
+/// The chores: link health, the first discovery (once the network is up), interview
+/// retries, availability.
+async fn on_chores(
+    context: &mut EzspContext,
+    chore_count: u32,
+    discovered: &mut bool,
+) -> Result<(), String> {
     check_link(context).await?;
-    drain_callbacks(context)
-        .await
-        .map_err(|error| error.to_string())?;
-    if tick_count.is_multiple_of(DISCOVERY_RETRY_INTERVAL_TICKS) {
+    if !*discovered && *context.shared.network.read().await == NetworkState::Joined {
         // a hung unicast here would block the whole loop
+        timeout(EZSP_COMMAND_TIMEOUT, discover_devices(context))
+            .await
+            .map_err(|_| "first discovery timed out".to_string())?;
+        *discovered = true;
+        context.publish();
+    }
+    if chore_count.is_multiple_of(INTERVIEW_RETRY_CHORES) {
         timeout(EZSP_COMMAND_TIMEOUT, retry_pending_interviews(context))
             .await
             .map_err(|_| "interview retry timed out".to_string())?;
         context.publish();
     }
-    if tick_count.is_multiple_of(AVAILABILITY_CHECK_INTERVAL_TICKS) {
-        check_availability(context).await;
-    }
+    check_availability(context).await;
     Ok(())
 }
 
@@ -484,9 +474,7 @@ impl ErrorCount {
 /// at first, `Failed` past [`MAX_RECONNECT_ATTEMPTS`] (requests fail fast), with a capped
 /// exponential backoff. It never gives up.
 async fn backoff_before_retry(shared: &Shared, attempts: u32) {
-    let delay = RECONNECT_DELAY
-        .saturating_mul(1_u32 << attempts.saturating_sub(1).min(8))
-        .min(MAX_RECONNECT_DELAY);
+    let delay = capped_backoff(RECONNECT_DELAY, attempts, MAX_RECONNECT_DELAY);
     let lifecycle = if attempts > MAX_RECONNECT_ATTEMPTS {
         DriverLifecycle::Failed("The Zigbee radio is unreachable; it keeps trying")
     } else {
@@ -502,11 +490,16 @@ async fn backoff_before_retry(shared: &Shared, attempts: u32) {
     tokio::time::sleep(delay).await;
 }
 
-/// Answers the requests already queued with `reason` (`try_recv`: `recv` would wait forever
-/// while the handle lives).
-fn drain_pending_requests(command_rx: &mut mpsc::Receiver<DriverRequest>, reason: &'static str) {
+/// Answers the requests already queued with `refusal` (`try_recv`: `recv` would wait forever
+/// while the handle lives). A caller that gave up meanwhile hears nothing, and needs not.
+fn drain_pending_requests(
+    command_rx: &mut mpsc::Receiver<DriverRequest>,
+    refusal: impl Fn() -> DriverError,
+) {
     while let Ok(request) = command_rx.try_recv() {
-        let _ = request.reply_tx.send(Err(DriverError::Unavailable(reason)));
+        if request.reply_tx.send(Err(refusal())).is_err() {
+            debug!("a queued zigbee request's caller had gone");
+        }
     }
 }
 
@@ -565,7 +558,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_panicking_driver_is_failed_then_restarted() {
         let shared = Arc::new(Shared::new(None));
         let (command_tx, command_rx) = mpsc::channel::<DriverRequest>(4);
@@ -612,7 +605,7 @@ mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         command_tx
             .send(DriverRequest {
-                command: DriverCommand::DiscoverDevices,
+                command: DriverCommand::PermitJoin { seconds: 0 },
                 reply_tx,
             })
             .await

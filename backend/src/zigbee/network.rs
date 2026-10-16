@@ -25,12 +25,13 @@ use tokio_serial::SerialPortBuilderExt;
 use tracing::{debug, info, warn};
 
 use super::{
+    callbacks::on_callback,
     config::ZigbeeConfig,
     context::{EzspContext, PipelineTasks},
-    device::DiscoveredDevice,
+    device::{DiscoveredDevice, Hex},
     driver::{Shared, EZSP_COMMAND_TIMEOUT},
     error::DriverError,
-    zcl::{format_eui64, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID},
+    zcl::{eui64_text, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID},
 };
 
 const EZSP_CHANNEL_SIZE: usize = 256;
@@ -44,6 +45,8 @@ const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(180);
 /// Quiet for this long (a calm night), the link is probed with a cheap `network_state()`
 /// round-trip, so a healthy dongle is never torn down by the watchdog for want of traffic.
 const KEEPALIVE_AFTER: Duration = Duration::from_secs(60);
+/// The longest a network being formed may take to come up.
+const NETWORK_FORM_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_HOME_GATEWAY_DEVICE_ID: u16 = 0x0050;
 const DEFAULT_LOCAL_INPUT_CLUSTERS: &[u16] =
     &[0x0000, 0x0006, 0x0008, 0x0300, 0x0403, 0x0201, 0xFC00];
@@ -301,7 +304,7 @@ async fn ensure_coordinator_network(
     // a ZDO Bind_req names the coordinator
     match context.connection.get_eui64().await {
         Ok(eui64) => {
-            info!(eui64 = %format_eui64(eui64.into_array()), "coordinator EUI64 cached");
+            info!(eui64 = %eui64_text(eui64.into_array()), "coordinator EUI64 cached");
             context.coordinator_eui64 = Some(eui64);
         }
         Err(error) => {
@@ -442,7 +445,7 @@ async fn form_coordinator_network(
         .map(Eui64::from)
         .unwrap_or_else(|| derive_extended_pan_id(coordinator_eui64));
     let (channel, tx_power) = (config.channel, config.tx_power);
-    info!(pan_id = format_args!("0x{pan_id:04x}"), %extended_pan_id, channel, tx_power, "forming Zigbee coordinator network");
+    info!(pan_id = %Hex(pan_id), %extended_pan_id, channel, tx_power, "forming Zigbee coordinator network");
 
     Security::set_initial_security_state(&mut context.connection, initial_security_state())
         .await
@@ -476,7 +479,7 @@ async fn log_network_parameters(
     info!(
         %serial_port,
         node_type = %node_type,
-        pan_id = format_args!("0x{:04x}", parameters.pan_id()),
+        pan_id = %Hex(parameters.pan_id()),
         extended_pan_id = %parameters.extended_pan_id(),
         channel = parameters.radio_channel(),
         tx_power = parameters.radio_tx_power(),
@@ -486,13 +489,14 @@ async fn log_network_parameters(
     Ok(())
 }
 
+/// The network's state once it is formed: the stack says so by a stack status callback
+/// (NetworkUp), each callback has the state read again; [`NETWORK_FORM_TIMEOUT`] is the
+/// safety net.
 async fn wait_for_network_ready(
     context: &mut EzspContext,
 ) -> Result<EmberNetworkStatus, DriverError> {
-    for _ in 0..25 {
-        if let Err(error) = super::callbacks::drain_callbacks(context).await {
-            warn!(%error, "callback while forming the network");
-        }
+    let deadline = Instant::now() + NETWORK_FORM_TIMEOUT;
+    loop {
         let state = context
             .connection
             .network_state()
@@ -501,9 +505,15 @@ async fn wait_for_network_ready(
         if state != EmberNetworkStatus::NoNetwork && state != EmberNetworkStatus::JoiningNetwork {
             return Ok(state);
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::select! {
+            Some(callback) = context.callbacks_rx.recv() => {
+                on_callback(context, callback).await?;
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(DriverError::Timeout("Zigbee coordinator network formation"));
+            }
+        }
     }
-    Err(DriverError::Timeout("Zigbee coordinator network formation"))
 }
 
 /// zigbee2mqtt's Ember initial security state: TRUST_CENTER_GLOBAL_LINK_KEY |

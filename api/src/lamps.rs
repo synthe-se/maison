@@ -14,16 +14,16 @@ pub struct LampState {
     pub temperature: Option<u8>,
     pub temperature_min: Option<u8>,
     pub temperature_max: Option<u8>,
-    /// Zigbee lamps only (Hue Bluetooth ones have no colour): absent, not null, for Hue. Read
-    /// back, an absent colour reads as one whose fields are all `None`.
+    /// Zigbee lamps only (Hue Bluetooth ones have no color): absent, not null, for Hue. Read
+    /// back, an absent color reads as one whose fields are all `None`.
     #[serde(flatten)]
-    pub colour: Option<LampColour>,
+    pub color: Option<LampColor>,
 }
 
-/// A colour lamp's CIE 1931 point and ZCL colour mode (0 HS, 1 XY, 2 temperature).
+/// A color lamp's CIE 1931 point and ZCL color mode (0 HS, 1 XY, 2 temperature).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LampColour {
+pub struct LampColor {
     pub color_x: Option<f32>,
     pub color_y: Option<f32>,
     pub color_mode: Option<u8>,
@@ -91,6 +91,29 @@ pub struct LampStats {
     pub message: Option<String>,
 }
 
+impl LampStats {
+    /// The counts of `lamps` (each one's `(connected, reachable)`), and the family's state.
+    pub fn of(
+        lamps: impl IntoIterator<Item = (bool, bool)>,
+        disabled: bool,
+        message: Option<String>,
+    ) -> Self {
+        let (mut total, mut connected, mut reachable) = (0, 0, 0);
+        for (is_connected, is_reachable) in lamps {
+            total += 1;
+            connected += usize::from(is_connected);
+            reachable += usize::from(is_reachable);
+        }
+        Self {
+            total,
+            connected,
+            reachable,
+            disabled,
+            message,
+        }
+    }
+}
+
 /// `POST /{id}/power`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,7 +176,7 @@ mod tests {
         let json = r#"{"success":true,"lamps":[{"id":"z","name":"Bureau","address":"0x1","friendlyName":"Bureau","interviewCompleted":true,"model":"LCT","manufacturer":"Philips","connected":true,"reachable":false,"supportsBrightness":true,"supportsTemperature":true,"supportsColor":true,"state":{"isOn":false,"brightness":10,"temperature":50,"temperatureMin":0,"temperatureMax":100,"colorX":0.3,"colorY":0.3,"colorMode":1},"lastSeen":"2026-10-16T08:00:00Z"}],"total":1,"connected":1,"reachable":0,"message":"Zigbee lamps list retrieved"}"#;
         let l: Answer<LampList<ZigbeeLamp>> = serde_json::from_str(json).unwrap();
         assert_eq!(
-            l.body.lamps[0].state.colour.as_ref().unwrap().color_mode,
+            l.body.lamps[0].state.color.as_ref().unwrap().color_mode,
             Some(1)
         );
         assert_eq!(serde_json::to_string(&l).unwrap(), json);
@@ -166,6 +189,11 @@ mod tests {
         )
         .unwrap();
         assert!(s.body.disabled);
+        let counted = LampStats::of([(true, true), (false, true), (false, false)], false, None);
+        assert_eq!(
+            (counted.total, counted.connected, counted.reachable),
+            (3, 1, 2)
+        );
         assert_eq!(
             serde_json::to_string(&PowerRequest { enabled: true }).unwrap(),
             r#"{"enabled":true}"#
