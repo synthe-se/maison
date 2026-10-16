@@ -9,6 +9,7 @@ pub mod events;
 pub mod lamps;
 pub mod matter;
 pub mod meross;
+pub mod nabaztag;
 pub mod paces;
 pub mod remote;
 pub mod scenes;

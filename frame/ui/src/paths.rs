@@ -25,6 +25,10 @@ pub const BROADLINK_DISCOVER: &str = "/broadlink/discover";
 /// The air conditioner's last order, and where orders go (`{host, settings | command, model}`).
 pub const CLIMATE_STATE: &str = "/broadlink/mitsubishi/state";
 pub const CLIMATE_SEND: &str = "/broadlink/mitsubishi/send";
+/// The rabbit: its status, `/ctl` (one of its commands), `/tempo/push` (today's colour again).
+pub const NABAZTAG: &str = "/nabaztag";
+pub const NABAZTAG_CTL: &str = "/nabaztag/ctl";
+pub const NABAZTAG_TEMPO_PUSH: &str = "/nabaztag/tempo/push";
 /// Scenes: the list, `/{id}/run`.
 pub const SCENES: &str = "/scenes";
 /// Who the screen is (its cookie renewed).

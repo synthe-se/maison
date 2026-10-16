@@ -19,7 +19,8 @@ interface NabaztagTempoPushResponse {
 }
 
 /** The tai chi choreography, as the remote's « Taichi » key and the keymap say it (backend
- * ir.rs, ir-keymap.json.template): the rabbit's own button sends the same. */
+ * ir.rs, ir-keymap.json.template): the rabbit's own button sends the same
+ * (`maison_api::nabaztag::TAICHI`). */
 export const TAICHI = 'chor taichi';
 
 export const nabaztagApi = {

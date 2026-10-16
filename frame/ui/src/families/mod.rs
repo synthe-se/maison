@@ -6,6 +6,7 @@
 
 pub mod climate;
 pub mod lamps;
+pub mod nabaztag;
 pub mod plugs;
 pub mod scenes;
 pub mod shutters;
@@ -58,6 +59,8 @@ pub struct Sources {
     /// The IR blasters found (`/broadlink/discover`), the air conditioner's last order.
     pub blasters: Source<serde_json::Value>,
     pub climate: Source<serde_json::Value>,
+    /// The rabbit (`/nabaztag`): its address set or not, reachable, showing Tempo.
+    pub rabbit: Source<serde_json::Value>,
     pub place: Source<Where>,
     pub sun: Source<SunNow>,
 }
@@ -70,6 +73,7 @@ pub const SCENES: &str = "scenes";
 pub const TEMPO: &str = "tempo";
 /// The air conditioner's last order: the event the server says when it changes.
 pub const CLIMATE: &str = maison_api::events::CLIMATE;
+pub const NABAZTAG: &str = "nabaztag";
 
 fn until_sun(sun: Option<&maison_api::sun::NextSun>) -> Duration {
     ms(paces::until_sun(sun, Utc::now().timestamp_millis()))
@@ -125,6 +129,11 @@ impl Sources {
                 },
                 get(paths::BROADLINK_DISCOVER),
             ),
+            rabbit: Source::every(
+                "nabaztag:status",
+                ms(paces::NABAZTAG_MS),
+                get(paths::NABAZTAG),
+            ),
             climate: Source::every(
                 CLIMATE,
                 ms(paces::CLIMATE_STATE_MS),
@@ -175,7 +184,7 @@ impl Cx<'_> {
 }
 
 /// The dashboard's groups, in its order (web/src/routes/+page.svelte): scenes, Tempo, lamps,
-/// the air conditioning, shutters, plugs.
+/// the air conditioning, shutters, plugs, the rabbit.
 pub fn house(cx: &mut Cx) -> Vec<Group> {
     [
         scenes::group(cx),
@@ -184,6 +193,7 @@ pub fn house(cx: &mut Cx) -> Vec<Group> {
         climate::group(cx),
         shutters::group(cx),
         plugs::group(cx),
+        nabaztag::group(cx),
     ]
     .into_iter()
     .flatten()
