@@ -8,6 +8,7 @@ pub mod cats;
 pub mod climate;
 pub mod lamps;
 pub mod nabaztag;
+pub mod now;
 pub mod plugs;
 pub mod scenes;
 pub mod shutters;

@@ -51,11 +51,12 @@ pub struct Outcome {
     pub answer: Option<Value>,
 }
 
-/// One POST to the API.
+/// One request to the API that changes something: a POST, or a PUT (`put`: the TV's volume).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Post {
     pub path: String,
     pub body: Option<Value>,
+    pub put: bool,
 }
 
 impl Post {
@@ -64,6 +65,15 @@ impl Post {
         Self {
             path: path.into(),
             body: None,
+            put: false,
+        }
+    }
+
+    /// A PUT of `body` (a setting set to a value).
+    pub fn put(path: impl Into<String>, body: &impl Serialize) -> Self {
+        Self {
+            put: true,
+            ..Self::json(path, body)
         }
     }
 
@@ -73,6 +83,7 @@ impl Post {
         Self {
             path: path.into(),
             body: Some(json(body)),
+            put: false,
         }
     }
 }
@@ -249,7 +260,13 @@ impl Commands {
                         let client = client.clone();
                         let sent = std::thread::Builder::new()
                             .name(format!("post {name}"))
-                            .spawn(move || client.post::<Value>(&post.path, post.body.as_ref()));
+                            .spawn(move || {
+                                if post.put {
+                                    client.put::<Value>(&post.path, post.body.as_ref())
+                                } else {
+                                    client.post::<Value>(&post.path, post.body.as_ref())
+                                }
+                            });
                         (name, sent)
                     })
                     .collect();

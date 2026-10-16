@@ -194,11 +194,19 @@ pub struct Slider {
     pub name: String,
 }
 
+/// A chip of « Maintenant » (NowStrip's Chip): a fact in words, what needs a hand in the
+/// warning style.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chip {
+    pub text: String,
+    pub warn: bool,
+}
+
 /// The whole screen.
 #[derive(Debug, Clone)]
 pub enum Screen {
-    /// The house: its groups in the dashboard's order.
-    House(Vec<Group>),
+    /// The house: « Maintenant », then its groups in the dashboard's order.
+    House { now: Vec<Chip>, groups: Vec<Group> },
     /// One of the house's pages (Tempo): its title, the way back, its groups in columns.
     Page {
         title: String,

@@ -202,7 +202,13 @@ impl App {
             Who::Paired => (
                 families::sun_signed_in(&mut cx),
                 match self.view {
-                    View::House => Screen::House(families::house(&mut cx)),
+                    View::House => {
+                        let now = cx.house_now();
+                        Screen::House {
+                            now: families::now::chips(&mut cx, &now),
+                            groups: families::house(&mut cx),
+                        }
+                    }
                     View::Tempo => families::tempo::page(&mut cx),
                 },
             ),
@@ -525,7 +531,7 @@ mod tests {
         let mut app = App::new(&config(&stub.origin, dir.clone()), Arc::new(|| {}));
         wait_until(|| {
             app.take();
-            matches!(app.screen(Instant::now()), Screen::House(_))
+            matches!(app.screen(Instant::now()), Screen::House { .. })
         });
         // the house's reads say 401: the pairing is told, the screen says it was removed
         wait_until(|| {

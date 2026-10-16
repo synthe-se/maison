@@ -120,6 +120,61 @@ pub const ROW_PAD_X: f32 = px::S_3;
 pub const ROW_PAD_BOTTOM: f32 = px::S_3;
 /// Between a row's head and each control under it (`.tile`'s gap).
 pub const PART_GAP: f32 = px::S_2;
+/// « Maintenant » (NowStrip): two lines of chips at most, 4 px apart, 16 px over the groups; a
+/// chip's warning triangle (Chip.svelte: 14 px).
+pub const NOW_LINES: usize = 2;
+pub const CHIP_ICON: f32 = 14.0;
+
+/// Which chips fit `lines` lines `w` wide, `gap` apart, given their widths and whether each
+/// needs a hand, and how many wait behind « +N » (`more`: its width for a count): the facts
+/// folded from the end first, then what needs a hand from the end (NowStrip's `fit`).
+pub fn fold(
+    widths: &[f32],
+    warn: &[bool],
+    w: f32,
+    gap: f32,
+    lines: usize,
+    more: impl Fn(usize) -> f32,
+) -> (Vec<bool>, usize) {
+    let count = |shown: &[bool], extra: Option<f32>| {
+        let mut n = 0;
+        let mut x = f32::INFINITY;
+        for cw in widths
+            .iter()
+            .zip(shown)
+            .filter(|(_, s)| **s)
+            .map(|(cw, _)| *cw)
+            .chain(extra)
+        {
+            if x + gap + cw > w {
+                n += 1;
+                x = cw;
+            } else {
+                x += gap + cw;
+            }
+        }
+        n
+    };
+    let mut shown = vec![true; widths.len()];
+    if count(&shown, None) <= lines {
+        return (shown, 0);
+    }
+    let order: Vec<usize> = (0..widths.len())
+        .rev()
+        .filter(|i| !warn[*i])
+        .chain((0..widths.len()).rev().filter(|i| warn[*i]))
+        .collect();
+    let mut folded = 0;
+    for i in order {
+        if count(&shown, Some(more(folded))) <= lines {
+            break;
+        }
+        shown[i] = false;
+        folded += 1;
+    }
+    (shown, folded)
+}
+
 /// Header.svelte's mark, before the name (Brand.svelte: 28 px).
 pub const HEADER_MARK: f32 = 28.0;
 /// Borel sits high in its box: Brand.svelte's `.name` has `padding-top: 0.3em`, which, centred
@@ -431,6 +486,25 @@ mod tests {
         assert_eq!(columns(320.0), 1);
         assert_eq!(columns(1300.0), 3);
         assert_eq!(columns(9000.0), MAX_COLUMNS);
+    }
+
+    #[test]
+    fn the_strip_folds_its_facts_first_and_keeps_what_needs_a_hand() {
+        // five chips 100 wide, two to a 250 wide line: three lines, so « +N » and a fold
+        let widths = [100.0; 5];
+        let warn = [false, true, false, false, true];
+        let (shown, folded) = fold(&widths, &warn, 250.0, 2.0, 2, |_| 40.0);
+        assert!(folded > 0);
+        assert!(
+            shown[1] && shown[4],
+            "what needs a hand stays in sight: {shown:?}"
+        );
+        assert!(!shown[3], "the last fact goes first: {shown:?}");
+        // all fit: nothing folded
+        assert_eq!(
+            fold(&widths, &warn, 1000.0, 2.0, 2, |_| 40.0),
+            (vec![true; 5], 0)
+        );
     }
 
     #[test]

@@ -8,10 +8,10 @@ use crate::theme::{px, ty};
 use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
 use crate::ui::layout::{
-    BRAND_NUDGE, CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP,
-    HEADER_MARK, MARK, MARK_SVG, P, STALE_ICON, TOUCH, balance, columns, margin,
+    BRAND_NUDGE, CHIP_ICON, CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP,
+    HEADER_MARK, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH, balance, columns, fold, margin,
 };
-use crate::ui::model::{Body, Button, Group, Screen};
+use crate::ui::model::{Body, Button, Chip, Group, Screen};
 
 /// What the header says: the brand (the house), or a page's way back and its title.
 enum Head<'a> {
@@ -70,6 +70,60 @@ impl P<'_, '_, '_, '_> {
             end - x,
         )?;
         Ok(())
+    }
+
+    /// « Maintenant » at (x, y), `w` wide: its chips on two lines at most, the rest behind
+    /// « +N »; its height.
+    fn now_strip(&mut self, chips: &[Chip], x: f32, y: f32, w: f32) -> Result<f32, Error> {
+        let pal = self.c.pal;
+        let h = px::CONTROL_H_XS;
+        let gap = px::S_1;
+        let mut widths = Vec::with_capacity(chips.len());
+        for c in chips {
+            let icon = if c.warn { CHIP_ICON + px::S_1 } else { 0.0 };
+            widths.push(self.width(&c.text, ty::TINY)? + 2.0 * px::S_2 + icon);
+        }
+        let mut mores = Vec::new();
+        for n in 0..=chips.len() {
+            mores.push(self.width(&format!("+{n}"), ty::TINY)? + 2.0 * px::S_2);
+        }
+        let warn: Vec<bool> = chips.iter().map(|c| c.warn).collect();
+        let (shown, folded) = fold(&widths, &warn, w, gap, NOW_LINES, |n| mores[n]);
+        let more = format!("+{folded}");
+        let pills = chips
+            .iter()
+            .zip(&widths)
+            .zip(&shown)
+            .filter(|(_, s)| **s)
+            .map(|((c, cw), _)| (c.text.as_str(), c.warn, *cw))
+            .chain((folded > 0).then(|| (more.as_str(), false, mores[folded])));
+        let (mut cx, mut cy) = (x, y);
+        for (text, warn, cw) in pills {
+            if cx > x && cx + cw > x + w {
+                cx = x;
+                cy += h + gap;
+            }
+            let (fill, line, ink) = if warn {
+                (pal.blocked_wash, pal.blocked, pal.warn_text)
+            } else {
+                (pal.ground, pal.line, pal.ink)
+            };
+            self.framed((cx, cy, cw, h), px::RADIUS_PILL, fill, line)?;
+            let mut tx = cx + px::S_2;
+            if warn {
+                self.icon(
+                    icon::TRIANGLE_ALERT,
+                    tx,
+                    cy + (h - CHIP_ICON) / 2.0,
+                    CHIP_ICON,
+                    ink,
+                )?;
+                tx += CHIP_ICON + px::S_1;
+            }
+            self.line(text, ty::TINY, ink, tx, cy + (h - ty::TINY.line) / 2.0, cw)?;
+            cx += cw + gap;
+        }
+        Ok(cy + h - y)
     }
 
     /// Stale.svelte at (x, cy): the clock, « Dernière lecture 14:02 · Réessayer ».
@@ -143,7 +197,13 @@ impl P<'_, '_, '_, '_> {
 
     /// The house, or one of its pages: the groups in columns (the dashboard's), the header
     /// over them; the columns' height in the panel's pixels.
-    fn house(&mut self, groups: &[Group], head: Head, wcss: f32) -> Result<f32, Error> {
+    fn house(
+        &mut self,
+        now: &[Chip],
+        groups: &[Group],
+        head: Head,
+        wcss: f32,
+    ) -> Result<f32, Error> {
         let pal = self.c.pal;
         let m = margin(wcss);
         let inner = wcss - 2.0 * m;
@@ -157,7 +217,10 @@ impl P<'_, '_, '_, '_> {
         }
         self.measuring = measuring;
         let starts = balance(&hs, cols, GROUP_GAP);
-        let top = px::HEADER_H + px::S_5;
+        let mut top = px::HEADER_H + px::S_5;
+        if !now.is_empty() {
+            top += self.now_strip(now, m, top, inner)? + px::S_4;
+        }
         let mut bottom = top;
         for (c, &from) in starts.iter().enumerate() {
             let to = starts.get(c + 1).copied().unwrap_or(groups.len());
@@ -324,12 +387,12 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
     };
     let wcss = c.width / c.scale;
     let content = match screen {
-        Screen::House(groups) => p.house(groups, Head::Brand, wcss)?,
+        Screen::House { now, groups } => p.house(now, groups, Head::Brand, wcss)?,
         Screen::Page {
             title,
             back,
             groups,
-        } => p.house(groups, Head::Back(back, title), wcss)?,
+        } => p.house(&[], groups, Head::Back(back, title), wcss)?,
         Screen::Door {
             title,
             lead,
@@ -456,7 +519,13 @@ mod tests {
             canvas: &mut canvas,
             gfx: &mut gfx,
         };
-        let house = Screen::House(vec![group.clone()]);
+        let house = Screen::House {
+            now: vec![Chip {
+                text: "2 lampes allumées".into(),
+                warn: false,
+            }],
+            groups: vec![group.clone()],
+        };
         let drawn = paint(&mut d, &ctx, &house, &toasts).unwrap();
         let keys: Vec<&str> = drawn.hits.iter().filter_map(|h| h.what.key()).collect();
         // « Tout éteindre », each gesture (its row's head and its disc), the lit one's slider,

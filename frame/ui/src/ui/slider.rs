@@ -46,6 +46,7 @@ fn order(s: &Slider, value: f64) -> Order {
     let post = Post {
         path: s.path.clone(),
         body: Some((s.body)(value)),
+        put: false,
     };
     Order::one(format!("{}:set", s.key), s.name.clone(), post)
         .within(limit::DEVICE)

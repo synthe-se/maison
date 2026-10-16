@@ -32,6 +32,8 @@ pub const NABAZTAG_TEMPO_PUSH: &str = "/nabaztag/tempo/push";
 /// The Philips TV: its status and settings, `/power` (over infrared).
 pub const TV: &str = "/tv";
 pub const TV_POWER: &str = "/tv/power";
+/// The TV's volume, set by PUT (`{level}`).
+pub const TV_VOLUME: &str = "/tv/volume";
 /// The Android box: its status, `/wake`, `/sleep`, `/launch` (an app, the TV turned on first).
 pub const ANDROIDTV: &str = "/androidtv";
 pub const BOX_WAKE: &str = "/androidtv/wake";

@@ -244,7 +244,9 @@ fn as_lamps<L>(v: View<LampList<L>>, from: fn(&L) -> Lamp) -> View<Vec<Lamp>> {
     v.map(|d| d.lamps.iter().map(from).collect())
 }
 
-pub fn group(cx: &mut Cx) -> Option<Group> {
+/// The radios the server runs (its stats say whether Bluetooth is there at all), each with its
+/// lamps as read.
+fn families(cx: &mut Cx) -> Vec<(Driver, View<Vec<Lamp>>)> {
     let hue_on = cx
         .live
         .want(&cx.sources.hue_stats)
@@ -268,6 +270,19 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
             as_lamps(cx.live.want(&cx.sources.zigbee), from_zigbee),
         ));
     }
+    families
+}
+
+/// Every lamp read, whatever its radio (« Maintenant » counts those lit).
+pub fn all(cx: &mut Cx) -> Vec<Lamp> {
+    families(cx)
+        .into_iter()
+        .flat_map(|(_, v)| v.data.as_deref().cloned().unwrap_or_default())
+        .collect()
+}
+
+pub fn group(cx: &mut Cx) -> Option<Group> {
+    let families = families(cx);
     let now = cx.house_now();
     let old = families.iter().find_map(|(_, v)| stale(cx, v, LAMPS));
     let refs: Vec<_> = families.iter().map(|(d, v)| (*d, v)).collect();

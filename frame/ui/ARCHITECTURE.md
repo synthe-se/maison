@@ -68,17 +68,20 @@ frame/ui/
                  measures, the painter's primitives, hits), bricks (button, slider, tile),
                  screens (house, door, toasts), slider (live sends every SLIDER_THROTTLE_MS,
                  held SLIDER_HOLD_MS), touch (tap, drag, fling)
-  families/      tempo, lamps (Hue + Zigbee), shutters, plugs, scenes: pure functions from the
-                 API's answers to a group, each tested on the backend's JSON
+  families/      now, scenes, tempo, lamps (Hue + Zigbee), cats, climate, shutters, plugs,
+                 nabaztag, tv: pure functions from the API's answers to a group, each tested on
+                 the backend's JSON
   simulate.sh sim/   the armv7 binary on the frame's system, emulated (below)
 ```
 
 ## Scope
 
-1. Done: pairing (and removal), the sun's theme, the scrolled column, scenes, Tempo, lamps,
-   shutters (move, skip tonight's, position), plugs (power and its cost, red peak hours).
-2. Next: climate, TV and box, cats, Nabaztag, the « Maintenant » strip, a spinner for slow
-   gestures (today a static ring).
+1. Done: pairing (and removal), the sun's theme, the header and its mark, « Maintenant », and
+   every group of the web dashboard: scenes, Tempo (and its page: the week, the prices, the
+   season), lamps, the cats' corner, the air conditioning, shutters, plugs, the rabbit,
+   « Télé » (the TV, its volume, the box and its apps).
+2. Next: a spinner for slow gestures (today a static ring); the climate, rabbit, TV and cats'
+   answers typed in maison-api (the frame reads their JSON by field name today).
 3. Not on the frame: device pages, settings, admin, the keymap.
 
 The house is laid out as the web dashboard is (+page.svelte's `.dashboard`): the groups in

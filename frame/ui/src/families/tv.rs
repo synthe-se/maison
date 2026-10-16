@@ -34,6 +34,32 @@ fn power(name: &str, on: bool) -> Order {
     .then_refresh(&[TV, BOX])
 }
 
+/// The volume a step down and a step up, each button saying the level it sets (TvTile's
+/// − / +); none while the TV is not on or says no volume.
+fn volume_steps(w: &Words, name: &str, volume: &Value) -> Option<Part> {
+    let (level, min, max) = (
+        volume["current"].as_i64()?,
+        volume["min"].as_i64().unwrap_or(0),
+        volume["max"].as_i64().unwrap_or(i64::MAX),
+    );
+    let step = |delta: i64, icon| {
+        let to = (level + delta).clamp(min, max);
+        let order = Order::one(
+            format!("{TV}:volume"),
+            name,
+            Post::put(paths::TV_VOLUME, &json!({ "level": to })),
+        )
+        .then_refresh(&[TV]);
+        Button::new(
+            Some(icon),
+            w.t(k::TV_VOLUME_FACT, &[("level", w.num(to as f64, 0).into())]),
+            Act::Order(order),
+        )
+        .unavailable(to == level)
+    };
+    Some(Part::Row(vec![step(-1, icon::MINUS), step(1, icon::PLUS)]))
+}
+
 /// The TV's row, from `/tv` (`{config, status}`).
 pub fn tv_tile(w: &Words, data: &Value) -> Tile {
     let s = &data["status"];
@@ -78,7 +104,7 @@ pub fn tv_tile(w: &Words, data: &Value) -> Tile {
                 turn_on: Box::new(power(&name, true)),
                 turn_off: Box::new(power(&name, false)),
             },
-            Vec::new(),
+            volume_steps(w, &name, volume).into_iter().collect(),
         )
     } else {
         let parts = if configured {
@@ -281,6 +307,15 @@ mod tests {
         };
         assert_eq!(turn_off.posts[0].1.path, "/tv/power");
         assert_eq!(turn_off.posts[0].1.body.as_ref().unwrap()["state"], "off");
+        // the volume a step down and up, each saying the level it sets, by PUT
+        let [Part::Row(v)] = &t.parts[..] else {
+            panic!("{:?}", t.parts)
+        };
+        assert_eq!(v[0].label, "Vol.\u{a0}11");
+        let Act::Order(up) = &v[1].act else { panic!() };
+        assert!(up.posts[0].1.put);
+        assert_eq!(up.posts[0].1.path, "/tv/volume");
+        assert_eq!(up.posts[0].1.body.as_ref().unwrap()["level"], 13);
     }
 
     #[test]

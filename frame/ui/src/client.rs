@@ -276,7 +276,23 @@ impl Client {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<T, Failure> {
-        let mut req = self.agent.post(format!("{}{path}", self.api));
+        self.send(self.agent.post(format!("{}{path}", self.api)), body)
+    }
+
+    /// A PUT with a JSON body, or none.
+    pub fn put<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Option<&impl Serialize>,
+    ) -> Result<T, Failure> {
+        self.send(self.agent.put(format!("{}{path}", self.api)), body)
+    }
+
+    fn send<T: DeserializeOwned>(
+        &self,
+        mut req: ureq::RequestBuilder<ureq::typestate::WithBody>,
+        body: Option<&impl Serialize>,
+    ) -> Result<T, Failure> {
         if let Some(c) = self.jar.get() {
             req = req.header("Cookie", c);
         }

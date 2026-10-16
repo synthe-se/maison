@@ -50,15 +50,7 @@ pub fn blaster(found: &Value) -> Option<&str> {
 fn send(host: &str, mut body: Value) -> Order {
     body["host"] = json!(host);
     body["model"] = json!(climate::MODEL);
-    Order::one(
-        KEY,
-        "climate",
-        Post {
-            path: paths::CLIMATE_SEND.to_string(),
-            body: Some(body),
-        },
-    )
-    .then_refresh(&[CLIMATE])
+    Order::one(KEY, "climate", Post::json(paths::CLIMATE_SEND, &body)).then_refresh(&[CLIMATE])
 }
 
 /// The last settings sent, again: without their sleep timer, at `temperature` if given.
