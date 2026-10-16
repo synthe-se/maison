@@ -1,8 +1,8 @@
 <script lang="ts">
 	// My passkeys (FIDO « create, view and manage passkeys in account settings »): one row per
 	// passkey, renamed in place, removed after asking (§ 6; the focus then goes to the list's
-	// title), and « Ajouter une clé d’accès » from this device (asking the passkey again first
-	// when the last sign-in is old: the server says `reauth_needed`).
+	// title), and « Ajouter une clé d’accès » from this device. Each asks the passkey again first
+	// when the last sign-in is old (`withRecentPasskey`).
 	import { m } from '#lib/paraglide/messages.js';
 	import { lifeLine } from './lines.ts';
 	import { live } from '#lib/live.svelte.ts';
@@ -31,7 +31,7 @@
 
 	const add = () =>
 		g.run(
-			() => register({ onReauth: () => ui.say(m.keys_reauth()) }),
+			() => register(),
 			async () => {
 				ui.toast(m.keys_added());
 				await keys.refresh();

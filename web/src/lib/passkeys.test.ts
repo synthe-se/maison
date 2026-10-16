@@ -8,16 +8,23 @@ import {
 	creationOptions,
 	inviteGreeting,
 	invitesData,
+	onReconfirmed,
 	passkeysData,
+	peopleApi,
 	register,
 	removePasskey,
 	renamePasskey,
 	requestOptions,
 	revokeInvite,
+	sessionsApi,
+	sessionsData,
 	signIn,
-	toJSON
+	toJSON,
+	withRecentPasskey
 } from './passkeys.ts';
+import { ApiError } from './api.ts';
 import { errorText } from './errors.ts';
+import { ui } from './ui.svelte.ts';
 
 const bytes = (b: BufferSource) => [...new Uint8Array(b as ArrayBuffer)];
 const text = (s: string) => [...new TextEncoder().encode(s)];
@@ -122,7 +129,7 @@ describe('passkeys: the ceremonies', () => {
 	it('an old sign-in: asks the passkey again, then starts the registration again, once', async () => {
 		const { credentials } = browser();
 		let refused = false;
-		const onReauth = vi.fn();
+		const say = vi.spyOn(ui, 'say');
 		const api = stubApi({
 			...passkeyRoutes(),
 			'POST /passkeys/register/start': () => {
@@ -131,8 +138,8 @@ describe('passkeys: the ceremonies', () => {
 				return json({ error: 'Sign in again', code: 'reauth_needed' }, 403);
 			}
 		});
-		await register({ onReauth });
-		expect(onReauth).toHaveBeenCalledOnce();
+		await register();
+		expect(say).toHaveBeenCalledWith(m.reauth_ask());
 		expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
 			'POST /passkeys/register/start',
 			'POST /passkeys/login/start',
@@ -156,7 +163,10 @@ describe('passkeys: the rest of the API', () => {
 		['list', () => passkeysData.fetch(), 'GET', '/passkeys'],
 		['rename', () => renamePasskey('k 1', 'Mac'), 'PATCH', '/passkeys/k%201', { name: 'Mac' }],
 		['remove', () => removePasskey('k1'), 'DELETE', '/passkeys/k1'],
-		['greeting', () => inviteGreeting('tok'), 'GET', '/invites/tok'],
+		['greeting: the token in the body, never in an address', () => inviteGreeting('tok'), 'POST', '/invites/greet', { token: 'tok' }],
+		['my sessions', () => sessionsData.fetch(), 'GET', '/auth/sessions'],
+		['one ends', () => sessionsApi.end('s 1'), 'DELETE', '/auth/sessions/s%201'],
+		['someone signed out everywhere', () => peopleApi.endSessions('alex'), 'POST', '/people/alex/sessions/end'],
 		['invitations', () => invitesData.fetch(), 'GET', '/invites'],
 		['invite', () => createInvite('Alex', false), 'POST', '/invites', { name: 'Alex', admin: false }],
 		['access back', () => createInvite('Alex', false, 'alex'), 'POST', '/invites', { name: 'Alex', admin: false, person: 'alex' }],
@@ -166,5 +176,70 @@ describe('passkeys: the rest of the API', () => {
 		const api = stubApi({ [`${method} ${path}`]: {} });
 		await call();
 		expect(api.calls).toEqual([{ method, path, body }]);
+	});
+});
+
+describe('passkeys: the lists come in their envelope', () => {
+	it.each([
+		['passkeys', () => passkeysData.fetch(), '/passkeys'],
+		['invites', () => invitesData.fetch(), '/invites'],
+		['people', () => peopleApi.list(), '/people'],
+		['sessions', () => sessionsData.fetch(), '/auth/sessions']
+	] as const)('%s', async (key, fetch, path) => {
+		stubApi({ [`GET ${path}`]: { success: true, [key]: [{ id: 'x' }] } });
+		expect(await fetch()).toEqual([{ id: 'x' }]);
+	});
+});
+
+describe('withRecentPasskey', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		onReconfirmed(() => true);
+	});
+	const reauth = () => json({ error: 'again', code: 'reauth_needed' }, 403);
+
+	it('any other refusal stands, and no passkey is asked', async () => {
+		browser();
+		const api = stubApi({ ...passkeyRoutes(), 'DELETE /people/alex': json({ error: 'x', code: 'not_yourself' }, 409) });
+		await expect(peopleApi.remove('alex')).rejects.toMatchObject({ code: 'not_yourself' });
+		expect(api.sent('POST', '/passkeys/login/start')).toEqual([]);
+	});
+
+	it('every gesture that wants a recent sign-in goes through it', async () => {
+		browser();
+		const once = (ok: unknown) => {
+			let n = 0;
+			return () => (n++ ? ok : reauth());
+		};
+		const api = stubApi({
+			...passkeyRoutes(),
+			'DELETE /people/alex': once(new Response(null, { status: 204 })),
+			'DELETE /passkeys/k1': once(new Response(null, { status: 204 })),
+			'PATCH /passkeys/k1': once({ success: true, id: 'k1', name: 'Mac' }),
+			'POST /invites': once({ success: true, id: 'i1', url: 'u', expiresMs: 1 })
+		});
+		await peopleApi.remove('alex');
+		await removePasskey('k1');
+		await renamePasskey('k1', 'Mac');
+		await createInvite('Alex', true);
+		expect(api.sent('POST', '/passkeys/login/finish')).toHaveLength(4);
+		for (const [method, path] of [
+			['DELETE', '/people/alex'],
+			['DELETE', '/passkeys/k1'],
+			['PATCH', '/passkeys/k1'],
+			['POST', '/invites']
+		])
+			expect(api.sent(method, path)).toHaveLength(2);
+	});
+
+	it('someone else’s passkey: nothing is sent for them, the refusal stands', async () => {
+		browser();
+		onReconfirmed(() => false);
+		const act = vi.fn(async () => {
+			throw new ApiError('again', 403, 'reauth_needed');
+		});
+		stubApi(passkeyRoutes());
+		await expect(withRecentPasskey(act)).rejects.toMatchObject({ code: 'reauth_needed' });
+		expect(act).toHaveBeenCalledOnce();
 	});
 });

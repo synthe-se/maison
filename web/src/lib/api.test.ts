@@ -184,7 +184,6 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['ir.recent', () => irApi.recent(), 'GET /ir/recent'],
 	['ir.test', () => irApi.test([]), 'POST /ir/test', { actions: [] }],
 	['nabaztag.status', () => nabaztagApi.status(), 'GET /nabaztag'],
-	['people.list', () => peopleApi.list(), 'GET /people'],
 	['people.remove', () => peopleApi.remove('alex'), 'DELETE /people/alex'],
 	['nabaztag.pushTempo (cached by default)', () => nabaztagApi.pushTempo(), 'POST /nabaztag/tempo/push', { forceRefresh: false }],
 	['tv.status', () => tvApi.status(), 'GET /tv'],

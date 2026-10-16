@@ -104,11 +104,19 @@ export function checkNoErrors(label = 'no page errors') {
 /** Waits for the page's own title (h1). */
 export const title = (page: Page, name: string | RegExp) => page.getByRole('heading', { name, level: 1 }).waitFor();
 
-/** A one-time invitation link, made as on the Pi: `maison-backend invite` (run.sh says where). */
+/** A one-time invitation link, made as on the Pi: `maison-backend invite` (run.sh says where).
+ * Its token rides in the fragment (`/invite#<token>`): never sent to the server. */
 export function invitation(person = USER.id, name = USER.name, admin = true): string {
 	const args = ['invite', person, '--name', name, ...(admin ? ['--admin'] : [])];
 	const out = execFileSync(process.env.MAISON_BIN!, args, { encoding: 'utf8' });
-	return out.match(/http\S+\/invite\/\S+/)![0];
+	return out.match(/http\S+\/invite#\S+/)![0];
+}
+
+/** Opens an invitation link as a fresh page load: from another invitation, a link differing
+ * only by its fragment would be a same-page jump, its token never read. */
+export async function openInvitation(page: Page, link: string) {
+	if (new URL(page.url(), BASE).pathname.startsWith('/invite')) await page.goto('about:blank');
+	await page.goto(link);
 }
 
 /** A platform authenticator with user verification, as on a phone or a Mac (WebAuthn CDP). */
@@ -132,10 +140,10 @@ export async function authenticator(page: Page) {
 /** In by a fresh invitation (a new passkey on a new authenticator), then the page itself. */
 export async function signIn(page: Page, path = '/') {
 	await authenticator(page);
-	await page.goto(invitation());
+	await openInvitation(page, invitation());
 	await page.getByRole('button', { name: fr.invite_create() }).click();
 	await page.getByRole('button', { name: fr.invite_enter() }).click();
-	await page.waitForURL((url) => !url.pathname.startsWith('/invite/'));
+	await page.waitForURL((url) => !url.pathname.startsWith('/invite'));
 	if (path !== '/') await page.goto(BASE + path);
 	await page.locator('main h1').first().waitFor();
 }

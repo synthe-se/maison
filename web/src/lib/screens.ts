@@ -3,6 +3,7 @@
 // it keeps the pairing's secret in memory while it waits, and that is all.
 
 import { del, get, path, post } from '#lib/api.ts';
+import { withRecentPasskey } from '#lib/passkeys.ts';
 import { isLocale, switchLocale } from '#lib/i18n.svelte.ts';
 import { source } from '#lib/live.svelte.ts';
 import { isTheme, ui } from '#lib/ui.svelte.ts';
@@ -29,10 +30,12 @@ export const screensApi = {
 	start: () => post<Pairing>('/screens/pairing'),
 	/** Whether an admin paired it: once paired, the backend has set its cookie. */
 	claim: (secret: string) => post<{ paired: boolean; screen?: { name: string } }>('/screens/pairing/claim', { secret }),
-	/** This browser as a screen, its cookie renewed; refused when it is none. */
-	me: () => get<{ screen: { name: string } }>('/screens/me'),
-	/** An admin pairs the screen showing `code`, from the screen's own network. */
-	pair: (code: string, name: string) => post<{ screen: { name: string } }>('/screens', { code, name }),
+	/** This browser as a screen, at each start of the page: its cookie renewed (a POST: a
+	 * change); refused when it is none. */
+	me: () => post<{ screen: { name: string } }>('/screens/me'),
+	/** An admin pairs the screen showing `code`, from the screen's own network, after a recent
+	 * passkey sign-in (a paired screen drives the house for months). */
+	pair: (code: string, name: string) => withRecentPasskey(() => post<{ screen: { name: string } }>('/screens', { code, name })),
 	list: () => get<{ screens: Screen[] }>('/screens').then((r) => r.screens),
 	remove: (id: string) => del<void>(path`/screens/${id}`)
 };

@@ -66,7 +66,7 @@ describe('layout', () => {
 		const backend = stubApi({
 			'POST /auth/verify': refused,
 			'POST /auth/refresh': refused,
-			'GET /screens/me': { success: true, screen: { name: 'Salon' } },
+			'POST /screens/me': { success: true, screen: { name: 'Salon' } },
 			'/scenes': refused,
 			'POST /screens/pairing': { success: true, code: 'ABCD-EFGH', secret: 's', expiresInMs: 600_000, pollMs: 3_000 }
 		});
@@ -112,8 +112,8 @@ describe('layout', () => {
 		await expect.poll(() => document.title).toContain(m.unreachable_title());
 	});
 
-	it('opens an invitation signed out: it is how one gets a first passkey', async () => {
-		kit.page.url = new URL('http://maison.test/invite/tok');
+	it.each(['/invite#tok', '/invite/tok'])('opens an invitation signed out (%s): it is how one gets a first passkey', async (path) => {
+		kit.page.url = new URL(path, 'http://maison.test');
 		stubApi({
 			'POST /auth/verify': new Response('{"error":"expired"}', { status: 401 }),
 			'POST /auth/refresh': new Response('{}', { status: 401 })
@@ -185,7 +185,7 @@ describe('layout', () => {
 		const backend = stubApi({
 			'POST /auth/verify': refused,
 			'POST /auth/refresh': refused,
-			'GET /screens/me': { success: true, screen: { name: 'Salon' } },
+			'POST /screens/me': { success: true, screen: { name: 'Salon' } },
 			'GET /matter/place': sunAt(true)
 		});
 		await show();
