@@ -217,6 +217,18 @@ pub enum AndroidKey {
     Wakeup,
 }
 
+/// How one action went, in the order they ran (a scene run from a key runs the scene's
+/// actions): the action itself (the apps name it in their words), whether it went, and if not,
+/// the refusal's code (`maison_api::codes`: `device_unreachable`, `not_found`, …).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionResult {
+    pub action: IrAction,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
 /// What running actions answers (`POST /api/scenes/{id}/run`, `/api/ir/test`, and a key press
 /// with no results, its actions running after): one entry per action, « ok: … » or « failed: … ».
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
