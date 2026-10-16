@@ -197,7 +197,7 @@ await shown('slide hue-lamp:hue-01:brightness 0.25');
 check('the brightness slider sends where it is let go', await sent('POST /api/hue-lamps/hue-01/brightness'), state.sent.join(' | '));
 await tell('press broadlink:climate:send', (l) => l.startsWith('ok') || l.startsWith('error'));
 check(
-	'« Allumer » sends the air conditioner its order through the blaster found',
+	'an air conditioner button sends its order through the blaster found (on and off share one key: one order at a time)',
 	await sent('POST /api/broadlink/mitsubishi/send'),
 	state.sent.join(' | ')
 );
