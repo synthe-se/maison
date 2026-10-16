@@ -28,7 +28,19 @@ impl Hit {
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
     }
+
+    /// How far (x, y) is from it, 0 inside.
+    pub fn distance(&self, x: f32, y: f32) -> f32 {
+        let dx = (self.x - x).max(x - (self.x + self.w)).max(0.0);
+        let dy = (self.y - y).max(y - (self.y + self.h)).max(0.0);
+        dx.hypot(dy)
+    }
 }
+
+/// A finger that lands this close to a control, outside every one, means that control: the
+/// frame's touch panel puts a tap 15 to 30 px from where the finger is (measured), and a tap
+/// that misses by a hair should not be lost. In the panel's pixels.
+pub const REACH: f32 = 16.0;
 
 #[derive(Debug, Clone)]
 pub enum Target {
@@ -113,8 +125,10 @@ pub const MAX_COLUMNS: usize = 6;
 pub const COLUMN_GAP: f32 = px::S_5;
 pub const GROUP_GAP: f32 = px::S_3;
 pub const HEAD_GAP: f32 = px::S_2;
-/// A row's padding above and below (`.tile`: `var(--s-1) var(--s-3)`), and at its sides.
-pub const ROW_PAD_Y: f32 = px::S_1;
+/// A row's padding above and below, and at its sides: the web's `var(--s-1) var(--s-3)`, but
+/// twice as tall above and below on the frame (a bigger target for a finger on the wall, the
+/// owner's ask; the house still fits).
+pub const ROW_PAD_Y: f32 = px::S_2;
 pub const ROW_PAD_X: f32 = px::S_3;
 /// Under a row that has a control below its head (`.tile:has(> :nth-child(2))`).
 pub const ROW_PAD_BOTTOM: f32 = px::S_3;
@@ -486,6 +500,20 @@ mod tests {
         assert_eq!(columns(320.0), 1);
         assert_eq!(columns(1300.0), 3);
         assert_eq!(columns(9000.0), MAX_COLUMNS);
+    }
+
+    #[test]
+    fn a_hit_says_how_far_a_finger_is() {
+        let h = Hit {
+            x: 24.0,
+            y: 100.0,
+            w: 364.0,
+            h: 60.0,
+            what: Target::Act(Act::Refresh(&[])),
+        };
+        assert_eq!(h.distance(30.0, 120.0), 0.0, "inside");
+        assert_eq!(h.distance(20.0, 120.0), 4.0, "just left of it: within reach");
+        assert!(h.distance(0.0, 0.0) > REACH);
     }
 
     #[test]

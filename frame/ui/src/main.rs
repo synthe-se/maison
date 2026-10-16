@@ -321,6 +321,9 @@ fn on_event(app: &mut App, event: Event, (wf, hf): (f32, f32), pending: &AtomicB
         } => return Flow::Quit,
         Event::FingerDown { x, y, .. } => {
             let (x, y) = at(x, y);
+            if said_touches() {
+                eprintln!("touch down {x:.0},{y:.0} on {}", app.key_under(x, y));
+            }
             app.finger_down(x, y, now);
         }
         Event::FingerMotion { x, y, .. } => {
@@ -329,6 +332,9 @@ fn on_event(app: &mut App, event: Event, (wf, hf): (f32, f32), pending: &AtomicB
         }
         Event::FingerUp { x, y, .. } => {
             let (x, y) = at(x, y);
+            if said_touches() {
+                eprintln!("touch up {x:.0},{y:.0}");
+            }
             app.finger_up(x, y, now);
         }
         Event::Window {
@@ -364,6 +370,13 @@ fn simulation(app: &mut App, rx: &Receiver<String>) -> Option<String> {
         }
     }
     shot
+}
+
+/// Each finger down and up said in the log, where it landed and on what (`MAISON_STATS=1`, as
+/// the frame's unit sets it): a tap that does nothing can be read back.
+fn said_touches() -> bool {
+    static SAID: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SAID.get_or_init(|| std::env::var("MAISON_STATS").is_ok_and(|v| v == "1"))
 }
 
 /// What the screen is, said to a simulation when it changes.

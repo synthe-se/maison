@@ -18,7 +18,7 @@ use crate::live::Live;
 use crate::pairing::{Ask, Screen as Who, Session};
 use crate::theme::{self, Palette};
 use crate::ui::icon;
-use crate::ui::layout::{Hit, Target};
+use crate::ui::layout::{Hit, REACH, Target};
 use crate::ui::model::{Act, Button, Screen, View};
 use crate::ui::slider::{Sliders, value_at};
 use crate::ui::touch::{Finger, Meaning, Under};
@@ -254,7 +254,21 @@ impl App {
     }
 
     fn under(&self, x: f32, y: f32) -> Under {
-        match self.hits.iter().rposition(|h| h.contains(x, y)) {
+        // on a control (the last drawn wins), else the nearest within reach
+        let on = self
+            .hits
+            .iter()
+            .rposition(|h| h.contains(x, y))
+            .or_else(|| {
+                self.hits
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| (i, h.distance(x, y)))
+                    .filter(|(_, d)| *d <= REACH)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| i)
+            });
+        match on {
             Some(i) => match self.hits[i].what {
                 Target::Slider { .. } => Under::Slider(i),
                 Target::Act(_) => Under::Hit(i),
@@ -284,13 +298,24 @@ impl App {
     pub fn finger_up(&mut self, x: f32, y: f32, now: Instant) {
         // still on what it pressed, wherever the hits are now
         let under = match &self.pressed {
-            Some((u, h)) if h.contains(x, y) => *u,
+            Some((u, h)) if h.distance(x, y) <= REACH => *u,
             _ => Under::Nothing,
         };
         let m = self.finger.up(x, y, under, now);
         self.meant(m, now);
         self.pressed = None;
         self.dirty = true;
+    }
+
+    /// What a finger at (x, y) would land on, by its key (a log's words).
+    pub fn key_under(&self, x: f32, y: f32) -> String {
+        match self.under(x, y) {
+            Under::Hit(i) | Under::Slider(i) => self.hits[i]
+                .what
+                .key()
+                .map_or_else(|| "a control".to_string(), str::to_string),
+            Under::Nothing => "nothing".to_string(),
+        }
     }
 
     /// What the finger holds (its target as it went down).
