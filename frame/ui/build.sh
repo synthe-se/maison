@@ -7,6 +7,7 @@
 # cache stays in a Docker volume; the binary lands in frame/build/ui.
 # Usage: frame/ui/build.sh
 set -euo pipefail
+. "$(dirname "$0")/../docker.sh"
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$REPO/frame/build/ui"

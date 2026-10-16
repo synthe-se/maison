@@ -7,6 +7,7 @@
 # in frame/build/linux (aic8800/: the modules and the firmware the initramfs ships).
 # Usage: frame/linux/build.sh
 set -euo pipefail
+. "$(dirname "$0")/../docker.sh"
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION=7.2.11

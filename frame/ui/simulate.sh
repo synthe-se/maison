@@ -10,6 +10,7 @@
 # compositor (MAISON_TURN, 180 as on the frame), else by the app.
 # Usage: MAISON_TARGET=http://host.docker.internal:PORT frame/ui/simulate.sh
 set -euo pipefail
+. "$(dirname "$0")/../docker.sh"
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$REPO/frame/build/ui/maison-frame-ui"

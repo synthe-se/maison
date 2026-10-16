@@ -6,6 +6,7 @@
 # (no battery) never leaves it half written. Built in an armhf container (emulated on the Mac).
 # Usage: frame/linux/rootfs.sh        out: frame/build/linux/rootfs.squashfs
 set -euo pipefail
+. "$(dirname "$0")/../docker.sh"
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$REPO/frame/build/linux"
