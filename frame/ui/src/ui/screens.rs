@@ -8,7 +8,7 @@ use crate::theme::{px, ty};
 use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
 use crate::ui::layout::{
-    CODE_SPACING, Ctx, Drawn, GROUP_HEAD, P, STALE_ICON, TOUCH, columns, margin,
+    CODE_SPACING, Ctx, Drawn, GROUP_HEAD, MARK, MARK_SVG, P, STALE_ICON, TOUCH, columns, margin,
 };
 use crate::ui::model::{Body, Button, Group, Screen};
 
@@ -187,7 +187,11 @@ impl P<'_, '_, '_, '_> {
         let x = (wcss - w) / 2.0;
         // measured first, then drawn centred on the panel's height
         let brand = self.c.words.s(k::BRANDING_NAME);
-        let mut h = ty::BRAND_DOOR.line + px::S_5 + self.para_height(title, ty::PAGE, w)?;
+        let mut h = MARK
+            + px::S_2
+            + ty::BRAND_DOOR.line
+            + px::S_5
+            + self.para_height(title, ty::PAGE, w)?;
         for p in lead {
             h += px::S_4 + self.para_height(p, ty::BODY, w)?;
         }
@@ -201,6 +205,9 @@ impl P<'_, '_, '_, '_> {
             h += px::S_5 + px::CONTROL_H_L;
         }
         let mut y = ((hcss - h) / 2.0).max(m);
+        let mark = self.d(MARK).max(1) as u32;
+        self.d.picture(MARK_SVG, self.d(x), self.y(y), mark, mark)?;
+        y += MARK + px::S_2;
         self.line(&brand, ty::BRAND_DOOR, pal.ink, x, y, w)?;
         y += ty::BRAND_DOOR.line + px::S_5;
         y += self.para(title, ty::PAGE, pal.ink, x, y, w)?;

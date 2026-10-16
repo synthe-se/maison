@@ -98,6 +98,10 @@ pub const SWATCH_RING: f32 = 2.0;
 pub const STALE_ICON: f32 = 14.0;
 /// The pairing code's letters apart (ScreenPairing `.code`: 0.15em).
 pub const CODE_SPACING: f32 = 0.15;
+/// The door's mark (AuthShell `.mark`: 88 px, the name `--s-2` below it).
+pub const MARK: f32 = 88.0;
+/// Maison's mark, the web app's own (`web/static/brand.svg`), drawn in its colors.
+pub const MARK_SVG: &str = include_str!("../../../../web/static/brand.svg");
 
 /// The page margin for the panel's width in CSS pixels (tokens.css `--page-margin` and its
 /// media queries).
