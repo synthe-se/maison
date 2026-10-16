@@ -45,6 +45,9 @@ pub struct App {
     finger: Finger,
     /// The column's scroll, in the panel's pixels.
     pub scroll: f32,
+    /// What the finger went down on, as it was then: a drawing in between (a read came, the
+    /// house redrew) moves the hits, never what the finger holds.
+    pressed: Option<(Under, Hit)>,
     /// The house, or one of its pages; and when a finger last touched the panel.
     view: View,
     touched: Instant,
@@ -75,6 +78,7 @@ impl App {
             sources: Sources::new(),
             finger: Finger::default(),
             scroll: 0.0,
+            pressed: None,
             view: View::House,
             touched: Instant::now(),
             content: 0.0,
@@ -258,6 +262,10 @@ impl App {
     pub fn finger_down(&mut self, x: f32, y: f32, now: Instant) {
         self.touched = now;
         let under = self.under(x, y);
+        self.pressed = match under {
+            Under::Hit(i) | Under::Slider(i) => self.hits.get(i).map(|h| (under, h.clone())),
+            Under::Nothing => None,
+        };
         let m = self.finger.down(x, y, under, self.scroll, now);
         self.meant(m, now);
     }
@@ -268,10 +276,20 @@ impl App {
     }
 
     pub fn finger_up(&mut self, x: f32, y: f32, now: Instant) {
-        let under = self.under(x, y);
+        // still on what it pressed, wherever the hits are now
+        let under = match &self.pressed {
+            Some((u, h)) if h.contains(x, y) => *u,
+            _ => Under::Nothing,
+        };
         let m = self.finger.up(x, y, under, now);
         self.meant(m, now);
+        self.pressed = None;
         self.dirty = true;
+    }
+
+    /// What the finger holds (its target as it went down).
+    fn held(&self) -> Option<Target> {
+        self.pressed.as_ref().map(|(_, h)| h.what.clone())
     }
 
     fn meant(&mut self, m: Meaning, now: Instant) {
@@ -281,15 +299,13 @@ impl App {
                 self.scroll = s;
                 self.dirty = true;
             }
-            Meaning::Tap(i) => {
-                if let Some(Target::Act(act)) = self.hits.get(i).map(|h| h.what.clone()) {
+            Meaning::Tap(_) => {
+                if let Some(Target::Act(act)) = self.held() {
                     self.act(act);
                 }
             }
-            Meaning::SlideStart(i, x) | Meaning::Slide(i, x) | Meaning::SlideEnd(i, x) => {
-                let Some(Target::Slider { slider, x0, x1 }) =
-                    self.hits.get(i).map(|h| h.what.clone())
-                else {
+            Meaning::SlideStart(_, x) | Meaning::Slide(_, x) | Meaning::SlideEnd(_, x) => {
+                let Some(Target::Slider { slider, x0, x1 }) = self.held() else {
                     return;
                 };
                 let v = value_at(&slider, x, x0, x1);

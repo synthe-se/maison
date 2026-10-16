@@ -253,6 +253,23 @@ impl P<'_, '_, '_, '_> {
         (t.state.clone(), t.warn || offline, None)
     }
 
+    /// The order a tap on a toggle sends: to the other side of what it shows (the target while
+    /// one travels); none for a device out of reach, or a lead that is no gesture.
+    fn toggle(&self, lead: &Lead) -> Option<Order> {
+        let Lead::Toggle {
+            on,
+            offline: false,
+            turn_on,
+            turn_off,
+            ..
+        } = lead
+        else {
+            return None;
+        };
+        let shown = self.c.commands.shown(&turn_on.key, *on);
+        Some(Order::clone(if shown { turn_off } else { turn_on }))
+    }
+
     fn lead(&mut self, lead: &Lead, x: f32, y: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         let size = px::TILE_ICON;
@@ -263,7 +280,7 @@ impl P<'_, '_, '_, '_> {
                 on,
                 offline,
                 turn_on,
-                turn_off,
+                turn_off: _,
             } => {
                 let state = self.c.commands.state(&turn_on.key);
                 let shown = self.c.commands.shown(&turn_on.key, *on) && !offline;
@@ -288,15 +305,8 @@ impl P<'_, '_, '_, '_> {
                 };
                 self.disc(x, y, size, fill, Some((RING, ring)))?;
                 self.icon(*icon, x + inset, y + inset, GLYPH_ICON, ink)?;
-                if !offline {
-                    let order = if shown { turn_off } else { turn_on };
-                    self.hit(
-                        x,
-                        y,
-                        size,
-                        size,
-                        Target::Act(Act::Order(Order::clone(order))),
-                    );
+                if let Some(order) = self.toggle(lead) {
+                    self.hit(x, y, size, size, Target::Act(Act::Order(order)));
                 }
             }
             Lead::Glyph { icon, on } => {
@@ -397,6 +407,12 @@ impl P<'_, '_, '_, '_> {
         if let Some(open) = &t.open {
             // the whole row leads there (DeviceTile's link); a gesture drawn over it wins
             self.hit(x, y, w, h, Target::Act(open.clone()));
+        }
+        if let Some(order) = self.toggle(&t.lead) {
+            // the frame has no device pages to lead to: a row's head is its on/off, a big
+            // target for a finger on the wall (the controls under it keep theirs)
+            let head_h = self.head_height(t, w)?;
+            self.hit(x, y, w, ROW_PAD_Y + head_h, Target::Act(Act::Order(order)));
         }
         let (ix, iy) = (x + ROW_PAD_X, y + ROW_PAD_Y);
         let inner = w - 2.0 * ROW_PAD_X;

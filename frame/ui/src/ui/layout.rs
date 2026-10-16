@@ -120,8 +120,11 @@ pub const ROW_PAD_X: f32 = px::S_3;
 pub const ROW_PAD_BOTTOM: f32 = px::S_3;
 /// Between a row's head and each control under it (`.tile`'s gap).
 pub const PART_GAP: f32 = px::S_2;
-/// Header.svelte's mark, before the name.
+/// Header.svelte's mark, before the name (Brand.svelte: 28 px).
 pub const HEADER_MARK: f32 = 28.0;
+/// Borel sits high in its box: Brand.svelte's `.name` has `padding-top: 0.3em`, which, centred
+/// in its row, brings the name half of it down (in ems of the brand's size).
+pub const BRAND_NUDGE: f32 = 0.15;
 
 /// The page margin for the panel's width in CSS pixels (tokens.css `--page-margin` and its
 /// media queries).

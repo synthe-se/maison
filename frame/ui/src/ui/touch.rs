@@ -46,6 +46,8 @@ struct Down {
     under: Under,
     scroll: f32,
     dragging: bool,
+    /// Where the drag last put the column: still `scroll` when nothing could move.
+    scrolled: f32,
 }
 
 #[derive(Debug, Default)]
@@ -69,6 +71,7 @@ impl Finger {
             under,
             scroll,
             dragging: false,
+            scrolled: scroll,
         });
         match under {
             Under::Slider(i) => Meaning::SlideStart(i, x),
@@ -91,7 +94,8 @@ impl Finger {
         self.trail
             .retain(|(t, _)| at.duration_since(*t) <= SPEED_WINDOW);
         if d.dragging {
-            Meaning::Scrolled((d.scroll - (y - d.y)).clamp(0.0, max.max(0.0)))
+            d.scrolled = (d.scroll - (y - d.y)).clamp(0.0, max.max(0.0));
+            Meaning::Scrolled(d.scrolled)
         } else {
             Meaning::None
         }
@@ -105,7 +109,11 @@ impl Finger {
         };
         match d.under {
             Under::Slider(i) => Meaning::SlideEnd(i, x),
-            Under::Hit(i) if !d.dragging && still_under == d.under => Meaning::Tap(i),
+            // a finger that wandered past the slop but moved nothing (a column that does not
+            // scroll, a touch panel's jitter) still tapped what it pressed
+            Under::Hit(i) if still_under == d.under && (!d.dragging || d.scrolled == d.scroll) => {
+                Meaning::Tap(i)
+            }
             _ if d.dragging => {
                 self.trail.push((at, y));
                 self.trail
@@ -158,6 +166,26 @@ mod tests {
 
     fn ms(t0: Instant, n: u64) -> Instant {
         t0 + Duration::from_millis(n)
+    }
+
+    #[test]
+    fn a_finger_that_wanders_but_scrolls_nothing_still_taps() {
+        let t0 = Instant::now();
+        let mut f = Finger::default();
+        f.down(100.0, 100.0, Under::Hit(3), 0.0, t0);
+        // a touch panel's jitter, past the slop, on a column that does not scroll
+        assert_eq!(
+            f.motion(118.0, 110.0, 0.0, ms(t0, 40)),
+            Meaning::Scrolled(0.0)
+        );
+        assert_eq!(
+            f.up(118.0, 110.0, Under::Hit(3), ms(t0, 80)),
+            Meaning::Tap(3)
+        );
+        // the same move on a column that scrolls is a drag: no tap
+        f.down(100.0, 100.0, Under::Hit(3), 50.0, t0);
+        f.motion(100.0, 80.0, 400.0, ms(t0, 40));
+        assert_eq!(f.up(100.0, 80.0, Under::Hit(3), ms(t0, 80)), Meaning::None);
     }
 
     #[test]

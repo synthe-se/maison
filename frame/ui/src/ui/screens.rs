@@ -8,8 +8,8 @@ use crate::theme::{px, ty};
 use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
 use crate::ui::layout::{
-    CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP, HEADER_MARK, MARK,
-    MARK_SVG, P, STALE_ICON, TOUCH, balance, columns, margin,
+    BRAND_NUDGE, CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP,
+    HEADER_MARK, MARK, MARK_SVG, P, STALE_ICON, TOUCH, balance, columns, margin,
 };
 use crate::ui::model::{Body, Button, Group, Screen};
 
@@ -202,7 +202,7 @@ impl P<'_, '_, '_, '_> {
             ty::BRAND,
             pal.ink,
             bx,
-            (px::HEADER_H - ty::BRAND.line) / 2.0,
+            (px::HEADER_H - ty::BRAND.line) / 2.0 + BRAND_NUDGE * ty::BRAND.size,
             wcss - bx - m,
         )?;
         Ok(content)
@@ -459,14 +459,20 @@ mod tests {
         let house = Screen::House(vec![group.clone()]);
         let drawn = paint(&mut d, &ctx, &house, &toasts).unwrap();
         let keys: Vec<&str> = drawn.hits.iter().filter_map(|h| h.what.key()).collect();
-        // « Tout éteindre », each gesture, the lit one's slider, and the late one's
-        // « Réessayer », which turns it on again
+        // « Tout éteindre », each gesture (its row's head and its disc), the lit one's slider,
+        // and the late one's « Réessayer », which turns it on again
         assert!(keys.contains(&"lamps:all-off"), "{keys:?}");
         assert_eq!(
             keys.iter().filter(|k| **k == "hue-lamp:2:power").count(),
-            2,
-            "the late lamp's disc and its « Réessayer »: {keys:?}"
+            3,
+            "the late lamp's row, its disc and its « Réessayer »: {keys:?}"
         );
+        let row = drawn
+            .hits
+            .iter()
+            .find(|h| h.what.key() == Some("hue-lamp:1:power"))
+            .unwrap();
+        assert!(row.w > 300.0, "the whole row is the lamp's on/off: {row:?}");
         assert!(keys.contains(&"hue-lamp:1:power") && keys.contains(&"hue-lamp:1:brightness"));
         let slider = drawn
             .hits
