@@ -3,9 +3,9 @@
 //! Before 06:00 it says it as it is: yesterday's color is still in force (« Encore blanc
 //! jusqu'à 6:00 »), today's starts at 06:00.
 
-use chrono::{DateTime, NaiveTime, Timelike};
+use chrono::{DateTime, Timelike};
 use maison_api::Tz;
-use maison_api::tempo::{Color, Forecast, Hours, Today};
+use maison_api::tempo::{Color, Forecast, Today};
 
 use super::{Cx, TEMPO, loaded, stale};
 use crate::i18n::{Arg, Words, k};
@@ -14,75 +14,12 @@ use crate::ui::model::{Body, Group, Lead, Tile};
 /// RTE publishes tomorrow's color around 10:40 (minutes after midnight).
 pub const ANNOUNCED_AT: u32 = 10 * 60 + 40;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Period {
-    Peak,
-    OffPeak,
-}
+pub use maison_api::tempo::{Period, PriceNow};
 
-/// The price in force at a moment (price.ts `PriceNow`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct PriceNow {
-    pub color: Color,
-    pub period: Period,
-    /// €/kWh
-    pub price: f64,
-    /// When the period ends (« 22:00 »).
-    pub until: String,
-    /// False before the peak hours start: the color in force is still yesterday's, and today's
-    /// (`next`) starts at `until`.
-    pub day_started: bool,
-    pub next: Option<Color>,
-}
-
-fn minutes(hhmm: &str) -> u32 {
-    NaiveTime::parse_from_str(hhmm, "%H:%M").map_or_else(
-        |e| {
-            // read as midnight, as before; said, so a server's new format does not go unseen
-            eprintln!("tempo: the hours' `{hhmm}` is no HH:MM ({e}): read as 00:00");
-            0
-        },
-        |t| t.hour() * 60 + t.minute(),
-    )
-}
-
-/// The period at `now`; the Tempo day starts when the peak hours do.
-fn period_at(now: &DateTime<Tz>, hours: &Hours) -> (Period, bool) {
-    let t = now.hour() * 60 + now.minute();
-    let (start, end) = (minutes(&hours.peak_start), minutes(&hours.peak_end));
-    (
-        if t >= start && t < end {
-            Period::Peak
-        } else {
-            Period::OffPeak
-        },
-        t >= start,
-    )
-}
-
-/// What a kWh costs at `now`; `None` without prices or without the color in force.
+/// What a kWh costs at `now`; `None` without prices or without the color in force
+/// (maison-api's `Today::price_at`, the backend's rule).
 pub fn price_now(now: &DateTime<Tz>, data: &Today) -> Option<PriceNow> {
-    let (period, day_started) = period_at(now, &data.hours);
-    let color = if day_started {
-        data.today.color
-    } else {
-        data.yesterday.color
-    }?;
-    let prices = data.tariffs.as_ref()?.of(color);
-    Some(PriceNow {
-        color,
-        period,
-        price: match period {
-            Period::Peak => prices.peak,
-            Period::OffPeak => prices.off_peak,
-        },
-        until: match period {
-            Period::Peak => data.hours.peak_end.to_string(),
-            Period::OffPeak => data.hours.peak_start.to_string(),
-        },
-        day_started,
-        next: if day_started { None } else { data.today.color },
-    })
+    data.price_at(now.with_timezone(&chrono::Utc))
 }
 
 /// A color's name (colors.ts `TEMPO[c].name`).
