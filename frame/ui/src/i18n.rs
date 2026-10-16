@@ -82,6 +82,8 @@ impl Words {
             Lang::Fr => FR,
             Lang::En => EN,
         };
+        // build.rs refused to build unless both files are JSON and every message is a text or
+        // a plural on `count` (`message_shape`): these cannot fail on the embedded files
         let mut messages: HashMap<String, serde_json::Value> =
             serde_json::from_str(json).expect("the messages are JSON (build.rs read them)");
         messages.remove("$schema");
@@ -89,7 +91,7 @@ impl Words {
             .into_iter()
             .map(|(k, v)| {
                 let m = serde_json::from_value(v)
-                    .unwrap_or_else(|e| panic!("message {k}: not a text nor a plural: {e}"));
+                    .unwrap_or_else(|e| panic!("message {k}: build.rs checked its shape: {e}"));
                 (k, m)
             })
             .collect();
@@ -165,7 +167,7 @@ impl Words {
     }
 
     /// A time of day as Intl writes `{hour: 'numeric', minute: '2-digit'}`: « 7:05 », « 19:05 »;
-    /// « 7:05 PM » in English (the web app's `clock`).
+    /// « 7:05 PM » in English (the web app's `clock`; the day periods typed from CLDR's en).
     pub fn clock(&self, t: NaiveTime) -> String {
         let (h, m) = (t.hour(), t.minute());
         match self.lang {
@@ -196,6 +198,7 @@ impl Words {
         if at.date_naive() == now.date_naive() {
             return clock;
         }
+        // CLDR's abbreviated month names (fr, en), as Intl's `month: 'short'` writes them
         const FR: [&str; 12] = [
             "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.",
             "nov.", "déc.",
@@ -282,7 +285,7 @@ impl Words {
         text.to_lowercase()
     }
 
-    /// « a, b et c », « a, b, and c » (Intl.ListFormat, long).
+    /// « a, b et c », « a, b, and c » (Intl.ListFormat, long: CLDR's list patterns, typed).
     pub fn list(&self, items: &[String]) -> String {
         match (items, self.lang) {
             ([], _) => String::new(),
@@ -294,18 +297,23 @@ impl Words {
         }
     }
 
-    /// What a failure means for the person (errors.ts `errorText`).
+    /// What a failure means for the person (errors.ts `errorText`): a refusal by its code,
+    /// else by its status; no answer as the network's.
     pub fn failure(&self, f: &crate::client::Failure) -> String {
         use crate::client::Failure;
         match f {
             Failure::Unreachable(_) => self.s(k::ERROR_NETWORK),
             Failure::SignedOut => self.s(k::ERROR_SIGNED_OUT),
-            Failure::Refused { code: Some(c), .. } if c == "too_many_attempts" => {
-                self.s(k::PK_TOO_MANY)
-            }
-            Failure::Refused { code: Some(c), .. } if c == "pairing_unknown" => {
-                self.s(k::SCREENS_PAIRING_UNKNOWN)
-            }
+            Failure::Refused {
+                code: Some(c),
+                status,
+            } => match code_words(*c) {
+                Some(key) => self.s(key),
+                None => self.failure(&Failure::Refused {
+                    status: *status,
+                    code: None,
+                }),
+            },
             Failure::Refused { status: 403, .. } => self.s(k::ADMIN_ONLY),
             Failure::Refused { status: 404, .. } => self.s(k::ERROR_NOT_FOUND),
             Failure::Refused {
@@ -323,6 +331,44 @@ impl Words {
             Lang::En => format!("{n}%"),
         }
     }
+}
+
+/// The words of a refusal's code (errors.ts `BY_CODE`): every code of the API is named here, so a
+/// new one is a decision; `None` is said by its status (the web app's own fallback).
+fn code_words(code: maison_api::codes::Code) -> Option<&'static str> {
+    use maison_api::codes::Code;
+    Some(match code {
+        Code::NotSignedIn => k::ERROR_SIGNED_OUT,
+        Code::Forbidden => k::ADMIN_ONLY,
+        Code::BadName => k::ERROR_BAD_NAME,
+        Code::PasskeyOff => k::PK_OFF,
+        Code::InviteInvalid => k::PK_INVITE_INVALID,
+        Code::CeremonyExpired => k::PK_EXPIRED,
+        Code::PasskeyRejected => k::PK_REJECTED,
+        Code::UnknownPasskey => k::PK_UNKNOWN,
+        Code::PasskeyExists => k::PK_EXISTS,
+        Code::LastPasskey => k::PK_LAST,
+        Code::NotFound => k::ERROR_NOT_FOUND,
+        Code::ReauthNeeded => k::KEYS_REAUTH,
+        Code::PersonExists => k::INVITES_PERSON_EXISTS_SHORT,
+        Code::PairingUnknown => k::SCREENS_PAIRING_UNKNOWN,
+        Code::PairingElsewhere => k::SCREENS_PAIRING_ELSEWHERE,
+        Code::ScreenExists => k::SCREENS_EXISTS,
+        Code::TooManyAttempts => k::PK_TOO_MANY,
+        Code::NestedScene => k::SCENES_NESTED,
+        Code::DeviceUnreachable | Code::ServiceUnreachable => k::ERROR_NETWORK,
+        Code::Internal => k::ERROR_SERVER,
+        // no words of their own yet in i18n/messages: said by their status
+        Code::NotForScreens
+        | Code::BadPerson
+        | Code::NotYourself
+        | Code::TooManyActions
+        | Code::NotADevice
+        | Code::Invalid
+        | Code::NotConfigured
+        | Code::Busy
+        | Code::Unsupported => return None,
+    })
 }
 
 /// `{name}` → its value; a name without one stays as written.
@@ -469,6 +515,35 @@ mod tests {
             fr.failure(&crate::client::Failure::Unreachable("x".into())),
             fr.s(k::ERROR_NETWORK)
         );
+    }
+
+    #[test]
+    fn a_refusal_is_said_by_its_code_else_its_status() {
+        use crate::client::Failure;
+        use maison_api::codes::Code;
+        let fr = Words::new(Lang::Fr);
+        let refused = |status, code| fr.failure(&Failure::Refused { status, code });
+        assert_eq!(
+            refused(404, Some(Code::PairingUnknown)),
+            fr.s(k::SCREENS_PAIRING_UNKNOWN)
+        );
+        assert_eq!(
+            refused(429, Some(Code::TooManyAttempts)),
+            fr.s(k::PK_TOO_MANY)
+        );
+        assert_eq!(
+            refused(503, Some(Code::DeviceUnreachable)),
+            fr.s(k::ERROR_NETWORK)
+        );
+        // a code without words of its own: its status
+        assert_eq!(refused(409, Some(Code::Busy)), fr.s(k::ERROR_SERVER));
+        assert_eq!(refused(403, Some(Code::NotForScreens)), fr.s(k::ADMIN_ONLY));
+        assert_eq!(refused(404, None), fr.s(k::ERROR_NOT_FOUND));
+        assert_eq!(refused(502, None), fr.s(k::ERROR_NETWORK));
+        // every code is said with words that exist
+        for c in Code::ALL {
+            assert!(!refused(c.status(), Some(*c)).is_empty());
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 use crate::commands::Order;
 use crate::pairing::Ask;
+use crate::ui::icon::Icon;
 use maison_api::tempo::Color;
 
 /// A dashboard group (Group.svelte): a title, a fact or actions in its head, then its body.
@@ -61,14 +62,14 @@ pub enum Lead {
     /// side of what is shown (the target while one travels, as DeviceTile's `!shown`); both
     /// orders share one key, which holds the gesture's state.
     Toggle {
-        icon: &'static str,
+        icon: Icon,
         on: bool,
         offline: bool,
         turn_on: Box<Order>,
         turn_off: Box<Order>,
     },
     /// An icon that does nothing (on: in the accent wash).
-    Glyph { icon: &'static str, on: bool },
+    Glyph { icon: Icon, on: bool },
     /// A Tempo day's swatch: blue filled, white a ring, red hatched (Swatch.svelte).
     Swatch(Option<Color>),
 }
@@ -92,25 +93,22 @@ pub enum Part {
 /// A button (`.btn`).
 #[derive(Debug, Clone)]
 pub struct Button {
-    pub icon: Option<&'static str>,
+    pub icon: Option<Icon>,
     pub label: String,
     pub act: Act,
     /// `.btn.primary`: the accent, filled.
     pub primary: bool,
-    /// `.btn.ghost`.
-    pub ghost: bool,
     /// Out of reach: shown, does nothing (its reason said on the tile).
     pub unavailable: bool,
 }
 
 impl Button {
-    pub fn new(icon: Option<&'static str>, label: impl Into<String>, act: Act) -> Self {
+    pub fn new(icon: Option<Icon>, label: impl Into<String>, act: Act) -> Self {
         Self {
             icon,
             label: label.into(),
             act,
             primary: false,
-            ghost: false,
             unavailable: false,
         }
     }
@@ -155,15 +153,15 @@ pub struct Slider {
     pub step: f64,
     /// Where the device is while it travels to the value (a shutter's position).
     pub mark: Option<f64>,
-    /// Sends while it moves (at most every 300 ms), not only on release.
+    /// Sends while it moves (at most every `SLIDER_THROTTLE_MS`), not only on release.
     pub live: bool,
     /// The value held after release is let go once the device says one this near.
     pub near: f64,
     /// Words under each end (« Fermé », « Ouvert »).
     pub ends: Option<(String, String)>,
-    /// The order for a value: its path, and the body's field the value goes in.
+    /// The order for a value: its path, and its body, one of the API's request types.
     pub path: String,
-    pub field: &'static str,
+    pub body: fn(f64) -> serde_json::Value,
     pub refresh: &'static str,
     pub name: String,
 }

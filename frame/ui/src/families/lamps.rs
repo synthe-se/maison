@@ -4,14 +4,15 @@
 //! brightness slider only under a lamp that is on and reachable. « Tout éteindre » when one is.
 
 use chrono::DateTime;
-use chrono_tz::Tz;
-use maison_api::lamps::{HueLamp, LampList, ZigbeeLamp};
-use serde_json::json;
+use maison_api::Tz;
+use maison_api::lamps::{BrightnessRequest, HueLamp, LampList, PowerRequest, ZigbeeLamp};
 
-use super::{Cx, HUE, ZIGBEE, path_segment, stale};
-use crate::commands::{Order, Outcome, Toast, limit};
+use super::{Cx, HUE, ZIGBEE, loaded, stale};
+use crate::commands::{Order, Outcome, Post, Toast, json, limit};
 use crate::i18n::{Arg, Words, k};
 use crate::live::View;
+use crate::paths;
+use crate::ui::icon;
 use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Slider, Tile};
 
 /// One lamp, whatever its radio (lamp.ts `Lamp`).
@@ -36,11 +37,11 @@ pub struct Driver {
 
 pub const HUE_DRIVER: Driver = Driver {
     key: HUE,
-    base: "/hue-lamps",
+    base: paths::HUE_LAMPS,
 };
 pub const ZIGBEE_DRIVER: Driver = Driver {
     key: ZIGBEE,
-    base: "/zigbee/lamps",
+    base: paths::ZIGBEE_LAMPS,
 };
 /// Both families, read again together.
 pub const LAMPS: &[&str] = &[HUE, ZIGBEE];
@@ -92,16 +93,29 @@ pub fn state(w: &Words, l: &Lamp, now: &DateTime<Tz>) -> String {
     }
 }
 
+fn power_post(d: Driver, l: &Lamp, on: bool) -> Post {
+    Post::json(
+        paths::of(d.base, &l.id, "power"),
+        &PowerRequest { enabled: on },
+    )
+}
+
 fn power(d: Driver, l: &Lamp, on: bool) -> Order {
     Order::one(
         format!("{}:{}:power", d.key, l.id),
         l.name.clone(),
-        format!("{}/{}/power", d.base, path_segment(&l.id)),
-        Some(json!({ "enabled": on })),
+        power_post(d, l, on),
     )
     .toggle(on)
     .within(limit::LAMP)
     .then_refresh(&[d.key])
+}
+
+/// A brightness slider's body (1–100, whole percents).
+fn brightness(value: f64) -> serde_json::Value {
+    json(&BrightnessRequest {
+        brightness: value.round().clamp(0.0, 100.0) as u8,
+    })
 }
 
 pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Tile {
@@ -117,8 +131,8 @@ pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Tile {
             live: true,
             near: 2.0,
             ends: None,
-            path: format!("{}/{}/brightness", d.base, path_segment(&l.id)),
-            field: "brightness",
+            path: paths::of(d.base, &l.id, "brightness"),
+            body: brightness,
             refresh: d.key,
             name: l.name.clone(),
         }));
@@ -129,9 +143,9 @@ pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Tile {
         warn: !l.reachable && !l.connecting,
         lead: Lead::Toggle {
             icon: if l.reachable {
-                "lightbulb"
+                icon::LIGHTBULB
             } else {
-                "lightbulb-off"
+                icon::LIGHTBULB_OFF
             },
             on: l.is_on,
             offline: !l.reachable,
@@ -177,43 +191,44 @@ pub fn lamps_group(
     if !lit.is_empty() {
         let posts = lit
             .iter()
-            .map(|(d, l)| (l.name.clone(), power(*d, l, false).posts.remove(0).1))
+            .map(|(d, l)| (l.name.clone(), power_post(*d, l, false)))
             .collect();
         actions.push(Button::new(
-            Some("lightbulb-off"),
+            Some(icon::LIGHTBULB_OFF),
             w.s(k::LAMPS_ALL_OFF),
-            Act::Order(Order {
-                key: "lamps:all-off".into(),
-                posts,
-                target: None,
-                limit: limit::LAMP,
-                refresh: vec![HUE, ZIGBEE],
-                say: Some(all_off_said),
-            }),
+            Act::Order(
+                Order::many("lamps:all-off", posts)
+                    .within(limit::LAMP)
+                    .then_refresh(LAMPS)
+                    .said(all_off_said),
+            ),
         ));
     }
-    // the two lists read as one: loading while one is, failed when one did and nothing is known
-    let loading = families.iter().any(|(_, v)| v.loading) && rows.is_empty();
-    let failed = families.iter().any(|(_, v)| v.failed) && rows.is_empty();
-    let body = if loading {
-        Body::Loading
-    } else if failed {
-        Body::Failed {
-            text: w.s(k::ERROR_NETWORK),
-            retry: Button::new(
-                Some("refresh-cw"),
-                w.s(k::COMMON_RETRY),
-                Act::Refresh(LAMPS),
-            ),
-        }
-    } else if rows.is_empty() {
-        Body::Empty {
-            text: w.s(k::LAMPS_NONE),
-            hint: w.s(k::LAMPS_NONE_HINT),
-        }
-    } else {
-        Body::Tiles(rows.iter().map(|(d, l)| tile(w, *d, l, now)).collect())
+    // the two lists read as one: loading while one is, failed when one did, and nothing known
+    let unknown = rows.is_empty() && families.iter().any(|(_, v)| v.loading || v.failed());
+    let loading = families.iter().any(|(_, v)| v.loading);
+    let both = View {
+        data: (!unknown).then(|| std::sync::Arc::new(rows)),
+        loading,
+        // still reading one: no failure said yet
+        failure: if loading {
+            None
+        } else {
+            families.iter().find_map(|(_, v)| v.failure.clone())
+        },
+        stale: false,
+        at: None,
     };
+    let body = loaded(
+        w,
+        &both,
+        LAMPS,
+        (k::LAMPS_NONE, k::LAMPS_NONE_HINT),
+        |rows| {
+            (!rows.is_empty())
+                .then(|| Body::Tiles(rows.iter().map(|(d, l)| tile(w, *d, l, now)).collect()))
+        },
+    );
     Some(Group {
         title: w.s(k::ZIGBEE_LAMPS_TITLE),
         fact: None,
@@ -225,15 +240,7 @@ pub fn lamps_group(
 
 /// A list's lamps, its read state kept.
 fn as_lamps<L>(v: View<LampList<L>>, from: fn(&L) -> Lamp) -> View<Vec<Lamp>> {
-    View {
-        data: v
-            .data
-            .map(|d| std::sync::Arc::new(d.lamps.iter().map(from).collect())),
-        loading: v.loading,
-        failed: v.failed,
-        stale: v.stale,
-        at: v.at,
-    }
+    v.map(|d| d.lamps.iter().map(from).collect())
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
@@ -272,16 +279,9 @@ mod tests {
     use crate::i18n::Lang;
     use chrono::TimeZone;
     use maison_api::{Answer, HOUSE_TZ};
-    use std::sync::Arc;
 
     fn view(lamps: Vec<Lamp>) -> View<Vec<Lamp>> {
-        View {
-            data: Some(Arc::new(lamps)),
-            loading: false,
-            failed: false,
-            stale: false,
-            at: None,
-        }
+        View::ready(lamps)
     }
 
     fn now() -> DateTime<Tz> {
@@ -318,13 +318,17 @@ mod tests {
         assert!(*on && !offline);
         assert_eq!(order.key, "hue-lamp:aa:bb:power");
         assert_eq!(order.posts[0].1.path, "/hue-lamps/aa%3Abb/power");
-        assert_eq!(order.posts[0].1.body, Some(json!({"enabled": false})));
+        assert_eq!(
+            order.posts[0].1.body,
+            Some(serde_json::json!({"enabled": false}))
+        );
         assert_eq!(order.target, Some(false));
         let Part::Slider(s) = &tiles[0].parts[0] else {
             panic!("slider")
         };
         assert_eq!(s.value, 80.0);
         assert!(s.live);
+        assert_eq!((s.body)(42.4), serde_json::json!({"brightness": 42}));
         // unreachable: said since when, no slider, the gesture shown but not operable
         assert_eq!(tiles[1].state, "Injoignable depuis 10\u{a0}min");
         assert!(tiles[1].warn);
@@ -345,12 +349,48 @@ mod tests {
         let loading = View::<Vec<Lamp>> {
             data: None,
             loading: true,
-            failed: false,
+            failure: None,
             stale: false,
             at: None,
         };
         let g = lamps_group(&w, &[(HUE_DRIVER, &loading)], &now(), None).unwrap();
         assert!(matches!(g.body, Body::Loading));
+        // one list failed, the other still reading: reading; both done, the failure said
+        let failed = View::<Vec<Lamp>> {
+            data: None,
+            loading: false,
+            failure: Some(crate::client::Failure::Unreachable("x".into())),
+            stale: false,
+            at: None,
+        };
+        let g = lamps_group(
+            &w,
+            &[(HUE_DRIVER, &failed), (ZIGBEE_DRIVER, &loading)],
+            &now(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(g.body, Body::Loading));
+        let g = lamps_group(&w, &[(HUE_DRIVER, &failed)], &now(), None).unwrap();
+        assert!(matches!(g.body, Body::Failed { .. }));
+        // one list failed, the other read: its lamps
+        let one = view(vec![Lamp {
+            id: "1".into(),
+            name: "Salon".into(),
+            reachable: true,
+            connecting: false,
+            last_seen: None,
+            is_on: false,
+            brightness: 10,
+        }]);
+        let g = lamps_group(
+            &w,
+            &[(HUE_DRIVER, &failed), (ZIGBEE_DRIVER, &one)],
+            &now(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(&g.body, Body::Tiles(t) if t.len() == 1));
         let none = view(Vec::new());
         let g = lamps_group(&w, &[(HUE_DRIVER, &none)], &now(), None).unwrap();
         assert!(matches!(g.body, Body::Empty { .. }));

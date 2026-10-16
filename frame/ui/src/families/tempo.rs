@@ -4,7 +4,7 @@
 //! jusqu'à 6:00 »), today's starts at 06:00.
 
 use chrono::{DateTime, NaiveTime, Timelike};
-use chrono_tz::Tz;
+use maison_api::Tz;
 use maison_api::tempo::{Color, Forecast, Hours, Today};
 
 use super::{Cx, TEMPO, loaded, stale};
@@ -36,7 +36,14 @@ pub struct PriceNow {
 }
 
 fn minutes(hhmm: &str) -> u32 {
-    NaiveTime::parse_from_str(hhmm, "%H:%M").map_or(0, |t| t.hour() * 60 + t.minute())
+    NaiveTime::parse_from_str(hhmm, "%H:%M").map_or_else(
+        |e| {
+            // read as midnight, as before; said, so a server's new format does not go unseen
+            eprintln!("tempo: the hours' `{hhmm}` is no HH:MM ({e}): read as 00:00");
+            0
+        },
+        |t| t.hour() * 60 + t.minute(),
+    )
 }
 
 /// The period at `now`; the Tempo day starts when the peak hours do.
@@ -214,13 +221,13 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
     let forecast = cx.live.want(&cx.sources.forecast);
     let now = cx.house_now();
     let w = cx.words;
-    let body = loaded(w, &today, &[TEMPO], false, ("", ""), || {
-        Body::Tiles(vec![tile(
+    let body = loaded(w, &today, &[TEMPO], ("", ""), |data| {
+        Some(Body::Tiles(vec![tile(
             w,
-            today.data.as_deref().expect("loaded"),
+            data,
             forecast.data.as_deref(),
             &now,
-        )])
+        )]))
     });
     Some(Group {
         title: w.s(k::NAV_TEMPO),

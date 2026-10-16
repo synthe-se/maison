@@ -10,14 +10,19 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$REPO/frame/build/ui"
-RUST=1.99.1
+# the toolchain the crate says it needs (Cargo.toml `rust-version`), said once there
+RUST=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' "$REPO/frame/ui/Cargo.toml")
+[ -n "$RUST" ] || { echo "frame/ui/Cargo.toml says no rust-version" >&2; exit 1; }
 TARGET=armv7-unknown-linux-gnueabihf
 VOLUME=maison-frame-ui
 
 mkdir -p "$OUT"
 docker volume create "$VOLUME" >/dev/null
 # the platform said: the local debian:trixie may be the armhf one rootfs.sh pulled (emulated, slow,
-# and rustup would take it for the host)
+# and rustup would take it for the host). By its tag: not pinned by digest yet
+# (`debian:trixie@sha256:…`, the manifest list's, to look up with the network).
+# rustup comes from its script over HTTPS (curl -f, TLS checked), once into the cache volume; the
+# toolchain it installs is checked by rustup against the hashes of its channel's manifest (HTTPS).
 # the web app's fonts come from its node_modules (Fraunces): installed on the Mac first
 [ -f "$REPO/web/node_modules/@fontsource-variable/fraunces/files/fraunces-latin-wght-normal.woff2" ] ||
 	{ echo "the web app's fonts are missing: run \`bun install\` in web/" >&2; exit 1; }

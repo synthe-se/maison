@@ -5,7 +5,8 @@
 
 use std::time::{Duration, Instant};
 
-/// Past this many pixels a finger is dragging, not tapping (Android's touch slop, 8 dp).
+/// Past this many pixels a finger is dragging, not tapping: Android's touch slop (8 dp) at 1.5 px
+/// a dp (hdpi), in the panel's pixels.
 pub const SLOP: f32 = 12.0;
 /// A fling slower than this (px/s) stops at once.
 const MIN_FLING: f32 = 60.0;

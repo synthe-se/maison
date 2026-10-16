@@ -459,7 +459,6 @@ version = "0.1.0"
 dependencies = [
  "allsorts",
  "chrono",
- "chrono-tz",
  "maison-api",
  "resvg",
  "sdl3",
