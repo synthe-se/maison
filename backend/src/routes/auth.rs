@@ -24,15 +24,14 @@ use axum::{
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use chrono::{Duration, Utc};
-use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::Serialize;
 use time::Duration as CookieDuration;
 
 use crate::{
     auth::{
-        cookie_name, cookie_value, decode_token, AuthUser, AuthenticatedUser, Claims, CookieName,
-        Opened, RefreshEntry, SessionInfo, Taken, ACCESS_TOKEN_MINUTES, REFRESH_TOKEN_DAYS,
-        SESSION_MAX_DAYS,
+        cookie_name, cookie_value, decode_token, encode_token, AuthUser, AuthenticatedUser, Claims,
+        CookieName, Opened, RefreshEntry, SessionInfo, Taken, ACCESS_TOKEN_MINUTES,
+        REFRESH_TOKEN_DAYS, SESSION_MAX_DAYS,
     },
     error::{AppError, Refusal},
     passkey::client_ip,
@@ -103,11 +102,7 @@ pub(crate) async fn open_session(
         exp: u64::try_from((Utc::now() + Duration::minutes(ACCESS_TOKEN_MINUTES)).timestamp())
             .unwrap_or_default(),
     };
-    let token = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()),
-    )?;
+    let token = encode_token(&claims, state.config.jwt_secret.as_bytes())?;
     let refresh_token = random_secret();
     state
         .refresh_store

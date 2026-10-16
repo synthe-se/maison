@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.99.1"
 default-run = "maison-backend"
+# never on crates.io: cargo deny reads it as private (its path dependency, its unchosen license)
+publish = false
 
 [features]
 default = ["bluetooth"]
@@ -18,7 +20,7 @@ webauthn-rs = { version = "0.5.5", default-features = false, features = ["condit
 webauthn-rs-proto = "0.5.5"   # the same version webauthn-rs pins; for the options it builds
 # webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the Pi
 # carries it (cargo-zigbuild compiles it with zig cc)
-openssl = { version = "0.10", features = ["vendored"] }
+openssl = { version = "=0.10.81", features = ["vendored"] }
 axum = { version = "0.8.9", features = ["multipart"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.23.1"
@@ -33,10 +35,12 @@ dotenvy = "0.15.7"
 # the uplg forks (main = upstream + our fixes), pinned: `cargo update` must not follow a branch
 ashv2 = { git = "https://github.com/uplg/ashv2/", rev = "a6ab7043d7bc9924114ae22fc0abf73298645d7e", version = "13.0.0", features = ["ezsp"] }
 ezsp = "17.0.0"
-silizium = { version = "3", features = ["le-stream"] }
+silizium = { version = "=3.1.0", features = ["le-stream"] }
 futures = "0.3.34"
-heapless = "0.9"
-jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
+heapless = "=0.9.3"
+# HS256 only, through our own provider (auth.rs `hs256`): no crypto backend feature, so no
+# RSA/ECDSA/EdDSA (and no rsa 0.9, RUSTSEC-2023-0071) in the tree for a JWT we HMAC
+jsonwebtoken = { version = "=11.1.0", default-features = false }
 md5 = "0.8.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "query", "rustls", "form"] }
 rbroadlink = "0.4.2"
@@ -78,8 +82,8 @@ sunrise = "3.0.0"
 tokio = { version = "1.53.3", features = ["test-util"] }
 # a software authenticator and client: passkeys end to end, discoverable ones included
 passkey = { version = "0.6.0", features = ["rust-crypto"] }
-async-trait = "0.1"
-public-suffix = "0.1"
+async-trait = "=0.1.92"
+public-suffix = "=0.1.3"
 tempfile = "3.27.0"
 tower = "0.5.3"
 

@@ -14,9 +14,8 @@ use axum::{
     http::{HeaderMap, Method, Request, StatusCode},
     Router,
 };
-use jsonwebtoken::{encode, EncodingKey, Header};
 use maison_backend::{
-    auth::Claims,
+    auth::{encode_token, Claims},
     build_app_parts_from_config,
     config::{self, Config},
 };
@@ -100,12 +99,7 @@ pub fn token_signed_in_ago(person: &str, age_ms: i64) -> String {
         sid: String::new(),
         exp: 4_102_444_800,
     };
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(jwt_secret().as_bytes()),
-    )
-    .expect("test token should encode")
+    encode_token(&claims, jwt_secret().as_bytes()).expect("test token should encode")
 }
 
 /// A never-expiring admin token for `leonard`.

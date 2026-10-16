@@ -38,7 +38,7 @@ use axum::{
     http::{header::AUTHORIZATION, request::Parts, Extensions, HeaderMap},
 };
 use chrono::Utc;
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -515,11 +515,129 @@ pub fn decode_token(
     token: &str,
     secret: &[u8],
 ) -> Result<jsonwebtoken::TokenData<Claims>, jsonwebtoken::errors::Error> {
+    hs256::install();
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret),
         &Validation::default(),
     )
+}
+
+/// An access token for `claims`, signed with `secret` (HS256).
+pub fn encode_token(claims: &Claims, secret: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
+    hs256::install();
+    encode(
+        &Header::default(),
+        claims,
+        &EncodingKey::from_secret(secret),
+    )
+}
+
+/// The one algorithm the access token uses, HS256, as jsonwebtoken's crypto provider: its own
+/// providers (`rust_crypto`, `aws_lc_rs`) bring RSA, ECDSA and EdDSA, `rsa` 0.9 among them
+/// (RUSTSEC-2023-0071), none of which Maison signs with. HMAC-SHA-256 (RFC 2104) over `sha2`,
+/// checked against RFC 4231's vectors; any other algorithm is refused.
+mod hs256 {
+    use jsonwebtoken::{
+        crypto::{CryptoProvider, JwtSigner, JwtVerifier, KeyUtils},
+        errors::{ErrorKind, Result},
+        signature, Algorithm, AlgorithmFamily, DecodingKey, DecodingKeyKind, EncodingKey,
+    };
+    use sha2::{Digest, Sha256};
+
+    use crate::util::constant_time_eq;
+
+    const BLOCK: usize = 64;
+
+    /// HMAC-SHA-256 of `message` under `key`.
+    pub(super) fn hmac(key: &[u8], message: &[u8]) -> [u8; 32] {
+        let mut block = [0u8; BLOCK];
+        if key.len() > BLOCK {
+            block[..32].copy_from_slice(&Sha256::digest(key));
+        } else {
+            block[..key.len()].copy_from_slice(key);
+        }
+        let pad = |byte: u8| block.map(|b| b ^ byte);
+        let inner = Sha256::new()
+            .chain_update(pad(0x36))
+            .chain_update(message)
+            .finalize();
+        Sha256::new()
+            .chain_update(pad(0x5c))
+            .chain_update(inner)
+            .finalize()
+            .into()
+    }
+
+    struct Signer(Vec<u8>);
+
+    impl signature::Signer<Vec<u8>> for Signer {
+        fn try_sign(&self, message: &[u8]) -> std::result::Result<Vec<u8>, signature::Error> {
+            Ok(hmac(&self.0, message).to_vec())
+        }
+    }
+
+    impl JwtSigner for Signer {
+        fn algorithm(&self) -> Algorithm {
+            Algorithm::HS256
+        }
+    }
+
+    struct Verifier(Vec<u8>);
+
+    impl signature::Verifier<Vec<u8>> for Verifier {
+        fn verify(
+            &self,
+            message: &[u8],
+            tag: &Vec<u8>,
+        ) -> std::result::Result<(), signature::Error> {
+            if constant_time_eq(&hmac(&self.0, message), tag) {
+                Ok(())
+            } else {
+                Err(signature::Error::new())
+            }
+        }
+    }
+
+    impl JwtVerifier for Verifier {
+        fn algorithm(&self) -> Algorithm {
+            Algorithm::HS256
+        }
+    }
+
+    fn signer(algorithm: &Algorithm, key: &EncodingKey) -> Result<Box<dyn JwtSigner>> {
+        if *algorithm != Algorithm::HS256 || key.family() != AlgorithmFamily::Hmac {
+            return Err(ErrorKind::InvalidAlgorithm.into());
+        }
+        Ok(Box::new(Signer(key.as_bytes().to_vec())))
+    }
+
+    fn verifier(algorithm: &Algorithm, key: &DecodingKey) -> Result<Box<dyn JwtVerifier>> {
+        match key.kind() {
+            DecodingKeyKind::SecretOrDer(secret)
+                if *algorithm == Algorithm::HS256 && key.family() == AlgorithmFamily::Hmac =>
+            {
+                Ok(Box::new(Verifier(secret.clone())))
+            }
+            _ => Err(ErrorKind::InvalidAlgorithm.into()),
+        }
+    }
+
+    static PROVIDER: CryptoProvider = CryptoProvider {
+        signer_factory: signer,
+        verifier_factory: verifier,
+        key_utils: KeyUtils::new_unimplemented(),
+    };
+
+    /// This process signs and checks its tokens with [`PROVIDER`] (once; again is harmless).
+    pub(super) fn install() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            if PROVIDER.install_default().is_err() {
+                tracing::error!("another JWT crypto provider was installed first");
+            }
+        });
+    }
 }
 
 // ---------- refresh tokens and sessions ----------
@@ -925,6 +1043,49 @@ mod tests {
         assert!(service_token(&people, &forged, 0).await.unwrap().is_none());
         assert!(people.revoke_token("achi").await.unwrap());
         assert!(found(0).await.is_none(), "revoked at once");
+    }
+
+    /// RFC 4231, test cases 1, 2 and 6 (a key longer than a block).
+    #[test]
+    fn hmac_sha256_is_rfc_4231s() {
+        let hex = |b: &[u8]| crate::util::hex(b, "");
+        assert_eq!(
+            hex(&hs256::hmac(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        assert_eq!(
+            hex(&hs256::hmac(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            hex(&hs256::hmac(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+
+    #[test]
+    fn an_access_token_round_trips_and_another_algorithm_or_key_is_refused() {
+        let claims = Claims {
+            user_id: "leonard".into(),
+            issued_ms: 1,
+            auth_ms: 1,
+            sid: "f".into(),
+            exp: 4_102_444_800,
+        };
+        let token = encode_token(&claims, b"k".repeat(32).as_slice()).unwrap();
+        let back = decode_token(&token, b"k".repeat(32).as_slice()).unwrap();
+        assert_eq!(
+            (back.claims.user_id.as_str(), back.claims.sid.as_str()),
+            ("leonard", "f")
+        );
+        assert!(decode_token(&token, b"other key, long enough, 32 bytes").is_err());
+        // the same claims under `alg: none`, or HS512: refused
+        let body = token.split('.').nth(1).unwrap();
+        assert!(decode_token(&format!("eyJhbGciOiJub25lIn0.{body}."), b"k").is_err());
+        assert!(decode_token(&format!("eyJhbGciOiJIUzUxMiJ9.{body}.x"), b"k").is_err());
     }
 
     #[test]
