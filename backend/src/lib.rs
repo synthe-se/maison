@@ -188,24 +188,15 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         },
     );
 
-    // Mirror the daily Tempo colors on the Nabaztag. The push is two UDP datagrams and
-    // idempotent, so it simply repeats every 15 minutes: that also re-applies the colors
-    // after a rabbit reboot.
+    // Mirror the daily Tempo colors on the Nabaztag: pushed when Tempo's answer changes,
+    // when the day turns, and every hour (a rabbit reboot); restarted should it end.
     let tempo_rabbit = state.clone();
     every(
         "tempo on the rabbit",
-        std::time::Duration::from_secs(900),
+        nabaztag::TEMPO_SAFETY_NET,
         move || {
             let state = tempo_rabbit.clone();
-            async move {
-                let config = state.nabaztag.config().await;
-                if !config.tempo_enabled || config.host.is_none() {
-                    return;
-                }
-                if let Err(error) = state.nabaztag.push_tempo_from(&state.tempo, false).await {
-                    tracing::debug!(%error, "tempo push to the rabbit failed");
-                }
-            }
+            async move { state.nabaztag.follow_tempo(&state.tempo).await }
         },
     );
 

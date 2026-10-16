@@ -92,8 +92,8 @@ async fn push_tempo(
     Ok(Answer::ok(TempoPushed {
         message: format!(
             "Tempo pushed: today={}, tomorrow={}",
-            result.today_color,
-            result.tomorrow_color.as_deref().unwrap_or("unknown")
+            result.today_color.as_str(),
+            result.tomorrow_color.map_or("unknown", |c| c.as_str())
         ),
         result,
     }))

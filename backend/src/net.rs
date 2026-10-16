@@ -3,11 +3,14 @@
 
 use std::{net::Ipv4Addr, time::Duration};
 
-use crate::error::AppError;
+use crate::error::{AppError, Refusal};
 
 /// How long a TCP connection may take to open, for every client: a host that is gone
 /// should not hold a request for the whole timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Who asks, to the public web APIs (RTE, EDF, data.gouv, ODRE, Open-Meteo): said once.
+pub const USER_AGENT: &str = concat!("Maison/", env!("CARGO_PKG_VERSION"));
 
 // ------------------------------------------------------------------ clients --
 
@@ -54,12 +57,38 @@ pub async fn read_capped(
     Ok(body)
 }
 
-/// A device that did not answer, or answered nonsense. The client hears only that: the
-/// library or network error stays in the log, so the answers cannot map which hosts and
-/// ports exist.
+/// A device that did not answer, or answered nonsense. The client hears only that, coded
+/// (`device_unreachable`): which device and the library or network error stay in the log,
+/// so the answers cannot map which hosts and ports exist.
 pub fn unreachable(device: &'static str, error: impl std::fmt::Display) -> AppError {
-    tracing::debug!(device, %error, "device unreachable");
-    AppError::service_unavailable(format!("{device} unreachable"))
+    tracing::warn!(device, %error, "device unreachable");
+    Refusal::DeviceUnreachable.into()
+}
+
+/// A public service's answer, if it is a success; else the coded `service_unreachable`
+/// (its status, and which service, in the log).
+pub fn checked(response: reqwest::Response, service: &str) -> Result<reqwest::Response, AppError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    tracing::warn!(service, %status, "service answered an error");
+    Err(Refusal::ServiceUnreachable.into())
+}
+
+/// A public service's JSON answer: sent, checked ([`checked`]) and read; a service that
+/// does not answer, answers an error or answers nonsense is the coded `service_unreachable`
+/// (the detail in the log).
+pub async fn fetch_json<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+    service: &str,
+) -> Result<T, AppError> {
+    let unanswered = |error: reqwest::Error| {
+        tracing::warn!(service, %error, "service unreachable");
+        AppError::from(Refusal::ServiceUnreachable)
+    };
+    let response = request.send().await.map_err(unanswered)?;
+    checked(response, service)?.json().await.map_err(unanswered)
 }
 
 // ------------------------------------------------------------- LAN devices --
@@ -223,7 +252,38 @@ mod tests {
     #[test]
     fn unreachable_says_nothing_about_the_network() {
         let error = unreachable("TV", "connection refused (os error 61) at 192.168.1.9:22");
-        assert_eq!(error.to_string(), "TV unreachable");
+        assert!(
+            matches!(error, AppError::Coded { code, .. } if code == "device_unreachable"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("192.168"), "{error}");
+    }
+
+    /// A service's error, or nonsense, is the coded `service_unreachable`, nothing more.
+    #[tokio::test]
+    async fn a_service_failing_is_coded() {
+        let app = axum::Router::new()
+            .route(
+                "/down",
+                axum::routing::get(|| async { axum::http::StatusCode::BAD_GATEWAY }),
+            )
+            .route("/nonsense", axum::routing::get(|| async { "<html>" }))
+            .route("/fine", axum::routing::get(|| async { "{\"a\": 1}" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = web_client(USER_AGENT, Duration::from_secs(2)).unwrap();
+        let coded = |error: AppError| matches!(error, AppError::Coded { code, .. } if code == "service_unreachable");
+        for path in ["/down", "/nonsense"] {
+            let error = fetch_json::<serde_json::Value>(client.get(format!("{base}{path}")), "x")
+                .await
+                .unwrap_err();
+            assert!(coded(error), "{path}");
+        }
+        let fine: serde_json::Value = fetch_json(client.get(format!("{base}/fine")), "x")
+            .await
+            .unwrap();
+        assert_eq!(fine["a"], 1);
     }
 
     /// A device that redirects is not followed: the 3xx comes back as the answer.

@@ -6,17 +6,10 @@ use std::num::NonZero;
 
 use tracing::warn;
 
-/// The dongle's protocol. Only Silicon Labs' EmberZNet (EZSP over ASH) is spoken.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Adapter {
-    #[default]
-    Ember,
-}
-
+/// The radio's settings. `ZIGBEE_ADAPTER` is only checked: Silicon Labs' EmberZNet (EZSP
+/// over ASH, `ember`) is the one protocol spoken, another name is a typo said in the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZigbeeConfig {
-    /// `ZIGBEE_ADAPTER` (`ember`).
-    pub adapter: Adapter,
     /// `ZIGBEE_SERIAL_PORT`; unset, the radio stays off.
     pub serial_port: Option<String>,
     /// `ZIGBEE_EZSP_PROTOCOL_VERSION`: 13 for EmberZNet 7.4 (the MG21 dongle). On a mismatch
@@ -40,7 +33,6 @@ const DEFAULT_PROTOCOL_VERSION: NonZero<u8> = NonZero::new(13).expect("13 is not
 impl Default for ZigbeeConfig {
     fn default() -> Self {
         Self {
-            adapter: Adapter::Ember,
             serial_port: None,
             protocol_version: DEFAULT_PROTOCOL_VERSION,
             channel: 11,
@@ -103,7 +95,6 @@ impl ZigbeeConfig {
             &|raw| integer(raw).filter(|value| (1..=254).contains(value)),
         );
         let config = Self {
-            adapter: Adapter::Ember,
             serial_port: var("ZIGBEE_SERIAL_PORT"),
             protocol_version: protocol_version
                 .and_then(|value| NonZero::new(value as u8))
@@ -127,23 +118,10 @@ fn integer(raw: &str) -> Option<i64> {
     }
 }
 
-/// Eight bytes written as 16 hex digits, whatever separates them.
+/// Eight bytes written as 16 hex digits, `:`, `-` or spaces between them or not.
 fn eui64(raw: &str) -> Option<[u8; 8]> {
-    let digits = raw
-        .chars()
-        .filter(char::is_ascii_hexdigit)
-        .collect::<Vec<_>>();
-    let only_separators = raw
-        .chars()
-        .all(|c| c.is_ascii_hexdigit() || matches!(c, ':' | '-' | ' '));
-    if digits.len() != 16 || !only_separators {
-        return None;
-    }
-    let mut bytes = [0_u8; 8];
-    for (byte, pair) in bytes.iter_mut().zip(digits.chunks(2)) {
-        *byte = u8::from_str_radix(&pair.iter().collect::<String>(), 16).ok()?;
-    }
-    Some(bytes)
+    let digits = raw.replace([':', '-', ' '], "");
+    crate::util::unhex(&digits)?.try_into().ok()
 }
 
 #[cfg(test)]
@@ -185,7 +163,6 @@ mod tests {
             ("ZIGBEE_EXTENDED_PAN_ID", "dd:dd:dd:dd:dd:dd:dd:01"),
         ]);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(config.adapter, Adapter::Ember);
         assert_eq!(config.serial_port.as_deref(), Some("/dev/ttyUSB0"));
         assert_eq!(config.protocol_version.get(), 14);
         assert_eq!(config.channel, 25);

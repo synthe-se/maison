@@ -264,8 +264,8 @@ async fn a_failing_plug_is_not_asked_twice() {
     )
     .await;
     assert_eq!(
-        (status, body["error"].as_str()),
-        (StatusCode::SERVICE_UNAVAILABLE, Some("Plug unreachable"))
+        (status, body["code"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("device_unreachable"))
     );
     assert_eq!(plug.received.lock().unwrap().len(), 1);
 }

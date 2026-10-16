@@ -4,7 +4,7 @@
 
 use ezsp::ezsp::Status as NcpStatus;
 
-use crate::error::AppError;
+use crate::error::{AppError, Refusal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
@@ -27,9 +27,12 @@ pub enum DriverError {
     /// The device cannot do it (yet): no such cluster, no endpoint found.
     #[error("{0}")]
     Unsupported(String),
-    /// The driver cannot serve the request (restarting, not configured…).
+    /// The driver cannot serve the request (restarting, the coordinator not ready…).
     #[error("{0}")]
     Unavailable(&'static str),
+    /// No radio is set up (`ZIGBEE_SERIAL_PORT`).
+    #[error("{0}")]
+    NotConfigured(&'static str),
 }
 
 /// What a failed command says about the link to the dongle.
@@ -55,22 +58,27 @@ impl DriverError {
             Self::Ezsp { source, .. } if breaks_the_link(source) => Link::Broken,
             Self::Ezsp { .. } => Link::Suspect,
             Self::Serial(_) | Self::Timeout(_) => Link::Broken,
-            Self::UnknownDevice(_) | Self::Unsupported(_) | Self::Unavailable(_) => Link::Fine,
+            Self::UnknownDevice(_)
+            | Self::Unsupported(_)
+            | Self::Unavailable(_)
+            | Self::NotConfigured(_) => Link::Fine,
         }
     }
 
-    /// What the client hears: the request's own refusals as they are, a radio failure as
-    /// « unreachable » (the detail, serial path included, stays in the log).
+    /// What the client hears, coded: the lamp cannot do it (`unsupported`), no radio is set
+    /// up (`not_configured`), else the radio or the lamp is out of reach
+    /// (`device_unreachable`). The detail, serial path included, stays in the log.
     pub fn into_client(self) -> AppError {
         match self {
-            Self::UnknownDevice(_) => {
-                AppError::service_unavailable("This Zigbee lamp is not on the network yet")
+            Self::Unsupported(message) => {
+                tracing::info!(%message, "zigbee request refused");
+                Refusal::Unsupported.into()
             }
-            Self::Unsupported(message) => AppError::service_unavailable(message),
-            Self::Unavailable(message) => AppError::service_unavailable(message),
-            error @ (Self::Ezsp { .. } | Self::Serial(_) | Self::Timeout(_)) => {
-                crate::net::unreachable("Zigbee radio", error)
+            Self::NotConfigured(message) => {
+                tracing::info!(%message, "zigbee request refused");
+                Refusal::NotConfigured.into()
             }
+            error => crate::net::unreachable("Zigbee radio", error),
         }
     }
 }
@@ -149,13 +157,28 @@ mod tests {
             Link::Fine
         );
         assert_eq!(DriverError::Unavailable("restarting").link(), Link::Fine);
+        assert_eq!(DriverError::NotConfigured("no port").link(), Link::Fine);
     }
 
     #[test]
-    fn the_client_never_hears_the_radio_detail() {
+    fn the_client_hears_a_code_never_the_radio_detail() {
+        let code = |error: DriverError| match error.into_client() {
+            AppError::Coded { code, .. } => code,
+            other => panic!("uncoded: {other}"),
+        };
         let io = std::io::Error::other("/dev/ttyUSB0: device disconnected");
-        let error = ezsp(ezsp::Error::Io(io)).into_client();
-        assert!(!error.to_string().contains("ttyUSB0"), "{error}");
-        assert_eq!(error.to_string(), "Zigbee radio unreachable");
+        assert_eq!(code(ezsp(ezsp::Error::Io(io))), "device_unreachable");
+        assert_eq!(
+            code(DriverError::UnknownDevice("aa".into())),
+            "device_unreachable"
+        );
+        assert_eq!(
+            code(DriverError::Unsupported("no On/Off".into())),
+            "unsupported"
+        );
+        assert_eq!(
+            code(DriverError::NotConfigured("/dev/ttyUSB0 unset")),
+            "not_configured"
+        );
     }
 }

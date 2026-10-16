@@ -2,10 +2,11 @@
 //! (today, tomorrow from about 10:40, the seasons), the days left, the prices, and a
 //! forecast to J+7 that is labelled as one (`forecast.rs`, measured in `model.json`).
 //!
-//! Everything lives in `cache/tempo/`: the seasons (`tempo_history_<season>.json`), the
-//! fitted model (`model.json`, versioned, written by `fit_tempo`), the past year of net
-//! consumption (`netload.json`, kept up to date from ODRE) and the last weather forecast
-//! (`weather.json`). A source down means older data, said as such, never nothing.
+//! Everything lives in `Config::tempo_dir` (`cache/tempo/`): the seasons ([`season_file`]),
+//! the fitted model ([`MODEL_FILE`], versioned, written by `fit_tempo`), the past year of
+//! net consumption ([`NETLOAD_FILE`], kept up to date from ODRE) and the last weather
+//! forecast ([`WEATHER_FILE`]). A source down means older data, said as such, never nothing.
+//! [`TempoService::subscribe`] says today's answer as it changes (the rabbit's push).
 
 pub mod forecast;
 pub mod inputs;
@@ -13,19 +14,24 @@ pub mod rules;
 pub mod source;
 pub mod tariffs;
 
-use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
+use maison_api::tempo::{
+    Color, Count, Day, Forecast, ForecastDay, ModelInfo, Probabilities, Reliability, SeasonStock,
+    Tariffs, Today, HOURS,
+};
 use serde::Serialize;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{watch, Mutex, MutexGuard};
 
-pub use rules::{current_season, Color};
+pub use rules::current_season;
 
 use crate::{
     config::Config,
-    error::AppError,
+    error::{AppError, Refusal},
+    net::USER_AGENT,
     store::{self, Access, Corrupt},
-    util::{house_today, HOUSE_TZ},
+    util::{house_today, lock, HOUSE_TZ},
 };
 use forecast::{expected, likeliest, seed, simulate, Ahead, Levels, Model};
 use inputs::{fetch_load, fetch_weather, NetLoad, Weather};
@@ -34,9 +40,21 @@ use rules::{
     Quotas, Stock,
 };
 use source::{Sources, Values};
-use tariffs::Tariffs;
 
-const USER_AGENT: &str = concat!("Maison/", env!("CARGO_PKG_VERSION"));
+/// The fitted model, written by `fit_tempo`.
+pub const MODEL_FILE: &str = "model.json";
+/// The past year's net consumption and temperatures.
+pub const NETLOAD_FILE: &str = "netload.json";
+/// The last weather forecast (written at runtime, not versioned).
+pub const WEATHER_FILE: &str = "weather.json";
+
+/// A season's colours' file (`tempo_history_2026-2027.json`).
+pub fn season_file(start_year: i32) -> String {
+    format!("tempo_history_{}.json", season_name(start_year))
+}
+
+/// A forced refresh asks every source again: at most this often (they are not ours).
+const FORCE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// A source that failed is asked again after this; so is tomorrow until RTE publishes it.
 const RETRY: Duration = Duration::minutes(15);
 const WEATHER_EVERY: Duration = Duration::hours(3);
@@ -72,6 +90,10 @@ struct Inner {
     /// RTE when it has today's already.
     last_today: Last<Today>,
     last_forecast: Last<Forecast>,
+    /// Today's answer, sent when it changed (a new day, tomorrow published).
+    shown: watch::Sender<Option<Today>>,
+    /// When the sources were last asked again by force.
+    forced: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 /// An answer and the day it is for.
@@ -111,11 +133,6 @@ struct State {
     load_asked: Option<Asked>,
 }
 
-pub use maison_api::tempo::{
-    Count, Day, Forecast, ForecastDay, Hours, ModelInfo, Probabilities, Reliability, SeasonStock,
-    Today,
-};
-
 /// A season's days per colour: used (published, tomorrow included), quota, left.
 fn season_stock(start_year: i32, history: &History, quotas: Quotas) -> SeasonStock {
     let (first, last) = season_bounds(start_year);
@@ -138,11 +155,6 @@ fn season_stock(start_year: i32, history: &History, quotas: Quotas) -> SeasonSto
     }
 }
 
-pub const HOURS: Hours = Hours {
-    peak_start: Cow::Borrowed("06:00"),
-    peak_end: Cow::Borrowed("22:00"),
-};
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarDay {
@@ -158,6 +170,7 @@ pub struct CalendarDay {
 
 /// A season's days, the forecast's after the published ones for the current season.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Calendar {
     pub season: String,
     pub calendar: Vec<CalendarDay>,
@@ -245,12 +258,11 @@ pub fn outlook(
 impl TempoService {
     pub fn from_config(config: &Config) -> Result<Self, AppError> {
         let client = crate::net::web_client(USER_AGENT, std::time::Duration::from_secs(30))?;
-        let dir = config.source_root.join("cache").join("tempo");
-        let model = match store::read_json::<Option<Model>>(&dir.join("model.json"), Corrupt::Fail)
-        {
+        let dir = config.tempo_dir.clone();
+        let model = match store::read_json::<Option<Model>>(&dir.join(MODEL_FILE), Corrupt::Fail) {
             Ok(Some(model)) => Some(model),
             Ok(None) => {
-                tracing::warn!("no cache/tempo/model.json: no Tempo forecast (run fit_tempo)");
+                tracing::warn!(dir = %dir.display(), "no {MODEL_FILE}: no Tempo forecast (run fit_tempo)");
                 None
             }
             Err(error) => {
@@ -258,22 +270,44 @@ impl TempoService {
                 None
             }
         };
-        let url = |u: &str| u.trim_end_matches('/').to_string();
         Ok(Self {
             inner: Arc::new(Inner {
                 client,
                 sources: Sources::from_config(config),
                 tariffs_url: config.tempo_tarifs_url.clone(),
-                edf_url: url(&config.tempo_edf_url),
-                odre_url: url(&config.tempo_odre_url),
-                open_meteo_url: url(&config.open_meteo_url),
+                edf_url: config.tempo_edf_url.clone(),
+                odre_url: config.tempo_odre_url.clone(),
+                open_meteo_url: config.open_meteo_url.clone(),
                 dir,
                 model,
                 state: Mutex::new(State::default()),
                 last_today: Last::default(),
                 last_forecast: Last::default(),
+                shown: watch::Sender::new(None),
+                forced: std::sync::Mutex::new(None),
             }),
         })
+    }
+
+    /// Today's answer as it changes (a new day, tomorrow published, the prices): what the
+    /// rabbit is pushed from, and whoever pushes it to the apps.
+    pub fn subscribe(&self) -> watch::Receiver<Option<Today>> {
+        self.inner.shown.subscribe()
+    }
+
+    /// Whether the sources may be asked again by force now: at most every [`FORCE_EVERY`]
+    /// (they are RTE's, EDF's…); else the coded `too_many_attempts`, with when to try again.
+    pub fn may_force(&self) -> Result<(), AppError> {
+        let mut forced = lock(&self.inner.forced);
+        let now = std::time::Instant::now();
+        if let Some(wait) = forced
+            .map(|at| FORCE_EVERY.saturating_sub(now.duration_since(at)))
+            .filter(|wait| !wait.is_zero())
+        {
+            return Err(AppError::too_many(wait.as_secs().max(1)));
+        }
+        *forced = Some(now);
+        Ok(())
     }
 
     /// The refresh lock; or, while a refresh holds it, the last answer for today (unless
@@ -283,7 +317,7 @@ impl TempoService {
             return Turn::Refresh(state);
         }
         if !force {
-            let kept = last.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let kept = lock(last).clone();
             if let Some((day, answer)) = kept.filter(|(day, _)| *day == house_today()) {
                 tracing::debug!(%day, "tempo: a refresh runs, the last answer is served");
                 return Turn::Last(answer);
@@ -300,6 +334,13 @@ impl TempoService {
         };
         let answer = self.today_in(&mut state, force).await?;
         remember(&self.inner.last_today, answer.today.date, &answer);
+        self.inner.shown.send_if_modified(|shown| {
+            let changed = shown.as_ref() != Some(&answer);
+            if changed {
+                *shown = Some(answer.clone());
+            }
+            changed
+        });
         Ok(answer)
     }
 
@@ -360,7 +401,7 @@ impl TempoService {
         let quotas = self.quotas(state, today, &history).await;
         let stock = season_stock(season_start_year(today), &history, quotas);
         let Some(model) = self.inner.model.as_ref() else {
-            let (days, _) = outlook(&Model::empty(), &history, quotas, None, None, today);
+            let (days, _) = outlook(&Model::default(), &history, quotas, None, None, today);
             return Ok(Forecast {
                 issued: today,
                 weather_issued: None,
@@ -459,9 +500,8 @@ impl TempoService {
         force: bool,
     ) -> Result<(Color, Option<(Color, bool)>), AppError> {
         let today = self.today(force).await?;
-        let color = today.today.color.ok_or_else(|| {
-            AppError::service_unavailable("Today's Tempo color is not available yet")
-        })?;
+        // not published yet (or no source answered): RTE's to say
+        let color = today.today.color.ok_or(Refusal::ServiceUnreachable)?;
         if let Some(tomorrow) = today.tomorrow.color {
             return Ok((color, Some((tomorrow, false))));
         }
@@ -475,9 +515,7 @@ impl TempoService {
     }
 
     fn season_path(&self, start_year: i32) -> PathBuf {
-        self.inner
-            .dir
-            .join(format!("tempo_history_{}.json", season_name(start_year)))
+        self.inner.dir.join(season_file(start_year))
     }
 
     fn read_season(&self, start_year: i32) -> Result<History, AppError> {
@@ -536,7 +574,8 @@ impl TempoService {
         }
         let history = &state.seasons[&start];
         if history.is_empty() {
-            return Err(AppError::service_unavailable("Tempo colours unavailable"));
+            tracing::warn!("Tempo colours unavailable: no source answered, nothing on file");
+            return Err(Refusal::ServiceUnreachable.into());
         }
         Ok(history.clone())
     }
@@ -600,7 +639,7 @@ impl TempoService {
                 quotas
             }
             Err(error) => {
-                tracing::debug!(%error, "EDF's season unavailable: the usual quotas");
+                tracing::warn!(%error, "EDF's season unavailable: the usual quotas");
                 previous
             }
         };
@@ -635,7 +674,7 @@ impl TempoService {
     }
 
     fn netload<'a>(&self, state: &'a mut State) -> &'a mut NetLoad {
-        let path = self.inner.dir.join("netload.json");
+        let path = self.inner.dir.join(NETLOAD_FILE);
         state.netload.get_or_insert_with(|| {
             store::read_json(&path, Corrupt::Reset).unwrap_or_else(|error| {
                 tracing::warn!(%error, "unreadable netload.json: starting empty");
@@ -646,7 +685,7 @@ impl TempoService {
 
     async fn save_netload(&self, net: &NetLoad) {
         if let Err(error) =
-            store::write_json_async(&self.inner.dir.join("netload.json"), net, Access::Shared).await
+            store::write_json_async(&self.inner.dir.join(NETLOAD_FILE), net, Access::Shared).await
         {
             tracing::warn!(%error, "netload.json not saved");
         }
@@ -695,9 +734,12 @@ impl TempoService {
         now: DateTime<Utc>,
         force: bool,
     ) {
-        let path = self.inner.dir.join("weather.json");
+        let path = self.inner.dir.join(WEATHER_FILE);
         if state.weather.is_none() {
-            let saved: Weather = store::read_json(&path, Corrupt::Reset).unwrap_or_default();
+            let saved: Weather = store::read_json(&path, Corrupt::Reset).unwrap_or_else(|error| {
+                tracing::warn!(%error, "unreadable {WEATHER_FILE}: no last forecast");
+                Weather::default()
+            });
             state.weather = saved.issued.is_some().then_some(saved);
         }
         let fresh = state
@@ -738,26 +780,7 @@ impl TempoService {
 
 /// Keeps `answer` as the last one for `day`.
 fn remember<T: Clone>(last: &Last<T>, day: NaiveDate, answer: &T) {
-    *last.lock().unwrap_or_else(|p| p.into_inner()) = Some((day, answer.clone()));
-}
-
-impl Model {
-    /// No model: only RTE's days.
-    fn empty() -> Self {
-        Self {
-            version: String::new(),
-            fitted_through: NaiveDate::MIN,
-            cities: vec![],
-            wind_sites: vec![],
-            consumption: vec![],
-            wind: vec![],
-            solar: vec![],
-            sigma: vec![],
-            rho: 0.0,
-            runs: 0,
-            backtest: Default::default(),
-        }
-    }
+    *lock(last) = Some((day, answer.clone()));
 }
 
 #[cfg(test)]
@@ -915,7 +938,7 @@ mod tests {
 
     /// A refresh holds the lock across the sources: a reader with today's answer gets it at
     /// once; one forcing, or with only yesterday's, waits for the refresh.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_reader_gets_the_last_answer_while_a_refresh_runs() {
         let dir = crate::util::test_dir();
         let service =

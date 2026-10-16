@@ -1,5 +1,5 @@
 //! The sun over the house, as pages read it: where the house is, when the sun next rises and
-//! sets there, and the side that says for a page's theme (the backend's `sun::side` decides it).
+//! sets there, and the side that says for a page's theme (the server decides it).
 
 use serde::{Deserialize, Serialize};
 

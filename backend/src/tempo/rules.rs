@@ -12,11 +12,9 @@
 use std::collections::BTreeMap;
 
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
-use serde::Serialize;
+use maison_api::tempo::Color;
 
-use crate::error::AppError;
-
-pub use maison_api::tempo::Color;
+use crate::error::{AppError, Refusal};
 
 /// A season's colours by day, in date order.
 pub type History = BTreeMap<NaiveDate, Color>;
@@ -57,15 +55,15 @@ pub fn current_season(today: NaiveDate) -> String {
 }
 
 /// A season as asked (`?season=`, a file name): `YYYY-YYYY`, two following years, from RTE's
-/// first season to the current one; its first year. Anything else is refused before it
-/// reaches a source, a file name or a day-by-day loop.
+/// first season to the current one; its first year. Anything else is refused (the coded
+/// `invalid`, with the seasons there are as its detail) before it reaches a source, a file
+/// name or a day-by-day loop.
 pub fn parse_season(season: &str, today: NaiveDate) -> Result<i32, AppError> {
     let invalid = || {
-        AppError::bad_request(format!(
-            "Invalid season: expected YYYY-YYYY, from {} to {}",
-            season_name(FIRST_SEASON),
-            current_season(today)
-        ))
+        AppError::from(Refusal::Invalid).with_detail(serde_json::json!({
+            "first": season_name(FIRST_SEASON),
+            "last": current_season(today),
+        }))
     };
     let year = |text: &str| {
         (text.len() == 4 && text.bytes().all(|b| b.is_ascii_digit()))
@@ -83,11 +81,17 @@ pub fn parse_season(season: &str, today: NaiveDate) -> Result<i32, AppError> {
     }
 }
 
-/// The season's blue days: what the year leaves after the white and red ones (300, 301 in a
-/// leap season).
-pub fn blue_days(start_year: i32, red: u32, white: u32) -> u32 {
+/// How many days the season starting in `start_year` has (365, 366 in a leap season).
+pub fn season_days(start_year: i32) -> u32 {
     let (first, last) = season_bounds(start_year);
-    (last - first).num_days() as u32 + 1 - red - white
+    (last - first).num_days() as u32 + 1
+}
+
+/// The season's blue days: what the year leaves after the white and red ones (300, 301 in a
+/// leap season); none when they take it all (quotas are checked where they come in:
+/// [`Quotas::checked`]).
+pub fn blue_days(start_year: i32, red: u32, white: u32) -> u32 {
+    season_days(start_year).saturating_sub(red.saturating_add(white))
 }
 
 /// RTE's « jour Tempo »: 1 on 1 September.
@@ -151,10 +155,25 @@ pub fn white_allowed(date: NaiveDate) -> bool {
 }
 
 /// The season's quotas (EDF's, else the CRE's).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Quotas {
     pub red: u32,
     pub white: u32,
+}
+
+impl Quotas {
+    /// Quotas as a source says them, if they can be a season's: the red days no more than
+    /// the winter's weekdays allow, red and white together fewer than the season's days.
+    pub fn checked(red: u32, white: u32, start_year: i32) -> Option<Self> {
+        let (first, last) = season_bounds(start_year);
+        let red_days = first
+            .iter_days()
+            .take_while(|d| *d <= last)
+            .filter(|d| red_allowed(*d))
+            .count() as u32;
+        (red <= red_days && red.checked_add(white)? <= season_days(start_year))
+            .then_some(Self { red, white })
+    }
 }
 
 impl Default for Quotas {
@@ -285,12 +304,12 @@ pub(crate) mod tests {
         ymd(y, m, d)
     }
 
-    /// A season as RTE gave it (the repository's file).
+    /// A finished season as RTE gave it (a test fixture: the live `cache/tempo` moves).
     pub(crate) fn season(start_year: i32) -> History {
         let path = format!(
-            "{}/../cache/tempo/tempo_history_{}.json",
+            "{}/tests/fixtures/tempo/{}",
             env!("CARGO_MANIFEST_DIR"),
-            season_name(start_year)
+            crate::tempo::season_file(start_year)
         );
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let file: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -310,6 +329,28 @@ pub(crate) mod tests {
         assert_eq!(tempo_day(day(2027, 1, 1)), 123);
         assert_eq!(blue_days(2026, 22, 43), 300);
         assert_eq!(blue_days(2027, 22, 43), 301);
+        assert_eq!(
+            blue_days(2026, 400, 43),
+            0,
+            "absurd quotas: no blue, no panic"
+        );
+        assert_eq!(blue_days(2026, u32::MAX, u32::MAX), 0);
+    }
+
+    #[test]
+    fn only_quotas_a_season_can_hold_are_taken() {
+        assert_eq!(
+            Quotas::checked(22, 43, 2026),
+            Some(Quotas { red: 22, white: 43 })
+        );
+        assert_eq!(Quotas::checked(0, 0, 2026).map(|q| q.red), Some(0));
+        assert_eq!(
+            Quotas::checked(200, 43, 2026),
+            None,
+            "more reds than winter weekdays"
+        );
+        assert_eq!(Quotas::checked(22, 400, 2026), None, "more than the year");
+        assert_eq!(Quotas::checked(22, u32::MAX, 2026), None, "no overflow");
     }
 
     #[test]
@@ -326,7 +367,16 @@ pub(crate) mod tests {
             "2024",
             "+202-2025",
         ] {
-            assert!(parse_season(bad, today).is_err(), "{bad}");
+            assert!(
+                matches!(
+                    parse_season(bad, today),
+                    Err(AppError::Coded {
+                        code: "invalid",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
         }
     }
 

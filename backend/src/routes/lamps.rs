@@ -10,13 +10,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use maison_api::lamps::{BrightnessRequest, LampList, PowerRequest};
-use serde::{Deserialize, Serialize};
+use maison_api::{
+    lamps::{BrightnessRequest, LampList, PowerRequest, RenameRequest, TemperatureRequest},
+    Message,
+};
+use serde::Serialize;
 
 use crate::{
     error::AppError,
-    lamps::{LampState, LampStats},
-    routes::{Answer, Reply, SimpleResponse},
+    lamps::{self, Lamp, LampState, LampStats},
+    routes::{Answer, Reply},
     AppState,
 };
 
@@ -24,7 +27,7 @@ use crate::{
 pub trait LampBackend: Send + Sync + 'static {
     /// « Hue lamp », « Zigbee lamp »: the start of every message.
     const NAME: &'static str;
-    type View: Serialize + Send;
+    type View: Serialize + Lamp + Send;
 
     fn of(state: &AppState) -> &Self;
     fn list(&self) -> impl Future<Output = Vec<Self::View>> + Send;
@@ -40,6 +43,7 @@ pub trait LampBackend: Send + Sync + 'static {
         id: &str,
         on: bool,
     ) -> impl Future<Output = Result<LampState, AppError>> + Send;
+    /// `brightness` as [`lamps::brightness`] takes it (1–100, 0 the dimmest).
     fn set_brightness(
         &self,
         id: &str,
@@ -53,46 +57,28 @@ pub trait LampBackend: Send + Sync + 'static {
     fn rename(&self, id: &str, name: &str) -> impl Future<Output = Result<(), AppError>> + Send;
 }
 
+/// One lamp (`GET /{id}`).
 #[derive(Debug, Serialize)]
-struct StatsResponse {
-    success: bool,
-    #[serde(flatten)]
-    stats: LampStats,
-}
-
-#[derive(Debug, Serialize)]
-struct LampResponse<V> {
-    success: bool,
+#[serde(rename_all = "camelCase")]
+struct OneLamp<V> {
     lamp: V,
     message: String,
 }
 
 /// The answer of a command that changed a lamp: its new state.
 #[derive(Debug, Serialize)]
-pub struct ActionResponse {
-    success: bool,
+#[serde(rename_all = "camelCase")]
+pub struct Changed {
     state: LampState,
     message: String,
 }
 
-impl ActionResponse {
-    pub fn ok(state: LampState, message: String) -> Json<Self> {
-        Json(Self {
-            success: true,
-            state,
-            message,
-        })
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct TemperatureBody {
-    temperature: u8,
-}
-
-#[derive(Debug, Deserialize)]
-struct RenameBody {
-    name: String,
+/// `{success, state, message}`.
+pub fn changed(state: LampState, message: impl Into<String>) -> Json<Answer<Changed>> {
+    Answer::ok(Changed {
+        state,
+        message: message.into(),
+    })
 }
 
 /// `/`, `/stats`, `/{lamp_id}` and its `power`, `brightness`, `temperature`, `rename`.
@@ -118,24 +104,20 @@ async fn list<B: LampBackend>(State(state): State<AppState>) -> Json<Answer<Lamp
     })
 }
 
-async fn stats<B: LampBackend>(State(state): State<AppState>) -> Json<StatsResponse> {
-    Json(StatsResponse {
-        success: true,
-        stats: B::of(&state).stats().await,
-    })
+async fn stats<B: LampBackend>(State(state): State<AppState>) -> Json<Answer<LampStats>> {
+    Answer::ok(B::of(&state).stats().await)
 }
 
-/// One lamp; an unknown id is a 404.
+/// One lamp; an unknown id is the coded `not_found`.
 async fn lamp<B: LampBackend>(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
-) -> Result<Json<LampResponse<B::View>>, AppError> {
+) -> Result<Json<Answer<OneLamp<B::View>>>, AppError> {
     let lamp = B::of(&state)
         .get(&lamp_id)
         .await
-        .ok_or_else(|| AppError::not_found(format!("{} not found", B::NAME)))?;
-    Ok(Json(LampResponse {
-        success: true,
+        .ok_or_else(lamps::not_found)?;
+    Ok(Answer::ok(OneLamp {
         lamp,
         message: format!("{} retrieved", B::NAME),
     }))
@@ -145,23 +127,20 @@ async fn power<B: LampBackend>(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
     Json(body): Json<PowerRequest>,
-) -> Result<Json<ActionResponse>, AppError> {
+) -> Result<Json<Answer<Changed>>, AppError> {
     let lamp_state = B::of(&state).set_power(&lamp_id, body.enabled).await?;
-    Ok(ActionResponse::ok(
-        lamp_state,
-        format!("{} power updated", B::NAME),
-    ))
+    Ok(changed(lamp_state, format!("{} power updated", B::NAME)))
 }
 
 async fn brightness<B: LampBackend>(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
     Json(body): Json<BrightnessRequest>,
-) -> Result<Json<ActionResponse>, AppError> {
+) -> Result<Json<Answer<Changed>>, AppError> {
     let lamp_state = B::of(&state)
         .set_brightness(&lamp_id, body.brightness)
         .await?;
-    Ok(ActionResponse::ok(
+    Ok(changed(
         lamp_state,
         format!("{} brightness updated", B::NAME),
     ))
@@ -170,12 +149,12 @@ async fn brightness<B: LampBackend>(
 async fn temperature<B: LampBackend>(
     State(state): State<AppState>,
     Path(lamp_id): Path<String>,
-    Json(body): Json<TemperatureBody>,
-) -> Result<Json<ActionResponse>, AppError> {
+    Json(body): Json<TemperatureRequest>,
+) -> Result<Json<Answer<Changed>>, AppError> {
     let lamp_state = B::of(&state)
         .set_temperature(&lamp_id, body.temperature)
         .await?;
-    Ok(ActionResponse::ok(
+    Ok(changed(
         lamp_state,
         format!("{} temperature updated", B::NAME),
     ))
@@ -185,8 +164,8 @@ async fn rename<B: LampBackend>(
     State(state): State<AppState>,
     _settings: crate::auth::SettingsClient,
     Path(lamp_id): Path<String>,
-    Json(body): Json<RenameBody>,
-) -> Result<Json<SimpleResponse>, AppError> {
+    Json(body): Json<RenameRequest>,
+) -> Result<Json<Answer<Message>>, AppError> {
     B::of(&state).rename(&lamp_id, &body.name).await?;
-    Ok(SimpleResponse::ok(format!("{} renamed", B::NAME)))
+    Ok(Json(Answer::said(format!("{} renamed", B::NAME))))
 }

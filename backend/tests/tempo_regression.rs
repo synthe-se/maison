@@ -1,7 +1,8 @@
-//! Tempo, offline: every test runs on a temp copy of the repository's `cache/tempo/` and talks
-//! to a local stub of RTE (open data and API), api-couleur-tempo, EDF, data.gouv, ODRE and
-//! Open-Meteo, so `cargo test` neither needs the internet nor rewrites tracked files. The
-//! stub answers around today's date, whatever it is.
+//! Tempo, offline: every test runs on a temp copy of `tests/fixtures/tempo/` (finished
+//! seasons, a model and a year of net consumption, frozen: the live `cache/tempo/` moves) and
+//! talks to a local stub of RTE (open data and API), api-couleur-tempo, EDF, data.gouv, ODRE
+//! and Open-Meteo, so `cargo test` neither needs the internet nor reads or rewrites tracked
+//! state. The stub answers around today's date, whatever it is.
 mod common;
 
 use std::{
@@ -19,9 +20,10 @@ use axum::{
 use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use serde_json::{json, Value};
 
+use maison_api::tempo::Color;
 use maison_backend::{
     config::Config,
-    tempo::{current_season, Color, TempoService},
+    tempo::{current_season, rules::season_start_year, season_file, TempoService, WEATHER_FILE},
     util::house_today,
 };
 
@@ -222,19 +224,16 @@ async fn meteo(State(stub): State<Stub>, Query(q): Query<HashMap<String, String>
     Ok(Json(json!(vec![place; places])))
 }
 
-/// The test config on a temp root holding a copy of the Tempo cache, every upstream on the
-/// stub.
+/// The test config on a temp root holding a copy of the Tempo fixtures, every upstream on
+/// the stub.
 async fn stubbed(name: &str) -> (Config, Stub) {
     let mut config = common::isolated_config(name);
-    let from = common::workspace_root().join("cache/tempo");
+    let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tempo");
     let to = tempo_dir(&config);
     std::fs::create_dir_all(&to).unwrap();
     for entry in std::fs::read_dir(&from).unwrap() {
         let path = entry.unwrap().path();
-        // the dev machine's own weather is not the stub's
-        if path.extension().is_some_and(|e| e == "json") && !path.ends_with("weather.json") {
-            std::fs::copy(&path, to.join(path.file_name().unwrap())).unwrap();
-        }
+        std::fs::copy(&path, to.join(path.file_name().unwrap())).unwrap();
     }
 
     let stub = Stub::default();
@@ -268,7 +267,7 @@ async fn stubbed(name: &str) -> (Config, Stub) {
 }
 
 fn tempo_dir(config: &Config) -> PathBuf {
-    config.source_root.join("cache/tempo")
+    config.tempo_dir.clone()
 }
 
 fn service(config: &Config) -> TempoService {
@@ -283,7 +282,11 @@ fn tomorrow() -> NaiveDate {
 async fn today_and_tomorrow_come_from_rte_then_from_memory() {
     let (config, stub) = stubbed("maison-tempo-today").await;
     let tempo = service(&config);
+    let mut answers = tempo.subscribe();
+    assert!(answers.borrow_and_update().is_none());
     let today = tempo.today(false).await.unwrap();
+    assert!(answers.has_changed().unwrap(), "a first answer is said");
+    assert_eq!(answers.borrow_and_update().as_ref(), Some(&today));
     assert!(!today.cached);
     assert_eq!(today.today.date, house_today());
     assert_eq!(today.today.color, Color::parse(color(house_today())));
@@ -312,12 +315,13 @@ async fn today_and_tomorrow_come_from_rte_then_from_memory() {
         1,
         "both colours known: the second read is from memory"
     );
+    assert!(
+        !answers.has_changed().unwrap(),
+        "the same answer is no news"
+    );
     assert_eq!(stub.count("tarifs"), 1);
     // the season's file, without RTE's extra keys
-    let file = tempo_dir(&config).join(format!(
-        "tempo_history_{}.json",
-        current_season(house_today())
-    ));
+    let file = tempo_dir(&config).join(season_file(season_start_year(house_today())));
     let text = std::fs::read_to_string(file).unwrap();
     assert!(!text.contains("fallback") && text.contains(&key(tomorrow())));
 }
@@ -362,10 +366,7 @@ async fn everything_down_is_the_season_s_file_said_cached() {
     for upstream in ["rte", "fallback", "edf", "tarifs", "odre", "meteo"] {
         stub.down(upstream);
     }
-    let file = tempo_dir(&config).join(format!(
-        "tempo_history_{}.json",
-        current_season(house_today())
-    ));
+    let file = tempo_dir(&config).join(season_file(season_start_year(house_today())));
     std::fs::write(
         &file,
         format!(r#"{{"values":{{"{}":"RED"}}}}"#, key(house_today())),
@@ -413,7 +414,7 @@ async fn the_forecast_covers_the_week() {
         (stub.count("odre/eco2mix-national-tr"), stub.count("meteo/")),
         (1, 2)
     );
-    assert!(tempo_dir(&config).join("weather.json").exists());
+    assert!(tempo_dir(&config).join(WEATHER_FILE).exists());
     let again = tempo.forecast(false).await.unwrap();
     assert_eq!(
         again.days, forecast.days,
@@ -438,7 +439,7 @@ async fn open_meteo_down_uses_the_last_forecast() {
         .map(|i| (key(issued + Duration::days(i)), 0.1))
         .collect();
     std::fs::write(
-        tempo_dir(&config).join("weather.json"),
+        tempo_dir(&config).join(WEATHER_FILE),
         json!({ "issued": key(issued), "temperature": temperature, "wind_power": wind })
             .to_string(),
     )
@@ -539,6 +540,17 @@ async fn the_routes_answer_members_and_check_seasons() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // the sources are not ours: a forced refresh once a minute at most
+    let (status, body) = common::send(
+        &app,
+        Method::POST,
+        "/api/tempo/refresh",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["code"], "too_many_attempts");
     let (status, _) = common::send(&app, Method::GET, "/api/tempo", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 

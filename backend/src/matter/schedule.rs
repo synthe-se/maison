@@ -1,6 +1,6 @@
-//! The shutters' sun schedule, as pure functions of a place and a time: when the sun rises
-//! and sets at the house, which order falls due between two looks, what is retried, what a
-//! « not tonight » skips. `MatterManager` looks every 30 s and sends what this says.
+//! The shutters' sun schedule, as pure functions of a place and a time: which order falls
+//! due between two looks (the sun's times from `sun.rs`), what is retried, what a « not
+//! tonight » skips. `MatterManager` looks every 30 s and sends what this says.
 
 use std::collections::BTreeMap;
 
@@ -15,25 +15,6 @@ use crate::{
 pub use maison_api::matter::SunSchedule;
 
 pub(super) const MAX_SUN_OFFSET_MIN: i16 = 180;
-
-/// The next sunrise and sunset at a place, strictly after `now` (looking up to two days
-/// ahead: today's may be past).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub(super) struct NextSun {
-    pub(super) sunrise: Option<DateTime<Utc>>,
-    pub(super) sunset: Option<DateTime<Utc>>,
-}
-
-pub(super) fn next_sun(place: &Place, now: DateTime<Utc>) -> NextSun {
-    let today = now.with_timezone(&HOUSE_TZ).date_naive();
-    let mut next = NextSun::default();
-    for day in today.iter_days().take(3) {
-        let (rise, set) = sun::sun_times(place, day);
-        next.sunrise = next.sunrise.or(rise.filter(|t| *t > now));
-        next.sunset = next.sunset.or(set.filter(|t| *t > now));
-    }
-    next
-}
 
 pub(super) fn offset(minutes: i16) -> TimeDelta {
     TimeDelta::minutes(i64::from(minutes))
@@ -70,12 +51,10 @@ pub(super) fn due(
 ) -> Option<(CoverCommand, DateTime<Utc>)> {
     let since = since.max(now - CATCH_UP);
     let mut out = Vec::new();
-    // yesterday too: a late sunset plus an offset can fall after local midnight
-    let first = since
-        .with_timezone(&HOUSE_TZ)
-        .date_naive()
-        .pred_opt()
-        .unwrap_or_default();
+    // yesterday too: a late sunset plus an offset can fall after local midnight (the first
+    // day there is has no yesterday)
+    let since_day = since.with_timezone(&HOUSE_TZ).date_naive();
+    let first = since_day.pred_opt().unwrap_or(since_day);
     let last = now.with_timezone(&HOUSE_TZ).date_naive();
     for day in first.iter_days().take_while(|d| *d <= last) {
         let (rise, set) = sun::sun_times(place, day);
@@ -224,13 +203,7 @@ pub(super) fn clock_trusted() -> bool {
 pub(super) mod tests {
     use super::*;
 
-    pub(in crate::matter) fn paris() -> Place {
-        Place {
-            name: "Paris".into(),
-            latitude: 48.8566,
-            longitude: 2.3522,
-        }
-    }
+    pub(in crate::matter) use crate::sun::tests::paris;
 
     pub(in crate::matter) fn utc(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
@@ -308,18 +281,6 @@ pub(super) mod tests {
         // an event a minute before the jump is still kept, alone
         let fired = due(&BOTH, &paris(), since, utc("2026-10-02T17:29:00Z"));
         assert_eq!(fired.map(|e| e.0), Some(CoverCommand::Close));
-    }
-
-    #[test]
-    fn the_next_events_are_after_now() {
-        let now = utc("2026-10-02T12:00:00Z");
-        let next = next_sun(&paris(), now);
-        let (rise, set) = (next.sunrise.unwrap(), next.sunset.unwrap());
-        assert!(
-            set > now && set < utc("2026-10-02T18:00:00Z"),
-            "today's sunset: {set}"
-        );
-        assert!(rise > set, "tomorrow's sunrise: {rise}");
     }
 
     #[test]

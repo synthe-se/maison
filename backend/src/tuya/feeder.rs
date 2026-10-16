@@ -226,7 +226,10 @@ mod tests {
 
     #[test]
     fn a_feeder_answering_nonsense_says_only_that() {
-        assert_eq!(decode("***").unwrap_err().to_string(), "Feeder unreachable");
+        assert_eq!(
+            decode("***").unwrap_err().to_string(),
+            "device_unreachable: Device unreachable"
+        );
         assert_eq!(
             decode("BQgeAg==").unwrap(),
             Vec::new(),

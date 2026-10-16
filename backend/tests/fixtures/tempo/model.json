@@ -1,0 +1,273 @@
+{
+  "version": "2026-10-03",
+  "fitted_through": "2026-10-01",
+  "cities": [
+    {
+      "name": "Paris",
+      "latitude": 48.85,
+      "longitude": 2.35,
+      "weight": 13.0
+    },
+    {
+      "name": "Lyon",
+      "latitude": 45.76,
+      "longitude": 4.84,
+      "weight": 2.3
+    },
+    {
+      "name": "Marseille",
+      "latitude": 43.3,
+      "longitude": 5.37,
+      "weight": 1.9
+    },
+    {
+      "name": "Lille",
+      "latitude": 50.63,
+      "longitude": 3.06,
+      "weight": 1.5
+    },
+    {
+      "name": "Toulouse",
+      "latitude": 43.6,
+      "longitude": 1.44,
+      "weight": 1.5
+    },
+    {
+      "name": "Bordeaux",
+      "latitude": 44.84,
+      "longitude": -0.58,
+      "weight": 1.4
+    },
+    {
+      "name": "Nantes",
+      "latitude": 47.22,
+      "longitude": -1.55,
+      "weight": 1.0
+    },
+    {
+      "name": "Strasbourg",
+      "latitude": 48.57,
+      "longitude": 7.75,
+      "weight": 0.8
+    },
+    {
+      "name": "Rennes",
+      "latitude": 48.11,
+      "longitude": -1.68,
+      "weight": 0.75
+    },
+    {
+      "name": "Nice",
+      "latitude": 43.7,
+      "longitude": 7.27,
+      "weight": 1.0
+    },
+    {
+      "name": "Clermont-Ferrand",
+      "latitude": 45.78,
+      "longitude": 3.08,
+      "weight": 0.5
+    },
+    {
+      "name": "Dijon",
+      "latitude": 47.32,
+      "longitude": 5.04,
+      "weight": 0.4
+    }
+  ],
+  "wind_sites": [
+    {
+      "name": "Somme",
+      "latitude": 49.9,
+      "longitude": 2.3,
+      "weight": 1.0
+    },
+    {
+      "name": "Aisne",
+      "latitude": 49.85,
+      "longitude": 3.29,
+      "weight": 1.0
+    },
+    {
+      "name": "Marne",
+      "latitude": 48.96,
+      "longitude": 4.36,
+      "weight": 1.0
+    },
+    {
+      "name": "Haute-Marne",
+      "latitude": 48.64,
+      "longitude": 4.95,
+      "weight": 1.0
+    },
+    {
+      "name": "Aude",
+      "latitude": 43.18,
+      "longitude": 3.0,
+      "weight": 1.0
+    },
+    {
+      "name": "Côtes-d'Armor",
+      "latitude": 48.5,
+      "longitude": -2.76,
+      "weight": 1.0
+    },
+    {
+      "name": "Indre",
+      "latitude": 46.8,
+      "longitude": 1.7,
+      "weight": 1.0
+    },
+    {
+      "name": "Pays de Caux",
+      "latitude": 49.9,
+      "longitude": 0.2,
+      "weight": 1.0
+    },
+    {
+      "name": "Saint-Nazaire offshore",
+      "latitude": 47.15,
+      "longitude": -2.55,
+      "weight": 1.0
+    },
+    {
+      "name": "Vendée",
+      "latitude": 46.7,
+      "longitude": -1.4,
+      "weight": 1.0
+    },
+    {
+      "name": "Beauce",
+      "latitude": 48.3,
+      "longitude": 1.7,
+      "weight": 1.0
+    },
+    {
+      "name": "Aveyron",
+      "latitude": 44.3,
+      "longitude": 2.6,
+      "weight": 1.0
+    }
+  ],
+  "consumption": [
+    0.9064804918178954,
+    0.9151635635418512,
+    0.9176379132381594,
+    0.91584027769824,
+    0.898841332724313,
+    0.8092597736843363,
+    0.7804280153249731,
+    -0.09384034625606305,
+    -0.10748720157585853,
+    -0.051338675489370905,
+    0.022571776907119596,
+    0.00417403820489529,
+    0.010871547295109725,
+    0.06806291816306952,
+    0.009763325522513095,
+    0.02432895328596981,
+    0.014685592603408848,
+    0.0038597585683682045
+  ],
+  "wind": [
+    0.030887054908814455,
+    1.38458991688325,
+    -0.07611469749630449
+  ],
+  "solar": [
+    0.5854164365988247,
+    -0.322369664645738,
+    0.062094068144289846,
+    -0.05170939763083755,
+    0.01663196835781019
+  ],
+  "sigma": [
+    0.145,
+    0.154,
+    0.167,
+    0.189,
+    0.217,
+    0.269,
+    0.31
+  ],
+  "rho": 0.7,
+  "runs": 400,
+  "backtest": {
+    "seasons": [
+      "2024-2025",
+      "2025-2026"
+    ],
+    "horizons": [
+      {
+        "horizon": 1,
+        "days": 716,
+        "accuracy": 0.955,
+        "winter_accuracy": 0.914,
+        "red_f1": 0.933,
+        "white_f1": 0.807,
+        "brier": 0.068,
+        "always_blue": 0.818
+      },
+      {
+        "horizon": 2,
+        "days": 716,
+        "accuracy": 0.955,
+        "winter_accuracy": 0.914,
+        "red_f1": 0.945,
+        "white_f1": 0.807,
+        "brier": 0.067,
+        "always_blue": 0.818
+      },
+      {
+        "horizon": 3,
+        "days": 716,
+        "accuracy": 0.947,
+        "winter_accuracy": 0.894,
+        "red_f1": 0.913,
+        "white_f1": 0.774,
+        "brier": 0.075,
+        "always_blue": 0.818
+      },
+      {
+        "horizon": 4,
+        "days": 716,
+        "accuracy": 0.933,
+        "winter_accuracy": 0.861,
+        "red_f1": 0.87,
+        "white_f1": 0.714,
+        "brier": 0.089,
+        "always_blue": 0.818
+      },
+      {
+        "horizon": 5,
+        "days": 716,
+        "accuracy": 0.92,
+        "winter_accuracy": 0.831,
+        "red_f1": 0.826,
+        "white_f1": 0.675,
+        "brier": 0.107,
+        "always_blue": 0.818
+      },
+      {
+        "horizon": 6,
+        "days": 716,
+        "accuracy": 0.892,
+        "winter_accuracy": 0.772,
+        "red_f1": 0.752,
+        "white_f1": 0.581,
+        "brier": 0.125,
+        "always_blue": 0.818
+      },
+      {
+        "horizon": 7,
+        "days": 716,
+        "accuracy": 0.899,
+        "winter_accuracy": 0.785,
+        "red_f1": 0.725,
+        "white_f1": 0.579,
+        "brier": 0.137,
+        "always_blue": 0.818
+      }
+    ]
+  }
+}

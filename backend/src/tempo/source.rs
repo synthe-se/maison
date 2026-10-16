@@ -9,12 +9,18 @@
 
 use std::{collections::BTreeMap, time::Instant};
 
-use chrono::{Duration, NaiveDate, TimeZone};
+use chrono::{Duration, NaiveDate};
+use maison_api::tempo::Color;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use super::rules::{season_bounds, season_name, Color, History, Quotas};
-use crate::{config::Config, error::AppError, util::HOUSE_TZ};
+use super::rules::{season_bounds, season_name, History, Quotas};
+use crate::{
+    config::Config,
+    error::{AppError, Refusal},
+    net::fetch_json,
+    util::{house_time, HOUSE_TZ},
+};
 
 /// RTE's answers and the season files: `{"values": {"2026-01-29": "RED", …}}`. Other keys
 /// (RTE's `"2026-01-29-fallback": "false"`) and unknown colours are dropped.
@@ -59,7 +65,7 @@ impl Sources {
     pub fn from_config(config: &Config) -> Self {
         let official = match (&config.rte_client_id, &config.rte_client_secret) {
             (Some(id), Some(secret)) => Some(Official {
-                url: config.tempo_rte_api_url.trim_end_matches('/').to_string(),
+                url: config.tempo_rte_api_url.clone(),
                 id: id.clone(),
                 secret: secret.clone(),
                 token: Mutex::new(None),
@@ -68,8 +74,8 @@ impl Sources {
         };
         Self {
             official,
-            public: config.tempo_rte_url.trim_end_matches('/').to_string(),
-            fallback: config.tempo_fallback_url.trim_end_matches('/').to_string(),
+            public: config.tempo_rte_url.clone(),
+            fallback: config.tempo_fallback_url.clone(),
         }
     }
 
@@ -82,7 +88,7 @@ impl Sources {
         today: NaiveDate,
     ) -> Result<History, AppError> {
         let current = season_bounds(start_year).0 <= today && today <= season_bounds(start_year).1;
-        let mut failure = AppError::service_unavailable("No Tempo source answered");
+        let mut failure = AppError::from(Refusal::ServiceUnreachable);
         if let Some(official) = &self.official {
             match official.season(client, start_year, today).await {
                 Ok(history) if !history.is_empty() => return Ok(history),
@@ -112,20 +118,6 @@ impl Sources {
     }
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(
-    request: reqwest::RequestBuilder,
-    what: &str,
-) -> Result<T, AppError> {
-    let response = request.send().await?;
-    if !response.status().is_success() {
-        return Err(AppError::service_unavailable(format!(
-            "{what}: {}",
-            response.status()
-        )));
-    }
-    Ok(response.json().await?)
-}
-
 /// `/tempo?season=` (up to today), and `/tempoLight` (today and tomorrow) for the current one.
 async fn public_season(
     client: &reqwest::Client,
@@ -137,12 +129,12 @@ async fn public_season(
     let request = client
         .get(format!("{url}/tempo"))
         .query(&[("season", season.as_str())]);
-    let mut history = get_json::<Values>(request, "RTE open data")
+    let mut history = fetch_json::<Values>(request, "RTE open data")
         .await?
         .history();
     if current {
         history.extend(
-            get_json::<Values>(client.get(format!("{url}/tempoLight")), "RTE open data")
+            fetch_json::<Values>(client.get(format!("{url}/tempoLight")), "RTE open data")
                 .await?
                 .history(),
         );
@@ -150,24 +142,24 @@ async fn public_season(
     Ok(history)
 }
 
+/// One day as api-couleur-tempo says it (its own French words).
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CouleurDay {
-    #[serde(rename = "dateJour")]
-    date: NaiveDate,
+    date_jour: NaiveDate,
     /// 1 blue, 2 white, 3 red, 0 not known yet.
-    #[serde(rename = "codeJour")]
-    code: u8,
+    code_jour: u8,
 }
 
 impl CouleurDay {
     fn color(&self) -> Option<(NaiveDate, Color)> {
-        let color = match self.code {
+        let color = match self.code_jour {
             1 => Color::Blue,
             2 => Color::White,
             3 => Color::Red,
             _ => return None,
         };
-        Some((self.date, color))
+        Some((self.date_jour, color))
     }
 }
 
@@ -181,13 +173,13 @@ async fn fallback_season(
     let request = client
         .get(format!("{url}/api/joursTempo"))
         .query(&[("periode", season_name(start_year))]);
-    let mut history: History = get_json::<Vec<CouleurDay>>(request, "api-couleur-tempo")
+    let mut history: History = fetch_json::<Vec<CouleurDay>>(request, "api-couleur-tempo")
         .await?
         .iter()
         .filter_map(CouleurDay::color)
         .collect();
     if current {
-        let tomorrow: CouleurDay = get_json(
+        let tomorrow: CouleurDay = fetch_json(
             client.get(format!("{url}/api/jourTempo/tomorrow")),
             "api-couleur-tempo",
         )
@@ -203,18 +195,19 @@ struct Token {
     expires_in: u64,
 }
 
+/// RTE's API answer (its own snake_case words).
 #[derive(Deserialize)]
 struct Calendars {
-    tempo_like_calendars: Vec<Calendar>,
+    tempo_like_calendars: Vec<RteCalendar>,
 }
 
 #[derive(Deserialize)]
-struct Calendar {
-    values: Vec<CalendarDay>,
+struct RteCalendar {
+    values: Vec<RteDay>,
 }
 
 #[derive(Deserialize)]
-struct CalendarDay {
+struct RteDay {
     /// `2026-10-03T00:00:00+02:00`
     start_date: String,
     value: String,
@@ -222,10 +215,8 @@ struct CalendarDay {
 
 /// Midnight in Paris, as RTE's API wants its bounds.
 fn paris_midnight(day: NaiveDate) -> String {
-    HOUSE_TZ
-        .from_local_datetime(&day.and_hms_opt(0, 0, 0).expect("midnight"))
-        .earliest()
-        .expect("midnight exists in Paris")
+    house_time(day, 0, 0)
+        .with_timezone(&HOUSE_TZ)
         .format("%Y-%m-%dT%H:%M:%S%:z")
         .to_string()
 }
@@ -242,7 +233,7 @@ impl Official {
             .post(format!("{}/token/oauth/", self.url))
             .basic_auth(&self.id, Some(&self.secret))
             .form(&[("grant_type", "client_credentials")]);
-        let fresh: Token = get_json(request, "RTE OAuth").await?;
+        let fresh: Token = fetch_json(request, "RTE OAuth").await?;
         // a minute early: never a token that dies on the way
         let lasts = std::time::Duration::from_secs(fresh.expires_in.saturating_sub(60));
         *token = Some((fresh.access_token.clone(), Instant::now() + lasts));
@@ -268,7 +259,7 @@ impl Official {
                 ("start_date", paris_midnight(first)),
                 ("end_date", paris_midnight(end)),
             ]);
-        let calendars: Calendars = get_json(request, "RTE API").await?;
+        let calendars: Calendars = fetch_json(request, "RTE API").await?;
         Ok(calendars
             .tempo_like_calendars
             .iter()
@@ -302,30 +293,40 @@ pub async fn edf_season(
     url: &str,
     day: NaiveDate,
 ) -> Result<(Quotas, [u32; 3]), AppError> {
-    let request = client
-        .get(format!("{}/saisons/search", url.trim_end_matches('/')))
-        .query(&[
-            ("option", "TEMPO".to_string()),
-            ("dateReference", day.to_string()),
-        ]);
-    let seasons: EdfSeasons = get_json(request, "EDF").await?;
+    let request = client.get(format!("{url}/saisons/search")).query(&[
+        ("option", "TEMPO".to_string()),
+        ("dateReference", day.to_string()),
+    ]);
+    let seasons: EdfSeasons = fetch_json(request, "EDF").await?;
+    edf_quotas(&seasons, super::rules::season_start_year(day))
+}
+
+/// EDF's answer read: its three colours, quotas a season can hold ([`Quotas::checked`]);
+/// anything else is the coded `service_unreachable` (EDF answered nonsense).
+fn edf_quotas(seasons: &EdfSeasons, start_year: i32) -> Result<(Quotas, [u32; 3]), AppError> {
     let find = |kind: &str| seasons.content.iter().find(|s| s.type_jour_eff == kind);
-    match (find("TEMPO_BLEU"), find("TEMPO_BLANC"), find("TEMPO_ROUGE")) {
-        (Some(blue), Some(white), Some(red)) => Ok((
-            Quotas {
-                red: red.nombre_jours,
-                white: white.nombre_jours,
-            },
-            [
-                blue.nombre_jours_tires,
-                white.nombre_jours_tires,
-                red.nombre_jours_tires,
-            ],
-        )),
-        _ => Err(AppError::service_unavailable(
-            "EDF answered without the three colours",
-        )),
-    }
+    let (Some(blue), Some(white), Some(red)) =
+        (find("TEMPO_BLEU"), find("TEMPO_BLANC"), find("TEMPO_ROUGE"))
+    else {
+        tracing::warn!("EDF answered without the three colours");
+        return Err(Refusal::ServiceUnreachable.into());
+    };
+    let Some(quotas) = Quotas::checked(red.nombre_jours, white.nombre_jours, start_year) else {
+        tracing::warn!(
+            red = red.nombre_jours,
+            white = white.nombre_jours,
+            "EDF's quotas cannot be a season's"
+        );
+        return Err(Refusal::ServiceUnreachable.into());
+    };
+    Ok((
+        quotas,
+        [
+            blue.nombre_jours_tires,
+            white.nombre_jours_tires,
+            red.nombre_jours_tires,
+        ],
+    ))
 }
 
 #[cfg(test)]
@@ -361,5 +362,33 @@ mod tests {
         let red: CouleurDay =
             serde_json::from_str(r#"{"dateJour":"2026-01-29","codeJour":3}"#).unwrap();
         assert_eq!(red.color(), Some((day(2026, 1, 29), Color::Red)));
+    }
+
+    #[test]
+    fn edf_s_quotas_are_checked_before_they_count() {
+        let answer = |red: u32, white: u32| -> EdfSeasons {
+            serde_json::from_value(serde_json::json!({ "content": [
+                { "typeJourEff": "TEMPO_ROUGE", "nombreJours": red, "nombreJoursTires": 1 },
+                { "typeJourEff": "TEMPO_BLANC", "nombreJours": white, "nombreJoursTires": 2 },
+                { "typeJourEff": "TEMPO_BLEU", "nombreJours": 300, "nombreJoursTires": 3 },
+            ] }))
+            .unwrap()
+        };
+        let (quotas, used) = edf_quotas(&answer(20, 45), 2026).unwrap();
+        assert_eq!((quotas.red, quotas.white, used), (20, 45, [3, 2, 1]));
+        for (red, white) in [(400, 43), (22, 4_000_000_000), (u32::MAX, u32::MAX)] {
+            assert!(
+                matches!(
+                    edf_quotas(&answer(red, white), 2026),
+                    Err(AppError::Coded {
+                        code: "service_unreachable",
+                        ..
+                    })
+                ),
+                "{red}/{white}"
+            );
+        }
+        let partial = EdfSeasons { content: vec![] };
+        assert!(edf_quotas(&partial, 2026).is_err());
     }
 }

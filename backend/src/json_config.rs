@@ -21,6 +21,7 @@ pub trait Checked: Sized {
 
 pub struct JsonConfig<T> {
     path: PathBuf,
+    access: Access,
     value: RwLock<T>,
 }
 
@@ -29,9 +30,16 @@ impl<T: Checked + Clone + Default + Serialize + DeserializeOwned> JsonConfig<T> 
     /// one, or one holding what `set` would refuse, is an error, not a silently forgotten
     /// device.
     pub fn load(path: &Path) -> Result<Self, AppError> {
+        Self::load_as(path, Access::Shared)
+    }
+
+    /// [`Self::load`], the file written as `access` says (a private one in a private
+    /// directory: the shutters').
+    pub fn load_as(path: &Path, access: Access) -> Result<Self, AppError> {
         let value = store::read_json::<T>(path, Corrupt::Fail)?.checked()?;
         Ok(Self {
             path: path.to_path_buf(),
+            access,
             value: RwLock::new(value),
         })
     }
@@ -66,7 +74,7 @@ impl<T: Checked + Clone + Default + Serialize + DeserializeOwned> JsonConfig<T> 
         let mut next = current.clone();
         let answer = change(&mut next)?;
         let next = next.checked()?;
-        store::write_json_async(&self.path, &next, Access::Shared).await?;
+        store::write_json_async(&self.path, &next, self.access).await?;
         *current = next;
         Ok(answer)
     }

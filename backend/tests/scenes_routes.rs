@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 /// The rabbit has no host in a fresh config: its action fails, saying so — which shows
 /// it was run.
-const NO_RABBIT: &str = "failed: No Nabaztag host configured";
+const NO_RABBIT: &str = "failed: not_configured";
 
 fn ping() -> Value {
     json!([{ "action": "nabaztag", "command": "ping" }])
@@ -302,7 +302,7 @@ async fn leaving_turns_off_the_ac_and_closes_the_shutters() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let results = body["results"].as_array().unwrap();
     assert_eq!(results.len(), 5, "every action ran: {body}");
-    assert_eq!(results[4], json!("failed: Unknown shutter"));
+    assert_eq!(results[4], json!("failed: not_found: Not found"));
 
     let (status, _) = common::send(
         &app,
@@ -329,7 +329,7 @@ async fn leaving_turns_off_the_ac_and_closes_the_shutters() {
         .await
         .expect("the key's actions ran");
     assert!(
-        line.contains("Unknown shutter") && line.contains("8.8.8.8"),
+        line.contains("not_found") && line.contains("8.8.8.8"),
         "the scene's actions ran: {line}"
     );
 }

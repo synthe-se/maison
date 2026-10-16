@@ -57,6 +57,12 @@ pub struct Config {
     pub tempo_tarifs_url: String,
     pub tempo_odre_url: String,
     pub open_meteo_url: String,
+    /// Tempo's files (`tempo/mod.rs`: the seasons, `model.json`, `netload.json`,
+    /// `weather.json`), shared with `fit_tempo`.
+    pub tempo_dir: PathBuf,
+    /// Open-Meteo's geocoding (`sun::search`, the house's place by name): a setting so the
+    /// tests point it at a local stub.
+    pub geocoding_url: String,
     /// The scenes (`scenes.rs`).
     pub scenes_path: PathBuf,
     /// The Zigbee radio (`ZIGBEE_*`, `zigbee/config.rs`).
@@ -87,6 +93,13 @@ impl Config {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| source_root.join(default))
         };
+        // a service's address, without the trailing slash its paths are joined after
+        let url = |name: &str, default: &str| {
+            var(name)
+                .unwrap_or_else(|| default.to_string())
+                .trim_end_matches('/')
+                .to_string()
+        };
         let flag = |name: &str, default: bool| {
             var(name).map_or(default, |v| {
                 if !is_truthy(&v)
@@ -102,12 +115,6 @@ impl Config {
         };
 
         // an address as kept: without its trailing slash, said once here
-        let url = |name: &str, default: &str| {
-            var(name)
-                .unwrap_or_else(|| default.to_string())
-                .trim_end_matches('/')
-                .to_string()
-        };
 
         Self {
             host: var("HOST").unwrap_or_else(|| "0.0.0.0".to_string()),
@@ -165,15 +172,14 @@ impl Config {
             rte_client_secret: var("RTE_CLIENT_SECRET"),
             tempo_fallback_url: url("TEMPO_FALLBACK_URL", "https://www.api-couleur-tempo.fr"),
             tempo_edf_url: url("TEMPO_EDF_URL", "https://api-commerce.edf.fr/commerce-activet/api/v1"),
-            tempo_tarifs_url: url(
-                "TEMPO_TARIFS_URL",
-                "https://tabular-api.data.gouv.fr/api/resources/0c3d1d36-c412-4620-8566-e5cbb4fa2b5a/data/?page_size=1&P_SOUSCRITE__exact=6&__id__sort=desc",
-            ),
-            tempo_odre_url: url(
-                "TEMPO_ODRE_URL",
-                "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets",
-            ),
+            // a whole request (its query included): taken as it is
+            tempo_tarifs_url: var("TEMPO_TARIFS_URL").unwrap_or_else(|| {
+                "https://tabular-api.data.gouv.fr/api/resources/0c3d1d36-c412-4620-8566-e5cbb4fa2b5a/data/?page_size=1&P_SOUSCRITE__exact=6&__id__sort=desc".to_string()
+            }),
+            tempo_odre_url: url("TEMPO_ODRE_URL", "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets"),
             open_meteo_url: url("OPEN_METEO_URL", "https://api.open-meteo.com"),
+            tempo_dir: path("TEMPO_CACHE_DIR", "cache/tempo"),
+            geocoding_url: url("GEOCODING_URL", "https://geocoding-api.open-meteo.com"),
             scenes_path: path("SCENES_JSON_PATH", "scenes.json"),
             zigbee: crate::zigbee::ZigbeeConfig::load(&var),
             source_root,
@@ -310,5 +316,17 @@ mod tests {
                 .permit_join_seconds,
             60
         );
+    }
+
+    #[test]
+    fn a_service_address_loses_its_trailing_slash_once_here() {
+        let config = with(&[
+            ("TEMPO_EDF_URL", "http://edf.example/api/"),
+            ("GEOCODING_URL", "http://geo.example//"),
+        ]);
+        assert_eq!(config.tempo_edf_url, "http://edf.example/api");
+        assert_eq!(config.geocoding_url, "http://geo.example");
+        assert_eq!(config.open_meteo_url, "https://api.open-meteo.com");
+        assert_eq!(config.tempo_dir, PathBuf::from("/x/cache/tempo"));
     }
 }
