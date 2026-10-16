@@ -186,7 +186,7 @@ def maison(boot: BootImage, adb_keys: bytes) -> None:
     board = drop_service(rd.text("init.rk30board.rc"), "startup_rington")  # the boot chime
     rd.put("init.rk30board.rc", board.encode())
     # `adb root` instead of su; ADB over Wi-Fi (keys still required: only these)
-    props = set_props(rd.text("default.prop"), {"ro.debuggable": "1", "persist.sys.usb.config": "adb", "service.adb.tcp.port": "5555"})
+    props = set_props(rd.text("default.prop"), {"ro.debuggable": "1", "ro.adb.secure": "1", "persist.sys.usb.config": "adb", "service.adb.tcp.port": "5555"})
     rd.put("default.prop", props.encode())
     rd.put("adb_keys", adb_keys, mode=0o100644)
     boot.ramdisk = rd.pack()

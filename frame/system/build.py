@@ -61,13 +61,21 @@ REMOVED = [
 ]
 
 # build.prop: Frameo's defaults out; the house's language and time zone in, and ADB over Wi-Fi
-# (adbd starts after /system's properties are loaded; its keys are still required).
+# (adbd starts after /system's properties are loaded). It stays on after provisioning, on
+# purpose: the kiosk is updated with `adb connect` + `adb install -r` (docs/frame.md), there
+# being no root nor cable once the frame hangs. adbd asks every computer for its key: only those
+# `flash.sh keys` put in /data/misc/adb/adb_keys get in: ro.adb.secure=1, which the vendor's
+# default.prop (its boot image's, kept) leaves out (it sets ro.secure=1, ro.debuggable=0 only),
+# so adbd's key check never hangs on how the vendor built it. A computer with a key can also
+# write Android's /data/local/tmp, where the mainline system's image is installed (install.sh):
+# keep the keys few.
 PROPS_DROPPED = ("ro.frameo.", "ro.zeasn.", "ro.rk.homepage_base")
 PROPS = {
     "ro.product.locale": "fr-FR",
     "persist.sys.locale": "fr-FR",
     "persist.sys.timezone": "Europe/Paris",
     "service.adb.tcp.port": "5555",
+    "ro.adb.secure": "1",
 }
 
 
