@@ -4,7 +4,11 @@
 //!   reconnect), supervised;
 //! - `cache`: the values a device reports now and then, kept across restarts;
 //! - `parse`: payloads read into data points, and data points named for the web;
-//! - `feeder`: the feeder's meal-plan codec.
+//! - `feeder`: the feeder's meal-plan codec and its feeding limits.
+//!
+//! A device's status is what its session knows: read once when it connects, then kept up to
+//! date by what the device pushes and what its commands echo (`TuyaManager::subscribe`).
+//! A read costs no radio unless it asks for a refresh.
 
 mod cache;
 pub mod feeder;
@@ -13,6 +17,7 @@ mod worker;
 
 use std::{
     collections::HashMap,
+    net::Ipv4Addr,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, AtomicUsize},
@@ -25,15 +30,17 @@ use serde_json::{Map, Value};
 use tokio::sync::{oneshot, watch, RwLock};
 
 use crate::{
-    error::AppError,
+    error::{AppError, Refusal},
     net,
     routes::DeviceRef,
     store::{self, Corrupt},
 };
-use cache::{cacheable_dps_keys, DeviceCache};
+use cache::DeviceCache;
 use parse::parse_device_data;
-pub use parse::parse_hhmm;
 use worker::{Link, WorkerCommand, WorkerHandle, COMMAND_REPLY_TIMEOUT, STATUS_TIMEOUT};
+
+/// How the device library's errors name the device to the client (the detail is logged).
+const DEVICE: &str = "Tuya device";
 
 /// The data points (DPS) of each device type, said once: the status parsers read them and
 /// the routes write them.
@@ -97,6 +104,7 @@ pub mod dps {
     }
 }
 
+/// A device as `devices.json` keeps it (the Tuya cloud's export, snake_case).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TuyaDeviceConfig {
     pub name: String,
@@ -115,8 +123,7 @@ pub struct TuyaDeviceConfig {
 pub struct TuyaDeviceListEntry {
     pub id: String,
     pub name: String,
-    #[serde(rename = "type")]
-    pub device_type: TuyaDeviceType,
+    pub r#type: TuyaDeviceType,
     pub product_name: String,
     pub model: Option<String>,
     pub ip: String,
@@ -129,8 +136,21 @@ pub struct TuyaDeviceListEntry {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TuyaStatusPayload {
     pub dps: Map<String, Value>,
+}
+
+/// A device's data points and their reading, as its session knows them: what the cache kept
+/// until the device is read, then what it said since.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TuyaStatus {
+    pub dps: Map<String, Value>,
+    pub parsed: Value,
+    /// Read whole from the device in its current session (pushes keep it current).
+    #[serde(skip)]
+    pub read: bool,
 }
 
 /// What a device is, as the web names it (`"feeder"`, `"litter-box"`, ...).
@@ -158,16 +178,6 @@ impl TuyaDeviceType {
             Self::Unknown
         }
     }
-
-    /// The refusal when a route for this type meets another device.
-    fn mismatch(self) -> &'static str {
-        match self {
-            Self::Feeder => "Device is not a feeder",
-            Self::LitterBox => "Device is not a litter box",
-            Self::Fountain => "Device is not a fountain",
-            Self::Unknown => "Unsupported device type",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -175,17 +185,26 @@ pub struct TuyaManager {
     devices: Arc<HashMap<String, ManagedTuyaDevice>>,
     cache: Arc<RwLock<DeviceCache>>,
     cache_path: Arc<PathBuf>,
-    runtime: Arc<RwLock<HashMap<String, RuntimeDeviceState>>>,
+    /// The handle of the worker that owns each device's session, if any. It may outlive a
+    /// worker that panicked: `Link::worker` says whether it is still the live one.
+    workers: Arc<RwLock<HashMap<String, WorkerHandle>>>,
     next_worker: Arc<AtomicU64>,
     live_workers: Arc<AtomicUsize>,
+    /// Manual feeds, for their limits.
+    feeds: Arc<feeder::Feeds>,
 }
 
 #[derive(Debug, Clone)]
 struct ManagedTuyaDevice {
     config: TuyaDeviceConfig,
     device_type: TuyaDeviceType,
+    /// Its address, checked once at load (`net::device_ipv4`); none: not a device address on
+    /// the house's network, said in the log, and never dialled.
+    address: Option<Ipv4Addr>,
     /// The connection, as the device's worker publishes it.
     link: Arc<watch::Sender<Link>>,
+    /// Its status, as its session knows it.
+    status: Arc<watch::Sender<TuyaStatus>>,
 }
 
 impl ManagedTuyaDevice {
@@ -197,15 +216,6 @@ impl ManagedTuyaDevice {
     }
 }
 
-#[derive(Debug)]
-struct RuntimeDeviceState {
-    last_data: Map<String, Value>,
-    parsed_data: Value,
-    /// The handle of the worker that owns the session, if any. It may outlive a worker
-    /// that panicked: `Link::worker` says whether it is still the live one.
-    worker: Option<WorkerHandle>,
-}
-
 impl TuyaManager {
     pub fn new(devices_path: &Path, cache_path: &Path) -> Result<Self, AppError> {
         let configs = store::read_json::<Vec<TuyaDeviceConfig>>(devices_path, Corrupt::Fail)?;
@@ -215,28 +225,27 @@ impl TuyaManager {
             .into_iter()
             .map(|config| {
                 let device_type = TuyaDeviceType::of(&config);
-                let link = Arc::new(watch::Sender::new(Link::default()));
+                let address = net::device_ipv4(&config.ip)
+                    .inspect_err(|_| {
+                        tracing::warn!(device = %config.name, ip = %config.ip, "tuya device without a LAN address: never dialled");
+                    })
+                    .ok();
+                let dps = cache.dps(&config.id);
+                let status = TuyaStatus {
+                    parsed: parse_device_data(device_type, &dps),
+                    dps,
+                    read: false,
+                };
                 (
                     config.id.clone(),
                     ManagedTuyaDevice {
                         config,
                         device_type,
-                        link,
+                        address,
+                        link: Arc::new(watch::Sender::new(Link::default())),
+                        status: Arc::new(watch::Sender::new(status)),
                     },
                 )
-            })
-            .collect::<HashMap<_, _>>();
-
-        let runtime = devices
-            .values()
-            .map(|device| {
-                let cached = cache.dps(&device.config.id);
-                let state = RuntimeDeviceState {
-                    parsed_data: parse_device_data(device.device_type, &cached),
-                    last_data: cached,
-                    worker: None,
-                };
-                (device.config.id.clone(), state)
             })
             .collect::<HashMap<_, _>>();
 
@@ -244,23 +253,23 @@ impl TuyaManager {
             devices: Arc::new(devices),
             cache: Arc::new(RwLock::new(cache)),
             cache_path: Arc::new(cache_path.to_path_buf()),
-            runtime: Arc::new(RwLock::new(runtime)),
+            workers: Arc::default(),
             next_worker: Arc::new(AtomicU64::new(1)),
             live_workers: Arc::new(AtomicUsize::new(0)),
+            feeds: Arc::default(),
         })
     }
 
     pub async fn list_devices(&self) -> Vec<TuyaDeviceListEntry> {
-        let runtime = self.runtime.read().await;
         self.devices
             .values()
-            .filter_map(|device| {
-                let state = runtime.get(&device.config.id)?;
+            .map(|device| {
                 let link = *device.link.borrow();
-                Some(TuyaDeviceListEntry {
+                let status = device.status.borrow().clone();
+                TuyaDeviceListEntry {
                     id: device.config.id.clone(),
                     name: device.config.name.clone(),
-                    device_type: device.device_type,
+                    r#type: device.device_type,
                     product_name: device.config.product_name.clone(),
                     model: device.config.model.clone(),
                     ip: device.config.ip.clone(),
@@ -268,33 +277,41 @@ impl TuyaManager {
                     connected: link.connected,
                     connecting: link.connecting,
                     reconnect_attempts: link.reconnect_attempts,
-                    last_data: TuyaStatusPayload {
-                        dps: state.last_data.clone(),
-                    },
-                    parsed_data: state.parsed_data.clone(),
-                })
+                    last_data: TuyaStatusPayload { dps: status.dps },
+                    parsed_data: status.parsed,
+                }
             })
             .collect()
     }
 
-    /// A device's live data points (the cached ones filling the gaps) and their reading.
+    /// A device's status as it changes (an event stream's): what it pushes, what its
+    /// commands echo, each read.
+    pub fn subscribe(&self, device_id: &str) -> Result<watch::Receiver<TuyaStatus>, AppError> {
+        Ok(self.device(device_id)?.status.subscribe())
+    }
+
+    /// A device's data points (the cached ones filling the gaps) and their reading. The
+    /// device is read only when its session has not read it yet, or on `refresh`: else its
+    /// pushes have kept the status current.
     pub async fn get_status(
         &self,
         device_id: &str,
+        refresh: bool,
     ) -> Result<(DeviceRef, Map<String, Value>, Value), AppError> {
         let device = self.device(device_id)?;
-        let dps = self.fetch_device_dps(device).await?;
-        let parsed = parse_device_data(device.device_type, &dps);
-        Ok((device.reference(), dps, parsed))
+        self.current(device, refresh).await?;
+        let status = device.status.borrow().clone();
+        Ok((device.reference(), status.dps, status.parsed))
     }
 
     pub async fn get_typed_status(
         &self,
         device_id: &str,
         expected: TuyaDeviceType,
+        refresh: bool,
     ) -> Result<(DeviceRef, Map<String, Value>, Value), AppError> {
         self.typed_device(device_id, expected)?;
-        self.get_status(device_id).await
+        self.get_status(device_id, refresh).await
     }
 
     pub async fn send_typed_command(
@@ -319,14 +336,27 @@ impl TuyaManager {
         updates: Vec<(String, Value)>,
     ) -> Result<DeviceRef, AppError> {
         let device = self.typed_device(device_id, expected)?;
-        self.send_device_commands(device, &updates).await?;
-        let cacheable = updates
-            .iter()
-            .filter(|(dps_id, _)| cacheable_dps_keys(device.device_type).contains(&dps_id.as_str()))
-            .cloned()
-            .collect();
-        self.apply_cache_updates(&device.config.id, cacheable).await;
+        self.send_device_commands(device, updates).await?;
         Ok(device.reference())
+    }
+
+    /// Serves `portions` from the feeder, within its limits (`feeder::Feeds`): counted only
+    /// once the feeder took the order.
+    pub async fn feed(&self, device_id: &str, portions: u8) -> Result<DeviceRef, AppError> {
+        self.typed_device(device_id, TuyaDeviceType::Feeder)?;
+        let claim = self.feeds.claim(device_id, portions)?;
+        let sent = self
+            .send_typed_command(
+                device_id,
+                TuyaDeviceType::Feeder,
+                dps::feeder::MANUAL_FEED,
+                Value::from(portions),
+            )
+            .await;
+        if sent.is_err() {
+            self.feeds.give_back(claim);
+        }
+        sent
     }
 
     /// The feeder's meal plan as it keeps it (base64), if it said it yet.
@@ -334,21 +364,23 @@ impl TuyaManager {
         &self,
         device_id: &str,
     ) -> Result<(DeviceRef, Option<String>), AppError> {
-        let device = self.typed_device(device_id, TuyaDeviceType::Feeder)?;
-        let dps = self.fetch_device_dps(device).await?;
+        let (device, dps, _) = self
+            .get_typed_status(device_id, TuyaDeviceType::Feeder, false)
+            .await?;
         let plan = dps
             .get(dps::feeder::MEAL_PLAN)
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        Ok((device.reference(), plan))
+        Ok((device, plan))
     }
 
     fn device(&self, device_id: &str) -> Result<&ManagedTuyaDevice, AppError> {
         self.devices
             .get(device_id)
-            .ok_or_else(|| AppError::not_found("Device not found"))
+            .ok_or_else(|| Refusal::NotFound.into())
     }
 
+    /// The device, if it is of the `expected` type: another cannot do what was asked.
     fn typed_device(
         &self,
         device_id: &str,
@@ -356,7 +388,13 @@ impl TuyaManager {
     ) -> Result<&ManagedTuyaDevice, AppError> {
         let device = self.device(device_id)?;
         if device.device_type != expected {
-            return Err(AppError::bad_request(expected.mismatch()));
+            return Err(crate::util::refused(
+                Refusal::Unsupported,
+                format!(
+                    "{device_id} is a {:?}, not a {expected:?}",
+                    device.device_type
+                ),
+            ));
         }
         Ok(device)
     }
@@ -369,19 +407,15 @@ impl TuyaManager {
         let device = self.device(device_id)?;
 
         let spawn = {
-            let mut runtime = self.runtime.write().await;
-            let Some(state) = runtime.get_mut(device_id) else {
-                return Err(AppError::not_found("Device not found"));
-            };
+            let mut workers = self.workers.write().await;
             let link = *device.link.borrow();
-            if state
-                .worker
-                .as_ref()
+            if workers
+                .get(device_id)
                 .is_some_and(|handle| link.worker != Some(handle.id))
             {
-                state.worker = None;
+                workers.remove(device_id);
             }
-            match &state.worker {
+            match workers.get(device_id) {
                 Some(_) if link.connected || link.connecting => None,
                 Some(worker) => {
                     // A worker waiting out its back-off: retry now.
@@ -401,7 +435,7 @@ impl TuyaManager {
                             link.reconnect_attempts += 1;
                         }
                     });
-                    state.worker = Some(handle);
+                    workers.insert(device_id.to_string(), handle);
                     Some(parts)
                 }
             }
@@ -420,10 +454,10 @@ impl TuyaManager {
         if connected {
             Ok(())
         } else {
-            Err(AppError::service_unavailable(format!(
-                "Failed to connect to {}",
-                device.config.name
-            )))
+            Err(net::unreachable(
+                DEVICE,
+                format!("{} did not connect", device.config.name),
+            ))
         }
     }
 
@@ -432,21 +466,21 @@ impl TuyaManager {
     pub async fn disconnect_device(&self, device_id: &str) -> Result<(), AppError> {
         let device = self.device(device_id)?;
         let worker = {
-            let mut runtime = self.runtime.write().await;
+            let mut workers = self.workers.write().await;
             device.link.send_modify(|link| {
                 *link = Link {
                     reconnect_attempts: link.reconnect_attempts,
                     ..Link::default()
                 }
             });
-            runtime
-                .get_mut(device_id)
-                .and_then(|state| state.worker.take())
+            workers.remove(device_id)
         };
         if let Some(WorkerHandle { exited, stop, .. }) = worker {
             drop(stop);
             // gone, or still closing its socket after the wait: either way no longer ours
-            tokio::time::timeout(STATUS_TIMEOUT, exited).await.ok();
+            if tokio::time::timeout(STATUS_TIMEOUT, exited).await.is_err() {
+                tracing::debug!(%device_id, "tuya worker still closing its session");
+            }
         }
         Ok(())
     }
@@ -462,58 +496,37 @@ impl TuyaManager {
     }
 
     pub async fn disconnect_all_devices(&self) {
-        // only an unknown id fails, and these are the known ones
-        let disconnects = self
-            .devices
-            .keys()
-            .map(|device_id| self.disconnect_device(device_id));
+        let disconnects = self.devices.keys().map(|device_id| async move {
+            // only an unknown id fails, and these are the known ones
+            if let Err(error) = self.disconnect_device(device_id).await {
+                tracing::warn!(%device_id, %error, "tuya device not disconnected");
+            }
+        });
         futures::future::join_all(disconnects).await;
     }
 
-    async fn fetch_device_dps(
-        &self,
-        device: &ManagedTuyaDevice,
-    ) -> Result<Map<String, Value>, AppError> {
-        let config = &device.config;
-        self.connect_device(&config.id).await?;
-
+    /// The device connected and its status current: read by its session unless it already
+    /// was (and no `refresh` is asked).
+    async fn current(&self, device: &ManagedTuyaDevice, refresh: bool) -> Result<(), AppError> {
+        self.connect_device(&device.config.id).await?;
+        if !refresh && device.status.borrow().read {
+            return Ok(());
+        }
         let (reply, answer) = oneshot::channel();
-        self.send_to_worker(device, WorkerCommand::FetchStatus { reply })
+        self.send_to_worker(device, WorkerCommand::FetchStatus { refresh, reply })
             .await?;
-        let mut dps = await_reply(answer, &config.name, "Status request").await?;
-
-        self.record_dps(&config.id, device.device_type, &dps).await;
-        self.store_cacheable_dps(&config.id, device.device_type, &dps)
-            .await;
-        self.merge_cached_dps(&mut dps, device.device_type, &config.id)
-            .await;
-        Ok(dps)
+        await_reply(answer, &device.config.name).await
     }
 
     async fn send_device_commands(
         &self,
         device: &ManagedTuyaDevice,
-        updates: &[(String, Value)],
+        updates: Vec<(String, Value)>,
     ) -> Result<(), AppError> {
         let (reply, answer) = oneshot::channel();
-        self.send_to_worker(
-            device,
-            WorkerCommand::SetValues {
-                updates: updates.to_vec(),
-                reply,
-            },
-        )
-        .await?;
-        await_reply(answer, &device.config.name, "Command").await?;
-
-        let mut runtime = self.runtime.write().await;
-        if let Some(state) = runtime.get_mut(&device.config.id) {
-            for (key, value) in updates {
-                state.last_data.insert(key.clone(), value.clone());
-            }
-            state.parsed_data = parse_device_data(device.device_type, &state.last_data);
-        }
-        Ok(())
+        self.send_to_worker(device, WorkerCommand::SetValues { updates, reply })
+            .await?;
+        await_reply(answer, &device.config.name).await
     }
 
     /// Hands `command` to the device's worker; a device without a connected session fails
@@ -525,20 +538,40 @@ impl TuyaManager {
     ) -> Result<(), AppError> {
         let name = &device.config.name;
         let sender = {
-            let runtime = self.runtime.read().await;
+            let workers = self.workers.read().await;
             let link = *device.link.borrow();
-            runtime
+            workers
                 .get(&device.config.id)
-                .and_then(|state| state.worker.as_ref())
                 .filter(|worker| link.connected && link.worker == Some(worker.id))
                 .map(|worker| worker.commands.clone())
         };
-        let sender = sender
-            .ok_or_else(|| AppError::service_unavailable(format!("{name} is not connected")))?;
+        let sender =
+            sender.ok_or_else(|| net::unreachable(DEVICE, format!("{name} is not connected")))?;
         sender
             .send(command)
             .await
-            .map_err(|_| AppError::service_unavailable(format!("{name} worker is unavailable")))
+            .map_err(|_| net::unreachable(DEVICE, format!("{name}: its worker is gone")))
+    }
+
+    /// What `dps` says over the device's status (and its cache): `read`, a whole status read.
+    /// Said to the status's listeners only when it changed something.
+    async fn absorb(&self, device: &ManagedTuyaDevice, dps: Map<String, Value>, read: bool) {
+        self.store_cacheable_dps(&device.config.id, device.device_type, &dps)
+            .await;
+        device.status.send_if_modified(|status| {
+            let mut changed = read && !status.read;
+            status.read |= read;
+            for (key, value) in dps {
+                if status.dps.get(&key) != Some(&value) {
+                    status.dps.insert(key, value);
+                    changed = true;
+                }
+            }
+            if changed {
+                status.parsed = parse_device_data(device.device_type, &status.dps);
+            }
+            changed
+        });
     }
 }
 
@@ -546,12 +579,11 @@ impl TuyaManager {
 async fn await_reply<T>(
     answer: oneshot::Receiver<Result<T, AppError>>,
     name: &str,
-    what: &str,
 ) -> Result<T, AppError> {
     tokio::time::timeout(COMMAND_REPLY_TIMEOUT, answer)
         .await
-        .map_err(|_| AppError::service_unavailable(format!("{what} timeout for {name}")))?
-        .map_err(|_| net::unreachable("Tuya device", format!("{name} worker dropped the reply")))?
+        .map_err(|_| net::unreachable(DEVICE, format!("{name}: no reply in time")))?
+        .map_err(|_| net::unreachable(DEVICE, format!("{name}: its worker dropped the reply")))?
 }
 
 #[cfg(test)]
@@ -590,6 +622,97 @@ pub(crate) mod tests {
 
     fn link(manager: &TuyaManager, id: &str) -> Link {
         *manager.device(id).unwrap().link.borrow()
+    }
+
+    /// A connected session for `f` that the test plays: its worker's parts (its commands).
+    async fn connected(manager: &TuyaManager) -> worker::WorkerParts {
+        let device = manager.device("f").unwrap();
+        let (handle, parts) = manager.new_worker(device);
+        let id = handle.id;
+        device.link.send_modify(|link| {
+            link.worker = Some(id);
+            link.connected = true;
+        });
+        manager.workers.write().await.insert("f".into(), handle);
+        parts
+    }
+
+    /// What the device says goes into its status, said to its listeners when it changes it.
+    #[tokio::test]
+    async fn what_a_device_says_is_absorbed_and_said() {
+        let (manager, _dir) = make(json!([config("f", "Feeder", "")]), None);
+        let device = manager.device("f").unwrap();
+        let mut status = manager.subscribe("f").unwrap();
+        status.mark_unchanged();
+        let dps = |v: Value| v.as_object().cloned().unwrap();
+        manager
+            .absorb(device, dps(json!({ "101": 2, "1": "BQgeAgE=" })), false)
+            .await;
+        assert!(status.has_changed().unwrap());
+        let seen = status.borrow_and_update().clone();
+        assert_eq!(seen.dps["101"], 2);
+        assert_eq!(seen.parsed["feeding"]["lastFeedSize"], "2 portions");
+        assert!(!seen.read, "a push is not a whole read");
+
+        manager
+            .absorb(device, dps(json!({ "101": 2 })), false)
+            .await;
+        assert!(!status.has_changed().unwrap(), "nothing new: nothing said");
+        manager.absorb(device, Map::new(), true).await;
+        assert!(status.borrow_and_update().read, "a read is said");
+        assert_eq!(
+            manager.list_devices().await[0].last_data.dps["1"],
+            "BQgeAgE="
+        );
+        assert!(
+            _dir.path().join("device-cache.json").exists(),
+            "the meal plan is cached"
+        );
+    }
+
+    /// A status read costs no radio once the session has read the device: its pushes keep
+    /// it current. Unread, or on a refresh, the session reads it.
+    #[tokio::test]
+    async fn a_status_is_read_from_the_device_only_when_it_must() {
+        let (manager, _dir) = make(json!([config("f", "Feeder", "")]), None);
+        let mut parts = connected(&manager).await;
+        let reads = std::sync::Arc::new(AtomicUsize::new(0));
+        let (worker, counted) = (manager.clone(), reads.clone());
+        let worker = tokio::spawn(async move {
+            while let Some(command) = parts.commands().recv().await {
+                let WorkerCommand::FetchStatus { reply, .. } = command else {
+                    continue;
+                };
+                counted.fetch_add(1, Ordering::SeqCst);
+                let device = worker.device("f").unwrap();
+                let read = json!({ "101": 3 }).as_object().cloned().unwrap();
+                worker.absorb(device, read, true).await;
+                reply.send(Ok(())).unwrap();
+            }
+        });
+
+        let (_, dps, parsed) = manager.get_status("f", false).await.unwrap();
+        assert_eq!(dps["101"], 3);
+        assert_eq!(parsed["feeding"]["lastFeedSize"], "3 portions");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "unread: read once");
+        for _ in 0..3 {
+            manager.get_status("f", false).await.unwrap();
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "then from the session");
+        manager.get_status("f", true).await.unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 2, "a refresh reads again");
+        worker.abort();
+    }
+
+    /// A feed counts against the feeder's limits only once it went: one that did not
+    /// leaves the next free.
+    #[tokio::test]
+    async fn a_feed_that_failed_is_not_counted() {
+        let (manager, _dir) = make(json!([config("f", "Feeder", "")]), None);
+        for _ in 0..2 {
+            let error = manager.feed("f", 1).await.unwrap_err();
+            assert_eq!(error.to_string(), "Tuya device unreachable", "not too many");
+        }
     }
 
     fn live(manager: &TuyaManager) -> usize {
@@ -641,7 +764,7 @@ pub(crate) mod tests {
         assert!(TuyaManager::new(&root.join("devices.json"), &cache).is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn disconnect_stops_a_retrying_worker() {
         let (manager, _dir) = make(json!([config("f", "Feeder", "")]), None);
         assert!(manager.connect_device("f").await.is_err());
@@ -650,10 +773,10 @@ pub(crate) mod tests {
         manager.disconnect_device("f").await.unwrap();
         assert_eq!(live(&manager), 0);
         // Past the first back-off: no worker came back and reinstalled itself.
-        tokio::time::sleep(reconnect_delay(1) + std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(reconnect_delay(1) * 2).await;
         assert_eq!(live(&manager), 0);
         assert!(!link(&manager, "f").connecting);
-        assert!(manager.runtime.read().await["f"].worker.is_none());
+        assert!(manager.workers.read().await.get("f").is_none());
     }
 
     #[tokio::test]
@@ -703,7 +826,7 @@ pub(crate) mod tests {
             link.worker = Some(id);
             link.connected = true;
         });
-        manager.runtime.write().await.get_mut("f").unwrap().worker = Some(handle);
+        manager.workers.write().await.insert("f".into(), handle);
         let task = tokio::spawn(async move {
             let _parts = parts;
             panic!("a worker bug");
@@ -783,14 +906,18 @@ pub(crate) mod tests {
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("is not connected"));
+        assert_eq!(error.to_string(), "Tuya device unreachable");
 
+        let code = |error: AppError| match error {
+            AppError::Coded { code, .. } => code,
+            other => panic!("not coded: {other}"),
+        };
         let error = manager
-            .get_typed_status("l", TuyaDeviceType::Feeder)
+            .get_typed_status("l", TuyaDeviceType::Feeder, false)
             .await
             .unwrap_err();
-        assert_eq!(error.to_string(), "Device is not a feeder");
-        let error = manager.get_status("nope").await.unwrap_err();
-        assert_eq!(error.to_string(), "Device not found");
+        assert_eq!(code(error), "unsupported", "a litter box feeds nothing");
+        let error = manager.get_status("nope", false).await.unwrap_err();
+        assert_eq!(code(error), "not_found");
     }
 }

@@ -38,12 +38,16 @@ async fn main() {
         Some(DpId::Higher),
         None,
     );
-    let _ = device.refresh(refresh).await;
+    if let Err(error) = device.refresh(refresh).await {
+        println!("REFRESH send: {error}");
+    }
     if let Ok(Some(result)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
         println!("REFRESH recv: {result:#?}");
     } else {
         println!("REFRESH recv: timeout");
     }
 
-    let _ = device.disconnect().await;
+    if let Err(error) = device.disconnect().await {
+        println!("DISCONNECT: {error}");
+    }
 }

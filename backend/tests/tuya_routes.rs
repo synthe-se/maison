@@ -117,8 +117,8 @@ async fn the_dps_scan_is_for_admins_and_checks_its_range() {
 
     let (status, body) = admin(&app, Method::GET, &format!("{path}?start=9&end=3"), None).await;
     assert_eq!(
-        (status, body["error"].as_str()),
-        (StatusCode::BAD_REQUEST, Some("Invalid DPS scan range"))
+        (status, body["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid"))
     );
     let (status, _) = admin(&app, Method::GET, &format!("{path}?start=abc"), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -143,50 +143,74 @@ async fn bad_requests_are_refused_before_reaching_the_device() {
         (
             format!("/api/devices/{FEEDER}/feeder/feed"),
             json!({ "portion": 0 }),
-            "portion must be between 1 and 12",
+            "invalid",
         ),
         (
             format!("/api/devices/{FEEDER}/feeder/meal-plan"),
             json!({ "mealPlan": [] }),
-            "mealPlan array is required",
+            "invalid",
         ),
         (
             format!("/api/devices/{FEEDER}/feeder/meal-plan"),
             json!({ "mealPlan": [{ "daysOfWeek": ["Monday"], "time": "25:00", "portion": 1, "status": "Enabled" }] }),
-            "Invalid meal plan entry at index 0",
+            "invalid",
         ),
         (
             format!("/api/devices/{LITTER}/litter-box/settings"),
             json!({}),
-            "No valid settings provided",
+            "invalid",
         ),
         (
             format!("/api/devices/{LITTER}/litter-box/settings"),
             json!({ "cleanDelay": 5000 }),
-            "cleanDelay must be between 0 and 1800 seconds",
+            "invalid",
         ),
         (
             format!("/api/devices/{FOUNTAIN}/fountain/eco-mode"),
             json!({ "mode": 3 }),
-            "Eco mode must be 1 or 2",
+            "invalid",
         ),
         (
             format!("/api/devices/{FOUNTAIN}/fountain/uv"),
             json!({ "runtime": 25 }),
-            "UV runtime must be between 0 and 24 hours",
+            "invalid",
         ),
         (
             format!("/api/devices/{FOUNTAIN}/fountain/uv"),
             json!({}),
-            "No valid settings provided",
+            "invalid",
         ),
     ];
-    for (path, body, error) in cases {
+    for (path, body, code) in cases {
         let (status, answer) = member(&app, Method::POST, &path, Some(body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
-        assert_eq!(answer["error"], error, "{path}");
+        assert_eq!(answer["code"], code, "{path}");
         assert_eq!(answer["success"], false);
     }
+    // a factory reset is an admin's, on its own route
+    let (status, answer) = member(
+        &app,
+        Method::POST,
+        &format!("/api/devices/{LITTER}/litter-box/settings"),
+        Some(json!({ "actions": { "resetFactorySettings": true } })),
+    )
+    .await;
+    assert_eq!(
+        (status, answer["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden"))
+    );
+    let reset = format!("/api/devices/{LITTER}/litter-box/factory-reset");
+    let (status, answer) = member(&app, Method::POST, &reset, None).await;
+    assert_eq!(
+        (status, answer["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden"))
+    );
+    let (status, _) = admin(&app, Method::POST, &reset, None).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an admin's reaches the device"
+    );
     // a day or status the feeder has no word for does not even read as a meal plan
     for meal in [
         json!({ "daysOfWeek": ["Funday"], "time": "08:00", "portion": 1, "status": "Enabled" }),
@@ -211,29 +235,29 @@ async fn a_route_for_another_device_type_is_refused() {
         (
             Method::GET,
             format!("/api/devices/{LITTER}/feeder/status"),
-            "Device is not a feeder",
+            "unsupported",
         ),
         (
             Method::GET,
             format!("/api/devices/{FEEDER}/fountain/status"),
-            "Device is not a fountain",
+            "unsupported",
         ),
         (
             Method::POST,
             format!("/api/devices/{FOUNTAIN}/litter-box/clean"),
-            "Device is not a litter box",
+            "unsupported",
         ),
         (
             Method::POST,
             format!("/api/devices/{LITTER}/fountain/reset/filter"),
-            "Device is not a fountain",
+            "unsupported",
         ),
     ];
-    for (method, path, error) in cases {
+    for (method, path, code) in cases {
         let (status, answer) = member(&app, method, &path, None).await;
         assert_eq!(
-            (status, answer["error"].as_str()),
-            (StatusCode::BAD_REQUEST, Some(error)),
+            (status, answer["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some(code)),
             "{path}"
         );
     }
@@ -245,8 +269,8 @@ async fn a_route_for_another_device_type_is_refused() {
     )
     .await;
     assert_eq!(
-        (status, answer["error"].as_str()),
-        (StatusCode::NOT_FOUND, Some("Device not found"))
+        (status, answer["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("not_found"))
     );
 }
 
@@ -260,8 +284,8 @@ async fn commands_to_an_unreachable_device_fail_with_503() {
         let (status, answer) = member(&app, Method::POST, &path, None).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
         assert!(
-            answer["error"].as_str().unwrap().contains("not connected"),
-            "{answer}"
+            answer["error"].as_str().unwrap().contains("unreachable"),
+            "nothing about the session: {answer}"
         );
     }
     let (status, _) = member(
