@@ -19,8 +19,10 @@ Cal Sans, self-hosted), in `web/src/styles/tokens.css`:
   (`--measure` 42rem), left-aligned. A spacing scale of 4 (`--s-1`…`--s-7`).
 - One height scale for controls (`--control-h` 44, `-s` 36, `-xs` 32; all 44 on a coarse
   pointer; `-l` 52 for the door's one big action), one radius scale, one type scale (`--t-*`),
-  one focus ring (`--focus-ring`); `web/scripts/css.check.ts` refuses literal radii, control
-  heights, px font sizes, colors outside `tokens.css` and outline literals.
+  one focus ring (`--focus-ring`), one layer scale (`--z-*`: raised, bar, overlay, dialog,
+  toast, menu, skip), one duration scale (`--dur-*`); `web/scripts/css.check.ts` refuses
+  literal radii, control heights, px font sizes, colors outside `tokens.css`, outline
+  literals, literal z-index, durations and opacities, and media widths not in `tokens.css`.
 - Every color once, light and dark side by side in `light-dark()`; `data-theme` on `<html>`
   (set before first paint) forces a side.
 - From 600 px a sticky 56 px header holds the destinations; below, a bottom bar does.
@@ -36,8 +38,9 @@ Cal Sans, self-hosted), in `web/src/styles/tokens.css`:
   Ariane's. Maison's identity on the brand's petrol, in both themes (the mark at 88 px, the
   name in Borel, the promise « Ta maison te répond, ici, sans passer par le nuage. », the
   sun's path the shutters follow drawn faintly, `aria-hidden`), the action on the other
-  side: one column on a phone, two from 840 px. Each door page is a title, a lead and one
-  52 px action; the focus goes to the page's h1 once in.
+  side: one column on a phone, two from 840 px. Each door page is `Door` (what `PageHead` is
+  to the other pages): the window title, an h1, a lead and one 52 px action with its hints;
+  the focus goes to the page's h1 once in.
 - No sideways scroll at 320 px (WCAG 1.4.10); `e2e/layout.ts` measures 320, 390, 1024, 1440
   and 2560 px.
 
@@ -63,7 +66,8 @@ Cal Sans, self-hosted), in `web/src/styles/tokens.css`:
   rouge · 0,76 €/h » in the warning style; its fact is the power and its cost at the price
   in force (« 42 W · 0,7 c€/h »).
 - Nothing that looks like a status is a button: a Tuya device's local connection is a
-  labelled switch on its page and in the group's ⋯ menu, never a Wi‑Fi icon on the tile.
+  labelled switch on its page and in the group's ⋯ menu (`Menu`, the one Bits UI
+  DropdownMenu: a switch item keeps it open and shows a tick), never a Wi‑Fi icon on the tile.
 
 - Two zones: the 48 px icon is the main gesture (on/off), the name and state lead to the
   device's page (`/device/[id]`, `/hue-lamp/[id]`, `/zigbee-lamp/[id]`, `/meross/[id]`): a
@@ -73,9 +77,10 @@ Cal Sans, self-hosted), in `web/src/styles/tokens.css`:
   without a written state. The right-hand fact never wraps.
 - On is a filled `--accent` disc, off an empty 1.5 px ring: two shapes, never color alone
   (WCAG 1.4.1, 1.4.11).
-- A tile's settings unfold inside it under its gear (`DeviceTile` `settings`, `TileSettings`
-  on a Bits UI Collapsible: `aria-expanded` and `aria-controls`); closed while the focus is in
-  them (saved, cancelled), the focus goes back to the gear. A form that needs room is a
+- A tile's settings unfold inside it under its gear (`DeviceTile` `settings`, through `Fold`,
+  the one Bits UI Collapsible: `aria-expanded` and `aria-controls`; what unfolds exists only
+  while open); closed while the focus is in them (saved, cancelled), the focus goes back to
+  the gear. A form that needs room is a
   `Sheet` instead (adding a shutter, an invitation, a meal, a remote key, a scene).
 
 ## 2. Commands
@@ -137,7 +142,12 @@ be touched anywhere (WCAG 2.5.7), `touch-action: pan-y`.
   (its key, its one fetch, its pace) is declared once, in its family's `data.ts`: two views of
   a key ask the same way (live() refuses a key declared with two fetches). Cadences: 1 s for a
   moving shutter, 3–5 s lamps and plugs, 10–15 s Tuya, 60 s TV and box (never faster:
-  JointSPACE dies under bursts), 120 s Nabaztag.
+  JointSPACE dies under bursts), 120 s Nabaztag; every pace is maison-api's
+  (`web/src/lib/paces.ts`, generated).
+- The server says what changed (`GET /api/events`): an event names the prefix of the keys to
+  read again, never the value (`web/src/lib/events.ts`, generated). A reader that follows the
+  stream (the wall frame's native app does) reads such a source again at once and polls it
+  only every 60 s (`PUSHED_SAFETY_MS`) while the stream is open.
 - An old value says so, once, where it is shown (`Loaded`, or a group's head: `Stale`):
   « Dernière lecture 14:20 · Réessayer », when the last ask failed or the polls have not
   answered for three of their intervals. A page the server says does not exist (404) says

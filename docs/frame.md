@@ -22,8 +22,9 @@ python3 -m unittest discover -s frame -p 'test_*.py'
 `build.py` changes the vendor's system image in place with debugfs: what goes (`REMOVED`), the
 kiosk in `/system/priv-app/MaisonFrame` with its libraries extracted in `lib/arm`, the boot
 animation (`frame/bootanimation.sh`: the sign-in door's identity panel, from the app's sources),
-`build.prop` (French, Paris, ADB over Wi-Fi). Before a flash, compare its tree with the vendor's:
-only those paths may differ. It also makes `resource.img`: the vendor's, with U-Boot's logo (the
+`build.prop` (French, Paris, ADB over Wi-Fi, and `ro.adb.secure=1`: adbd asks every computer
+for its key, which the vendor's default.prop left unsaid). Before a flash, compare its tree with
+the vendor's: only those paths may differ. It also makes `resource.img`: the vendor's, with U-Boot's logo (the
 first screen, read from that partition, not from boot.img's copy) replaced in place by the boot
 animation's still frame; the device tree beside it stays byte for byte.
 
@@ -92,8 +93,11 @@ The loader may drop halfway: do the reset again, `rkwrite.py` resumes where it s
 
 - The kiosk is updated with `adb install -r` (same release key): there is no root any more.
 - `adb shell am broadcast -a maison.frame.PROVISION -n maison.frame/.ProvisionReceiver --es url
-  …` gives it a new address; `maison.frame.RELEASE` lifts the kiosk. Removed from « Mon
-  compte », it offers to pair again.
+  …` gives it a new address; `maison.frame.RELEASE` to the same receiver lifts the kiosk. The
+  receiver requires DUMP (the shell's alone) and hands the activity a one-time grant: the
+  activity is exported (it is the home), so its own action without the grant is refused.
+  Removed from « Mon compte », it offers to pair again.
+- A page that could not load is tried again as soon as the Wi-Fi is back (a NetworkCallback).
 - The frame stands in portrait, rotation 1: `ROTATION` in `provision.sh` and
   `bootanimation.sh` is one setting.
 
@@ -106,12 +110,27 @@ WebKit) on KMS, is a read-only squashfs in Android's userdata, a tmpfs over it.
 ```bash
 frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules (Docker)
 frame/linux/rootfs.sh           # the system: rootfs.squashfs (Docker, armhf emulated, ~20 min)
-python3 -I frame/linux/initramfs.py frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
+python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
 python3 -I frame/linux/image.py frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/recovery-linux.img
 frame/linux/install.sh --target https://<maison>   # once: the system and Maison's address
 frame/linux/try.sh --install --flash                # then: on the frame, booted, its console up
 frame/linux/console.sh 'systemctl status maison-kiosk'   # a root shell over the USB-C
 ```
+
+`--debug` is for bring-up: the backlight blinks five times as soon as init runs (a sign with
+no console at all) and the initramfs waits 8 s before saying what came up.
+
+Maison's address is root's: `/android-data/maison/target` (0600), loaded by the units as their
+`target` credential. `install.sh --target` can only write where Android's shell writes,
+`/data/local/tmp/maison/target`; the next mainline boot's initramfs adopts it, only while root
+keeps none, and removes it. The units never read the old place, so a system built since wants
+the recovery image built since (its initramfs adopts): flash both. To change the address,
+remove root's copy from the console (`frame/linux/console.sh 'rm /android-data/maison/target'`),
+then `--target` again and reboot.
+
+The USB-C console is root's, logged in at once, for bring-up only: the system's getty runs
+only while `/android-data/maison/debug-console` exists (root's password is locked). Remove the
+file once the frame is on the wall: whoever holds the frame and a cable then gets nothing.
 
 The kiosk opens Maison's address with `#lang=fr` (WPE says `en-US` whatever its system), and is
 paired as a wall screen like the Android one; its cookies, WebKit's storage and cache persist in
@@ -133,6 +152,13 @@ What the bring-up taught, each point seen on the frame:
 - WebKit's sandbox needs user namespaces; cog's modeset renderer cannot rotate (gles does);
   simpledrm left beside Rockchip's card is where cog would draw, unseen.
 - `reboot` from mainline brings Android even with the USB-C plugged in; `try.sh` handles either.
+
+The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)) is in the
+system beside cog: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
+client, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`;
+its launcher (`/usr/local/sbin/maison-ui`) turns the output with `wlr-randr` (`MAISON_TURN`, 0
+or 180, else the app turns its own picture). Not enabled yet: `systemctl stop maison-kiosk;
+systemctl start maison-ui`, enabled once measured on the frame.
 
 A wall screen's theme follows the sun at the house when nothing is chosen (« Soleil », which
 anyone may choose too): dark from sunset to sunrise, from the house's place (set with the

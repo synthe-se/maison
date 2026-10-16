@@ -30,7 +30,7 @@ Needs Rust and Bun.
 cp .env.example .env                      # set JWT_SECRET: openssl rand -hex 32
 PUBLIC_URL=http://localhost:5173 make backend   # API on :3033
 make web                                  # http://localhost:5173
-make test                                 # cargo test, web checks, Vitest
+make test                                 # fmt, clippy, tests (api, backend, frame/ui), web checks, Vitest
 cd e2e && bun install && bun run all      # Playwright + axe, after cargo build and web build
 ```
 
