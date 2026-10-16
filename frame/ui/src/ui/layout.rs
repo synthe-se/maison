@@ -47,6 +47,7 @@ impl Target {
         match self {
             Self::Act(Act::Order(o)) => Some(&o.key),
             Self::Slider { slider, .. } => Some(&slider.key),
+            Self::Act(Act::Open(v)) => Some(v.key()),
             _ => None,
         }
     }

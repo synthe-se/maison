@@ -178,6 +178,7 @@ pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
         _ => {}
     }
     Tile {
+        open: None,
         name: c.name.clone(),
         state: describe(w, c),
         warn: off,

@@ -138,6 +138,7 @@ pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Tile {
         }));
     }
     Tile {
+        open: None,
         name: l.name.clone(),
         state: state(w, l, now),
         warn: !l.reachable && !l.connecting,

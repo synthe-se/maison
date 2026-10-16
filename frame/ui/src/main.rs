@@ -370,6 +370,7 @@ fn simulation(app: &mut App, rx: &Receiver<String>) -> Option<String> {
 fn say_screen(screen: &Screen, said: &mut String) {
     let now_said = match screen {
         Screen::House(_) => "screen house".to_string(),
+        Screen::Page { title, .. } => format!("screen page {title}"),
         Screen::Door { title, code, .. } => match code {
             Some(c) => format!("screen door {title}\ncode {c}"),
             None => format!("screen door {title}"),

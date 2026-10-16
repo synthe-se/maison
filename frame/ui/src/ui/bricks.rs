@@ -174,6 +174,8 @@ impl P<'_, '_, '_, '_> {
             Part::Slider(s) => Self::slider_height(s),
             Part::Row(_) => TOUCH,
             Part::Hint(t) => self.para_height(t, ty::SECONDARY, w)?,
+            Part::Bar { thin: false, .. } => px::BAR_H,
+            Part::Bar { thin: true, .. } => px::BAR_THIN,
             Part::Note { .. } => TOUCH,
         })
     }
@@ -182,7 +184,8 @@ impl P<'_, '_, '_, '_> {
     fn head_columns(&mut self, t: &Tile, w: f32) -> Result<(f32, f32), Error> {
         let inner = w - 2.0 * ROW_PAD_X;
         let fact_w = match &t.fact {
-            Some(f) => self.width(f, ty::META)?.min(inner / 3.0),
+            // at most two fifths of the row: « 47 utilisés sur 300 » whole
+            Some(f) => self.width(f, ty::META)?.min(inner * 0.4),
             None => 0.0,
         };
         let tw =
@@ -359,8 +362,42 @@ impl P<'_, '_, '_, '_> {
         self.d.picture(&svg, px_, py, pw, pw)
     }
 
+    /// Shares in Tempo's colours on one track (ForecastCard's `.bar`, Share.svelte's): blue,
+    /// white ringed, red, each its share of the width, the rest the empty track.
+    fn bar(
+        &mut self,
+        shares: &[(Color, f64)],
+        thin: bool,
+        x: f32,
+        y: f32,
+        w: f32,
+    ) -> Result<(), Error> {
+        let pal = self.c.pal;
+        let h = if thin { px::BAR_THIN } else { px::BAR_H };
+        self.rounded(x, y, w, h, h / 2.0, pal.ground_raised)?;
+        let mut at = x;
+        for (c, share) in shares {
+            let sw = w * share.clamp(0.0, 1.0) as f32;
+            if sw <= 0.0 {
+                continue;
+            }
+            let fill = match c {
+                Color::Blue => pal.tempo_blue,
+                Color::White => pal.tempo_white_ring,
+                Color::Red => pal.tempo_red,
+            };
+            self.rounded(at, y, sw, h, if thin { h / 2.0 } else { 0.0 }, fill)?;
+            at += sw;
+        }
+        Ok(())
+    }
+
     /// One row of a group's list at (x, y), `w` wide and `h` high (its frame is the list's).
     pub fn tile(&mut self, t: &Tile, x: f32, y: f32, w: f32, h: f32) -> Result<(), Error> {
+        if let Some(open) = &t.open {
+            // the whole row leads there (DeviceTile's link); a gesture drawn over it wins
+            self.hit(x, y, w, h, Target::Act(open.clone()));
+        }
         let (ix, iy) = (x + ROW_PAD_X, y + ROW_PAD_Y);
         let inner = w - 2.0 * ROW_PAD_X;
         let head_h = self.tile_head(t, ix, iy, w)?;
@@ -442,6 +479,7 @@ impl P<'_, '_, '_, '_> {
             Part::Hint(text) => {
                 self.para(text, ty::SECONDARY, pal.ink_muted, ix, py, inner)?;
             }
+            Part::Bar { shares, thin } => self.bar(shares, *thin, ix, py, inner)?,
             Part::Note {
                 text,
                 link,

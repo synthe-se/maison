@@ -13,6 +13,12 @@ use crate::ui::layout::{
 };
 use crate::ui::model::{Body, Button, Group, Screen};
 
+/// What the header says: the brand (the house), or a page's way back and its title.
+enum Head<'a> {
+    Brand,
+    Back(&'a Button, &'a str),
+}
+
 impl P<'_, '_, '_, '_> {
     /// A group at (x, y), `w` wide (Group.svelte); its height.
     fn group(&mut self, g: &Group, x: f32, y: f32, w: f32) -> Result<f32, Error> {
@@ -135,9 +141,9 @@ impl P<'_, '_, '_, '_> {
         Ok(cy - y)
     }
 
-    /// The house: its groups in columns (the dashboard's), the header over them; the
-    /// columns' height in the panel's pixels.
-    fn house(&mut self, groups: &[Group], wcss: f32) -> Result<f32, Error> {
+    /// The house, or one of its pages: the groups in columns (the dashboard's), the header
+    /// over them; the columns' height in the panel's pixels.
+    fn house(&mut self, groups: &[Group], head: Head, wcss: f32) -> Result<f32, Error> {
         let pal = self.c.pal;
         let m = margin(wcss);
         let inner = wcss - 2.0 * m;
@@ -164,11 +170,25 @@ impl P<'_, '_, '_, '_> {
             bottom = bottom.max(y - GROUP_GAP);
         }
         let content = (bottom + px::S_5) * self.s();
-        // the header stays: the mark and the name (Header.svelte's brand), a line under it
+        // the header stays, a line under it: the brand, or a page's way back and its title
         self.dy = 0.0;
         self.rounded(0.0, 0.0, wcss, px::HEADER_H, 0.0, pal.ground)?;
         let hair = 1.0 / self.s();
         self.rounded(0.0, px::HEADER_H - hair, wcss, hair, 0.0, pal.line)?;
+        if let Head::Back(back, title) = head {
+            let bw = self.button_width(back)?;
+            self.button(back, m, (px::HEADER_H - TOUCH) / 2.0, bw, TOUCH)?;
+            let tx = m + bw + px::S_4;
+            self.line(
+                title,
+                ty::GROUP,
+                pal.ink,
+                tx,
+                (px::HEADER_H - ty::GROUP.line) / 2.0,
+                wcss - tx - m,
+            )?;
+            return Ok(content);
+        }
         let my = (px::HEADER_H - HEADER_MARK) / 2.0;
         if self.visible(my, HEADER_MARK) {
             let mark = self.d(HEADER_MARK).max(1) as u32;
@@ -304,7 +324,12 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
     };
     let wcss = c.width / c.scale;
     let content = match screen {
-        Screen::House(groups) => p.house(groups, wcss)?,
+        Screen::House(groups) => p.house(groups, Head::Brand, wcss)?,
+        Screen::Page {
+            title,
+            back,
+            groups,
+        } => p.house(groups, Head::Back(back, title), wcss)?,
         Screen::Door {
             title,
             lead,

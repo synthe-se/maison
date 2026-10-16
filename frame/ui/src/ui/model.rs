@@ -53,6 +53,8 @@ pub struct Tile {
     /// One short fact at the end (« 42 W »).
     pub fact: Option<String>,
     pub parts: Vec<Part>,
+    /// The row leads somewhere (DeviceTile's `href`: the Tempo tile, its page).
+    pub open: Option<Act>,
 }
 
 /// What leads the tile.
@@ -82,6 +84,12 @@ pub enum Part {
     Row(Vec<Button>),
     /// A line of words, muted, wrapping.
     Hint(String),
+    /// Shares in Tempo's colors, one bar (a forecast's probabilities; a season's days used):
+    /// each `(color, share)` in turn, the rest of the track empty. `thin`: Share.svelte's.
+    Bar {
+        shares: Vec<(Color, f64)>,
+        thin: bool,
+    },
     /// Words then a link-like button on one line (« Fermeture 20:24 · Ne pas fermer ce soir »).
     Note {
         text: String,
@@ -139,6 +147,26 @@ pub enum Act {
     /// The families' sources read again now (a failed group's « Réessayer »).
     Refresh(&'static [&'static str]),
     Pairing(Ask),
+    /// Another screen of the house (the Tempo page); `View::House` is the way back.
+    Open(View),
+}
+
+/// What the paired screen shows: the house, or one of its pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    #[default]
+    House,
+    Tempo,
+}
+
+impl View {
+    /// What opens it, by name (a simulation's `press open:tempo`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::House => "open:house",
+            Self::Tempo => "open:tempo",
+        }
+    }
 }
 
 /// A slider (Range.svelte): a 44 px band, a thin track, the thumb.
@@ -171,6 +199,12 @@ pub struct Slider {
 pub enum Screen {
     /// The house: its groups in the dashboard's order.
     House(Vec<Group>),
+    /// One of the house's pages (Tempo): its title, the way back, its groups in columns.
+    Page {
+        title: String,
+        back: Box<Button>,
+        groups: Vec<Group>,
+    },
     /// A wall screen not (yet) paired, or a notice: a title, paragraphs, a big code, a button.
     Door {
         title: String,

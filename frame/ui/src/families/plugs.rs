@@ -111,6 +111,7 @@ pub fn tile(
         w.s(k::STATE_OFF)
     };
     Tile {
+        open: None,
         name: plug.name.clone(),
         state,
         warn: nudge.is_some() && plug.is_on,

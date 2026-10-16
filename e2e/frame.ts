@@ -177,6 +177,13 @@ const after = reads.length;
 await until(() => reads.slice(after).some((r) => r.answered), 10_000 * SLOW);
 await picture('house');
 
+// Tempo's page, from its tile, and back
+await tell('press open:tempo');
+check('the Tempo tile opens its page', await saidLine((l) => l === `screen page ${fr.nav_tempo()}`, 10_000));
+await picture('tempo');
+await tell('press open:house');
+check('« Retour à l’accueil » brings the house back', await saidLine((l) => l === 'screen house', 10_000));
+
 // a finger: the lamp off, its brightness, the plug, the shutter
 const sent = (want: string) => until(() => state.sent.some((s) => s.startsWith(want)), 5_000 * SLOW);
 await tell('press hue-lamp:hue-01:power');

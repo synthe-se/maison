@@ -3,13 +3,15 @@
 //! Before 06:00 it says it as it is: yesterday's color is still in force (« Encore blanc
 //! jusqu'à 6:00 »), today's starts at 06:00.
 
+use chrono::NaiveDate;
 use chrono::{DateTime, Timelike};
 use maison_api::Tz;
-use maison_api::tempo::{Color, Forecast, Today};
+use maison_api::tempo::{Color, Forecast, ForecastDay, SeasonStock, Today};
 
 use super::{Cx, TEMPO, loaded, stale};
 use crate::i18n::{Arg, Words, k};
-use crate::ui::model::{Body, Group, Lead, Tile};
+use crate::ui::icon;
+use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Screen, Tile, View};
 
 /// RTE publishes tomorrow's color around 10:40 (minutes after midnight).
 pub const ANNOUNCED_AT: u32 = 10 * 60 + 40;
@@ -140,6 +142,7 @@ pub fn tile(w: &Words, data: &Today, forecast: Option<&Forecast>, now: &DateTime
     let current = price_now(now, data);
     let next = next_line(w, data, current.as_ref(), forecast, now);
     Tile {
+        open: Some(Act::Open(View::Tempo)),
         name: now_line(w, data, current.as_ref()),
         state: if next.is_empty() {
             w.s(k::TEMPO_OPEN)
@@ -173,6 +176,224 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
         stale: stale(cx, &today, &[TEMPO]),
         body,
     })
+}
+
+// ── the Tempo page (routes/tempo-predictions: the week, the prices, the season) ──
+
+/// Tempo's colours in their order (colors.ts `TEMPO_COLORS`).
+const COLORS: [Color; 3] = [Color::Blue, Color::White, Color::Red];
+
+/// « 0,1612 €/kWh »: TempoPrices' `price`.
+pub fn price(w: &Words, eur_per_kwh: f64) -> String {
+    w.t(k::TEMPO_PRICE, &[("price", w.num(eur_per_kwh, 4).into())])
+}
+
+/// « HP bleu »: price.ts `periodColor`.
+pub fn period_color(w: &Words, period: Period, color: Color) -> String {
+    let p = w.s(if period == Period::Peak {
+        k::TEMPO_HP
+    } else {
+        k::TEMPO_HC
+    });
+    w.t(
+        k::TEMPO_PERIOD_COLOR,
+        &[
+            ("period", p.into()),
+            ("color", w.lower(&name(w, color)).into()),
+        ],
+    )
+}
+
+/// One day of the week (ForecastCard): RTE's colour once published; else Maison's forecast,
+/// its probabilities as one bar, and how often it was right this far ahead.
+pub fn day_tile(w: &Words, d: &ForecastDay, today: NaiveDate) -> Tile {
+    let parts = if d.official {
+        vec![Part::Hint(w.s(k::TEMPO_OFFICIAL))]
+    } else {
+        let p = d.probabilities;
+        let mut parts = vec![Part::Bar {
+            shares: vec![
+                (Color::Blue, p.blue),
+                (Color::White, p.white),
+                (Color::Red, p.red),
+            ],
+            thin: false,
+        }];
+        if let Some(r) = d.reliability {
+            parts.push(Part::Hint(w.t(
+                k::TEMPO_RELIABILITY_DAY,
+                &[
+                    ("percent", w.percent(r.accuracy).into()),
+                    ("n", Arg::Count(f64::from(d.horizon))),
+                    ("winter", w.percent(r.winter_accuracy).into()),
+                ],
+            )));
+        }
+        parts
+    };
+    Tile {
+        name: w.day_label(d.date, today),
+        state: day_words(w, Some(d.color), !d.official, Some(d.confidence)),
+        warn: false,
+        lead: Lead::Swatch(Some(d.color)),
+        fact: Some(w.short_day(d.date)),
+        parts,
+        open: None,
+    }
+}
+
+/// The season's days of colour `c` (the page's stock): used of the quota, as a bar, and left.
+pub fn stock_tile(w: &Words, s: &SeasonStock, c: Color) -> Tile {
+    let n = match c {
+        Color::Blue => s.blue,
+        Color::White => s.white,
+        Color::Red => s.red,
+    };
+    let of = |key, count: u32| {
+        w.t(
+            key,
+            &[
+                ("count", Arg::Count(f64::from(count))),
+                ("total", Arg::Count(f64::from(n.total))),
+            ],
+        )
+    };
+    let share = if n.total > 0 {
+        f64::from(n.used) / f64::from(n.total)
+    } else {
+        0.0
+    };
+    Tile {
+        name: name(w, c),
+        state: of(k::TEMPO_LEFT, n.remaining),
+        warn: false,
+        lead: Lead::Swatch(Some(c)),
+        fact: Some(of(k::TEMPO_DAYS_USED, n.used)),
+        parts: vec![Part::Bar {
+            shares: vec![(c, share)],
+            thin: true,
+        }],
+        open: None,
+    }
+}
+
+/// TempoPrices: the price in force until when, the other period's, tomorrow's once published;
+/// then each colour's two rates.
+pub fn price_tiles(w: &Words, data: &Today, now: &DateTime<Tz>) -> Vec<Tile> {
+    let mut tiles = Vec::new();
+    if let (Some(c), Some(t)) = (price_now(now, data), &data.tariffs) {
+        let rates = t.of(c.color);
+        let (other, other_price) = if c.period == Period::Peak {
+            (Period::OffPeak, rates.off_peak)
+        } else {
+            (Period::Peak, rates.peak)
+        };
+        let mut parts = vec![Part::Hint(format!(
+            "{} · {}",
+            period_color(w, other, c.color),
+            price(w, other_price)
+        ))];
+        if let Some(color) = data.tomorrow.color {
+            let r = t.of(color);
+            parts.push(Part::Hint(w.t(
+                k::TEMPO_TOMORROW_PRICES,
+                &[
+                    ("color", w.lower(&name(w, color)).into()),
+                    ("hc", price(w, r.off_peak).into()),
+                    ("hp", price(w, r.peak).into()),
+                ],
+            )));
+        }
+        tiles.push(Tile {
+            name: format!(
+                "{} · {}",
+                period_color(w, c.period, c.color),
+                price(w, c.price)
+            ),
+            state: w.t(k::TEMPO_UNTIL, &[("time", w.hhmm(&c.until).into())]),
+            warn: false,
+            lead: Lead::Swatch(Some(c.color)),
+            fact: Some(w.s(k::TEMPO_NOW)),
+            parts,
+            open: None,
+        });
+    }
+    if let Some(t) = &data.tariffs {
+        for c in COLORS {
+            let r = t.of(c);
+            tiles.push(Tile {
+                name: name(w, c),
+                state: format!(
+                    "{} {} · {} {}",
+                    w.s(k::TEMPO_HC),
+                    price(w, r.off_peak),
+                    w.s(k::TEMPO_HP),
+                    price(w, r.peak)
+                ),
+                warn: false,
+                lead: Lead::Swatch(Some(c)),
+                fact: None,
+                parts: Vec::new(),
+                open: None,
+            });
+        }
+    }
+    tiles
+}
+
+/// The Tempo page: the week (RTE's days, then Maison's forecast), the prices, the season.
+pub fn page(cx: &mut Cx) -> Screen {
+    let today = cx.live.want(&cx.sources.tempo);
+    let forecast = cx.live.want(&cx.sources.forecast);
+    let now = cx.house_now();
+    let w = cx.words;
+    let day = now.date_naive();
+    let week = Group {
+        title: w.s(k::TEMPO_PREDICTION_WEEK_FORECAST),
+        fact: None,
+        actions: Vec::new(),
+        stale: stale(cx, &forecast, &[TEMPO]),
+        body: loaded(w, &forecast, &[TEMPO], ("", ""), |f| {
+            (!f.days.is_empty())
+                .then(|| Body::Tiles(f.days.iter().map(|d| day_tile(w, d, day)).collect()))
+        }),
+    };
+    let prices = Group {
+        title: w.s(k::TEMPO_PRICES_TITLE),
+        fact: None,
+        actions: Vec::new(),
+        stale: stale(cx, &today, &[TEMPO]),
+        body: loaded(w, &today, &[TEMPO], ("", ""), |t| {
+            let tiles = price_tiles(w, t, &now);
+            (!tiles.is_empty()).then_some(Body::Tiles(tiles))
+        }),
+    };
+    let season = Group {
+        title: match today.data.as_deref() {
+            Some(t) => w.t(
+                k::TEMPO_SEASON,
+                &[("season", t.stock.season.as_str().into())],
+            ),
+            None => w.s(k::NAV_TEMPO),
+        },
+        fact: None,
+        actions: Vec::new(),
+        stale: None,
+        body: loaded(w, &today, &[TEMPO], ("", ""), |t| {
+            Some(Body::Tiles(
+                COLORS.iter().map(|c| stock_tile(w, &t.stock, *c)).collect(),
+            ))
+        }),
+    };
+    Screen::Page {
+        title: w.s(k::NAV_TEMPO),
+        back: Box::new(Button::new(
+            Some(icon::ARROW_LEFT),
+            w.s(k::BACK_HOME),
+            Act::Open(View::House),
+        )),
+        groups: vec![week, prices, season],
+    }
 }
 
 #[cfg(test)]
@@ -249,5 +470,80 @@ mod tests {
         let mut d = today("BLUE", "RED", "");
         d.tariffs = None;
         assert_eq!(tile(&w, &d, None, &at(14, 0)).name, "Rouge");
+    }
+
+    #[test]
+    fn the_tile_leads_to_the_tempo_page() {
+        let w = Words::new(Lang::Fr);
+        let t = tile(&w, &today("BLUE", "BLUE", ""), None, &at(14, 0));
+        assert!(matches!(t.open, Some(Act::Open(View::Tempo))));
+    }
+
+    #[test]
+    fn the_week_says_rtes_days_then_maisons_forecast() {
+        let w = Words::new(Lang::Fr);
+        let f: Forecast = serde_json::from_str::<Answer<Forecast>>(
+            r#"{"success":true,"issued":"2026-11-12","weatherIssued":null,"stale":false,"model":null,"days":[{"date":"2026-11-13","horizon":1,"official":true,"color":"BLUE","probabilities":{"BLUE":1,"WHITE":0,"RED":0},"confidence":1},{"date":"2026-11-14","horizon":2,"official":false,"color":"WHITE","probabilities":{"BLUE":0.3,"WHITE":0.62,"RED":0.08},"confidence":0.62,"reliability":{"accuracy":0.81,"winterAccuracy":0.7}}],"stock":{"season":"2026-2027","blue":{"used":40,"total":300,"remaining":260},"white":{"used":3,"total":43,"remaining":40},"red":{"used":0,"total":22,"remaining":22}}}"#,
+        )
+        .unwrap()
+        .body;
+        let day = at(14, 0).date_naive();
+        let rte = day_tile(&w, &f.days[0], day);
+        assert_eq!(rte.name, "Demain");
+        assert_eq!(rte.state, "Bleu");
+        assert_eq!(rte.fact.as_deref(), Some("ven. 13 nov."));
+        assert!(matches!(&rte.parts[..], [Part::Hint(h)] if h == "Publié par RTE"));
+        let ours = day_tile(&w, &f.days[1], day);
+        assert_eq!(ours.name, "samedi");
+        assert_eq!(ours.state, "Blanc probable · 62\u{202f}%");
+        let [
+            Part::Bar {
+                shares,
+                thin: false,
+            },
+            Part::Hint(r),
+        ] = &ours.parts[..]
+        else {
+            panic!("{:?}", ours.parts)
+        };
+        assert_eq!(shares.len(), 3);
+        assert_eq!(shares[1], (Color::White, 0.62));
+        assert!(r.starts_with("Juste 81\u{202f}% des jours à J+2"), "{r}");
+    }
+
+    #[test]
+    fn the_season_says_each_colours_days() {
+        let w = Words::new(Lang::Fr);
+        let d = today("BLUE", "BLUE", "");
+        let white = stock_tile(&w, &d.stock, Color::White);
+        assert_eq!(white.name, "Blanc");
+        assert_eq!(white.fact.as_deref(), Some("3 utilisés sur 43"));
+        assert_eq!(white.state, "40 restants sur 43");
+        let [Part::Bar { shares, thin: true }] = &white.parts[..] else {
+            panic!()
+        };
+        assert!((shares[0].1 - 3.0 / 43.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_prices_say_the_one_in_force_then_every_rate() {
+        let w = Words::new(Lang::Fr);
+        let d = today("WHITE", "RED", "BLUE");
+        let tiles = price_tiles(&w, &d, &at(14, 0));
+        assert_eq!(tiles.len(), 4, "now, then the three colours");
+        assert_eq!(tiles[0].name, "HP rouge · 0,7062\u{a0}€/kWh");
+        assert_eq!(tiles[0].state, "jusqu’à 22:00");
+        let [Part::Hint(other), Part::Hint(tomorrow)] = &tiles[0].parts[..] else {
+            panic!("{:?}", tiles[0].parts)
+        };
+        assert_eq!(other, "HC rouge · 0,1575\u{a0}€/kWh");
+        assert!(tomorrow.contains("bleu"), "{tomorrow}");
+        assert_eq!(
+            tiles[1].state,
+            "HC 0,1325\u{a0}€/kWh · HP 0,1612\u{a0}€/kWh"
+        );
+        let mut none = d.clone();
+        none.tariffs = None;
+        assert!(price_tiles(&w, &none, &at(14, 0)).is_empty());
     }
 }

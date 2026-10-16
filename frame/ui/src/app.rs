@@ -19,7 +19,7 @@ use crate::pairing::{Ask, Screen as Who, Session};
 use crate::theme::{self, Palette};
 use crate::ui::icon;
 use crate::ui::layout::{Hit, Target};
-use crate::ui::model::{Act, Button, Screen};
+use crate::ui::model::{Act, Button, Screen, View};
 use crate::ui::slider::{Sliders, value_at};
 use crate::ui::touch::{Finger, Meaning, Under};
 
@@ -29,6 +29,9 @@ const TOAST: Duration = Duration::from_millis(paces::TOAST_MS);
 const TOAST_WARN: Duration = Duration::from_millis(paces::WALL_WARNING_MS);
 /// A frame while something moves (a fling): the panel's 60 Hz.
 pub const FRAME: Duration = Duration::from_millis(16);
+/// A page left open goes back to the house after this long without a finger: a wall screen
+/// shows the house to whoever passes by.
+pub const PAGE_IDLE: Duration = Duration::from_secs(120);
 /// Every API call's whole wait (a device's own limit is shorter: `commands::limit`).
 const HTTP_WAIT: Duration = Duration::from_secs(15);
 
@@ -42,6 +45,9 @@ pub struct App {
     finger: Finger,
     /// The column's scroll, in the panel's pixels.
     pub scroll: f32,
+    /// The house, or one of its pages; and when a finger last touched the panel.
+    view: View,
+    touched: Instant,
     /// The column's height and the panel's, from the last drawing.
     content: f32,
     height: f32,
@@ -69,6 +75,8 @@ impl App {
             sources: Sources::new(),
             finger: Finger::default(),
             scroll: 0.0,
+            view: View::House,
+            touched: Instant::now(),
             content: 0.0,
             height: 0.0,
             hits: Vec::new(),
@@ -103,6 +111,7 @@ impl App {
         if self.live.signed_out() {
             // the screen was removed: the house goes, the pairing says so
             self.live.clear();
+            self.view = View::House;
             self.session.ask(Ask::SignedOut);
             changed = true;
         }
@@ -127,6 +136,9 @@ impl App {
         self.toasts.retain(|(_, until)| now < *until);
         self.dirty |= self.toasts.len() != before;
         self.sliders.sweep(now);
+        if self.view != View::House && now.saturating_duration_since(self.touched) >= PAGE_IDLE {
+            self.open(View::House);
+        }
         if self.finger.flinging() {
             let max = self.max_scroll();
             if let Some(next) = self.finger.step(self.scroll, max, now) {
@@ -146,6 +158,7 @@ impl App {
             self.commands.next_change(),
             self.sliders.next_change(now),
             self.toasts.iter().map(|(_, until)| *until).min(),
+            (self.view != View::House).then(|| self.touched + PAGE_IDLE),
         ]
         .into_iter()
         .flatten()
@@ -184,7 +197,10 @@ impl App {
         let (side, screen) = match &self.session.screen {
             Who::Paired => (
                 families::sun_signed_in(&mut cx),
-                Screen::House(families::house(&mut cx)),
+                match self.view {
+                    View::House => Screen::House(families::house(&mut cx)),
+                    View::Tempo => families::tempo::page(&mut cx),
+                },
             ),
             who => (families::sun_signed_out(&mut cx), door(&self.words, who)),
         };
@@ -240,6 +256,7 @@ impl App {
     // ── the finger, in the panel's pixels as the picture shows them ──
 
     pub fn finger_down(&mut self, x: f32, y: f32, now: Instant) {
+        self.touched = now;
         let under = self.under(x, y);
         let m = self.finger.down(x, y, under, self.scroll, now);
         self.meant(m, now);
@@ -302,7 +319,16 @@ impl App {
                 }
             }
             Act::Pairing(ask) => self.session.ask(ask),
+            Act::Open(view) => self.open(view),
         }
+        self.dirty = true;
+    }
+
+    /// Shows `view`, from its top.
+    fn open(&mut self, view: View) {
+        self.view = view;
+        self.scroll = 0.0;
+        self.finger = Finger::default();
         self.dirty = true;
     }
 }

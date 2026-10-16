@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Datelike, NaiveTime, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Timelike};
 use serde::Deserialize;
 
 /// One const per key (generated from fr.json): `t(k::LAMPS_ON_PERCENT, …)`.
@@ -198,18 +198,39 @@ impl Words {
         if at.date_naive() == now.date_naive() {
             return clock;
         }
-        // CLDR's abbreviated month names (fr, en), as Intl's `month: 'short'` writes them
-        const FR: [&str; 12] = [
-            "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.",
-            "nov.", "déc.",
-        ];
-        const EN: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
         let (d, m) = (at.day(), at.month0() as usize);
         match self.lang {
-            Lang::Fr => format!("{d} {}, {clock}", FR[m]),
-            Lang::En => format!("{} {d}, {clock}", EN[m]),
+            Lang::Fr => format!("{d} {}, {clock}", MONTHS_FR[m]),
+            Lang::En => format!("{} {d}, {clock}", MONTHS_EN[m]),
+        }
+    }
+
+    /// « Aujourd'hui », « Demain », else the weekday (« samedi »): the web's `dayLabel`.
+    pub fn day_label(&self, day: NaiveDate, today: NaiveDate) -> String {
+        if day == today {
+            return self.s(k::DAY_TODAY);
+        }
+        if today.succ_opt() == Some(day) {
+            return self.s(k::DAY_TOMORROW);
+        }
+        let i = day.weekday().num_days_from_monday() as usize;
+        match self.lang {
+            Lang::Fr => WEEKDAYS_FR[i].to_string(),
+            Lang::En => WEEKDAYS_EN[i].to_string(),
+        }
+    }
+
+    /// « jeu. 12 nov. », « Thu, Nov 12 »: the web's `shortDay` (Intl's short weekday, day,
+    /// short month).
+    pub fn short_day(&self, day: NaiveDate) -> String {
+        let (i, d, m) = (
+            day.weekday().num_days_from_monday() as usize,
+            day.day(),
+            day.month0() as usize,
+        );
+        match self.lang {
+            Lang::Fr => format!("{} {d} {}", WEEKDAYS_SHORT_FR[i], MONTHS_FR[m]),
+            Lang::En => format!("{}, {} {d}", WEEKDAYS_SHORT_EN[i], MONTHS_EN[m]),
         }
     }
 
@@ -324,6 +345,29 @@ impl Words {
     }
 }
 
+// CLDR's names (fr, en), as Intl writes `month: 'short'`, `weekday: 'long'` and `'short'`
+const MONTHS_FR: [&str; 12] = [
+    "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
+    "déc.",
+];
+const MONTHS_EN: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+const WEEKDAYS_FR: [&str; 7] = [
+    "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+];
+const WEEKDAYS_EN: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+const WEEKDAYS_SHORT_FR: [&str; 7] = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
+const WEEKDAYS_SHORT_EN: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
 /// The key of a refusal's words: `code_<code>` for every code (errors.ts `CODE_WORDS`, the same
 /// convention; a test checks each one has its words).
 fn code_key(code: maison_api::codes::Code) -> String {
@@ -390,6 +434,21 @@ mod tests {
         assert_eq!(fr.t(k::MEROSS_PLUG_COUNT, &[count(2)]), "2 prises");
         assert_eq!(en.t(k::MEROSS_PLUG_COUNT, &[count(0)]), "0 plugs");
         assert_eq!(en.t(k::MEROSS_PLUG_COUNT, &[count(1)]), "1 plug");
+    }
+
+    #[test]
+    fn days_are_said_as_the_web_app_says_them() {
+        let (fr, en) = (Words::new(Lang::Fr), Words::new(Lang::En));
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        // 12 November 2026 is a Thursday
+        let today = d("2026-11-12");
+        assert_eq!(fr.day_label(today, today), "Aujourd’hui");
+        assert_eq!(fr.day_label(d("2026-11-13"), today), "Demain");
+        assert_eq!(fr.day_label(d("2026-11-14"), today), "samedi");
+        assert_eq!(en.day_label(d("2026-11-16"), today), "Monday");
+        assert_eq!(fr.short_day(today), "jeu. 12 nov.");
+        assert_eq!(en.short_day(today), "Thu, Nov 12");
+        assert_eq!(fr.short_day(d("2027-02-01")), "lun. 1 févr.");
     }
 
     #[test]
