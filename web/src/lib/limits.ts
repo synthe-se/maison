@@ -25,5 +25,5 @@ export const MAX_MEALS = 10;
 export const MAX_ACTIONS = 20;
 
 /** The air conditioner's model, whose learnt codes the backend looks up first (the living
- * room's unit; backend broadlink.rs `send_mitsubishi_command`). */
+ * room's unit; backend broadlink.rs `send_mitsubishi_command`): `maison_api::climate::MODEL`. */
 export const CLIMATE_MODEL = 'msz-hj5va';

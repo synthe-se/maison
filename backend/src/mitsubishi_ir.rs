@@ -16,9 +16,8 @@ pub const MITSUBISHI_FRAME_DURATIONS: usize = 2 + (MITSUBISHI_STATE_LEN * 8 * 2)
 /// The Mitsubishi clock counts in 10-minute ticks; one day is 144 ticks.
 const TICKS_PER_DAY: u16 = 144;
 
-/// Temperature setpoint bounds supported by the protocol (°C).
-pub const MIN_TEMPERATURE_C: u8 = 16;
-pub const MAX_TEMPERATURE_C: u8 = 31;
+/// Temperature setpoint bounds supported by the protocol (°C), said in maison-api.
+pub use maison_api::climate::{MAX_TEMPERATURE_C, MIN_TEMPERATURE_C};
 
 /// A setting's values, said once: its command token and its code in the frame. The parser,
 /// the encoder, the serde form (the API, `climate-state.json`) and the decoder all read the
@@ -342,7 +341,7 @@ impl ClimateSettings {
 }
 
 /// The command that switches the unit off (it carries no settings).
-pub const OFF_COMMAND: &str = "state-off";
+pub use maison_api::climate::OFF_COMMAND;
 
 /// Parses a structured command back into its settings. Returns `None` for
 /// `state-off`, non-structured commands, and anything unparseable.

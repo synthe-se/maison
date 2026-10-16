@@ -20,6 +20,11 @@ pub const PLACE: &str = "/matter/place";
 pub const SUN: &str = "/sun";
 /// Meross plugs: the list, `/{id}/toggle`, `/{id}/electricity`.
 pub const MEROSS: &str = "/meross";
+/// The IR blasters on the network, as the server last found them.
+pub const BROADLINK_DISCOVER: &str = "/broadlink/discover";
+/// The air conditioner's last order, and where orders go (`{host, settings | command, model}`).
+pub const CLIMATE_STATE: &str = "/broadlink/mitsubishi/state";
+pub const CLIMATE_SEND: &str = "/broadlink/mitsubishi/send";
 /// Scenes: the list, `/{id}/run`.
 pub const SCENES: &str = "/scenes";
 /// Who the screen is (its cookie renewed).

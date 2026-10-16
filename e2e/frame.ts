@@ -195,6 +195,12 @@ await until(() => state.hue[0].state.isOn, 5_000 * SLOW);
 check('the app reads the lamp on again', await readAgain('/api/hue-lamps'));
 await shown('slide hue-lamp:hue-01:brightness 0.25');
 check('the brightness slider sends where it is let go', await sent('POST /api/hue-lamps/hue-01/brightness'), state.sent.join(' | '));
+await tell('press broadlink:climate:send', (l) => l.startsWith('ok') || l.startsWith('error'));
+check(
+	'« Allumer » sends the air conditioner its order through the blaster found',
+	await sent('POST /api/broadlink/mitsubishi/send'),
+	state.sent.join(' | ')
+);
 await tell('press meross:plug-1:toggle');
 check('the plug turns off', await sent('POST /api/meross/plug-1/toggle {"on":false}'));
 await tell('press shutters:0000000000000002:move', (l) => l.startsWith('ok') || l.startsWith('error'));

@@ -4,6 +4,7 @@
 //! `refresh("meross")` reads every plug value again), at the paces of `maison_api::paces`, from
 //! the paths of `crate::paths`.
 
+pub mod climate;
 pub mod lamps;
 pub mod plugs;
 pub mod scenes;
@@ -54,6 +55,9 @@ pub struct Sources {
     pub plugs: Source<PlugList>,
     electricity: HashMap<String, Source<ElectricityAnswer>>,
     pub scenes: Source<SceneList>,
+    /// The IR blasters found (`/broadlink/discover`), the air conditioner's last order.
+    pub blasters: Source<serde_json::Value>,
+    pub climate: Source<serde_json::Value>,
     pub place: Source<Where>,
     pub sun: Source<SunNow>,
 }
@@ -64,6 +68,8 @@ pub const MEROSS: &str = "meross";
 pub const SHUTTERS: &str = "shutters";
 pub const SCENES: &str = "scenes";
 pub const TEMPO: &str = "tempo";
+/// The air conditioner's last order: the event the server says when it changes.
+pub const CLIMATE: &str = maison_api::events::CLIMATE;
 
 fn until_sun(sun: Option<&maison_api::sun::NextSun>) -> Duration {
     ms(paces::until_sun(sun, Utc::now().timestamp_millis()))
@@ -108,6 +114,22 @@ impl Sources {
             plugs: Source::every("meross:list", ms(paces::MEROSS_LIST_MS), get(paths::MEROSS)),
             electricity: HashMap::new(),
             scenes: Source::every("scenes:list", ms(paces::SCENES_MS), get(paths::SCENES)),
+            // asked often until the blaster answers (the web's search), then seldom
+            blasters: Source::paced(
+                "broadlink:discover",
+                |d: Option<&serde_json::Value>| {
+                    ms(match d.and_then(climate::blaster) {
+                        Some(_) => paces::SCENES_MS,
+                        None => paces::BROADLINK_SEARCH_MS,
+                    })
+                },
+                get(paths::BROADLINK_DISCOVER),
+            ),
+            climate: Source::every(
+                CLIMATE,
+                ms(paces::CLIMATE_STATE_MS),
+                get(paths::CLIMATE_STATE),
+            ),
             place: Source::paced(
                 "shutters:place",
                 |d: Option<&Where>| until_sun(d.and_then(|w| w.sun.as_ref())),
@@ -153,12 +175,13 @@ impl Cx<'_> {
 }
 
 /// The dashboard's groups, in its order (web/src/routes/+page.svelte): scenes, Tempo, lamps,
-/// shutters, plugs.
+/// the air conditioning, shutters, plugs.
 pub fn house(cx: &mut Cx) -> Vec<Group> {
     [
         scenes::group(cx),
         tempo::group(cx),
         lamps::group(cx),
+        climate::group(cx),
         shutters::group(cx),
         plugs::group(cx),
     ]
