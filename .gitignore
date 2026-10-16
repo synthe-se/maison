@@ -2,7 +2,7 @@
 .env
 
 # Logs and runtime state
-logs/
+/logs/
 *.log
 *.pid
 
@@ -12,28 +12,29 @@ logs/
 backend/target/
 
 # Cross-compiled binaries
-cloudflared-arm
+/cloudflared-arm
 
 # Root tooling
 node_modules/
 
-# Runtime data kept locally
-devices.json
-device-cache.json
-climate-state.json
-refresh-tokens.json
-users.json
-meross-devices.json
-hue-lamps.json
-hue-lamps-blacklist.json
-zigbee-lamps.json
-zigbee-lamps-blacklist.json
-broadlink-codes.json
+# Runtime data kept locally, at the repository's root only (anchored: backend/src/matter/ and
+# the test fixtures' devices.json are sources)
+/devices.json
+/device-cache.json
+/climate-state.json
+/refresh-tokens.json
+/users.json
+/meross-devices.json
+/hue-lamps.json
+/hue-lamps-blacklist.json
+/zigbee-lamps.json
+/zigbee-lamps-blacklist.json
+/broadlink-codes.json
 # Matter fabric private keys + commissioned covers
-matter/
+/matter/
 # People, passkeys, invitations
-auth/
-nabaztag.json
+/auth/
+/nabaztag.json
 # A torn state file kept aside, and the cross-process lock files
 *.corrupt
 *.json.lock
@@ -48,10 +49,13 @@ mosquitto/certs/
 *.swp
 *.swo
 
-ir-keymap.json
-tv.json
-androidtv.json
-adb-key
-atv-identity
+/ir-keymap.json
+/tv.json
+/androidtv.json
+/adb-key
+/atv-identity
 # Tempo: the weather forecast the backend saves (written at runtime, not versioned)
 cache/tempo/weather.json
+
+# Agents' working copies
+/.claude/worktrees/
