@@ -1,5 +1,7 @@
-//! Philips Hue lamps over Bluetooth (btleplug): found by a periodic scan, connected when
-//! seen, polled while connected. `ble` speaks the lamp's GATT, `store` keeps the lamps
+//! Philips Hue lamps over Bluetooth (btleplug): found by a scan (every few seconds while a
+//! known lamp is missing, or when asked), connected when seen, heard through their GATT
+//! notifications; a lamp whose notifications could not be subscribed to is polled, the
+//! others only checked now and then. `ble` speaks the lamp's GATT, `store` keeps the lamps
 //! and recognises them from one scan to the next.
 
 mod ble;
@@ -31,23 +33,26 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::Config,
-    error::AppError,
-    lamps::{HueLampView, LampState, LampStats, LampStore},
+    error::{AppError, Refusal},
+    lamps::{self, brightness_of, level_of, HueLamp, LampState, LampStats, LampStore},
     net::address_key,
 };
 use ble::{
-    ble, build_control_command, is_hue_lamp, parse_brightness, parse_temperature, to_brightness,
-    to_temperature, uuid_key, uuid_str_key, HueCharacteristics, BRIGHTNESS_UUID, CONTROL_UUID,
-    POWER_UUID, TEMPERATURE_UUID,
+    ble, build_control_command, is_hue_lamp, parse_temperature, to_temperature, uuid_key,
+    uuid_str_key, HueCharacteristics, BRIGHTNESS_UUID, CONTROL_UUID, POWER_UUID, TEMPERATURE_UUID,
 };
 use store::{
     dedupe_stored_lamps, fallback_lamp_name, lamp_display_address, lamp_matches_scan,
     stable_lamp_id, StoredLampConfig,
 };
 
+/// Between two scans while a known lamp is missing.
 const SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const SCAN_DURATION: Duration = Duration::from_secs(5);
+/// A lamp whose notifications could not be subscribed to is read this often.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// A lamp that notifies, silent this long, is read once: is it still there?
+const LIVENESS_CHECK: Duration = Duration::from_secs(60);
 /// How soon a lost adapter event stream is subscribed to again.
 const EVENTS_RETRY: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -86,6 +91,8 @@ struct LampRuntime {
     characteristics: HueCharacteristics,
     connection_failures: u8,
     notification_task: Option<JoinHandle<()>>,
+    /// Its notifications are subscribed to: it says what changes, no poll needed.
+    notifying: bool,
 }
 
 impl LampRuntime {
@@ -93,12 +100,10 @@ impl LampRuntime {
     fn new(config: StoredLampConfig) -> Self {
         Self {
             state: LampState {
-                is_on: false,
-                brightness: 100,
                 temperature: config.last_temperature,
                 temperature_min: config.temperature_min,
                 temperature_max: config.temperature_max,
-                colour: None,
+                ..lamps::unlit()
             },
             info: LampInfo {
                 manufacturer: "Philips Hue".to_string(),
@@ -114,6 +119,7 @@ impl LampRuntime {
             characteristics: HueCharacteristics::default(),
             connection_failures: 0,
             notification_task: None,
+            notifying: false,
         }
     }
 
@@ -123,6 +129,7 @@ impl LampRuntime {
         self.connected = false;
         self.connecting = false;
         self.reachable = false;
+        self.notifying = false;
         self.characteristics = HueCharacteristics::default();
         if let Some(task) = self.notification_task.take() {
             task.abort();
@@ -130,8 +137,22 @@ impl LampRuntime {
         self.peripheral.clone()
     }
 
-    fn view(&self) -> HueLampView {
-        HueLampView {
+    /// Whether a poll reads it now: connected, and either deaf to notifications or silent
+    /// past [`LIVENESS_CHECK`].
+    fn due_for_poll(&self, now: DateTime<Utc>) -> bool {
+        let silent = self.last_seen.is_none_or(|seen| {
+            now - seen >= chrono::Duration::from_std(LIVENESS_CHECK).unwrap_or_default()
+        });
+        self.connected && (!self.notifying || silent)
+    }
+
+    /// A lamp the scan should look for: known, and neither connected nor connecting.
+    fn missing(&self) -> bool {
+        !self.connected && !self.connecting
+    }
+
+    fn view(&self) -> HueLamp {
+        HueLamp {
             id: self.config.id.clone(),
             name: self.config.name.clone(),
             address: self.config.address.clone(),
@@ -172,11 +193,7 @@ impl HueManager {
             .into_iter()
             .map(|lamp| (lamp.id.clone(), LampRuntime::new(lamp)))
             .collect();
-        let blacklisted_addresses = store
-            .load_blacklist()?
-            .iter()
-            .map(|address| address_key(address))
-            .collect();
+        let blacklisted_addresses = store.load_blacklist()?;
 
         let manager = Self {
             inner: Arc::new(HueManagerInner {
@@ -201,7 +218,9 @@ impl HueManager {
 
         if !config.disable_bluetooth {
             let init_manager = manager.clone();
-            tokio::spawn(async move { init_manager.initialize_runtime().await });
+            crate::supervised("hue start", async move {
+                init_manager.initialize_runtime().await
+            });
         }
 
         Ok(manager)
@@ -221,11 +240,13 @@ impl HueManager {
             .cloned()
             .collect::<Vec<_>>();
         for lamp_id in lamp_ids {
-            let _ = self.disconnect_lamp(&lamp_id).await;
+            if let Err(error) = self.disconnect_lamp(&lamp_id).await {
+                debug!(lamp_id, %error, "Hue lamp not disconnected at shutdown");
+            }
         }
     }
 
-    pub async fn list_lamps(&self) -> Vec<HueLampView> {
+    pub async fn list_lamps(&self) -> Vec<HueLamp> {
         self.inner
             .lamps
             .read()
@@ -235,7 +256,7 @@ impl HueManager {
             .collect()
     }
 
-    pub async fn get_lamp(&self, lamp_id: &str) -> Option<HueLampView> {
+    pub async fn get_lamp(&self, lamp_id: &str) -> Option<HueLamp> {
         let lamp_key = self.resolve_lamp_key(lamp_id).await?;
         self.inner
             .lamps
@@ -247,15 +268,14 @@ impl HueManager {
 
     pub async fn stats(&self) -> LampStats {
         let lamps = self.inner.lamps.read().await;
-        LampStats {
-            total: lamps.len(),
-            connected: lamps.values().filter(|lamp| lamp.connected).count(),
-            reachable: lamps.values().filter(|lamp| lamp.reachable).count(),
-            disabled: self.inner.disabled,
-            message: self.inner.availability_message.read().await.clone(),
-        }
+        LampStats::of(
+            lamps.values().map(|lamp| (lamp.connected, lamp.reachable)),
+            self.inner.disabled,
+            self.inner.availability_message.read().await.clone(),
+        )
     }
 
+    /// A scan asked for (« add a lamp »): whatever is missing.
     pub async fn trigger_scan(&self) -> Result<(), AppError> {
         self.perform_scan(SCAN_DURATION).await
     }
@@ -271,7 +291,7 @@ impl HueManager {
 
         let peripheral = {
             let mut lamps = self.inner.lamps.write().await;
-            let lamp = lamps.get_mut(&lamp_key).ok_or_else(lamp_not_found)?;
+            let lamp = lamps.get_mut(&lamp_key).ok_or_else(lamps::not_found)?;
             if lamp.connected || lamp.connecting {
                 return Ok(lamp.connected);
             }
@@ -303,7 +323,7 @@ impl HueManager {
             let mut lamps = self.inner.lamps.write().await;
             lamps
                 .get_mut(&lamp_key)
-                .ok_or_else(lamp_not_found)?
+                .ok_or_else(lamps::not_found)?
                 .release()
         };
         self.disconnect_peripheral(peripheral).await;
@@ -319,7 +339,9 @@ impl HueManager {
             ble(peripheral.is_connected(), "connection check", IO_TIMEOUT).await,
             Ok(true)
         ) {
-            let _ = ble(peripheral.disconnect(), "disconnection", IO_TIMEOUT).await;
+            if let Err(error) = ble(peripheral.disconnect(), "disconnection", IO_TIMEOUT).await {
+                debug!(%error, "Hue lamp link not dropped cleanly");
+            }
         }
     }
 
@@ -328,7 +350,7 @@ impl HueManager {
 
         let (peripheral, characteristics) = {
             let lamps = self.inner.lamps.read().await;
-            let lamp = lamps.get(&lamp_key).ok_or_else(lamp_not_found)?;
+            let lamp = lamps.get(&lamp_key).ok_or_else(lamps::not_found)?;
             if !lamp.connected {
                 return Ok(None);
             }
@@ -344,6 +366,7 @@ impl HueManager {
             lamp.state = state.clone();
             lamp.connected = true;
             lamp.reachable = true;
+            lamp.last_seen = Some(Utc::now());
         }
 
         Ok(Some(state))
@@ -359,22 +382,21 @@ impl HueManager {
             self.write_characteristic(&peripheral, control, &command)
                 .await?;
         } else {
-            return Err(AppError::service_unavailable(
-                "Hue lamp has no power characteristic",
-            ));
+            return Err(Refusal::Unsupported.into());
         }
 
         self.update_state_after_write(lamp_id, |state| state.is_on = enabled)
             .await
     }
 
+    /// `brightness` as [`lamps::brightness`] takes it.
     pub async fn set_brightness(
         &self,
         lamp_id: &str,
         brightness: u8,
     ) -> Result<LampState, AppError> {
-        let brightness = brightness.clamp(1, 100);
-        let raw = to_brightness(brightness);
+        let brightness = lamps::brightness(brightness);
+        let raw = level_of(brightness);
         let (peripheral, characteristics) = self.connected_target(lamp_id).await?;
 
         if let Some(characteristic) = characteristics.brightness.as_ref() {
@@ -385,21 +407,20 @@ impl HueManager {
             self.write_characteristic(&peripheral, control, &command)
                 .await?;
         } else {
-            return Err(AppError::service_unavailable(
-                "Hue lamp has no brightness characteristic",
-            ));
+            return Err(Refusal::Unsupported.into());
         }
 
         self.update_state_after_write(lamp_id, |state| state.brightness = brightness)
             .await
     }
 
+    /// `temperature` as [`lamps::temperature`] takes it.
     pub async fn set_temperature(
         &self,
         lamp_id: &str,
         temperature: u8,
     ) -> Result<LampState, AppError> {
-        let temperature = temperature.clamp(0, 100);
+        let temperature = lamps::temperature(temperature);
         let raw = to_temperature(temperature);
         // the key, not the id it was asked by (a MAC address, a stale id): the kept
         // temperature must land on the lamp itself
@@ -414,9 +435,7 @@ impl HueManager {
             self.write_characteristic(&peripheral, control, &command)
                 .await?;
         } else {
-            return Err(AppError::service_unavailable(
-                "Hue lamp does not support color temperature",
-            ));
+            return Err(Refusal::Unsupported.into());
         }
 
         if let Some(lamp) = self.inner.lamps.write().await.get_mut(&lamp_key) {
@@ -436,7 +455,7 @@ impl HueManager {
 
         let (peripheral, device_name) = {
             let lamps = self.inner.lamps.read().await;
-            let lamp = lamps.get(&lamp_key).ok_or_else(lamp_not_found)?;
+            let lamp = lamps.get(&lamp_key).ok_or_else(lamps::not_found)?;
             (
                 lamp.peripheral.clone(),
                 lamp.characteristics.device_name.clone(),
@@ -452,7 +471,7 @@ impl HueManager {
             .write()
             .await
             .get_mut(&lamp_key)
-            .ok_or_else(lamp_not_found)?
+            .ok_or_else(lamps::not_found)?
             .config
             .name = name.to_string();
         self.persist_state().await
@@ -530,7 +549,9 @@ impl HueManager {
             move || {
                 let manager = manager.clone();
                 async move {
-                    if manager.running() {
+                    // the radio listens only while a known lamp is missing (a new lamp is
+                    // looked for when someone asks: `trigger_scan`)
+                    if manager.running() && manager.lamp_missing().await {
                         if let Err(error) = manager.perform_scan(SCAN_DURATION).await {
                             debug!(error = %error, "Hue periodic scan failed");
                         }
@@ -552,6 +573,16 @@ impl HueManager {
 
     fn running(&self) -> bool {
         !self.inner.shutting_down.load(Ordering::SeqCst)
+    }
+
+    /// A known lamp is neither connected nor connecting.
+    async fn lamp_missing(&self) -> bool {
+        self.inner
+            .lamps
+            .read()
+            .await
+            .values()
+            .any(LampRuntime::missing)
     }
 
     async fn perform_scan(&self, duration: Duration) -> Result<(), AppError> {
@@ -582,6 +613,8 @@ impl HueManager {
         let mut connect_queue = Vec::new();
 
         for peripheral in peripherals {
+            // a device that says nothing of itself is no lamp of ours (a failure is logged
+            // by `ble`)
             let Ok(Some(properties)) = ble(peripheral.properties(), "properties", IO_TIMEOUT).await
             else {
                 continue;
@@ -628,7 +661,7 @@ impl HueManager {
             lamp.peripheral = Some(peripheral);
             lamp.reachable = true;
             lamp.last_seen = Some(Utc::now());
-            if !lamp.connected && !lamp.connecting {
+            if lamp.missing() {
                 connect_queue.push(stable_id.clone());
             }
             lamps.insert(stable_id, lamp);
@@ -644,24 +677,30 @@ impl HueManager {
         self.persist_state().await?;
 
         for lamp_id in connect_queue {
-            let _ = self.connect_lamp(&lamp_id).await;
+            if let Err(error) = self.connect_lamp(&lamp_id).await {
+                warn!(lamp_id, %error, "a Hue lamp seen could not be taken in");
+            }
         }
 
         Ok(())
     }
 
+    /// Reads the lamps a notification will not tell about: deaf ones every poll, the others
+    /// once silent past [`LIVENESS_CHECK`] (are they still there?).
     async fn poll_connected_lamps(&self) {
+        let now = Utc::now();
         let lamp_ids = self
             .inner
             .lamps
             .read()
             .await
             .iter()
-            .filter_map(|(id, lamp)| lamp.connected.then_some(id.clone()))
+            .filter_map(|(id, lamp)| lamp.due_for_poll(now).then_some(id.clone()))
             .collect::<Vec<_>>();
 
         for lamp_id in lamp_ids {
-            if self.refresh_lamp_state(&lamp_id).await.is_err() {
+            if let Err(error) = self.refresh_lamp_state(&lamp_id).await {
+                debug!(lamp_id, %error, "Hue lamp did not answer its poll");
                 self.mark_runtime_disconnected(&lamp_id).await;
             }
         }
@@ -819,14 +858,12 @@ impl HueManager {
     ) -> Result<(Peripheral, HueCharacteristics), AppError> {
         let lamp_key = self.lamp_key(lamp_id).await?;
         let lamps = self.inner.lamps.read().await;
-        let lamp = lamps.get(&lamp_key).ok_or_else(lamp_not_found)?;
-        if !lamp.connected {
-            return Err(AppError::service_unavailable("Hue lamp is not connected"));
-        }
+        let lamp = lamps.get(&lamp_key).ok_or_else(lamps::not_found)?;
         let peripheral = lamp
             .peripheral
             .clone()
-            .ok_or_else(|| AppError::service_unavailable("Hue lamp is not available"))?;
+            .filter(|_| lamp.connected)
+            .ok_or(Refusal::DeviceUnreachable)?;
         Ok((peripheral, lamp.characteristics.clone()))
     }
 
@@ -855,7 +892,7 @@ impl HueManager {
     {
         let lamp_key = self.lamp_key(lamp_id).await?;
         let mut lamps = self.inner.lamps.write().await;
-        let lamp = lamps.get_mut(&lamp_key).ok_or_else(lamp_not_found)?;
+        let lamp = lamps.get_mut(&lamp_key).ok_or_else(lamps::not_found)?;
         update(&mut lamp.state);
         lamp.connected = true;
         lamp.reachable = true;
@@ -869,12 +906,9 @@ impl HueManager {
     ) -> Result<LampState, AppError> {
         let _guard = self.inner.ble_lock.lock().await;
         let mut state = LampState {
-            is_on: false,
-            brightness: 100,
-            temperature: None,
             temperature_min: Some(0),
             temperature_max: Some(100),
-            colour: None,
+            ..lamps::unlit()
         };
 
         if let Some(power) = characteristics.power.as_ref() {
@@ -885,7 +919,7 @@ impl HueManager {
         if let Some(brightness) = characteristics.brightness.as_ref() {
             let bytes = ble(peripheral.read(brightness), "read", IO_TIMEOUT).await?;
             if let Some(raw) = bytes.first().copied() {
-                state.brightness = parse_brightness(raw);
+                state.brightness = brightness_of(raw);
             }
         }
 
@@ -944,11 +978,13 @@ impl HueManager {
         let stream = match ble(peripheral.notifications(), "notifications", IO_TIMEOUT).await {
             Ok(stream) => stream,
             Err(error) => {
-                debug!(lamp_id, error = %error, "Hue notifications unavailable");
+                debug!(lamp_id, error = %error, "Hue notifications unavailable: the lamp is polled");
                 return;
             }
         };
 
+        // one characteristic that will not notify, and the lamp is polled
+        let mut notifying = true;
         for characteristic in subscribable {
             if let Err(error) = ble(
                 peripheral.subscribe(characteristic),
@@ -957,7 +993,8 @@ impl HueManager {
             )
             .await
             {
-                debug!(lamp_id, %error, "Hue notification subscription failed");
+                debug!(lamp_id, %error, "Hue notification subscription failed: the lamp is polled");
+                notifying = false;
             }
         }
 
@@ -982,6 +1019,7 @@ impl HueManager {
             if let Some(previous) = lamp.notification_task.replace(task) {
                 previous.abort();
             }
+            lamp.notifying = notifying;
         }
     }
 
@@ -1002,7 +1040,7 @@ impl HueManager {
                 lamp.state.is_on = first == Some(0x01);
             } else if uuid == uuid_str_key(BRIGHTNESS_UUID) {
                 if let Some(raw) = first {
-                    lamp.state.brightness = parse_brightness(raw);
+                    lamp.state.brightness = brightness_of(raw);
                 }
             } else if uuid == uuid_str_key(TEMPERATURE_UUID) {
                 if let Some(raw) = first {
@@ -1017,34 +1055,32 @@ impl HueManager {
         }
 
         if refresh_full_state {
-            let _ = self.refresh_lamp_state(&lamp_key).await;
+            if let Err(error) = self.refresh_lamp_state(&lamp_key).await {
+                debug!(lamp_id, %error, "Hue lamp state not read after its notification");
+            }
         }
     }
 
     /// Saves the names and the blacklist; a file is only rewritten when it changed (a scan
     /// every 15 s would otherwise write the SD card thousands of times a day). The snapshot
-    /// is taken under the store's lock: the newest state is always the one written.
+    /// is taken under the store's lock ([`LampStore::save`]).
     async fn persist_state(&self) -> Result<(), AppError> {
-        let mut store = self.inner.store.lock().await;
-        let lamps = self
-            .inner
-            .lamps
-            .read()
-            .await
-            .values()
-            .map(|lamp| lamp.config.clone())
-            .collect();
-        let blacklist = self.inner.blacklisted_addresses.read().await.clone();
-        store.save_lamps(lamps).await?;
-        store.save_blacklist(&blacklist).await?;
-        Ok(())
+        let snapshot = async {
+            let lamps = self.inner.lamps.read().await;
+            let blacklist = self.inner.blacklisted_addresses.read().await.clone();
+            (
+                lamps.values().map(|lamp| lamp.config.clone()).collect(),
+                Some(blacklist),
+            )
+        };
+        self.inner.store.save(snapshot).await
     }
 
     /// The key a lamp is kept under, from its key, id or address.
     async fn lamp_key(&self, lamp_id: &str) -> Result<String, AppError> {
         self.resolve_lamp_key(lamp_id)
             .await
-            .ok_or_else(lamp_not_found)
+            .ok_or_else(lamps::not_found)
     }
 
     async fn resolve_lamp_key(&self, lamp_id: &str) -> Option<String> {
@@ -1072,10 +1108,6 @@ async fn read_optional_string(
     let parsed = String::from_utf8(value).ok()?;
     let trimmed = parsed.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn lamp_not_found() -> AppError {
-    AppError::not_found("Hue lamp not found")
 }
 
 #[cfg(test)]
@@ -1112,7 +1144,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_lamp_is_renamed_by_its_address_and_the_name_kept() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::util::test_dir();
         let manager = manager(dir.path());
         manager
             .rename_lamp("AA:BB:CC:DD:EE:FF", "  Bureau ")
@@ -1137,7 +1169,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_blacklisted_lamp_is_gone_for_good() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::util::test_dir();
         let manager = manager(dir.path());
         assert!(manager.blacklist_lamp("aa:bb:cc:dd:ee:ff").await.unwrap());
         assert!(manager.list_lamps().await.is_empty());
@@ -1157,7 +1189,7 @@ mod tests {
     /// Blacklists written with separators still keep those lamps out.
     #[tokio::test]
     async fn a_kept_blacklist_is_read_as_keys() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::util::test_dir();
         files::write_json(
             &dir.path().join("hue-lamps-blacklist.json"),
             &vec!["AA:BB:CC:DD:EE:FF"],
@@ -1175,7 +1207,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_torn_names_file_stops_the_start_instead_of_forgetting_them() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::util::test_dir();
         std::fs::write(dir.path().join("hue-lamps.json"), "[{\"id\":").unwrap();
         let config = Config {
             disable_bluetooth: true,
@@ -1224,7 +1256,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_connection_counts_and_a_new_lamp_that_never_connects_goes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::util::test_dir();
         let manager = manager(dir.path());
         manager.inner.lamps.write().await.insert(
             "newlamp".into(),

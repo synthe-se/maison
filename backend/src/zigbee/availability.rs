@@ -1,9 +1,10 @@
-//! Is each lamp still there? Our small network carries little traffic, so a lamp switched
-//! off at the wall is only noticed when a ping goes unanswered. A lamp silent past its
-//! timeout is pinged (an On/Off read); one that comes back gets the light it was asked for.
+//! Is each lamp still there? A lamp that reports by itself (attribute reporting, asked at
+//! its interview) says so at least every few minutes; one that does not is only noticed
+//! when a ping goes unanswered. A lamp silent past its timeout is pinged (an On/Off read);
+//! one that comes back gets the light it was asked for.
 //!
-//! Never blocking: the check advances one step per call, timed against stored deadlines,
-//! and the event loop serves commands between steps.
+//! Never blocking: the check advances one step per call (every chore of the event loop),
+//! timed against stored deadlines, and the event loop serves commands between steps.
 
 use std::time::Duration;
 
@@ -13,26 +14,30 @@ use tracing::{debug, info, warn};
 use super::{
     callbacks::drain_callbacks,
     context::EzspContext,
-    device::{DiscoveredDevice, ZigbeeDeviceType},
+    device::{DiscoveredDevice, Hex, Reporting, ZigbeeDeviceType},
     driver::EZSP_COMMAND_TIMEOUT,
     zcl::{
         build_brightness_command_payload, build_color_temperature_command_payload,
         build_color_xy_command_payload, COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID,
-        ON_OFF_CLUSTER_ID,
+        ON_OFF_CLUSTER_ID, REPORT_MAX_INTERVAL_S,
     },
 };
+use crate::util::capped_backoff;
 
-/// How often the check runs, in event-loop ticks (5 × 200 ms: every second).
-pub const AVAILABILITY_CHECK_INTERVAL_TICKS: u32 = 5;
-/// A lamp silent this long is pinged. Short: the network is quiet, a ping is the only way
-/// to notice a wall switch.
+/// A lamp that does not report, silent this long, is pinged. Short: the network is quiet,
+/// a ping is the only way to notice a wall switch.
 const AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(60);
+/// A lamp that reports, silent this long (its longest report interval and a margin), is
+/// pinged: its reports stopped.
+const REPORTED_TIMEOUT: Duration = Duration::from_secs(REPORT_MAX_INTERVAL_S as u64 + 60);
 /// Between two pings of one lamp.
 const PING_RETRY_DELAY: Duration = Duration::from_secs(3);
 /// Between two lamps.
 const COOL_DOWN: Duration = Duration::from_secs(2);
-/// A lamp that keeps failing is checked less often: its timeout grows up to this factor.
-const MAX_BACKOFF_MULTIPLIER: f64 = 12.0;
+/// A lamp that keeps failing is checked less often: its timeout is ×1.5 after a failed
+/// cycle, then doubles, up to ×12.
+const FIRST_BACKOFF_FACTOR: f64 = 1.5;
+const MAX_BACKOFF_FACTOR: u32 = 12;
 /// Budget of one restore sweep. Past it the sweep pauses until the next change; it does not
 /// tear the pipeline down (after a power cut many lamps come back at once, and a healthy but
 /// busy link may need longer).
@@ -78,11 +83,13 @@ struct Ping {
 /// devices are shared.
 pub async fn check_availability(context: &mut EzspContext) {
     // the only blocking work is one read request, bounded like any command
-    if !timeout(EZSP_COMMAND_TIMEOUT, tick_device_availability(context))
-        .await
-        .unwrap_or(false)
-    {
-        return;
+    match timeout(EZSP_COMMAND_TIMEOUT, tick_device_availability(context)).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(_) => {
+            warn!("an availability step exceeded the command timeout — it goes on next chore");
+            return;
+        }
     }
     if timeout(RESTORE_SWEEP_TIMEOUT, restore_desired_state(context))
         .await
@@ -93,12 +100,23 @@ pub async fn check_availability(context: &mut EzspContext) {
     context.publish();
 }
 
-/// 1 for a lamp that answers; after failed cycles 1.5, 3, 6, then 12 at most.
-fn backoff_multiplier(failed_ping_cycles: u32) -> f64 {
-    if failed_ping_cycles == 0 {
-        return 1.0;
+/// How long `device` may stay silent before it is pinged: its heartbeat (a lamp that
+/// reports sends one at least every [`REPORT_MAX_INTERVAL_S`]), then ×1.5, ×3, ×6, ×12 at
+/// most after failed cycles.
+fn silence_allowed(device: &DiscoveredDevice) -> Duration {
+    let heartbeat = if device.reporting == Reporting::Configured {
+        REPORTED_TIMEOUT
+    } else {
+        AVAILABILITY_TIMEOUT
+    };
+    if device.failed_ping_cycles == 0 {
+        return heartbeat;
     }
-    (1.5 * 2.0_f64.powi(failed_ping_cycles.min(16) as i32 - 1)).min(MAX_BACKOFF_MULTIPLIER)
+    capped_backoff(
+        heartbeat.mul_f64(FIRST_BACKOFF_FACTOR),
+        device.failed_ping_cycles,
+        heartbeat * MAX_BACKOFF_FACTOR,
+    )
 }
 
 /// Idle → ping the next lamp due → wait for its answer (retrying once for a lamp that was
@@ -134,18 +152,18 @@ async fn start_next_ping(context: &mut EzspContext, now: Instant) -> bool {
         return false;
     };
     let max_attempts = if target.was_reachable { 2 } else { 1 };
-    debug!(node_id = format_args!("0x{:04x}", target.node_id), eui64 = %target.eui64, was_reachable = target.was_reachable,
+    debug!(node_id = %Hex(target.node_id), eui64 = %target.eui64, was_reachable = target.was_reachable,
         attempts = max_attempts, "availability ping started");
     send_ping(context, target, 1, max_attempts).await
 }
 
-/// A lamp (interviewed, with On/Off) silent past its timeout.
+/// A lamp (interviewed, with On/Off) silent past its timeout ([`silence_allowed`]).
 fn due_for_ping(device: &DiscoveredDevice, now: Instant) -> Option<AvailabilityTarget> {
     let endpoint = device.info.endpoint?;
     let lamp = device.interview_completed
         && device.info.has_input(ON_OFF_CLUSTER_ID)
         && device.info.device_type != ZigbeeDeviceType::Remote;
-    let limit = AVAILABILITY_TIMEOUT.mul_f64(backoff_multiplier(device.failed_ping_cycles));
+    let limit = silence_allowed(device);
     let silent = device
         .last_seen
         .is_none_or(|seen| now.duration_since(seen) > limit);
@@ -175,7 +193,7 @@ async fn send_ping(
     {
         Ok(()) => {
             debug!(
-                node_id = format_args!("0x{:04x}", target.node_id),
+                node_id = %Hex(target.node_id),
                 attempt, "availability ping sent"
             );
             let check_at = Instant::now() + PING_RETRY_DELAY;
@@ -189,7 +207,7 @@ async fn send_ping(
             false
         }
         Err(error) => {
-            warn!(node_id = format_args!("0x{:04x}", target.node_id), attempt, %error, "availability ping send failed — skipping device");
+            warn!(node_id = %Hex(target.node_id), attempt, %error, "availability ping send failed — skipping device");
             give_up(context, &target, "after an EZSP send failure")
         }
     }
@@ -207,7 +225,7 @@ async fn check_ping(context: &mut EzspContext, ping: Ping, now: Instant) -> bool
         .is_some_and(|seen| seen > ping.before_ping);
     if answered {
         debug!(
-            node_id = format_args!("0x{node_id:04x}"),
+            node_id = %Hex(node_id),
             attempt = ping.attempt,
             "availability ping got response — device is online"
         );
@@ -239,7 +257,7 @@ fn mark_lost(context: &mut EzspContext, target: &AvailabilityTarget, why: &str) 
         .device_mut(target.node_id)
         .is_some_and(DiscoveredDevice::lost);
     if lost {
-        info!(node_id = format_args!("0x{:04x}", target.node_id), eui64 = %target.eui64, why, "device marked unreachable");
+        info!(node_id = %Hex(target.node_id), eui64 = %target.eui64, why, "device marked unreachable");
     }
     lost
 }
@@ -279,7 +297,7 @@ async fn restore_desired_state(context: &mut EzspContext) {
         }
         if let Some(device) = context.device_mut(target.node_id) {
             device.desired.applied = true;
-            info!(node_id = format_args!("0x{:04x}", target.node_id), eui64 = %device.info.eui64, "desired state fully restored after reconnect");
+            info!(node_id = %Hex(target.node_id), eui64 = %device.info.eui64, "desired state fully restored after reconnect");
         }
         // answers update the device promptly
         if let Err(error) = drain_callbacks(context).await {
@@ -342,8 +360,8 @@ async fn restore(context: &mut EzspContext, target: &DiscoveredDevice) -> bool {
             return false;
         }
         if let Some(device) = context.device_mut(node_id) {
-            device.light.colour.color_x = Some(x);
-            device.light.colour.color_y = Some(y);
+            device.light.color.color_x = Some(x);
+            device.light.color.color_y = Some(y);
         }
     }
     true
@@ -353,13 +371,13 @@ fn restored(sent: Result<(), super::error::DriverError>, node_id: u16, what: &st
     match sent {
         Ok(()) => {
             info!(
-                node_id = format_args!("0x{node_id:04x}"),
+                node_id = %Hex(node_id),
                 what, "restored desired state after reconnect"
             );
             true
         }
         Err(error) => {
-            warn!(node_id = format_args!("0x{node_id:04x}"), what, %error, "failed to restore desired state");
+            warn!(node_id = %Hex(node_id), what, %error, "failed to restore desired state");
             false
         }
     }
@@ -371,11 +389,38 @@ mod tests {
 
     #[test]
     fn a_failing_lamp_is_checked_less_often() {
-        assert_eq!(backoff_multiplier(0), 1.0);
-        assert_eq!(backoff_multiplier(1), 1.5);
-        assert_eq!(backoff_multiplier(2), 3.0);
-        assert_eq!(backoff_multiplier(4), 12.0);
-        assert_eq!(backoff_multiplier(400), 12.0, "capped, no overflow");
+        let mut lamp = DiscoveredDevice::test_lamp();
+        let allowed = |lamp: &DiscoveredDevice, cycles| {
+            let mut lamp = lamp.clone();
+            lamp.failed_ping_cycles = cycles;
+            silence_allowed(&lamp).as_secs()
+        };
+        assert_eq!(
+            [0, 1, 2, 3, 4, 400].map(|cycles| allowed(&lamp, cycles)),
+            [60, 90, 180, 360, 720, 720],
+            "×1.5, ×3, ×6, ×12 at most, no overflow"
+        );
+        // a lamp that reports says it lives every five minutes: pinged only past that
+        lamp.reporting = Reporting::Configured;
+        assert_eq!(allowed(&lamp, 0), 360);
+        lamp.reporting = Reporting::Asked;
+        assert_eq!(allowed(&lamp, 0), 60, "until it says yes, pinged as before");
+    }
+
+    #[test]
+    fn a_reporting_lamp_heard_minutes_ago_is_not_pinged() {
+        let now = Instant::now();
+        let mut lamp = DiscoveredDevice::test_lamp();
+        let Some(two_minutes_ago) = now.checked_sub(Duration::from_secs(120)) else {
+            return;
+        };
+        lamp.last_seen = Some(two_minutes_ago);
+        assert!(
+            due_for_ping(&lamp, now).is_some(),
+            "silent 2 min, no reports"
+        );
+        lamp.reporting = Reporting::Configured;
+        assert!(due_for_ping(&lamp, now).is_none(), "its next report is due");
     }
 
     #[test]

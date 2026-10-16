@@ -1,4 +1,4 @@
-//! Fits the Tempo forecast, on the Mac (never on the Pi), and writes `cache/tempo/`:
+//! Fits the Tempo forecast, on the Mac (never on the Pi), and writes the Tempo directory (`Config::tempo_dir`, `cache/tempo/`):
 //! `model.json` (coefficients, errors by horizon, the backtest's scores), `netload.json`
 //! (the past year RTE's normalisation needs) and every season's colours.
 //!
@@ -21,8 +21,10 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
 use chrono::{Duration, NaiveDate};
+use maison_api::tempo::Color;
 use maison_backend::{
     config::Config,
+    net,
     store::{self, Access},
     tempo::{
         forecast::{
@@ -30,17 +32,18 @@ use maison_backend::{
             HorizonScore, Model, WeatherPoint, CONSUMPTION_FEATURES,
         },
         inputs::{
-            coordinates, daily_temperature, daily_wind_power, parse_hourly, tempo_days, NetLoad,
-            OdreRow, Series, Weather, WEATHER_MODEL,
+            coordinates, daily_temperature, daily_wind_power, odre_query, parse_hourly, tempo_days,
+            NetLoad, OdreRow, Series, Weather, WEATHER_MODEL,
         },
         outlook,
         rules::{
-            is_winter, season_bounds, season_name, season_start_year, Color, History, Quotas,
-            FIRST_SEASON,
+            is_winter, season_bounds, season_name, season_start_year, History, Quotas, FIRST_SEASON,
         },
+        season_file,
         source::{Sources, Values},
-        HORIZON,
+        HORIZON, MODEL_FILE, NETLOAD_FILE,
     },
+    util::HOUSE_TZ,
 };
 use serde_json::Value;
 
@@ -133,11 +136,7 @@ impl Downloads {
                 tokio::time::sleep(std::time::Duration::from_secs(65)).await;
                 continue;
             }
-            if !response.status().is_success() {
-                let status = response.status();
-                return Err(format!("{name}: {status} {}", response.text().await?).into());
-            }
-            let text = response.text().await?;
+            let text = net::checked(response, name)?.text().await?;
             store::write_bytes(&path, text.as_bytes(), Access::Shared)?;
             return Ok(text);
         }
@@ -165,7 +164,7 @@ impl Downloads {
             let mut query = coordinates(places).to_vec();
             query.extend([
                 ("hourly", keys.join(",")),
-                ("timezone", "Europe/Paris".into()),
+                ("timezone", HOUSE_TZ.name().into()),
                 ("start_date", start.to_string()),
                 ("end_date", end.to_string()),
             ]);
@@ -419,39 +418,62 @@ impl Tally {
 async fn main() -> Result<(), Failure> {
     let fresh = std::env::args().any(|a| a == "--fresh");
     let config = Config::from_env();
-    let out = config.source_root.join("cache/tempo");
+    let out = config.tempo_dir.clone();
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/tempo-fit");
     if fresh {
         let _ = std::fs::remove_dir_all(&dir);
     }
     std::fs::create_dir_all(&dir)?;
-    let client = maison_backend::net::web_client(
-        concat!("Maison-fit/", env!("CARGO_PKG_VERSION")),
-        std::time::Duration::from_secs(600),
-    )?;
+    let client = net::web_client(net::USER_AGENT, std::time::Duration::from_secs(600))?;
     let downloads = Downloads {
         client: client.clone(),
         dir,
     };
     let today = maison_backend::util::house_today();
-    let yesterday = today - Duration::days(1);
-    let (cities, wind_sites) = (cities(), wind_sites());
 
-    // 1. RTE's seasons, kept in cache/tempo/ as the service reads them
-    let sources = Sources::from_config(&config);
+    let colors = seasons(&config, &client, &out, today).await?;
+    let data = gather(&config, &downloads, colors, today).await?;
+    let (model, base_seasons) = backtest_and_fit(&data, today);
+
+    store::write_json(&out.join(MODEL_FILE), &model, Access::Shared)?;
+    let mut net = NetLoad::default();
+    net.merge(data.net.load.clone(), &data.net.temperature, today);
+    store::write_json(&out.join(NETLOAD_FILE), &net, Access::Shared)?;
+    println!("wrote {} (backtest on {base_seasons})", out.display());
+    Ok(())
+}
+
+/// 1. RTE's seasons, kept in the Tempo directory as the service reads them.
+async fn seasons(
+    config: &Config,
+    client: &reqwest::Client,
+    out: &std::path::Path,
+    today: NaiveDate,
+) -> Result<History, Failure> {
+    let sources = Sources::from_config(config);
     let mut colors = History::new();
     for start in FIRST_SEASON..=season_start_year(today) {
-        let season = sources.season(&client, start, today).await?;
+        let season = sources.season(client, start, today).await?;
         store::write_json(
-            &out.join(format!("tempo_history_{}.json", season_name(start))),
+            &out.join(season_file(start)),
             &Values::from_history(&season),
             Access::Shared,
         )?;
         colors.extend(season);
     }
+    Ok(colors)
+}
 
-    // 2. éCO2mix as Tempo days: the consolidated years, then the current months
-    let odre = config.tempo_odre_url.trim_end_matches('/');
+/// 2 and 3. éCO2mix as Tempo days (the consolidated years, then the current months), and
+/// the weather: observed, and forecast as it was.
+async fn gather(
+    config: &Config,
+    downloads: &Downloads,
+    colors: History,
+    today: NaiveDate,
+) -> Result<Data, Failure> {
+    let yesterday = today - Duration::days(1);
+    let odre = &config.tempo_odre_url;
     let mut load = BTreeMap::new();
     for (dataset, since) in [
         (
@@ -460,14 +482,7 @@ async fn main() -> Result<(), Failure> {
         ),
         ("eco2mix-national-tr", today - Duration::days(400)),
     ] {
-        let query = [
-            (
-                "select",
-                "date_heure,consommation,eolien,solaire".to_string(),
-            ),
-            ("where", format!("date_heure >= '{since}T00:00:00Z'")),
-            ("order_by", "date_heure".to_string()),
-        ];
+        let query = odre_query(&format!("date_heure >= '{since}T00:00:00Z'"));
         let text = downloads
             .get(
                 &format!("{dataset}.json"),
@@ -482,7 +497,7 @@ async fn main() -> Result<(), Failure> {
         }
     }
 
-    // 3. the weather: observed, and forecast as it was
+    let (cities, wind_sites) = (cities(), wind_sites());
     let from = season_bounds(FIRST_SEASON - 1).1 - Duration::days(5);
     let keys = |k: &str| vec![k.to_string()];
     let (temperature_keys, wind_keys) = (keys("temperature_2m"), keys("wind_speed_100m"));
@@ -547,7 +562,7 @@ async fn main() -> Result<(), Failure> {
         )
         .await?;
     let temperature = merged(&temps, "temperature_2m", |s| daily_temperature(s, &cities))?;
-    let data = Data {
+    Ok(Data {
         colors,
         net: NetLoad {
             load,
@@ -563,39 +578,58 @@ async fn main() -> Result<(), Failure> {
             .iter()
             .map(|k| merged(&fwinds, k, daily_wind_power))
             .collect::<Result<_, _>>()?,
-    };
+    })
+}
 
-    // 4. the backtest: the full seasons with a week of forecasts every day
+/// 4 and 5. The backtest on the full seasons with a week of forecasts every day (errors by
+/// horizon, then scores through the service's own `outlook`), and the model shipped, fitted
+/// on every day up to yesterday. Says which seasons the backtest ran on.
+fn backtest_and_fit(data: &Data, today: NaiveDate) -> (Model, String) {
+    let first_forecast: NaiveDate = FIRST_FORECAST.parse().expect("a date");
     let base = Model {
         version: today.to_string(),
-        fitted_through: yesterday,
-        cities,
-        wind_sites,
-        consumption: vec![],
-        wind: vec![],
-        solar: vec![],
-        sigma: vec![],
+        fitted_through: today - Duration::days(1),
+        cities: cities(),
+        wind_sites: wind_sites(),
         rho: RHO,
         runs: RUNS,
-        backtest: Backtest::default(),
+        ..Model::default()
     };
     let seasons: Vec<i32> = (season_start_year(first_forecast) + 1..season_start_year(today))
-        .filter(|start| issues(&data, *start).len() > 300)
+        .filter(|start| issues(data, *start).len() > 300)
         .collect();
     let fitted: Vec<Season> = seasons
         .iter()
         .map(|start| {
             (
                 *start,
-                fit(&data, season_bounds(*start).0, &base),
-                issues(&data, *start),
+                fit(data, season_bounds(*start).0, &base),
+                issues(data, *start),
             )
         })
         .collect();
+    let sigma = errors_by_horizon(data, &fitted);
+    eprintln!("error of x by horizon (winter): {sigma:?}");
+    let horizons = scores(data, &fitted, &sigma);
+    let names = seasons.iter().map(|s| season_name(*s)).collect::<Vec<_>>();
+    print_scores(&names.join(", "), &horizons);
 
-    // the error of x by horizon, in winter (the summer is far from every threshold)
+    let mut model = fit(data, today, &base);
+    model.sigma = sigma;
+    model.backtest = Backtest {
+        seasons: names.clone(),
+        horizons,
+    };
+    if let Some(last) = data.net.load.keys().next_back() {
+        model.fitted_through = *last;
+    }
+    (model, names.join(", "))
+}
+
+/// The error of x by horizon, in winter (the summer is far from every threshold).
+fn errors_by_horizon(data: &Data, fitted: &[Season]) -> Vec<f64> {
     let mut errors: Vec<Vec<f64>> = vec![vec![]; HORIZON as usize];
-    for (_, model, issued) in &fitted {
+    for (_, model, issued) in fitted {
         for (issue, weather) in issued {
             let Some(levels) = data.net.levels(*issue) else {
                 continue;
@@ -610,21 +644,23 @@ async fn main() -> Result<(), Failure> {
             }
         }
     }
-    let sigma: Vec<f64> = errors
+    errors
         .iter()
         .map(|e| {
             let mean = e.iter().sum::<f64>() / e.len() as f64;
             let sd = (e.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / e.len() as f64).sqrt();
             (sd * 1000.0).round() / 1000.0
         })
-        .collect();
-    eprintln!("error of x by horizon (winter): {sigma:?}");
+        .collect()
+}
 
+/// Each backtest day's forecast scored against RTE's colours, by horizon.
+fn scores(data: &Data, fitted: &[Season], sigma: &[f64]) -> Vec<HorizonScore> {
     let mut tallies = vec![Tally::default(); HORIZON as usize];
     let mut timing = (std::time::Duration::ZERO, 0u32);
-    for (_, model, issued) in &fitted {
+    for (_, model, issued) in fitted {
         let model = Model {
-            sigma: sigma.clone(),
+            sigma: sigma.to_vec(),
             ..model.clone()
         };
         for (issue, weather) in issued {
@@ -657,21 +693,21 @@ async fn main() -> Result<(), Failure> {
             }
         }
     }
-    let horizons: Vec<HorizonScore> = tallies
+    println!(
+        "one forecast (normalisation, rules, {RUNS} draws × 7 days): {:?} on this machine",
+        timing.0 / timing.1.max(1)
+    );
+    tallies
         .iter()
         .enumerate()
         .map(|(i, t)| t.score(i as u32 + 1))
-        .collect();
-    println!(
-        "backtest on {}:",
-        seasons
-            .iter()
-            .map(|s| season_name(*s))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+        .collect()
+}
+
+fn print_scores(seasons: &str, horizons: &[HorizonScore]) {
+    println!("backtest on {seasons}:");
     println!("  J+h  days  accuracy  winter  red F1  white F1  Brier  always blue");
-    for s in &horizons {
+    for s in horizons {
         println!(
             "  J+{}  {:4}  {:8.3}  {:6.3}  {:6.3}  {:8.3}  {:5.3}  {:11.3}",
             s.horizon,
@@ -684,24 +720,4 @@ async fn main() -> Result<(), Failure> {
             s.always_blue
         );
     }
-    println!(
-        "one forecast (normalisation, rules, {RUNS} draws × 7 days): {:?} on this machine",
-        timing.0 / timing.1.max(1)
-    );
-
-    // 5. the model shipped: every day up to yesterday
-    let mut model = fit(&data, today, &base);
-    model.sigma = sigma;
-    model.backtest = Backtest {
-        seasons: seasons.iter().map(|s| season_name(*s)).collect(),
-        horizons,
-    };
-    model.fitted_through = *data.net.load.keys().next_back().ok_or("no load")?;
-    store::write_json(&out.join("model.json"), &model, Access::Shared)?;
-
-    let mut net = NetLoad::default();
-    net.merge(data.net.load.clone(), &data.net.temperature, today);
-    store::write_json(&out.join("netload.json"), &net, Access::Shared)?;
-    println!("wrote {}", out.display());
-    Ok(())
 }

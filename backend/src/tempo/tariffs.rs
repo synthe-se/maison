@@ -1,5 +1,5 @@
 //! The regulated Tempo prices (EDF's « tarif bleu », 6 kVA), from the CRE's open data on
-//! data.gouv.fr: per colour, peak (06:00–22:00) and off-peak, tax included, €/kWh.
+//! data.gouv.fr: per colour, peak (`maison_api::tempo::HOURS`) and off-peak, tax included, €/kWh.
 //!
 //! The dataset writes its start dates year-day-month (`2026-01-08` is 1 August 2026: the
 //! prices change on the first of a month), its end dates the usual way.
@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::error::AppError;
 
-pub use maison_api::tempo::{Price, Tariffs};
+use maison_api::tempo::{Price, Tariffs};
 
 #[derive(Deserialize)]
 struct Page {
@@ -71,11 +71,8 @@ pub fn start_date(text: &str) -> Option<NaiveDate> {
 
 /// The prices in force on `today` from the dataset's latest row (`None` when it is over or
 /// incomplete).
-pub fn parse(body: &str, today: NaiveDate) -> Result<Option<Tariffs>, AppError> {
-    let page: Page = serde_json::from_str(body)?;
-    let Some(row) = page.data.first() else {
-        return Ok(None);
-    };
+fn in_force(page: &Page, today: NaiveDate) -> Option<Tariffs> {
+    let row = page.data.first()?;
     let ended = row
         .DATE_FIN
         .as_deref()
@@ -96,32 +93,28 @@ pub fn parse(body: &str, today: NaiveDate) -> Result<Option<Tariffs>, AppError> 
             starts_on: start_date(&row.DATE_DEBUT)?,
         })
     })();
-    Ok(tariffs.filter(|_| !ended))
+    tariffs.filter(|_| !ended)
 }
 
+/// The prices in force on `today`, from data.gouv (`net::fetch_json`: coded when it fails).
 pub async fn fetch(
     client: &reqwest::Client,
     url: &str,
     today: NaiveDate,
 ) -> Result<Option<Tariffs>, AppError> {
-    let response = client
-        .get(url)
-        .header("Accept", "application/json")
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Err(AppError::service_unavailable(format!(
-            "data.gouv: {}",
-            response.status()
-        )));
-    }
-    parse(&response.text().await?, today)
+    let request = client.get(url).header("Accept", "application/json");
+    let page: Page = crate::net::fetch_json(request, "data.gouv").await?;
+    Ok(in_force(&page, today))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tempo::rules::tests::day;
+
+    fn parse(body: &str, today: NaiveDate) -> Result<Option<Tariffs>, serde_json::Error> {
+        Ok(in_force(&serde_json::from_str(body)?, today))
+    }
 
     /// data.gouv's answer on 3 October 2026 (one row).
     const AUGUST_2026: &str = r#"{"data":[{"__id":127,"DATE_DEBUT":"2026-01-08","DATE_FIN":null,"P_SOUSCRITE":6,"PART_FIXE_HT":142.68,"PART_FIXE_TTC":189.9802924,"PART_VARIABLE_HCBleu_TTC":0.1356,"PART_VARIABLE_HPBleu_TTC":0.1654,"PART_VARIABLE_HCBlanc_TTC":0.1536,"PART_VARIABLE_HPBlanc_TTC":0.1921,"PART_VARIABLE_HCRouge_TTC":0.1615,"PART_VARIABLE_HPRouge_TTC":0.7295}],"links":{},"meta":{}}"#;

@@ -3,10 +3,12 @@
 //! families it may have changed read again. Making and editing scenes stays in the web app;
 //! with none, the group is not shown (the web app's « Créer » is an admin's).
 
+use maison_api::codes::Code;
 use maison_api::remote::KeyResponse;
 use maison_api::scenes::Scene;
 
 use super::{Cx, HUE, MEROSS, SCENES, SHUTTERS, ZIGBEE};
+use crate::client::Failure;
 use crate::commands::{Order, Outcome, Post, Toast, limit};
 use crate::i18n::{Arg, Words, k};
 use crate::paths;
@@ -19,10 +21,19 @@ pub fn icon_of(s: &Scene) -> Icon {
     Icon::named(maison_api::scenes::icon_of(s)).unwrap_or(icon::SPARKLES)
 }
 
-/// How a run went (scenes.ts `sayRun`).
+/// How a run went (scenes.ts `sayRun`): each failure by what its refusal's code means.
 pub fn said(w: &Words, name: &str, r: &KeyResponse) -> Toast {
-    let failed: Vec<&str> = r.outcomes().filter(|(ok, _)| !ok).map(|(_, d)| d).collect();
-    if failed.is_empty() {
+    let mut failed: Vec<String> = Vec::new();
+    for f in r.failures() {
+        let code = f.code.as_deref().and_then(Code::parse);
+        let status = code.map_or(500, Code::status);
+        let why = w.failure(&Failure::Refused { status, code });
+        if !failed.contains(&why) {
+            failed.push(why);
+        }
+    }
+    let count = r.failures().count();
+    if count == 0 {
         return Toast {
             text: w.t(
                 k::SCENES_DONE,
@@ -39,7 +50,7 @@ pub fn said(w: &Words, name: &str, r: &KeyResponse) -> Toast {
             k::SCENES_FAILED,
             &[
                 ("name", name.into()),
-                ("count", Arg::Count(failed.len() as f64)),
+                ("count", Arg::Count(count as f64)),
                 ("total", Arg::Count(r.results.len() as f64)),
                 ("details", failed.join(" · ").into()),
             ],
@@ -128,10 +139,17 @@ mod tests {
         assert_eq!(o.posts[0].1.path, "/scenes/nuit/run");
         assert!(scenes_group(&w, &[]).is_none());
 
+        let went = |ok: bool, code: Option<&str>| maison_api::remote::ActionResult {
+            action: maison_api::remote::IrAction::Nabaztag {
+                command: "ping".into(),
+            },
+            ok,
+            code: code.map(String::from),
+        };
         let ok = said(
             &w,
             "Nuit",
-            &KeyResponse::ran(vec!["ok: a".into(), "ok: b".into()]),
+            &KeyResponse::ran(vec![went(true, None), went(true, None)]),
         );
         assert_eq!(
             ok,
@@ -143,12 +161,31 @@ mod tests {
         let partial = said(
             &w,
             "Nuit",
-            &KeyResponse::ran(vec!["ok: a".into(), "failed: TV injoignable".into()]),
+            &KeyResponse::ran(vec![went(true, None), went(false, Some("not_found"))]),
         );
         assert!(partial.warn);
         assert_eq!(
             partial.text,
-            "Nuit\u{a0}: 1 action sur 2 a échoué · TV injoignable"
+            format!(
+                "Nuit\u{a0}: 1 action sur 2 a échoué · {}",
+                w.s(k::CODE_NOT_FOUND)
+            )
+        );
+        let twice = said(
+            &w,
+            "Nuit",
+            &KeyResponse::ran(vec![
+                went(false, Some("not_found")),
+                went(false, Some("not_found")),
+            ]),
+        );
+        assert_eq!(
+            twice.text,
+            format!(
+                "Nuit\u{a0}: 2 actions sur 2 ont échoué · {}",
+                w.s(k::CODE_NOT_FOUND)
+            ),
+            "the same failure said once"
         );
     }
 }

@@ -430,3 +430,153 @@ mod tests {
         );
     }
 }
+
+// ------------------------------------------------- devices, time, locks --
+
+/// `base`, doubled at each `attempt` after the first (1: `base`, 2: twice, 3: four times…),
+/// never past `max`: every retry and reconnect delay.
+pub fn capped_backoff(
+    base: std::time::Duration,
+    attempt: u32,
+    max: std::time::Duration,
+) -> std::time::Duration {
+    base.saturating_mul(1_u32 << attempt.saturating_sub(1).min(16))
+        .min(max)
+}
+
+/// `hours:minutes` on `day` at the house, as an instant (the first one, on the night the
+/// clocks go back; an hour later, for a time the clocks skip).
+pub fn house_time(
+    day: chrono::NaiveDate,
+    hours: u32,
+    minutes: u32,
+) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    let mut local = day.and_hms_opt(hours, minutes, 0).unwrap_or_default();
+    for _ in 0..2 {
+        if let Some(at) = HOUSE_TZ.from_local_datetime(&local).earliest() {
+            return at.with_timezone(&chrono::Utc);
+        }
+        local += chrono::Duration::hours(1);
+    }
+    local.and_utc()
+}
+
+/// Hex digits (either case, two per byte, nothing else) as bytes; `None` for anything else.
+pub fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok())
+        .collect()
+}
+
+/// The coded refusal `code`, with why in the log (the app words the code, the reason is the
+/// owner's).
+pub fn refused(
+    code: crate::error::Refusal,
+    reason: impl std::fmt::Display,
+) -> crate::error::AppError {
+    tracing::info!(code = code.as_str(), %reason, "refused");
+    code.into()
+}
+
+/// `HH:MM` as minutes since midnight (`00:00` to `23:59`).
+pub fn minutes_of_day(value: &str) -> Option<u16> {
+    let (hours, minutes) = value.split_once(':')?;
+    let digits = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(hours) || !digits(minutes) {
+        return None;
+    }
+    let (hours, minutes) = (hours.parse::<u16>().ok()?, minutes.parse::<u16>().ok()?);
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+}
+
+#[cfg(test)]
+mod device_helper_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn backoffs_double_then_stay_capped() {
+        let (base, max) = (Duration::from_secs(2), Duration::from_secs(300));
+        let delays: Vec<u64> = (0..=10)
+            .map(|attempt| capped_backoff(base, attempt, max).as_secs())
+            .collect();
+        assert_eq!(delays, [2, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300]);
+        assert_eq!(capped_backoff(base, u32::MAX, max), max, "no overflow");
+    }
+
+    #[test]
+    fn house_times_are_paris_times() {
+        let day = |m, d| chrono::NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        assert_eq!(
+            house_time(day(1, 10), 6, 0).to_rfc3339(),
+            "2026-01-10T05:00:00+00:00"
+        );
+        assert_eq!(
+            house_time(day(7, 10), 0, 0).to_rfc3339(),
+            "2026-07-09T22:00:00+00:00"
+        );
+        // 02:30 does not exist on 29 March 2026: 03:30 summer time
+        assert_eq!(
+            house_time(day(3, 29), 2, 30).to_rfc3339(),
+            "2026-03-29T01:30:00+00:00"
+        );
+        // 02:30 happens twice on 25 October 2026: the first
+        assert_eq!(
+            house_time(day(10, 25), 2, 30).to_rfc3339(),
+            "2026-10-25T00:30:00+00:00"
+        );
+    }
+
+    #[test]
+    fn hex_reads_back() {
+        assert_eq!(unhex("00ffA0"), Some(vec![0x00, 0xff, 0xa0]));
+        assert_eq!(unhex(&hex(&[1, 2, 254], "")), Some(vec![1, 2, 254]));
+        assert_eq!(unhex(""), Some(vec![]));
+        for bad in ["0", "0g", "00:11", "+1"] {
+            assert_eq!(unhex(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_poisoned_lock_still_opens() {
+        let mutex = std::sync::Arc::new(std::sync::Mutex::new(1));
+        let poisoner = mutex.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("poisoned on purpose");
+        })
+        .join();
+        assert!(mutex.is_poisoned());
+        *lock(&mutex) += 1;
+        assert_eq!(*lock(&mutex), 2);
+    }
+
+    #[test]
+    fn clock_times_read_as_minutes() {
+        assert_eq!(minutes_of_day("00:00"), Some(0));
+        assert_eq!(minutes_of_day("07:30"), Some(450));
+        assert_eq!(minutes_of_day("23:59"), Some(1439));
+        for bad in [
+            "24:00", "12:60", "7:30", "07:3", "0730", "aa:bb", "-1:00", "07:30 ",
+        ] {
+            assert_eq!(minutes_of_day(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_code() {
+        let error = refused(crate::error::Refusal::Invalid, "why");
+        assert!(matches!(
+            error,
+            crate::error::AppError::Coded {
+                code: "invalid",
+                ..
+            }
+        ));
+    }
+}

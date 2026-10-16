@@ -13,17 +13,18 @@ use ezsp::{
     Callback, Connection as EzspConnection, Messaging,
 };
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
+use tracing::warn;
 
 use super::{
     availability::Availability,
-    device::DiscoveredDevice,
+    device::{DiscoveredDevice, Hex},
     driver::{ErrorCount, Shared},
     error::DriverError,
     remotes::RemotePresses,
     touchlink::TouchlinkScan,
     zcl::{
-        build_read_attributes_payload, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID,
-        ZDO_PROFILE_ID,
+        build_bind_request_payload, build_read_attributes_payload, parse_eui64,
+        BIND_REQ_CLUSTER_ID, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID, ZDO_PROFILE_ID,
     },
 };
 
@@ -72,6 +73,9 @@ pub struct EzspContext {
     pub remote_presses: RemotePresses,
     pub touchlink: TouchlinkScan,
     pub errors: ErrorCount,
+    /// Why the pipeline must be rebuilt, when an exchange made outside a command (an
+    /// interview, a ping) says so: the event loop reads it after each step.
+    pub rebuild: Option<String>,
     pub availability: Availability,
 }
 
@@ -95,8 +99,51 @@ impl EzspContext {
             remote_presses: RemotePresses::default(),
             touchlink: TouchlinkScan::default(),
             errors: ErrorCount::default(),
+            rebuild: None,
             availability: Availability::default(),
         }
+    }
+
+    /// An exchange made unasked (an interview, a binding): its failure is logged and counts
+    /// toward a rebuild like a command's ([`ErrorCount`]); says whether it went through.
+    pub fn note(&mut self, node_id: u16, what: &str, result: Result<(), DriverError>) -> bool {
+        if let Err(error) = &result {
+            warn!(node_id = %Hex(node_id), what, %error, "zigbee exchange failed");
+        }
+        if let Some(reason) = self.errors.record(&result) {
+            self.rebuild.get_or_insert(reason);
+        }
+        result.is_ok()
+    }
+
+    /// Asks `node_id` (whose address is `eui64`) to send its `cluster_id` from `endpoint`
+    /// to the coordinator: a remote's presses, a lamp's reports.
+    pub async fn bind_to_coordinator(
+        &mut self,
+        node_id: u16,
+        eui64: &str,
+        endpoint: u8,
+        cluster_id: u16,
+    ) -> Result<(), DriverError> {
+        let coordinator = self
+            .coordinator_eui64
+            .ok_or(DriverError::Unavailable(
+                "The coordinator's address is not known yet",
+            ))?
+            .into_array();
+        let source = parse_eui64(eui64)
+            .ok_or_else(|| DriverError::Unsupported(format!("invalid EUI64: {eui64}")))?;
+        self.send_zdo(node_id, BIND_REQ_CLUSTER_ID, "send Bind_req", |sequence| {
+            build_bind_request_payload(
+                sequence,
+                source,
+                endpoint,
+                cluster_id,
+                coordinator,
+                DEFAULT_SOURCE_ENDPOINT,
+            )
+        })
+        .await
     }
 
     pub fn device(&self, node_id: u16) -> Option<&DiscoveredDevice> {

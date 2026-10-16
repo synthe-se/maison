@@ -82,9 +82,9 @@ pub enum IrAction {
         #[serde(default)]
         state: SwitchState,
     },
-    /// Powers the Philips TV through JointSPACE. `switchToBox` also routes
-    /// the set to the Android box's HDMI input on power-on, since the TV
-    /// otherwise comes back on whatever source it was last left on.
+    /// Powers the Philips TV (over IR, through the Broadlink blaster). `switchToBox` also
+    /// routes the set to the Android box's HDMI input on power-on, since the TV otherwise
+    /// comes back on whatever source it was last left on.
     TvPower {
         #[serde(default)]
         state: SwitchState,
@@ -120,9 +120,8 @@ pub enum IrAction {
     /// Toggles the Mitsubishi AC through the Broadlink blaster: if the last
     /// commanded state left it on, sends `state-off`; otherwise sends
     /// `onCommand` (a structured `state-…` command, e.g.
-    /// `state-cool-16-fan-4-vane-swing`).
-    /// Same reversibility for the AC, driven by the last commanded state
-    /// (IR is one-way, so that is the best approximation available).
+    /// `state-cool-16-fan-4-vane-swing`). IR is one-way: the last commanded state is the
+    /// best approximation of the AC's.
     ClimateToggle {
         host: String,
         #[serde(alias = "on_command")]
@@ -150,9 +149,9 @@ pub enum IrAction {
     },
 }
 
-/// Remote-control keys accepted by `/6/input/key`. Kept as an enum for the same
-/// reason as `Endpoint`: an unknown key name is a rejected request, and a
-/// rejected request is a step towards a dead server.
+/// Remote-control keys accepted by the TV's `/6/input/key`. An enum: an unknown key name is a
+/// rejected request, and a rejected request is a step towards a dead server (the TV's
+/// JointSPACE dies on what it does not implement).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TvKey {
@@ -230,13 +229,14 @@ pub struct ActionResult {
 }
 
 /// What running actions answers (`POST /api/scenes/{id}/run`, `/api/ir/test`, and a key press
-/// with no results, its actions running after): one entry per action, « ok: … » or « failed: … ».
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// with no results, its actions running after): one entry per action, in the order they ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyResponse {
     pub success: bool,
+    /// For logs and curl (« 1/2 actions ok »): the apps say their own words.
     pub message: String,
-    pub results: Vec<String>,
+    pub results: Vec<ActionResult>,
 }
 
 impl KeyResponse {
@@ -250,8 +250,8 @@ impl KeyResponse {
     }
 
     /// Actions ran: how many went.
-    pub fn ran(results: Vec<String>) -> Self {
-        let failures = results.iter().filter(|r| r.starts_with("failed")).count();
+    pub fn ran(results: Vec<ActionResult>) -> Self {
+        let failures = results.iter().filter(|r| !r.ok).count();
         Self {
             success: failures == 0,
             message: format!("{}/{} actions ok", results.len() - failures, results.len()),
@@ -259,16 +259,9 @@ impl KeyResponse {
         }
     }
 
-    /// Each result: whether it went, and what it said (« ok: … » / « failed: … » stripped).
-    pub fn outcomes(&self) -> impl Iterator<Item = (bool, &str)> {
-        self.results.iter().map(|r| {
-            let ok = !r.starts_with("failed");
-            let detail = r
-                .strip_prefix("ok:")
-                .or_else(|| r.strip_prefix("failed:"))
-                .map_or(r.as_str(), str::trim_start);
-            (ok, detail)
-        })
+    /// The results that did not go.
+    pub fn failures(&self) -> impl Iterator<Item = &ActionResult> {
+        self.results.iter().filter(|r| !r.ok)
     }
 }
 
@@ -278,18 +271,36 @@ mod tests {
 
     #[test]
     fn a_run_says_each_action() {
-        let r = KeyResponse::ran(vec!["ok: lamp off".into(), "failed: TV unreachable".into()]);
+        let off = IrAction::MerossPower {
+            device: "p1".into(),
+            state: SwitchState::Off,
+        };
+        let r = KeyResponse::ran(vec![
+            ActionResult {
+                action: off.clone(),
+                ok: true,
+                code: None,
+            },
+            ActionResult {
+                action: IrAction::TvKey { key: TvKey::Mute },
+                ok: false,
+                code: Some("device_unreachable".into()),
+            },
+        ]);
         assert!(!r.success);
         assert_eq!(r.message, "1/2 actions ok");
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(
             json,
-            r#"{"success":false,"message":"1/2 actions ok","results":["ok: lamp off","failed: TV unreachable"]}"#
+            r#"{"success":false,"message":"1/2 actions ok","results":[{"action":{"action":"meross_power","device":"p1","state":"off"},"ok":true},{"action":{"action":"tv_key","key":"mute"},"ok":false,"code":"device_unreachable"}]}"#
         );
         let back: KeyResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, r);
         assert_eq!(
-            back.outcomes().collect::<Vec<_>>(),
-            [(true, "lamp off"), (false, "TV unreachable")]
+            back.failures()
+                .map(|f| f.code.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("device_unreachable")]
         );
     }
 

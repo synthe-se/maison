@@ -8,18 +8,13 @@
 //!    "actions": [{ "action": "tv_power", "state": "on" }] }]
 //! ```
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-use axum::http::StatusCode;
-use tokio::sync::RwLock;
+use std::{path::Path, sync::Arc};
 
 use crate::{
-    error::AppError,
+    error::{AppError, Refusal},
     ir::{self, IrAction},
-    store::{self, Access, Corrupt},
+    json_config::{Checked, JsonConfig},
+    util::refused,
 };
 
 /// A scene is something one taps: past twenty actions it is a script.
@@ -40,35 +35,36 @@ fn valid_icon(icon: &str) -> bool {
     (1..=32).contains(&icon.len()) && icon.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
 }
 
+/// The scenes, in the dashboard's order.
+type Scenes = Vec<Scene>;
+
+/// Each scene is checked when it comes in (`checked`); a hand-edited file is read as
+/// written, each action failing at its run if it must.
+impl Checked for Scenes {}
+
 #[derive(Clone)]
 pub struct ScenesManager {
-    path: Arc<PathBuf>,
-    scenes: Arc<RwLock<Vec<Scene>>>,
+    scenes: Arc<JsonConfig<Scenes>>,
 }
 
 impl ScenesManager {
     /// Missing file = no scenes (the web offers templates); an unreadable one is a startup
     /// error, like the keymap.
     pub fn new(path: &Path) -> Result<Self, AppError> {
-        let scenes: Vec<Scene> = store::read_json(path, Corrupt::Fail)?;
         Ok(Self {
-            path: Arc::new(path.to_path_buf()),
-            scenes: Arc::new(RwLock::new(scenes)),
+            scenes: Arc::new(JsonConfig::load(path)?),
         })
     }
 
     /// In the order they were made.
     pub async fn list(&self) -> Vec<Scene> {
-        self.scenes.read().await.clone()
+        self.scenes.get().await
     }
 
     pub async fn get(&self, id: &str) -> Option<Scene> {
         self.scenes
-            .read()
+            .read(|scenes| scenes.iter().find(|scene| scene.id == id).cloned())
             .await
-            .iter()
-            .find(|scene| scene.id == id)
-            .cloned()
     }
 
     /// Creates the scene `id` (at the end) or replaces it (in its place). Saved first, then
@@ -81,64 +77,65 @@ impl ScenesManager {
         actions: Vec<IrAction>,
     ) -> Result<Scene, AppError> {
         let scene = checked(id, name, icon, actions)?;
-        let mut scenes = self.scenes.write().await;
-        let mut next = scenes.clone();
-        match next.iter_mut().find(|kept| kept.id == scene.id) {
-            Some(kept) => *kept = scene.clone(),
-            None => next.push(scene.clone()),
-        }
-        store::write_json_async(&self.path, &next, Access::Shared).await?;
-        *scenes = next;
+        self.scenes
+            .update(|scenes| {
+                match scenes.iter_mut().find(|kept| kept.id == scene.id) {
+                    Some(kept) => *kept = scene.clone(),
+                    None => scenes.push(scene.clone()),
+                }
+                Ok(())
+            })
+            .await?;
         Ok(scene)
     }
 
     /// Returns `true` when the scene existed. Keys bound to it then fail at their press,
     /// saying so (`ir::run_actions`).
     pub async fn remove(&self, id: &str) -> Result<bool, AppError> {
-        let mut scenes = self.scenes.write().await;
-        if !scenes.iter().any(|scene| scene.id == id) {
+        if self.get(id).await.is_none() {
             return Ok(false);
         }
-        let next: Vec<Scene> = scenes
-            .iter()
-            .filter(|scene| scene.id != id)
-            .cloned()
-            .collect();
-        store::write_json_async(&self.path, &next, Access::Shared).await?;
-        *scenes = next;
-        Ok(true)
+        self.scenes
+            .update(|scenes| {
+                let before = scenes.len();
+                scenes.retain(|scene| scene.id != id);
+                Ok(scenes.len() != before)
+            })
+            .await
     }
 }
 
 /// The scene as kept, or why not.
 fn checked(id: &str, name: &str, icon: &str, actions: Vec<IrAction>) -> Result<Scene, AppError> {
     if !valid_id(id) {
-        return Err(AppError::bad_request(
-            "A scene id is 1 to 32 of a-z, 0-9 and -",
+        return Err(refused(
+            Refusal::Invalid,
+            "a scene id is 1 to 32 of a-z, 0-9 and -",
         ));
     }
     let name = crate::util::name(name)?.to_string();
     if !valid_icon(icon) {
-        return Err(AppError::bad_request(
-            "An icon name is 1 to 32 of a-z and -",
+        return Err(refused(
+            Refusal::Invalid,
+            "an icon name is 1 to 32 of a-z and -",
         ));
     }
-    if actions.is_empty() || actions.len() > MAX_ACTIONS {
-        return Err(AppError::bad_request(format!(
-            "A scene holds 1 to {MAX_ACTIONS} actions"
-        )));
+    if actions.is_empty() {
+        return Err(refused(
+            Refusal::Invalid,
+            "a scene holds an action at least",
+        ));
+    }
+    if actions.len() > MAX_ACTIONS {
+        return Err(Refusal::TooManyActions.into());
     }
     if actions
         .iter()
         .any(|action| matches!(action, IrAction::Scene { .. }))
     {
-        return Err(AppError::coded(
-            StatusCode::BAD_REQUEST,
-            "nested_scene",
-            "A scene cannot run another scene",
-        ));
+        return Err(Refusal::NestedScene.into());
     }
-    ir::validate_actions(&actions).map_err(AppError::bad_request)?;
+    ir::validate_actions(&actions)?;
     Ok(Scene {
         id: id.to_string(),
         name,

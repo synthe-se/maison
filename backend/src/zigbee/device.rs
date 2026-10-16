@@ -3,13 +3,24 @@
 //! snapshot the driver shares with the manager ([`ZigbeeDevice`]).
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::time::Instant;
 
 use super::zcl::COLOR_CONTROL_CLUSTER_ID;
-use crate::lamps::LampColour;
+use crate::lamps::LampColor;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// A 16-bit id as the logs say it (`0x2e34`): node ids, clusters, profiles.
+#[derive(Debug, Clone, Copy)]
+pub struct Hex(pub u16);
+
+impl std::fmt::Display for Hex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "0x{:04x}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ZigbeeDeviceType {
     /// A controllable light (On/Off, Level Control or Color Control input clusters).
     Lamp,
@@ -25,7 +36,8 @@ pub enum ZigbeeDeviceType {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZigbeeDeviceInfo {
-    #[serde(rename = "ieeeAddress")]
+    /// Read from `ieeeAddress` too (the zigbee2mqtt-era name).
+    #[serde(alias = "ieeeAddress")]
     pub eui64: String,
     pub endpoint: Option<u8>,
     #[serde(default)]
@@ -42,30 +54,26 @@ pub struct ZigbeeDeviceInfo {
     /// Control cluster for its temperature only.
     #[serde(default)]
     pub supports_color: bool,
-    /// Kept as `isRemote`: a lamp or not is all the file needs.
-    #[serde(
-        default,
-        rename = "isRemote",
-        serialize_with = "remote_flag",
-        deserialize_with = "from_remote_flag"
-    )]
+    /// `lamp`, `remote` or `unknown`; a file from before says `isRemote: true/false`.
+    #[serde(default, alias = "isRemote", deserialize_with = "device_type_or_flag")]
     pub device_type: ZigbeeDeviceType,
 }
 
-fn remote_flag<S: Serializer>(
-    device_type: &ZigbeeDeviceType,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_bool(*device_type == ZigbeeDeviceType::Remote)
-}
-
-fn from_remote_flag<'de, D: Deserializer<'de>>(
+/// A device type as written now (`"remote"`), or as `isRemote` was (`true`: a remote, `false`:
+/// a lamp).
+fn device_type_or_flag<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<ZigbeeDeviceType, D::Error> {
-    Ok(if bool::deserialize(deserializer)? {
-        ZigbeeDeviceType::Remote
-    } else {
-        ZigbeeDeviceType::Lamp
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Kept {
+        Flag(bool),
+        Type(ZigbeeDeviceType),
+    }
+    Ok(match Kept::deserialize(deserializer)? {
+        Kept::Flag(true) => ZigbeeDeviceType::Remote,
+        Kept::Flag(false) => ZigbeeDeviceType::Lamp,
+        Kept::Type(device_type) => device_type,
     })
 }
 
@@ -101,7 +109,22 @@ pub struct Light {
     pub brightness: u8,
     /// 0 (warm) – 100 (cool).
     pub temperature: Option<u8>,
-    pub colour: LampColour,
+    pub color: LampColor,
+}
+
+/// Whether a lamp reports its light by itself (ZCL attribute reporting, asked at its
+/// interview): one that does says it is alive every few minutes, and needs no ping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reporting {
+    /// Not asked (yet).
+    #[default]
+    Unknown,
+    /// Asked; its answer has not come.
+    Asked,
+    /// It said yes for its On/Off: a report at least every [`super::zcl::REPORT_MAX_INTERVAL_S`].
+    Configured,
+    /// It said no (or could not be asked): pinged as before.
+    Refused,
 }
 
 /// A device as the driver shares it with the manager.
@@ -153,6 +176,8 @@ pub struct DiscoveredDevice {
     /// Failed availability ping cycles in a row: drives the check's backoff; reset by any
     /// answer.
     pub failed_ping_cycles: u32,
+    /// Whether it reports by itself (then it is only pinged when its reports stop).
+    pub reporting: Reporting,
 }
 
 impl DiscoveredDevice {
@@ -173,6 +198,7 @@ impl DiscoveredDevice {
             },
             last_discovery_at: None,
             failed_ping_cycles: 0,
+            reporting: Reporting::Unknown,
         }
     }
 
@@ -299,23 +325,34 @@ mod tests {
     }
 
     #[test]
-    fn the_file_keeps_the_same_fields_as_before() {
+    fn the_file_is_written_camel_case_and_old_files_still_read() {
         let json = serde_json::to_value(hue_lamp()).unwrap();
-        assert_eq!(json["ieeeAddress"], "4b:8e:c6:08:01:88:17:00");
+        assert_eq!(json["eui64"], "4b:8e:c6:08:01:88:17:00");
         assert_eq!(json["inputClusters"], serde_json::json!([0, 6, 8, 768]));
-        assert_eq!(json["isRemote"], false);
+        assert_eq!(json["deviceType"], "lamp");
         assert_eq!(json["supportsColor"], true);
+        assert!(crate::util::casing_offences(&json).is_empty(), "{json}");
         let kept: ZigbeeDeviceInfo = serde_json::from_value(json).unwrap();
         assert_eq!(kept, hue_lamp());
 
-        // a record from before the colour field: still read
+        // a record from before: its old names, and no colour field
         let old = serde_json::json!({"ieeeAddress": "aa", "endpoint": 1, "model": null, "manufacturer": null,
             "supportsBrightness": true, "supportsTemperature": false, "colorTempMin": null, "isRemote": true});
         let old: ZigbeeDeviceInfo = serde_json::from_value(old).unwrap();
         assert_eq!(
-            (old.device_type, old.supports_color),
-            (ZigbeeDeviceType::Remote, false)
+            (old.eui64.as_str(), old.device_type, old.supports_color),
+            ("aa", ZigbeeDeviceType::Remote, false)
         );
+        let lamp: ZigbeeDeviceInfo =
+            serde_json::from_value(serde_json::json!({"ieeeAddress": "bb", "isRemote": false}))
+                .unwrap();
+        assert_eq!(lamp.device_type, ZigbeeDeviceType::Lamp);
+    }
+
+    #[test]
+    fn ids_are_said_in_hex() {
+        assert_eq!(Hex(0x2e34).to_string(), "0x2e34");
+        assert_eq!(Hex(6).to_string(), "0x0006");
     }
 
     #[test]

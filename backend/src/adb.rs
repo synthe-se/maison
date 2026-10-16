@@ -40,7 +40,10 @@ use tokio::{
 use axum::body::Bytes;
 use futures::{Stream, StreamExt};
 
-use crate::{error::AppError, net::unreachable};
+use crate::{
+    error::{AppError, Refusal},
+    net::unreachable,
+};
 
 const A_CNXN: u32 = 0x4e58_4e43;
 const A_AUTH: u32 = 0x4854_5541;
@@ -115,15 +118,26 @@ fn wire_length(length: usize) -> Result<u32, AppError> {
         .ok_or_else(|| protocol_error("ADB payload larger than the negotiated max"))
 }
 
+/// The box said something ADB does not (or a dropped connection): unreachable, the detail
+/// in the log.
 fn protocol_error(message: impl Into<String>) -> AppError {
-    AppError::service_unavailable(message.into())
+    unreachable(BOX, message.into())
 }
+
+/// Our own failure (a key that cannot be made or read): the detail in the log.
+fn internal(what: &str, error: impl std::fmt::Display) -> AppError {
+    tracing::error!(%error, "{what}");
+    Refusal::Internal.into()
+}
+
+/// How errors name the box to the client.
+const BOX: &str = "Android TV box";
 
 async fn write_message(stream: &mut TcpStream, message: Message) -> Result<(), AppError> {
     timeout(IO_TIMEOUT, stream.write_all(&message.encode()?))
         .await
-        .map_err(|_| protocol_error("timed out writing to the ADB device"))??;
-    Ok(())
+        .map_err(|_| protocol_error("timed out writing to the ADB device"))?
+        .map_err(|error| unreachable(BOX, error))
 }
 
 async fn read_message(stream: &mut TcpStream) -> Result<Message, AppError> {
@@ -137,7 +151,8 @@ async fn read_message_within(
     let mut header = [0u8; 24];
     timeout(budget, stream.read_exact(&mut header))
         .await
-        .map_err(|_| protocol_error("timed out reading from the ADB device"))??;
+        .map_err(|_| protocol_error("timed out reading from the ADB device"))?
+        .map_err(|error| unreachable(BOX, error))?;
 
     let word = |index: usize| {
         u32::from_le_bytes([
@@ -160,7 +175,8 @@ async fn read_message_within(
     if length > 0 {
         timeout(IO_TIMEOUT, stream.read_exact(&mut payload))
             .await
-            .map_err(|_| protocol_error("timed out reading an ADB payload"))??;
+            .map_err(|_| protocol_error("timed out reading an ADB payload"))?
+            .map_err(|error| unreachable(BOX, error))?;
     }
 
     Ok(Message::new(command, word(4), word(8), payload))
@@ -170,18 +186,18 @@ async fn read_message_within(
 /// callers must run this off the async runtime and persist the result.
 pub fn generate_key() -> Result<RsaPrivateKey, AppError> {
     RsaPrivateKey::new(&mut rand::rng(), RSA_BITS as usize)
-        .map_err(|error| protocol_error(format!("could not generate an ADB key: {error}")))
+        .map_err(|error| internal("could not generate an ADB key", error))
 }
 
 pub fn encode_key(key: &RsaPrivateKey) -> Result<Vec<u8>, AppError> {
     key.to_pkcs8_der()
         .map(|der| der.as_bytes().to_vec())
-        .map_err(|error| protocol_error(format!("could not serialize the ADB key: {error}")))
+        .map_err(|error| internal("could not serialize the ADB key", error))
 }
 
 pub fn decode_key(der: &[u8]) -> Result<RsaPrivateKey, AppError> {
     RsaPrivateKey::from_pkcs8_der(der)
-        .map_err(|error| protocol_error(format!("could not read the ADB key: {error}")))
+        .map_err(|error| internal("could not read the ADB key", error))
 }
 
 /// Android's own public-key encoding, which is neither PKCS#1 nor SPKI: a
@@ -275,7 +291,7 @@ impl AdbKey {
                 .map(|signature| signature.to_vec())
         })
         .await?
-        .map_err(|error| protocol_error(format!("could not sign the ADB token: {error}")))
+        .map_err(|error| internal("could not sign the ADB token", error))
     }
 
     /// The public key as `adbd` stores it, computed off the runtime too (once per box).
@@ -301,13 +317,8 @@ impl AdbDevice {
     pub async fn connect(address: &str, key: &AdbKey) -> Result<Self, AppError> {
         let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
             .await
-            .map_err(|_| {
-                unreachable(
-                    "Android TV box",
-                    format!("ADB connect to {address} timed out"),
-                )
-            })?
-            .map_err(|error| unreachable("Android TV box", error))?;
+            .map_err(|_| unreachable(BOX, format!("ADB connect to {address} timed out")))?
+            .map_err(|error| unreachable(BOX, error))?;
         let mut device = Self {
             stream,
             next_local_id: 1,
@@ -369,8 +380,10 @@ impl AdbDevice {
                         .await?;
                         offered_key = true;
                     } else {
-                        return Err(protocol_error(
-                            "ADB authorisation refused — accept the prompt on the TV screen",
+                        // not a fault of the network: the box does not trust this host yet
+                        return Err(crate::util::refused(
+                            Refusal::NotConfigured,
+                            "ADB authorisation refused: accept the prompt on the TV screen",
                         ));
                     }
                 }
@@ -672,7 +685,11 @@ mod tests {
         });
         let mut stream = TcpStream::connect(address).await.expect("connect");
         let error = read_message(&mut stream).await.unwrap_err();
-        assert!(error.to_string().contains("larger than"), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "device_unreachable: Device unreachable",
+            "the detail in the log"
+        );
     }
 
     #[tokio::test]
@@ -683,7 +700,11 @@ mod tests {
             .expect("connect");
         assert_eq!(device.shell("x").await.expect("shell"), "abcdef");
         let error = device.shell_capped("x", 4).await.unwrap_err();
-        assert!(error.to_string().contains("too much"), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "device_unreachable: Device unreachable",
+            "the detail in the log"
+        );
     }
 
     #[test]
@@ -749,6 +770,24 @@ mod tests {
         assert_eq!(n0.wrapping_mul(n0inv), u32::MAX);
     }
 
+    /// The backend's own key (`ADB_KEY_PATH`), which the box already allows: made the way
+    /// the backend makes it when there is none yet.
+    fn live_key() -> AdbKey {
+        let path = crate::config::Config::from_env().adb_key_path;
+        AdbKey::new(
+            crate::store::load_or_create_secret(
+                &path,
+                |der| decode_key(der).ok(),
+                || {
+                    let key = generate_key()?;
+                    let der = encode_key(&key)?;
+                    Ok((key, der))
+                },
+            )
+            .expect("the backend's ADB key"),
+        )
+    }
+
     /// Real handshake against the box. Ignored by default: it needs the
     /// hardware and, on a first run with a fresh key, someone to accept the
     /// prompt on the television.
@@ -757,16 +796,7 @@ mod tests {
     async fn live_handshake_against_the_box() {
         let address =
             std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.153:5555".to_string());
-        let key_path = std::path::PathBuf::from("/tmp/maison-adb-test.key");
-
-        let key = AdbKey::new(match std::fs::read(&key_path) {
-            Ok(der) => decode_key(&der).expect("stored key"),
-            Err(_) => {
-                let key = generate_key().expect("generate");
-                std::fs::write(&key_path, encode_key(&key).expect("encode")).expect("persist");
-                key
-            }
-        });
+        let key = live_key();
 
         let mut device = AdbDevice::connect(&address, &key)
             .await
@@ -786,9 +816,7 @@ mod tests {
     async fn live_push_round_trip() {
         let address =
             std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.153:5555".to_string());
-        let key = AdbKey::new(
-            decode_key(&std::fs::read("/tmp/maison-adb-test.key").expect("key file")).expect("key"),
-        );
+        let key = live_key();
 
         let mut device = AdbDevice::connect(&address, &key).await.expect("connect");
         let payload = b"maison sync check";
@@ -807,7 +835,10 @@ mod tests {
             .shell("cat /data/local/tmp/maison-sync-check")
             .await
             .expect("cat");
-        let _ = shell.shell("rm -f /data/local/tmp/maison-sync-check").await;
+        shell
+            .shell("rm -f /data/local/tmp/maison-sync-check")
+            .await
+            .expect("removed");
 
         assert_eq!(read_back.trim(), String::from_utf8_lossy(payload));
     }

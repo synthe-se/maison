@@ -18,10 +18,11 @@ use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use super::{
-    callbacks::{drain_callbacks, on_callback},
+    callbacks::{on_callback, DriverEvent},
     context::EzspContext,
+    device::Hex,
     error::DriverError,
-    zcl::format_eui64,
+    zcl::eui64_text,
 };
 
 /// Primary ZLL channels (11, 15, 20, 25), scanned first.
@@ -36,6 +37,9 @@ const ZLL_MASTER_KEY: [u8; 16] = [
 /// ZLL InitialSecurityState bitmask: reserved per the EZSP documentation.
 const ZLL_SECURITY_KEY_BITMASK: u32 = 0;
 const TOUCHLINK_SCAN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a lamp told to join may take to be heard joining (the safety net: its join is
+/// what is waited for).
+const TOUCHLINK_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Touchlink tells proximity by RSSI: the strongest signal there is.
 const TOUCHLINK_TX_POWER: i8 = 20;
 
@@ -127,7 +131,9 @@ async fn scan(context: &mut EzspContext) -> Result<Vec<TouchlinkFoundNetwork>, D
         let deadline = Instant::now() + TOUCHLINK_SCAN_TIMEOUT;
         while context.touchlink.in_progress {
             tokio::select! {
-                Some(callback) = context.callbacks_rx.recv() => on_callback(context, callback).await,
+                Some(callback) = context.callbacks_rx.recv() => {
+                    on_callback(context, callback).await?;
+                }
                 _ = tokio::time::sleep_until(deadline) => break,
             }
         }
@@ -150,12 +156,13 @@ async fn scan(context: &mut EzspContext) -> Result<Vec<TouchlinkFoundNetwork>, D
     Ok(std::mem::take(&mut context.touchlink.found))
 }
 
-/// Tells one lamp found to join our network, then gives it time to (its joins and announce
-/// are handled as they come).
+/// Tells one lamp found to join our network, then waits until it is heard joining (or
+/// announcing itself), [`TOUCHLINK_JOIN_TIMEOUT`] at most; every callback meanwhile is
+/// handled as usual.
 async fn commission(context: &mut EzspContext, index: usize, lamp: &TouchlinkFoundNetwork) {
-    let eui64 = format_eui64(lamp.network_info.eui64().into_array());
+    let eui64 = eui64_text(lamp.network_info.eui64().into_array());
     info!(index, %eui64, rssi = lamp.rssi, device_id = ?lamp.device_id, endpoint = ?lamp.device_endpoint, "touchlink: commissioning ZLL device (JoinTarget)");
-    match context
+    let sent = context
         .connection
         .network_ops(
             lamp.network_info.clone(),
@@ -163,15 +170,33 @@ async fn commission(context: &mut EzspContext, index: usize, lamp: &TouchlinkFou
             TOUCHLINK_TX_POWER,
         )
         .await
-    {
-        Ok(()) => {
-            info!(%eui64, "touchlink: JoinTarget command sent successfully — device should join the network");
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            if let Err(error) = drain_callbacks(context).await {
-                warn!(%error, "callback after a Touchlink join");
+        .map_err(DriverError::ezsp("ZLL JoinTarget"));
+    if !context.note(lamp.network_info.node_id(), "touchlink JoinTarget", sent) {
+        return;
+    }
+    info!(%eui64, "touchlink: JoinTarget sent — waiting for the device to join");
+    let deadline = Instant::now() + TOUCHLINK_JOIN_TIMEOUT;
+    loop {
+        tokio::select! {
+            Some(callback) = context.callbacks_rx.recv() => match on_callback(context, callback).await {
+                Ok(Some(
+                    DriverEvent::DeviceJoined { eui64: joined, .. }
+                    | DriverEvent::DeviceAnnounced { eui64: joined, .. },
+                )) if joined == eui64 => {
+                    info!(%eui64, "touchlink: device joined");
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    context.note(lamp.network_info.node_id(), "callback after a Touchlink join", Err(error));
+                    return;
+                }
+            },
+            _ = tokio::time::sleep_until(deadline) => {
+                warn!(%eui64, "touchlink: no join heard in {TOUCHLINK_JOIN_TIMEOUT:?}");
+                return;
             }
         }
-        Err(error) => warn!(%eui64, %error, "touchlink: JoinTarget failed for device"),
     }
 }
 
@@ -182,8 +207,8 @@ pub fn handle_zll_callback(context: &mut EzspContext, handler: ZllHandler) {
             let network = found.network_info();
             let (device_endpoint, device_id) = match found.device_info() {
                 Some(info) => {
-                    info!(endpoint = info.endpoint_id(), profile_id = format_args!("0x{:04x}", info.profile_id()),
-                        device_id = format_args!("0x{:04x}", info.device_id()), device_eui64 = %format_eui64(info.ieee_address().into_array()),
+                    info!(endpoint = info.endpoint_id(), profile_id = %Hex(info.profile_id()),
+                        device_id = %Hex(info.device_id()), device_eui64 = %eui64_text(info.ieee_address().into_array()),
                         "touchlink: device info available");
                     (Some(info.endpoint_id()), Some(info.device_id()))
                 }
@@ -192,7 +217,7 @@ pub fn handle_zll_callback(context: &mut EzspContext, handler: ZllHandler) {
                     (None, None)
                 }
             };
-            info!(eui64 = %format_eui64(network.eui64().into_array()), rssi = found.last_hop_rssi(), node_id = format_args!("0x{:04x}", network.node_id()),
+            info!(eui64 = %eui64_text(network.eui64().into_array()), rssi = found.last_hop_rssi(), node_id = %Hex(network.node_id()),
                 number_sub_devices = network.number_sub_devices(), "touchlink: ZLL device found during scan");
             context.touchlink.found.push(TouchlinkFoundNetwork {
                 network_info: network.clone(),
@@ -207,12 +232,12 @@ pub fn handle_zll_callback(context: &mut EzspContext, handler: ZllHandler) {
         }
         ZllHandler::AddressAssignment(assignment) => {
             info!(
-                node_id = format_args!("0x{:04x}", assignment.address_info().node_id_()),
+                node_id = %Hex(assignment.address_info().node_id_()),
                 "touchlink: address assignment received"
             );
         }
         ZllHandler::TouchLinkTarget(target) => {
-            info!(eui64 = %format_eui64(target.network_info().eui64().into_array()),
+            info!(eui64 = %eui64_text(target.network_info().eui64().into_array()),
                 "touchlink: TouchLinkTarget callback (we are being touchlinked by another device)");
         }
     }

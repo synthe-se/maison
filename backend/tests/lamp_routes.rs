@@ -55,7 +55,7 @@ async fn both_families_answer_with_the_same_shapes() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
         body,
-        json!({"success": false, "error": "Zigbee lamp not found"})
+        json!({"success": false, "error": "Not found", "code": "not_found"})
     );
     let (status, body) = send(
         &app,
@@ -66,7 +66,7 @@ async fn both_families_answer_with_the_same_shapes() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-    assert_eq!(body["error"], "Hue lamp not found");
+    assert_eq!(body["code"], "not_found");
 
     let (status, _) = send(
         &app,
@@ -144,7 +144,7 @@ async fn commands_to_an_unknown_zigbee_lamp_are_404() {
             let (status, answer) =
                 send(&app, Method::POST, &path, Some(&member), Some(body.clone())).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {answer}");
-            assert_eq!(answer["error"], "Zigbee lamp not found");
+            assert_eq!(answer["code"], "not_found");
         }
     }
     let (status, answer) = send(

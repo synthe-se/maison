@@ -60,20 +60,3 @@ async fn status_is_consistent_with_power() {
         assert!(status.volume.is_none());
     }
 }
-
-#[tokio::test]
-async fn ambilight_topology_matches_a_three_sided_set() {
-    let _guard = common::serial().lock().await;
-    let manager = manager();
-    if manager.power().await != TvPower::On {
-        eprintln!("skipping: TV is not on");
-        return;
-    }
-    let topology = manager
-        .ambilight_topology()
-        .await
-        .expect("Ambilight topology should read");
-    // 55PUS6753: 4 left, 8 top, 4 right, no bottom strip.
-    assert_eq!(topology.get("bottom").and_then(|v| v.as_u64()), Some(0));
-    assert!(topology.get("top").and_then(|v| v.as_u64()).unwrap_or(0) > 0);
-}

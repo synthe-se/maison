@@ -16,9 +16,12 @@ mod common;
 
 use std::{env, time::Duration};
 
-use maison_backend::matter::{CoverCommand, CoverView, MatterManager};
+use maison_backend::matter::{Cover, CoverCommand, MatterManager};
 
-async fn settle(manager: &MatterManager, id: &str) -> CoverView {
+/// The house's place is never searched here.
+const NO_GEOCODING: &str = "http://127.0.0.1:9";
+
+async fn settle(manager: &MatterManager, id: &str) -> Cover {
     // A simulated cover jumps to its target; a real motor takes its travel
     // time, so poll until it reports itself stopped.
     for _ in 0..60 {
@@ -47,8 +50,8 @@ async fn commission_drive_and_remove() {
     let test_roots = env::var("MATTER_TEST_ROOTS").is_ok_and(|v| v == "1");
     let state_dir = common::temp_root("maison-matter-live");
     let trust_dir = common::workspace_root().join("matter-trust");
-    let manager =
-        MatterManager::with_paths(&state_dir, &trust_dir, test_roots).expect("manager builds");
+    let manager = MatterManager::with_paths(&state_dir, &trust_dir, test_roots, NO_GEOCODING)
+        .expect("manager builds");
 
     let cover = manager
         .commission(&code, "Volet test")
@@ -56,7 +59,19 @@ async fn commission_drive_and_remove() {
         .expect("commissioning succeeds");
     println!("commissioned: {cover:?}");
     assert!(cover.online);
+    // the switch is followed by a subscription: the list is said without a read
+    let mut shown = manager.subscribe();
     assert_eq!(manager.list().await.len(), 1);
+    let subscribed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            shown.changed().await.expect("the manager lives");
+            if shown.borrow().first().is_some_and(|c| c.online) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(subscribed.is_ok(), "the subscription is established");
 
     manager
         .command(&cover.id, CoverCommand::Close)
@@ -95,8 +110,8 @@ async fn commission_drive_and_remove() {
 
     // State survives a restart of the manager (fabric + covers on disk).
     drop(manager);
-    let manager =
-        MatterManager::with_paths(&state_dir, &trust_dir, test_roots).expect("manager reloads");
+    let manager = MatterManager::with_paths(&state_dir, &trust_dir, test_roots, NO_GEOCODING)
+        .expect("manager reloads");
     let reloaded = manager.get(&cover.id).await.expect("reloaded status");
     assert!(reloaded.online, "CASE session re-established after reload");
     assert_eq!(reloaded.name, "Volet salon");

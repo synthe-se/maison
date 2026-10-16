@@ -11,7 +11,7 @@ use tracing::{debug, info};
 
 use super::{
     context::EzspContext,
-    device::{DiscoveredDevice, ZigbeeDeviceType},
+    device::{DiscoveredDevice, Hex, ZigbeeDeviceType},
     discovery::{
         intercept_uninterviewed, on_active_endpoints, on_device_announce, on_simple_descriptor,
         request_known_device_discovery,
@@ -22,7 +22,7 @@ use super::{
     remotes::handle_remote_command,
     touchlink::handle_zll_callback,
     zcl::{
-        apply_lamp_frame, format_eui64, hex_bytes, ACTIVE_EP_RSP_CLUSTER_ID, BASIC_CLUSTER_ID,
+        apply_lamp_frame, eui64_text, ACTIVE_EP_RSP_CLUSTER_ID, BASIC_CLUSTER_ID,
         COLOR_CONTROL_CLUSTER_ID, DEVICE_ANNCE_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID,
         ON_OFF_CLUSTER_ID, SIMPLE_DESC_RSP_CLUSTER_ID, ZDO_PROFILE_ID,
     },
@@ -37,24 +37,32 @@ pub enum DriverEvent {
     DeliveryFailed { node_id: u16 },
 }
 
-/// Every callback already queued, each handled within the command timeout (a callback may
-/// make EZSP round-trips: discovery, binding, broadcasts); a hung one is an error, the
-/// pipeline is not to be trusted.
+/// Every callback already queued ([`on_callback`] each).
 pub async fn drain_callbacks(context: &mut EzspContext) -> Result<(), DriverError> {
     while let Ok(callback) = context.callbacks_rx.try_recv() {
-        timeout(EZSP_COMMAND_TIMEOUT, on_callback(context, callback))
-            .await
-            .map_err(|_| DriverError::Timeout("EZSP callback handling"))?;
+        on_callback(context, callback).await?;
     }
     Ok(())
 }
 
-/// One callback: handled, and what it changed applied.
-pub async fn on_callback(context: &mut EzspContext, callback: Callback) {
-    context.last_activity = Instant::now();
-    if let Some(event) = handle_callback(context, callback).await {
-        apply_event(context, event).await;
-    }
+/// One callback, handled within the command timeout (a callback may make EZSP round-trips:
+/// discovery, binding, broadcasts; a hung one is an error, the pipeline is not to be
+/// trusted), what it changed applied; says what that was, for whoever waits on it.
+pub async fn on_callback(
+    context: &mut EzspContext,
+    callback: Callback,
+) -> Result<Option<DriverEvent>, DriverError> {
+    let handled = async {
+        context.last_activity = Instant::now();
+        let event = handle_callback(context, callback).await;
+        if let Some(event) = &event {
+            apply_event(context, event.clone()).await;
+        }
+        event
+    };
+    timeout(EZSP_COMMAND_TIMEOUT, handled)
+        .await
+        .map_err(|_| DriverError::Timeout("EZSP callback handling"))
 }
 
 pub async fn apply_event(context: &mut EzspContext, event: DriverEvent) {
@@ -63,11 +71,11 @@ pub async fn apply_event(context: &mut EzspContext, event: DriverEvent) {
         DriverEvent::Network(state) => context.shared.set_network(state).await,
         // join and announce churn is for the log: the device list is what the user sees
         DriverEvent::DeviceJoined { node_id, eui64 } => {
-            info!(%eui64, node_id = format_args!("{node_id:#06x}"), "zigbee device joined");
+            info!(%eui64, node_id = %Hex(node_id), "zigbee device joined");
             context.publish();
         }
         DriverEvent::DeviceAnnounced { node_id, eui64 } => {
-            info!(%eui64, node_id = format_args!("{node_id:#06x}"), "zigbee device announced");
+            info!(%eui64, node_id = %Hex(node_id), "zigbee device announced");
             context.publish();
         }
         DriverEvent::DeliveryFailed { .. } => context.publish(),
@@ -83,9 +91,9 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
             network_state_of(status.result()).map(DriverEvent::Network)
         }
         Callback::Networking(Networking::ChildJoin(join)) => {
-            let eui64 = format_eui64(join.child_eui64().into_array());
+            let eui64 = eui64_text(join.child_eui64().into_array());
             let sleepy = join.child_type() == Ok(EmberNodeType::SleepyEndDevice);
-            info!(node_id = format_args!("0x{:04x}", join.child_id()), %eui64, joining = join.joining(), child_type = ?join.child_type(), "ChildJoin callback received");
+            info!(node_id = %Hex(join.child_id()), %eui64, joining = join.joining(), child_type = ?join.child_type(), "ChildJoin callback received");
             if !join.joining() {
                 return None;
             }
@@ -97,7 +105,7 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
         Callback::Messaging(Messaging::IncomingMessage(message)) => {
             let (node_id, frame) = (message.sender(), message.aps_frame());
             let payload = message.message();
-            debug!(node_id, cluster_id = frame.cluster_id(), payload = %hex_bytes(payload), "native zigbee incoming message");
+            debug!(node_id = %Hex(node_id), cluster_id = %Hex(frame.cluster_id()), payload = %crate::util::hex(payload, " "), "native zigbee incoming message");
             handle_incoming_cluster(
                 context,
                 node_id,
@@ -114,7 +122,7 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
             let node_id = sent.index_or_destination();
             if let Some(device) = context.device_mut(node_id) {
                 if device.lost() {
-                    info!(node_id = format_args!("0x{node_id:04x}"), eui64 = %device.info.eui64, "device marked unreachable after MAC delivery failure");
+                    info!(node_id = %Hex(node_id), eui64 = %device.info.eui64, "device marked unreachable after MAC delivery failure");
                 }
             }
             Some(DriverEvent::DeliveryFailed { node_id })
@@ -141,10 +149,10 @@ async fn on_child_join(
         .device(node_id)
         .is_some_and(|device| device.interview_completed);
     if sleepy && interviewed {
-        debug!(node_id = format_args!("0x{node_id:04x}"), %eui64, "sleepy end device already interviewed — skipping re-discovery");
+        debug!(node_id = %Hex(node_id), %eui64, "sleepy end device already interviewed — skipping re-discovery");
     } else {
         if sleepy {
-            info!(node_id = format_args!("0x{node_id:04x}"), %eui64, "sleepy end device joined — attempting ZDO discovery before classifying");
+            info!(node_id = %Hex(node_id), %eui64, "sleepy end device joined — attempting ZDO discovery before classifying");
         }
         request_known_device_discovery(context, node_id).await;
     }
@@ -160,12 +168,12 @@ async fn handle_trust_center_join(
 ) -> Option<DriverEvent> {
     let status = join.status().ok()?;
     let node_id: u16 = join.new_node_id();
-    let eui64 = format_eui64(join.new_node_eui64().into_array());
+    let eui64 = eui64_text(join.new_node_eui64().into_array());
     match status {
         EmberDeviceUpdate::StandardSecuritySecuredRejoin
         | EmberDeviceUpdate::StandardSecurityUnsecuredJoin
         | EmberDeviceUpdate::StandardSecurityUnsecuredRejoin => {
-            info!(node_id = format_args!("0x{node_id:04x}"), %eui64, join_status = ?status, "TrustCenterJoin received");
+            info!(node_id = %Hex(node_id), %eui64, join_status = ?status, "TrustCenterJoin received");
             ensure_joined_device(context, node_id, eui64.clone());
             request_known_device_discovery(context, node_id).await;
             Some(DriverEvent::DeviceJoined { node_id, eui64 })
@@ -193,7 +201,7 @@ pub fn ensure_joined_device(context: &mut EzspContext, node_id: u16, eui64: Stri
                 .position(|device| device.node_id == node_id)
         });
     let Some(device) = index.map(|index| &mut context.joined_devices[index]) else {
-        info!(node_id = format_args!("0x{node_id:04x}"), %eui64, "new device added to joined list — awaiting interview");
+        info!(node_id = %Hex(node_id), %eui64, "new device added to joined list — awaiting interview");
         context
             .joined_devices
             .push(DiscoveredDevice::joined(node_id, eui64));
@@ -225,7 +233,7 @@ async fn handle_incoming_cluster(
     payload: &[u8],
 ) -> Option<DriverEvent> {
     if let Some(device) = context.device(node_id) {
-        debug!(node_id = format_args!("0x{node_id:04x}"), cluster_id = format_args!("0x{cluster_id:04x}"),
+        debug!(node_id = %Hex(node_id), cluster_id = %Hex(cluster_id),
             device_type = ?device.info.device_type, endpoint = ?device.info.endpoint, interview_completed = device.interview_completed,
             "incoming message: device state at dispatch time");
     }
@@ -245,14 +253,14 @@ async fn handle_incoming_cluster(
     if from_remote && cluster_id != DEVICE_ANNCE_CLUSTER_ID {
         if profile_id == ZDO_PROFILE_ID {
             debug!(
-                node_id = format_args!("0x{node_id:04x}"),
-                cluster_id = format_args!("0x{cluster_id:04x}"),
+                node_id = %Hex(node_id),
+                cluster_id = %Hex(cluster_id),
                 "ignoring ZDO frame from remote (not a ZCL command)"
             );
         } else {
             info!(
-                node_id = format_args!("0x{node_id:04x}"),
-                cluster_id = format_args!("0x{cluster_id:04x}"),
+                node_id = %Hex(node_id),
+                cluster_id = %Hex(cluster_id),
                 "routing incoming message to remote command handler"
             );
             handle_remote_command(context, node_id, cluster_id, payload).await;
@@ -274,7 +282,7 @@ async fn handle_incoming_cluster(
         | LEVEL_CONTROL_CLUSTER_ID
         | COLOR_CONTROL_CLUSTER_ID
         | BASIC_CLUSTER_ID => {
-            debug!(node_id = format_args!("0x{node_id:04x}"), cluster_id = format_args!("0x{cluster_id:04x}"), payload = %hex_bytes(payload), "native zigbee lamp frame");
+            debug!(node_id = %Hex(node_id), cluster_id = %Hex(cluster_id), payload = %crate::util::hex(payload, " "), "native zigbee lamp frame");
             if let Some(device) = context.device_mut(node_id) {
                 if apply_lamp_frame(device, cluster_id, payload) {
                     device.heard();
