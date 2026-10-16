@@ -440,11 +440,10 @@ done
 # cloudflared's protocol, from the .env (it no longer reads the .env itself)
 protocol="$(grep -E '^CLOUDFLARED_PROTOCOL=' "${APP_DIR}/.env" | tail -n1 | cut -d'=' -f2-)" || true
 printf 'cloudflared_protocol="%s"\n' "${protocol:-http2}" >/etc/conf.d/cloudflared-maison
-# Mosquitto never listens without the plugs-only firewall in front of it
-touch /etc/conf.d/mosquitto
-if ! grep -q '^rc_need=.*maison-mqtt-firewall' /etc/conf.d/mosquitto; then
-  printf '%s\n' 'rc_need="maison-mqtt-firewall"' >>/etc/conf.d/mosquitto
-fi
+# Mosquitto reads our configuration (the package's mosquitto.conf includes nothing: from it the
+# broker ran local only, its TLS listener never loaded), and never listens without the
+# plugs-only firewall in front of it
+printf '%s\n' 'cfgfile="/etc/mosquitto/conf.d/maison.conf"' 'rc_need="maison-mqtt-firewall"' >/etc/conf.d/mosquitto
 
 rc-update add maison-mqtt-firewall default >/dev/null 2>&1 || true
 rc-update add mosquitto default >/dev/null 2>&1 || true
