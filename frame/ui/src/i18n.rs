@@ -358,6 +358,10 @@ fn code_words(code: maison_api::codes::Code) -> Option<&'static str> {
         Code::NestedScene => k::SCENES_NESTED,
         Code::DeviceUnreachable | Code::ServiceUnreachable => k::ERROR_NETWORK,
         Code::Internal => k::ERROR_SERVER,
+        Code::UsePublicAddress => k::CODE_USE_PUBLIC_ADDRESS,
+        Code::CrossSite => k::CODE_CROSS_SITE,
+        Code::LanOnly => k::CODE_LAN_ONLY,
+        Code::TooLarge => k::CODE_TOO_LARGE,
         // no words of their own yet in i18n/messages: said by their status
         Code::NotForScreens
         | Code::BadPerson
