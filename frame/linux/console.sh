@@ -11,9 +11,11 @@ dev=$(compgen -G '/dev/cu.usbmodem*' | head -1) || { echo "no frame console" >&2
 out=$(mktemp)
 trap 'kill "$reader" 2>/dev/null || true; rm -f "$out"' EXIT
 stty -f "$dev" raw -echo 115200
-cat "$dev" >"$out" &
+# the console is open for reading before the command goes: what the frame answers waits in the
+# tty for the reader, however late it starts
+exec 3<"$dev"
+cat <&3 >"$out" &
 reader=$!
-sleep 0.5
 printf 'stty -echo; export TERM=dumb SYSTEMD_COLORS=0 SYSTEMD_PAGER=; printf "__%%s__\\n" BEGIN; %s; printf "__%%s__\\n" END\r' "$CMD" >"$dev"
 for ((i = 0; i < SECS * 4; i++)); do
 	grep -q '^__END__' <(tr -d '\r' <"$out") && break
