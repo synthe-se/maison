@@ -90,8 +90,8 @@ dependencies = [
 
 [[package]]
 name = "ashv2"
-version = "13.0.0"
-source = "git+https://github.com/uplg/ashv2/?rev=a6ab7043d7bc9924114ae22fc0abf73298645d7e#a6ab7043d7bc9924114ae22fc0abf73298645d7e"
+version = "15.0.0"
+source = "git+https://github.com/uplg/ashv2/?rev=09ecfc8474d48389a32837a57bd0dd7ef5312afe#09ecfc8474d48389a32837a57bd0dd7ef5312afe"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -1199,8 +1199,8 @@ dependencies = [
 
 [[package]]
 name = "ezsp"
-version = "17.0.0"
-source = "git+https://github.com/uplg/ezsp?rev=edec778da0e65934976913b9f6ef1663367bfac3#edec778da0e65934976913b9f6ef1663367bfac3"
+version = "19.0.0"
+source = "git+https://github.com/uplg/ezsp?rev=8945dca05145de40773f86eefe827291c2ec7bab#8945dca05145de40773f86eefe827291c2ec7bab"
 dependencies = [
  "bitflags 2.13.2",
  "const_env",

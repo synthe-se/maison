@@ -33,8 +33,8 @@ dotenvy = "0.15.7"
 # crate itself resolves through [patch.crates-io] below so both the direct
 # dependency and ashv2's internal one use the same patched source.
 # the uplg forks (main = upstream + our fixes), pinned: `cargo update` must not follow a branch
-ashv2 = { git = "https://github.com/uplg/ashv2/", rev = "a6ab7043d7bc9924114ae22fc0abf73298645d7e", version = "13.0.0", features = ["ezsp"] }
-ezsp = "17.0.0"
+ashv2 = { git = "https://github.com/uplg/ashv2/", rev = "09ecfc8474d48389a32837a57bd0dd7ef5312afe", version = "15.0.0", features = ["ezsp"] }
+ezsp = "19.0.0"
 silizium = { version = "=3.1.0", features = ["le-stream"] }
 futures = "0.3.34"
 heapless = "=0.9.3"
@@ -88,4 +88,4 @@ tempfile = "3.27.0"
 tower = "0.5.3"
 
 [patch.crates-io]
-ezsp = { git = "https://github.com/uplg/ezsp", rev = "edec778da0e65934976913b9f6ef1663367bfac3" }
+ezsp = { git = "https://github.com/uplg/ezsp", rev = "8945dca05145de40773f86eefe827291c2ec7bab" }
