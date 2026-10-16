@@ -61,6 +61,8 @@ frame/ui/
   commands.rs    gestures: target shown at once, slow after COMMAND_SLOW_MS, late past the family's limit,
                  held until the family is read again after the answer (the web app's settle),
                  one order on the wire per key (the latest waits), « Tout … » said once
+  backlight.rs   the panel dimmed after DIM_AFTER (2 min) without a finger, a quarter of its
+                 level by day, 4 % at night (the sun's side); the first touch only wakes it
   i18n.rs theme.rs   words and tokens
   sim.rs         a simulation's hands and eyes (MAISON_STDIN=1): press, slide, drag, shot
   ui/            gfx (text atlas, discs and rounded boxes, icons, pictures), icon (typed),

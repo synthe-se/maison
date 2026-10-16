@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use maison_api::paces;
 use maison_api::sun::Side;
 
+use crate::backlight::Backlight;
 use crate::client::Client;
 use crate::commands::{Commands, Toast};
 use crate::config::Config;
@@ -51,6 +52,10 @@ pub struct App {
     /// The house, or one of its pages; and when a finger last touched the panel.
     view: View,
     touched: Instant,
+    /// Dimmed while nobody uses the frame; `waking`: the finger that woke it, which does nothing
+    /// else until it lifts.
+    backlight: Backlight,
+    waking: bool,
     /// The column's height and the panel's, from the last drawing.
     content: f32,
     height: f32,
@@ -81,6 +86,8 @@ impl App {
             pressed: None,
             view: View::House,
             touched: Instant::now(),
+            backlight: Backlight::open(std::path::Path::new("/sys/class/backlight")),
+            waking: false,
             content: 0.0,
             height: 0.0,
             hits: Vec::new(),
@@ -140,6 +147,8 @@ impl App {
         self.toasts.retain(|(_, until)| now < *until);
         self.dirty |= self.toasts.len() != before;
         self.sliders.sweep(now);
+        let night = self.side == Some(Side::Dark);
+        self.backlight.idle(now, self.touched, night);
         if self.view != View::House && now.saturating_duration_since(self.touched) >= PAGE_IDLE {
             self.open(View::House);
         }
@@ -163,6 +172,7 @@ impl App {
             self.sliders.next_change(now),
             self.toasts.iter().map(|(_, until)| *until).min(),
             (self.view != View::House).then(|| self.touched + PAGE_IDLE),
+            self.backlight.next(self.touched),
         ]
         .into_iter()
         .flatten()
@@ -281,6 +291,12 @@ impl App {
 
     pub fn finger_down(&mut self, x: f32, y: f32, now: Instant) {
         self.touched = now;
+        // asleep: this finger only wakes the panel
+        if self.backlight.wake() {
+            self.waking = true;
+            self.dirty = true;
+            return;
+        }
         let under = self.under(x, y);
         self.pressed = match under {
             Under::Hit(i) | Under::Slider(i) => self.hits.get(i).map(|h| (under, h.clone())),
@@ -291,11 +307,17 @@ impl App {
     }
 
     pub fn finger_motion(&mut self, x: f32, y: f32, now: Instant) {
+        if self.waking {
+            return;
+        }
         let m = self.finger.motion(x, y, self.max_scroll(), now);
         self.meant(m, now);
     }
 
     pub fn finger_up(&mut self, x: f32, y: f32, now: Instant) {
+        if std::mem::take(&mut self.waking) {
+            return;
+        }
         // still on what it pressed, wherever the hits are now
         let under = match &self.pressed {
             Some((u, h)) if h.distance(x, y) <= REACH => *u,
@@ -520,10 +542,39 @@ mod tests {
     }
 
     #[test]
+    fn the_finger_that_wakes_the_dimmed_panel_does_nothing_else() {
+        let mut app = alone();
+        app.drawn(
+            vec![Hit {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 1280.0,
+                what: Target::Act(Act::Open(View::Tempo)),
+            }],
+            1280.0,
+            1280.0,
+        );
+        let asleep = app.touched + crate::backlight::DIM_AFTER;
+        app.tick(asleep);
+        app.finger_down(400.0, 600.0, asleep);
+        app.finger_up(400.0, 600.0, asleep + FRAME);
+        assert_eq!(app.view, View::House, "the waking tap opened nothing");
+        // awake: the next tap acts
+        app.finger_down(400.0, 600.0, asleep + FRAME * 10);
+        app.finger_up(400.0, 600.0, asleep + FRAME * 11);
+        assert_eq!(app.view, View::Tempo);
+    }
+
+    #[test]
     fn the_loop_wakes_for_a_fling_every_frame_else_when_something_turns() {
         let mut app = alone();
         let t0 = Instant::now();
-        assert_eq!(app.next_wake(t0), None, "idle: nothing to wake for");
+        assert_eq!(
+            app.next_wake(t0),
+            Some(app.touched + crate::backlight::DIM_AFTER),
+            "idle: only to dim the panel"
+        );
         app.drawn(Vec::new(), 5000.0, 1280.0);
         // a quick drag up, let go: a fling, a frame at a time
         app.finger_down(10.0, 900.0, t0);

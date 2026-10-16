@@ -183,6 +183,9 @@ What the bring-up taught, each point seen on the frame:
   (`chvt 7` waiting, cage waiting for its session). Found with the journal kept and SSH.
 - No cable, the tools go over SSH: console.sh takes the USB console when it is there, else
   `ssh root@maison-frame.local`; install, flash and journals work with the frame on the wall.
+- The panel dims after 2 minutes without a finger (a quarter of its level by day, 4 % at
+  night, by the sun's side); the first touch only wakes it, the next acts. The app writes
+  /sys/class/backlight itself: the video group may (70-maison-backlight.rules).
 - The journal is kept on userdata (`/var/log/journal`, written every 5 s): a boot that went wrong
   reads at the next one. Each boot has its own machine id (the system lives in RAM): read one with
   `journalctl -D /var/log/journal/<id>`.

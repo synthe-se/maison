@@ -512,7 +512,11 @@ mod tests {
             what: Target::Act(Act::Refresh(&[])),
         };
         assert_eq!(h.distance(30.0, 120.0), 0.0, "inside");
-        assert_eq!(h.distance(20.0, 120.0), 4.0, "just left of it: within reach");
+        assert_eq!(
+            h.distance(20.0, 120.0),
+            4.0,
+            "just left of it: within reach"
+        );
         assert!(h.distance(0.0, 0.0) > REACH);
     }
 

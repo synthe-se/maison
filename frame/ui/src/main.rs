@@ -10,6 +10,7 @@
 //! measured run); `MAISON_STDIN=1` takes a simulation's commands on stdin (sim.rs).
 
 mod app;
+mod backlight;
 mod client;
 mod commands;
 mod config;
