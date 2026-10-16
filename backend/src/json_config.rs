@@ -88,7 +88,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_is_default_set_persists_and_a_failed_save_changes_nothing() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("x.json");
         let config = JsonConfig::<Vec<u8>>::load(&path).expect("loads");
         assert!(config.get().await.is_empty());
@@ -119,7 +119,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_check_runs_on_set_update_and_load() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("x.json");
         let config = JsonConfig::<Vec<u8>>::load(&path).expect("loads");
         assert!(config.set(vec![0]).await.is_err());
@@ -142,7 +142,7 @@ mod tests {
     /// Concurrent changes all land, and the file holds the last one kept.
     #[tokio::test]
     async fn concurrent_updates_are_never_lost() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("x.json");
         let config = std::sync::Arc::new(JsonConfig::<Vec<u8>>::load(&path).expect("loads"));
         let tasks: Vec<_> = (1..=20u8)
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn a_torn_file_is_an_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("x.json");
         std::fs::write(&path, "{").expect("written");
         assert!(JsonConfig::<Vec<u8>>::load(&path).is_err());

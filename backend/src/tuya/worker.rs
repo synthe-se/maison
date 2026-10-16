@@ -304,6 +304,7 @@ impl TuyaManager {
             link.connecting = false;
             link.reconnect_attempts = 0;
         });
+        // a status not read is logged by read_status; the next read asks again
         self.read_status(device, &mut tuya, &mut rx).await.ok();
 
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
