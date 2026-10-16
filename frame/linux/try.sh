@@ -43,6 +43,8 @@ elif ! android; then
 	exit 1
 fi
 step "on Android"
+# bring-up: the USB console runs only while this file exists (rootfs autologin.conf)
+adb shell "mkdir -p /data/local/tmp/maison && touch /data/local/tmp/maison/debug-console"
 install=false flash=false
 for a in "$@"; do
 	case "$a" in --install) install=true ;; --flash) flash=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
