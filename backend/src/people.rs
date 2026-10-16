@@ -213,6 +213,7 @@ pub struct TokenInfo {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Book {
     #[serde(default)]
     people: Vec<Person>,

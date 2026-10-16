@@ -718,6 +718,7 @@ fn public_id(family: &str) -> String {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Tokens {
     /// By `hash_secret(token)`: the file holds no usable token.
     #[serde(default)]

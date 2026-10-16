@@ -88,7 +88,8 @@ fn credential_id(text: &str) -> Option<CredentialID> {
 
 /// What a stored credential says of its backup: webauthn-rs keeps it inside its credential,
 /// public only behind its « danger » feature, so it is read here, typed, and a change of that
-/// shape fails loudly (the log, and `the_backup_state_is_where_webauthn_rs_keeps_it`).
+/// shape fails loudly (the log, and `the_backup_state_is_where_webauthn_rs_keeps_it`). Its
+/// snake_case is webauthn-rs's (stored data, not our API): no `rename_all` here.
 #[derive(Deserialize)]
 struct BackedUp {
     cred: BackupState,
