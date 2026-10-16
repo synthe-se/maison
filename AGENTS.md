@@ -206,7 +206,7 @@ make deny                             # cargo deny on the backend (backend/deny.
 cd web && bun run check               # i18n, css, oxfmt --check, oxlint, svelte-check, e2e types
 cd web && bun run format              # oxfmt over web/ and e2e/ (`bun run lint`: oxlint alone)
 cd web && bun scripts/i18n.add.ts '{"key": ["français", "English"]}'   # every locale at once
-cd e2e && bun run all                 # after `cargo build` (backend and frame/ui) and `bun --cwd web run build`
+cd e2e && bun run all                 # after `cargo build` (backend and frame/ui) and `bun run --cwd web build`
 cargo check --manifest-path backend/Cargo.toml --no-default-features   # the Pi's feature set
 cargo fmt --manifest-path backend/Cargo.toml --check                    # rustfmt's defaults, kept clean
 MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_live -- --nocapture

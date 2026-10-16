@@ -28,10 +28,10 @@ backend:
 	cargo run --manifest-path backend/Cargo.toml
 
 web:
-	bun --cwd web run dev
+	bun run --cwd web dev
 
 web-build:
-	bun --cwd web run build
+	bun run --cwd web build
 
 # Former names, kept for muscle memory.
 frontend: web
@@ -46,8 +46,8 @@ test:
 	for crate in $(CRATES); do cargo clippy --manifest-path $$crate/Cargo.toml --all-targets -- -D warnings || exit 1; done
 	cargo clippy --manifest-path backend/Cargo.toml --all-targets --no-default-features -- -D warnings
 	for crate in $(CRATES); do cargo test --manifest-path $$crate/Cargo.toml || exit 1; done
-	bun --cwd web run check
-	bun --cwd web run test
+	bun run --cwd web check
+	bun run --cwd web test
 
 # What the backend depends on (backend/deny.toml); the Pi's target, then the Mac's.
 deny:

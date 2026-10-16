@@ -267,7 +267,7 @@ mod tests {
             .unwrap()
             .body;
         let e: ElectricityAnswer = serde_json::from_str::<Answer<ElectricityAnswer>>(
-            r#"{"success":true,"device":{"id":"p1","name":"Bouilloire"},"message":"ok","electricity":{"voltage":"230.0V","current":"6.5A","power":"1500.0W","raw":{"channel":0,"current":6500,"voltage":2300,"power":1500000,"config":null}}}"#,
+            r#"{"success":true,"device":{"id":"p1","name":"Bouilloire"},"message":"ok","electricity":{"voltage":"230V","current":"6.5A","power":"1500W","raw":{"channel":0,"current":6500,"voltage":2300,"power":1500000,"config":null}}}"#,
         )
         .unwrap()
         .body;
