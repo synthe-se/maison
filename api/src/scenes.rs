@@ -4,6 +4,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::remote::IrAction;
 
+/// The icons a scene may have, by the web app's icon names; another draws as the sparkles.
+pub const ICONS: [&str; 6] = ["log-out", "moon", "film", "sun", "house", "sparkles"];
+
+/// The icon a scene is drawn with.
+pub fn icon_of(scene: &Scene) -> &'static str {
+    ICONS
+        .iter()
+        .copied()
+        .find(|i| *i == scene.icon)
+        .unwrap_or("sparkles")
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Scene {

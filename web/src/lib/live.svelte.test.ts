@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { time } from './clock.svelte.ts';
-import { live, refresh, source, sources, STALE_CADENCES, type Every, type Source } from './live.svelte.ts';
+import { STALE_CADENCES } from '#lib/paces.ts';
+import { live, refresh, source, sources, type Every, type Source } from './live.svelte.ts';
 
 /** Runs `live()` the way a component would, and returns the value plus the unmount. */
 function mountSource<T, A = never>(src: Source<T, A>) {

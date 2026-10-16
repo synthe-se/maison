@@ -81,6 +81,24 @@ pub struct PositionRequest {
     pub open_percent: u8,
 }
 
+/// Which scheduled move a skip is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SunEvent {
+    /// The next sunrise opening.
+    Open,
+    /// The next sunset closing.
+    Close,
+}
+
+/// `POST /api/matter/covers/{id}/skip`: skip the next scheduled move once, or no longer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkipRequest {
+    pub event: SunEvent,
+    pub skip: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

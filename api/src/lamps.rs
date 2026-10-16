@@ -105,6 +105,35 @@ pub struct BrightnessRequest {
     pub brightness: u8,
 }
 
+/// `POST /api/{hue-lamps,zigbee/lamps}/{id}/temperature`: 0 (warm) to 100 (cool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemperatureRequest {
+    pub temperature: u8,
+}
+
+/// A rename, of a lamp or a shutter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameRequest {
+    pub name: String,
+}
+
+/// `POST /api/zigbee/lamps/{id}/color`: a CIE 1931 point.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorRequest {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// `POST /api/zigbee/lamps/{id}/effect`: the effect by its name (`candle`, `blink`…).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectRequest {
+    pub effect: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

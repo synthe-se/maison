@@ -123,13 +123,12 @@ pub struct Today {
     pub cached: bool,
 }
 
+/// A forecast's chances per color, keyed as the colors are said (`BLUE`, `WHITE`, `RED`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub struct Probabilities {
-    #[serde(rename = "BLUE")]
     pub blue: f64,
-    #[serde(rename = "WHITE")]
     pub white: f64,
-    #[serde(rename = "RED")]
     pub red: f64,
 }
 

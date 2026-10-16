@@ -24,7 +24,6 @@ axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.23.1"
 btleplug = { version = "0.13.5", optional = true }
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
-chrono-tz = "0.10.4"
 dotenvy = "0.15.7"
 # The uplg forks track upstream (PaulmannLighting) plus robustness fixes and
 # the EZSP <= v13 legacy importTransientKey wire format for the MG21 dongle.

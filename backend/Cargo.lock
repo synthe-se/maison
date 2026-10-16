@@ -2266,7 +2266,6 @@ dependencies = [
  "base64 0.23.1",
  "btleplug",
  "chrono",
- "chrono-tz",
  "dotenvy",
  "ezsp",
  "futures",

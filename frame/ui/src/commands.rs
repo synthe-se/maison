@@ -200,6 +200,15 @@ impl Commands {
 
     fn send(&mut self, order: Order, generation: u64) {
         self.on_wire.insert(order.key.clone());
+        let (key, names) = (
+            order.key.clone(),
+            order
+                .posts
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect::<Vec<_>>(),
+        );
+        let (refresh, say) = (order.refresh.clone(), order.say);
         let client = self.client.clone();
         let tx = self.tx.clone();
         let wake = self.wake.clone();
@@ -211,12 +220,10 @@ impl Commands {
                     .into_iter()
                     .map(|(name, post)| {
                         let client = client.clone();
-                        (
-                            name,
-                            std::thread::spawn(move || {
-                                client.post::<Value>(&post.path, post.body.as_ref())
-                            }),
-                        )
+                        let sent = std::thread::Builder::new()
+                            .name(format!("post {name}"))
+                            .spawn(move || client.post::<Value>(&post.path, post.body.as_ref()));
+                        (name, sent)
                     })
                     .collect();
                 let mut outcome = Outcome {
@@ -225,10 +232,13 @@ impl Commands {
                     answer: None,
                 };
                 for (name, t) in sent {
-                    match t
-                        .join()
-                        .unwrap_or_else(|_| Err(Failure::Unreadable("panicked".into())))
-                    {
+                    let answer = match t {
+                        Ok(t) => t
+                            .join()
+                            .unwrap_or_else(|_| Err(Failure::Unreadable("panicked".into()))),
+                        Err(e) => Err(Failure::Unreadable(format!("could not start: {e}"))),
+                    };
+                    match answer {
                         Ok(v) => {
                             outcome.done.push(name);
                             outcome.answer = Some(v);
@@ -249,7 +259,20 @@ impl Commands {
                 wake();
             });
         if let Err(e) = spawned {
+            // said failed at once: the key is free again, the tile says « Pas de réponse »
             eprintln!("an order could not start: {e}");
+            let _ = self.tx.send(Done {
+                key,
+                generation,
+                outcome: Outcome {
+                    done: Vec::new(),
+                    failed: names,
+                    answer: None,
+                },
+                refresh,
+                say,
+            });
+            (self.wake)();
         }
     }
 

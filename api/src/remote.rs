@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 /// serde's `default` for flags that are on unless said otherwise.
-fn default_true() -> bool {
+pub fn default_true() -> bool {
     true
 }
 

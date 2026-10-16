@@ -2,6 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The cookie a paired screen holds: `__Host-` over HTTPS (Secure), else plain (e2e on http).
+pub const COOKIE: &str = "maison_screen";
+pub const COOKIE_SECURE: &str = "__Host-maison_screen";
+
 /// A pairing, as the screen shows it: its code, the secret it claims with (kept in memory, never
 /// in an address), how long it waits and how often it asks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

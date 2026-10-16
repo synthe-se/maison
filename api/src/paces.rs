@@ -1,8 +1,8 @@
 //! How often each value is read again, said once for every reader, in milliseconds: the wall
 //! frame's native app reads these, the web app imports them from `web/src/lib/paces.ts`,
-//! generated from this table (`cargo run --manifest-path api/Cargo.toml --bin paces-ts >
-//! web/src/lib/paces.ts`; a test refuses a module out of step). The families the frame does
-//! not read yet keep theirs in their `data.ts`.
+//! generated from this table (`cargo run --manifest-path api/Cargo.toml --bin shared-ts paces >
+//! web/src/lib/paces.ts`; a test refuses a module out of step). Times a gesture may take and
+//! a toast stays are here too: the same « how long » for every reader.
 
 use crate::matter::Covers;
 use crate::sun::NextSun;
@@ -47,10 +47,58 @@ paces! {
     /// Signed out (a wall screen waiting to be paired), the sun's side alone, this often: it
     /// knows no hours.
     SUN_SIGNED_OUT_MS = 10 * 60_000;
+    /// Never later than this, whatever the server says of the sun.
+    SUN_MAX_MS = 24 * 60 * 60_000;
+    /// The cats' devices (Tuya): their list.
+    TUYA_DEVICES_MS = 10_000;
+    /// The feeder's status.
+    FEEDER_MS = 15_000;
+    /// The fountain's status.
+    FOUNTAIN_MS = 10_000;
+    /// The litter box's status.
+    LITTER_BOX_MS = 15_000;
+    /// The rabbit's status.
+    NABAZTAG_MS = 120_000;
+    /// While the IR blaster is searched for, how often its list is read again.
+    BROADLINK_SEARCH_MS = 4_000;
+    /// How long a search for the IR blaster lasts.
+    BROADLINK_SEARCH_FOR_MS = 120_000;
+    /// The last climate order (only Maison changes it).
+    CLIMATE_STATE_MS = 60_000;
+    /// The remote's recent keys, while a key is being captured.
+    IR_CAPTURE_MS = 1_000;
+    /// The TV and the box: as slowly as the TV allows (JointSPACE dies of being asked).
+    TV_MS = 60_000;
+    /// The Zigbee network's pairing window while it is open (its countdown), and closed.
+    ZIGBEE_PAIRING_OPEN_MS = 1_000;
+    ZIGBEE_PAIRING_CLOSED_MS = 10_000;
+    /// A value read late this many times its pace is said to be old (a count, not a time).
+    STALE_CADENCES = 3;
+    /// The scenes change only from their editor, which reads them again (the web app never
+    /// polls them); a wall screen has no editor: it reads them again this often.
+    SCENES_MS = 60 * 60_000;
+    /// A gesture with no answer after this says it is slow (« Allumage… »).
+    COMMAND_SLOW_MS = 1_000;
+    /// How long a lamp may take to answer before « Pas de réponse ».
+    LAMP_LIMIT_MS = 3_000;
+    /// How long a plug may take.
+    PLUG_LIMIT_MS = 5_000;
+    /// How long the TV may take (its IR power and the box's wake).
+    TV_LIMIT_MS = 30_000;
+    /// How long any other device may take.
+    DEVICE_LIMIT_MS = 10_000;
+    /// A live slider sends at most this often while it moves.
+    SLIDER_THROTTLE_MS = 300;
+    /// A slider let go holds its value this long against an older reading.
+    SLIDER_HOLD_MS = 3_000;
+    /// How long a toast stays.
+    TOAST_MS = 5_000;
+    /// How long a toast with an action stays (time to reach it).
+    ACTION_TOAST_MS = 10_000;
+    /// A warning stays until dismissed on a page; on a wall screen, which nobody dismisses, this
+    /// long.
+    WALL_WARNING_MS = 10_000;
 }
-
-/// The scenes change only from their editor, which reads them again: never polled.
-pub const SCENES_MS: Option<u64> = None;
 
 /// The shutters' pace from what was last read.
 pub fn shutters(read: Option<&Covers>) -> u64 {
@@ -64,12 +112,18 @@ pub fn shutters(read: Option<&Covers>) -> u64 {
 /// How long until the sun's next event, and a little after; an hour when it says nothing.
 /// `now_ms`: since the epoch (the web app's `untilSun`, from the same constants).
 pub fn until_sun(sun: Option<&NextSun>, now_ms: i64) -> u64 {
-    let next = [sun.and_then(|s| s.sunrise_ms), sun.and_then(|s| s.sunset_ms)]
-        .into_iter()
-        .flatten()
-        .min();
+    let next = [
+        sun.and_then(|s| s.sunrise_ms),
+        sun.and_then(|s| s.sunset_ms),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
     match next {
-        Some(next) => (next - now_ms + SUN_AFTER_MS as i64).max(SUN_MIN_MS as i64) as u64,
+        Some(next) => next
+            .saturating_sub(now_ms)
+            .saturating_add(SUN_AFTER_MS as i64)
+            .clamp(SUN_MIN_MS as i64, SUN_MAX_MS as i64) as u64,
         None => NO_SUN_MS,
     }
 }
@@ -77,7 +131,7 @@ pub fn until_sun(sun: Option<&NextSun>, now_ms: i64) -> u64 {
 /// The web app's module, as `web/src/lib/paces.ts` holds it.
 pub fn typescript() -> String {
     let mut ts = String::from(
-        "// Generated from api/src/paces.rs (`cargo run --manifest-path api/Cargo.toml --bin paces-ts >\n\
+        "// Generated from api/src/paces.rs (`cargo run --manifest-path api/Cargo.toml --bin shared-ts paces >\n\
          // web/src/lib/paces.ts`): never edited. How often each value is read again, in milliseconds,\n\
          // said once for the web app and the wall frame.\n",
     );
@@ -126,6 +180,13 @@ mod tests {
         };
         assert_eq!(until_sun(Some(&nothing), 0), NO_SUN_MS);
         assert_eq!(until_sun(None, 0), 3_600_000);
+        // a server's absurd figure is bounded both ways
+        let far = NextSun {
+            sunrise_ms: Some(i64::MAX),
+            sunset_ms: None,
+            side: None,
+        };
+        assert_eq!(until_sun(Some(&far), i64::MIN), SUN_MAX_MS);
     }
 
     #[test]
@@ -165,8 +226,11 @@ mod tests {
         assert_eq!(
             include_str!("../../web/src/lib/paces.ts"),
             typescript(),
-            "web/src/lib/paces.ts is out of step: cargo run --manifest-path api/Cargo.toml --bin paces-ts > web/src/lib/paces.ts"
+            "web/src/lib/paces.ts is out of step: cargo run --manifest-path api/Cargo.toml --bin shared-ts paces > web/src/lib/paces.ts"
         );
-        assert!(ALL.iter().any(|(n, v, _)| *n == "SUN_SIGNED_OUT_MS" && *v == 600_000));
+        assert!(
+            ALL.iter()
+                .any(|(n, v, _)| *n == "SUN_SIGNED_OUT_MS" && *v == 600_000)
+        );
     }
 }

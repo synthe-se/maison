@@ -201,7 +201,8 @@ fn pair(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> 
             }
         };
         tries = 0;
-        let until = Instant::now() + Duration::from_millis(p.expires_in_ms);
+        // a server's figure, bounded: never past a day
+        let until = Instant::now() + Duration::from_millis(p.expires_in_ms.min(86_400_000));
         let code = Screen::Code {
             code: p.code.clone(),
             until,

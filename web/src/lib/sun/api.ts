@@ -3,7 +3,7 @@
 // for a page signed out (a wall screen waiting to be paired). Pure: e2e's types read it too.
 
 import { get } from '#lib/api.ts';
-import { NO_SUN_MS, SUN_AFTER_MS, SUN_MIN_MS } from '#lib/paces.ts';
+import { NO_SUN_MS, SUN_AFTER_MS, SUN_MAX_MS, SUN_MIN_MS } from '#lib/paces.ts';
 
 /** Light from sunrise to sunset at the house, dark the rest. */
 export type Side = 'light' | 'dark';
@@ -34,5 +34,5 @@ export const sunNow = () => get<{ side: Side | null }>('/sun');
  * `until_sun`). */
 export function untilSun(sun: NextSun | null | undefined, now = Date.now()): number {
 	const next = Math.min(sun?.sunriseMs ?? Infinity, sun?.sunsetMs ?? Infinity);
-	return Number.isFinite(next) ? Math.max(SUN_MIN_MS, next - now + SUN_AFTER_MS) : NO_SUN_MS;
+	return Number.isFinite(next) ? Math.min(SUN_MAX_MS, Math.max(SUN_MIN_MS, next - now + SUN_AFTER_MS)) : NO_SUN_MS;
 }

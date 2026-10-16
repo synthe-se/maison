@@ -20,6 +20,32 @@ impl<T> Answer<T> {
     }
 }
 
+/// A plain answer's words (`{success, message}`), for logs and curl: the apps say their own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    pub message: String,
+}
+
+impl Answer<Message> {
+    /// `{success: true, message}`.
+    pub fn said(message: impl Into<String>) -> Self {
+        Self::new(Message {
+            message: message.into(),
+        })
+    }
+}
+
+/// An answer about one device: `{success, device: {id, name}, message, ..body}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfDevice<T> {
+    pub device: DeviceRef,
+    pub message: String,
+    #[serde(flatten)]
+    pub body: T,
+}
+
 /// A device as the device routes name it in their answers (`device: {id, name}`), Tuya and
 /// Meross alike.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

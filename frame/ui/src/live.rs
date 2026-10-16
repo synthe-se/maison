@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 
 use crate::client::{Client, Failure};
 
+/// A value read late this many times its pace is said to be old (the web app's `STALE_CADENCES`).
+const STALE_CADENCES: u32 = maison_api::paces::STALE_CADENCES as u32;
+
 /// What a source reads.
 pub type Fetch<T> = Arc<dyn Fn(&Client) -> Result<T, Failure> + Send + Sync>;
 /// How long until it reads again, from what it last read (`None`: nothing yet, or a failure).
@@ -167,7 +170,8 @@ impl Live {
         }
         let e = &self.entries[&source.key];
         let data = e.value.clone().and_then(|v| v.downcast::<T>().ok());
-        let old = e.at.is_some_and(|at| at.elapsed() > e.pace * 3);
+        let old =
+            e.at.is_some_and(|at| at.elapsed() > e.pace.saturating_mul(STALE_CADENCES));
         let stale = data.is_some() && (old || e.failed);
         View {
             data,
@@ -258,7 +262,7 @@ impl Live {
         self.entries
             .values()
             .filter(|e| e.poke.is_some() && !e.failed)
-            .filter_map(|e| Some(e.at? + e.pace * 3))
+            .filter_map(|e| e.at?.checked_add(e.pace.saturating_mul(STALE_CADENCES)))
             .filter(|t| *t > Instant::now())
             .min()
     }

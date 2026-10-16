@@ -37,6 +37,9 @@ use crate::config::Config;
 use crate::ui::gfx::{Draw, Error, Gfx};
 use crate::ui::paint::{Ctx, paint};
 
+/// Drawings failed in a row before the app gives up (systemd starts it again).
+const MAX_FAILURES: u32 = 20;
+
 /// The threads' word that something came; one in the queue at a time.
 struct Wake;
 
@@ -148,8 +151,12 @@ fn run() -> Result<(), Error> {
     let sender = events.event_sender();
     let flag = pending.clone();
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-        if !flag.swap(true, Ordering::AcqRel) {
-            let _ = sender.push_custom_event(Wake);
+        // one word in the queue at a time; one that could not be queued lets the next one try
+        if !flag.swap(true, Ordering::AcqRel)
+            && let Err(e) = sender.push_custom_event(Wake)
+        {
+            flag.store(false, Ordering::Release);
+            eprintln!("the loop could not be woken: {e}");
         }
     });
     let commands = simulated.then(|| sim::listen(wake.clone()));
@@ -159,6 +166,10 @@ fn run() -> Result<(), Error> {
     let mut pump = sdl.event_pump()?;
     let mut turned: Option<Texture> = None;
     let mut drawings = 0_u64;
+    // a drawing that failed is tried again a little later; past this many in a row, the app ends
+    // (systemd starts it again): the renderer is lost
+    let mut failures = 0_u32;
+    let mut retry: Option<Instant> = None;
     let mut stats = Stats::new();
 
     loop {
@@ -166,7 +177,8 @@ fn run() -> Result<(), Error> {
         let first_event = if app.dirty {
             None
         } else {
-            match app.next_wake(now).map(|t| t.saturating_duration_since(now)) {
+            let next = [app.next_wake(now), retry].into_iter().flatten().min();
+            match next.map(|t| t.saturating_duration_since(now)) {
                 Some(t) => pump.wait_event_timeout(t),
                 None => Some(pump.wait_event()),
             }
@@ -229,6 +241,10 @@ fn run() -> Result<(), Error> {
             }
         }
         let now = Instant::now();
+        if retry.is_some_and(|t| now >= t) {
+            retry = None;
+            app.dirty = true;
+        }
         app.tick(now);
         if !app.dirty {
             continue;
@@ -249,36 +265,56 @@ fn run() -> Result<(), Error> {
             height: hf,
             scroll: app.scroll,
         };
-        let drawn = if config.rotate {
-            if turned.is_none() {
-                let mut t = creator.create_texture_target(None, w, h)?;
-                t.set_blend_mode(sdl3::render::BlendMode::None);
-                turned = Some(t);
-            }
-            let target = turned.as_mut().expect("just made");
-            let mut out = None;
-            canvas.with_texture_canvas(target, |c: &mut Canvas<Window>| {
+        let mut draw = || -> Result<ui::paint::Drawn, Error> {
+            let drawn = if config.rotate {
+                if turned.is_none() {
+                    let mut t = creator.create_texture_target(None, w, h)?;
+                    t.set_blend_mode(sdl3::render::BlendMode::None);
+                    turned = Some(t);
+                }
+                let target = turned.as_mut().expect("just made");
+                let mut out = None;
+                canvas.with_texture_canvas(target, |c: &mut Canvas<Window>| {
+                    let mut d = Draw {
+                        canvas: c,
+                        gfx: &mut gfx,
+                    };
+                    out = Some(paint(&mut d, &ctx, &screen, &toasts).map_err(|e| e.to_string()));
+                })?;
+                let drawn = out.ok_or("nothing drawn")??;
+                canvas.copy_ex(target, None, None, 180.0, None, false, false)?;
+                drawn
+            } else {
                 let mut d = Draw {
-                    canvas: c,
+                    canvas: &mut canvas,
                     gfx: &mut gfx,
                 };
-                out = Some(paint(&mut d, &ctx, &screen, &toasts).map_err(|e| e.to_string()));
-            })?;
-            let drawn = out.ok_or("nothing drawn")??;
-            canvas.copy_ex(target, None, None, 180.0, None, false, false)?;
-            drawn
-        } else {
-            let mut d = Draw {
-                canvas: &mut canvas,
-                gfx: &mut gfx,
+                paint(&mut d, &ctx, &screen, &toasts)?
             };
-            paint(&mut d, &ctx, &screen, &toasts)?
+            if let Some(path) = shot.take() {
+                save_png(&canvas, &path)?;
+                println!("shot {path}");
+            }
+            canvas.present();
+            Ok(drawn)
         };
-        if let Some(path) = shot.take() {
-            save_png(&canvas, &path)?;
-            println!("shot {path}");
-        }
-        canvas.present();
+        let drawn = match draw() {
+            Ok(d) => {
+                failures = 0;
+                d
+            }
+            Err(e) => {
+                failures += 1;
+                eprintln!("a drawing failed ({failures} in a row): {e}");
+                if failures >= MAX_FAILURES {
+                    return Err(e);
+                }
+                // the turned picture's texture is made again, the drawing tried in a second
+                turned = None;
+                retry = Some(Instant::now() + Duration::from_secs(1));
+                continue;
+            }
+        };
         app.drawn(drawn.hits, drawn.content, hf);
         if simulated {
             let now_said = match &screen {

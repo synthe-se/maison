@@ -48,7 +48,7 @@ fn millis(d: std::time::Duration) -> u64 {
 }
 
 fn too_many(retry_after_s: u64) -> AppError {
-    Refusal::TooManyAttempts { retry_after_s }.into()
+    AppError::too_many(retry_after_s)
 }
 
 fn screen_cookie(

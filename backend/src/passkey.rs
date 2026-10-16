@@ -18,7 +18,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use webauthn_rs::prelude::{
     DiscoverableAuthentication, PasskeyRegistration, Url, Uuid, Webauthn, WebauthnBuilder,
 };
@@ -41,129 +41,8 @@ pub const INVITE_DAYS: i64 = 7;
 
 // ---------- refusals ----------
 
-/// What the app says when it refuses, by name (the web app words each one).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    NotSignedIn,
-    Forbidden,
-    BadName,
-    /// A person's id that is not a slug (lowercase letters, digits, dashes).
-    BadPerson,
-    PasskeyOff,
-    InviteInvalid,
-    CeremonyExpired,
-    PasskeyRejected,
-    UnknownPasskey,
-    PasskeyExists,
-    LastPasskey,
-    NotFound,
-    /// Adding a passkey from a session wants a passkey sign-in in the last minutes.
-    ReauthNeeded,
-    /// An invitation by name for a name someone already has.
-    PersonExists,
-    /// No screen waits with this pairing code (mistyped, or its ten minutes are over).
-    PairingUnknown,
-    /// A screen waits with this code, but on another network than the admin's.
-    PairingElsewhere,
-    /// A screen, or an app's token, already has this name.
-    ScreenExists,
-    TooManyAttempts {
-        retry_after_s: u64,
-    },
-}
-
-impl From<Refusal> for AppError {
-    fn from(r: Refusal) -> Self {
-        // no 401 but for « not signed in »: the web app reads a 401 as a session that ended
-        let (status, code, message) = match r {
-            Refusal::NotSignedIn => (StatusCode::UNAUTHORIZED, "not_signed_in", "Not signed in"),
-            Refusal::Forbidden => (
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "Admin privileges required",
-            ),
-            Refusal::BadName => (
-                StatusCode::BAD_REQUEST,
-                "bad_name",
-                "A name, 60 characters at most",
-            ),
-            Refusal::BadPerson => (
-                StatusCode::BAD_REQUEST,
-                "bad_person",
-                "A person's id: lowercase letters, digits and dashes",
-            ),
-            Refusal::PasskeyOff => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "passkey_off",
-                "Passkeys need PUBLIC_URL (https)",
-            ),
-            Refusal::InviteInvalid => (
-                StatusCode::NOT_FOUND,
-                "invite_invalid",
-                "This invitation is no longer valid",
-            ),
-            Refusal::CeremonyExpired => (
-                StatusCode::BAD_REQUEST,
-                "ceremony_expired",
-                "Too late: start again",
-            ),
-            Refusal::PasskeyRejected => (
-                StatusCode::BAD_REQUEST,
-                "passkey_rejected",
-                "Passkey not accepted",
-            ),
-            Refusal::UnknownPasskey => {
-                (StatusCode::NOT_FOUND, "unknown_passkey", "Unknown passkey")
-            }
-            Refusal::PasskeyExists => (
-                StatusCode::CONFLICT,
-                "passkey_exists",
-                "Passkey already registered",
-            ),
-            Refusal::LastPasskey => (
-                StatusCode::CONFLICT,
-                "last_passkey",
-                "The last passkey stays",
-            ),
-            Refusal::NotFound => (StatusCode::NOT_FOUND, "not_found", "Not found"),
-            Refusal::ReauthNeeded => (
-                StatusCode::FORBIDDEN,
-                "reauth_needed",
-                "Sign in with a passkey again first",
-            ),
-            Refusal::PersonExists => (
-                StatusCode::CONFLICT,
-                "person_exists",
-                "Someone already has this name",
-            ),
-            Refusal::PairingUnknown => (
-                StatusCode::NOT_FOUND,
-                "pairing_unknown",
-                "No screen waits with this code",
-            ),
-            Refusal::PairingElsewhere => (
-                StatusCode::FORBIDDEN,
-                "pairing_elsewhere",
-                "Pair a screen from its own network",
-            ),
-            Refusal::ScreenExists => (
-                StatusCode::CONFLICT,
-                "screen_exists",
-                "A screen already has this name",
-            ),
-            Refusal::TooManyAttempts { retry_after_s } => {
-                return AppError::Coded {
-                    status: StatusCode::TOO_MANY_REQUESTS,
-                    code: "too_many_attempts",
-                    message: "Too many attempts",
-                    retry_after_s: Some(retry_after_s),
-                    detail: None,
-                };
-            }
-        };
-        AppError::coded(status, code, message)
-    }
-}
+/// The app's refusals, by name: maison-api's codes (error.rs words them as answers).
+pub use crate::error::Refusal;
 
 // ---------- state ----------
 
@@ -359,7 +238,7 @@ impl PasskeyState {
     pub fn start_allowed(&self, ip: IpAddr) -> Result<(), AppError> {
         self.starts.hit(ip).map_err(|retry_after_s| {
             tracing::warn!(%ip, "passkey ceremonies: too many started");
-            Refusal::TooManyAttempts { retry_after_s }.into()
+            AppError::too_many(retry_after_s)
         })
     }
 
@@ -371,7 +250,7 @@ impl PasskeyState {
     ) -> Result<T, AppError> {
         self.limiter.check(ip).map_err(|retry_after_s| {
             tracing::warn!(%ip, "passkey attempts: too many failures");
-            AppError::from(Refusal::TooManyAttempts { retry_after_s })
+            AppError::too_many(retry_after_s)
         })?;
         let r = f.await;
         if r.is_err() {

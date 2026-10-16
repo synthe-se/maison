@@ -9,6 +9,7 @@
 // a page): in development, live() refuses it.
 
 import { time } from '#lib/clock.svelte.ts';
+import { STALE_CADENCES } from '#lib/paces.ts';
 
 /** The poll interval in ms, or a function of the current value and of when this ask began
  * (faster while a motor runs, stopped once a search has gone on long enough); 0: no poll. */
@@ -21,9 +22,6 @@ export interface Source<T, A = never> {
 	fetch: (arg?: A) => Promise<T>;
 	every?: Every<T>;
 }
-
-/** A value read late this many times its cadence is said to be old. */
-export const STALE_CADENCES = 3;
 
 class Live<T, A = never> {
 	data = $state.raw<T | undefined>(undefined);

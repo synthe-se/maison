@@ -31,6 +31,16 @@ pub enum AppError {
     Join(#[from] tokio::task::JoinError),
 }
 
+/// The app's refusals, by name, said once in maison-api (`maison_api::codes`).
+pub use maison_api::codes::Code as Refusal;
+
+impl From<Refusal> for AppError {
+    fn from(r: Refusal) -> Self {
+        let status = StatusCode::from_u16(r.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        AppError::coded(status, r.as_str(), r.message())
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorBody {
     success: bool,
@@ -74,6 +84,26 @@ impl AppError {
                 message,
                 retry_after_s,
                 detail: Some(Box::new(value)),
+            },
+            other => other,
+        }
+    }
+
+    /// Too many tries: the app waits `retry_after_s` (sent as `Retry-After`).
+    pub fn too_many(retry_after_s: u64) -> Self {
+        match Self::from(Refusal::TooManyAttempts) {
+            Self::Coded {
+                status,
+                code,
+                message,
+                detail,
+                ..
+            } => Self::Coded {
+                status,
+                code,
+                message,
+                retry_after_s: Some(retry_after_s),
+                detail,
             },
             other => other,
         }
