@@ -40,8 +40,6 @@ export type TvKey =
 interface TvConfig {
 	host?: string | null;
 	irBlasterHost?: string | null;
-	boxHost?: string | null;
-	boxWakeApp?: string | null;
 }
 
 export interface TvVolume {
@@ -118,6 +116,8 @@ export interface AndroidApp {
 export interface AndroidTvConfig {
 	host?: string | null;
 	port?: number | null;
+	/** The app DIAL starts to wake the box (`YouTube` when unset). */
+	wakeApp?: string | null;
 	favoriteApps?: AndroidApp[];
 }
 

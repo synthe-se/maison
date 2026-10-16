@@ -1,5 +1,5 @@
 <script lang="ts">
-	// My account (Ariane's): my passkeys (PasskeyList), signing out everywhere, and for admins,
+	// My account (Ariane's): my passkeys (PasskeyList), my sessions (Sessions), signing out everywhere, and for admins,
 	// who may come in (People), the invitations (Invites) and the wall screens (Screens). What cannot be undone asks first
 	// (§ 6); when the control pressed goes with its row, the focus goes to the section's title.
 	import { m } from '#lib/paraglide/messages.js';
@@ -12,6 +12,7 @@
 	import PasskeyList from '#lib/account/PasskeyList.svelte';
 	import People from '#lib/account/People.svelte';
 	import Screens from '#lib/account/Screens.svelte';
+	import Sessions from '#lib/account/Sessions.svelte';
 
 	const admin = session.admin;
 	const g = new Gesture();
@@ -23,6 +24,7 @@
 
 <div class="sections">
 	<PasskeyList />
+	<Sessions />
 
 	<!-- a lost phone: every session ends, on every device; the passkeys stay -->
 	<Group id="everywhere-title" title={m.everywhere_title()}>

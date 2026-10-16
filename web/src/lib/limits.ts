@@ -12,7 +12,7 @@ export const SCREEN_CODE_LENGTH = 9;
 /** The code the TV shows to pair the box: six hexadecimal characters (backend atvremote.rs). */
 export const BOX_CODE_LENGTH = 6;
 
-/** Portions in one manual serving (backend routes/devices.rs `FEEDER_WARN_PORTIONS`). */
+/** Portions in one manual serving (backend tuya/feeder.rs `MAX_FEED_PORTIONS`). */
 export const FEED_MAX_PORTIONS = 12;
 
 /** Portions in one meal of the plan (backend tuya/feeder.rs `MAX_PORTIONS`). */

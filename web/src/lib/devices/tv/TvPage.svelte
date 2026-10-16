@@ -55,8 +55,7 @@
 	<Settings
 		fields={[
 			{ key: 'host', label: m.tv_host(), placeholder: ADDRESS_EXAMPLE },
-			{ key: 'irBlasterHost', label: m.tv_ir_blaster_host(), placeholder: ADDRESS_EXAMPLE },
-			{ key: 'boxHost', label: m.tv_box_host(), placeholder: ADDRESS_EXAMPLE }
+			{ key: 'irBlasterHost', label: m.tv_ir_blaster_host(), placeholder: ADDRESS_EXAMPLE }
 		]}
 		initial={{ ...tv.config }}
 		hint={tv.configured ? undefined : m.tv_configure_hint()}

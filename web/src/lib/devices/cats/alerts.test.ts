@@ -51,7 +51,7 @@ describe('tileLine', () => {
 describe('lastMeal', () => {
 	it('says the portions and when, from the feeder’s report', () => {
 		const s = {
-			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006', timestampReadable: '' } }
+			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006' } }
 		};
 		expect(lastMeal(s)).toBe(m.feeder_last_meal_value({ portions: m.feeder_portion({ count: 2 }), when: when(1773270006000) }));
 	});
@@ -59,6 +59,6 @@ describe('lastMeal', () => {
 	it('nothing without a report, or with one it cannot read', () => {
 		expect(lastMeal(undefined)).toBeNull();
 		expect(lastMeal({ history: null })).toBeNull();
-		expect(lastMeal({ history: { raw: 'C:1', parsed: { remaining: '', count: '1', timestamp: null, timestampReadable: '' } } })).toBeNull();
+		expect(lastMeal({ history: { raw: 'C:1', parsed: { remaining: '', count: '1', timestamp: null } } })).toBeNull();
 	});
 });

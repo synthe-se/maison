@@ -16,34 +16,35 @@
 	}
 </script>
 
-<!-- not a live region: the layout's two regions say each outcome once -->
-<div class="toasts">
-	{#each ui.toasts as t (t.id)}
-		<!-- svelte-ignore a11y_no_static_element_interactions: hover only pauses the timer -->
-		<div
-			class="toast"
-			class:warn={t.warn}
-			onmouseenter={() => ui.pause(t.id)}
-			onmouseleave={() => ui.resume(t.id)}
-			onfocusin={() => ui.pause(t.id)}
-			onfocusout={() => ui.resume(t.id)}
-		>
-			<p>{t.text}</p>
-			{#if t.action}
-				{@const action = t.action}
-				<button
-					class="btn"
-					id="toast-action-{t.id}"
-					onclick={(e) => {
-						const el = e.currentTarget.closest<HTMLElement>('.toast');
-						action.run();
-						leave(t.id, action, el);
-					}}>{action.label}</button
-				>
-			{/if}
-			<button class="toast-close" aria-label={m.dismiss()} onclick={(e) => leave(t.id, t.action, e.currentTarget.closest('.toast'))}>
-				<Icon name="x" />
-			</button>
-		</div>
-	{/each}
-</div>
+<!-- not a live region: the layout's two regions say each outcome once; a named region while it
+     holds some, so nothing on the page is outside a landmark -->
+{#if ui.toasts.length}<section class="toasts" aria-label={m.toasts_label()}>
+		{#each ui.toasts as t (t.id)}
+			<!-- svelte-ignore a11y_no_static_element_interactions: hover only pauses the timer -->
+			<div
+				class="toast"
+				class:warn={t.warn}
+				onmouseenter={() => ui.pause(t.id)}
+				onmouseleave={() => ui.resume(t.id)}
+				onfocusin={() => ui.pause(t.id)}
+				onfocusout={() => ui.resume(t.id)}
+			>
+				<p>{t.text}</p>
+				{#if t.action}
+					{@const action = t.action}
+					<button
+						class="btn"
+						id="toast-action-{t.id}"
+						onclick={(e) => {
+							const el = e.currentTarget.closest<HTMLElement>('.toast');
+							action.run();
+							leave(t.id, action, el);
+						}}>{action.label}</button
+					>
+				{/if}
+				<button class="toast-close" aria-label={m.dismiss()} onclick={(e) => leave(t.id, t.action, e.currentTarget.closest('.toast'))}>
+					<Icon name="x" />
+				</button>
+			</div>
+		{/each}
+	</section>{/if}

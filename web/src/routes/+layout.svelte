@@ -23,7 +23,7 @@
 	let repairing = $state(false);
 
 	// an invitation opens signed out: it is how one gets a first passkey
-	const invitation = $derived(page.url.pathname.startsWith('/invite/'));
+	const invitation = $derived(page.url.pathname === '/invite' || page.url.pathname.startsWith('/invite/'));
 
 	$effect(() => {
 		void session.verify();

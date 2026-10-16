@@ -17,14 +17,35 @@ const people = [
 	{ id: 'francia', name: 'Francia', role: 'member', passkeys: 1 }
 ];
 
+const here = {
+	id: 's-here',
+	createdMs: Date.UTC(2026, 9, 1, 8),
+	lastSeenMs: Date.now(),
+	ip: '203.0.113.7',
+	userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.0 Safari/605.1.15',
+	device: 'Mac',
+	current: true
+};
+const there = {
+	id: 's-there',
+	createdMs: Date.UTC(2026, 8, 20, 8),
+	lastSeenMs: Date.UTC(2026, 8, 28, 19),
+	ip: '198.51.100.4',
+	userAgent: 'curl/8',
+	device: '',
+	current: false
+};
+const sessionsRegion = () => page.getByRole('region', { name: m.sessions_title() });
+
 const salon = { id: 's1', name: 'Salon', createdMs: Date.UTC(2026, 9, 16), lastUsedMs: null };
 
 /** The account's backend: my passkeys, the pending invitations, the screens, and what changes them. */
 function site(more: Record<string, unknown> = {}) {
 	return stubApi({
-		'GET /passkeys': [iphone, mac],
-		'GET /invites': [pending],
-		'GET /people': people,
+		'GET /passkeys': { success: true, passkeys: [iphone, mac] },
+		'GET /invites': { success: true, invites: [pending] },
+		'GET /people': { success: true, people },
+		'GET /auth/sessions': { success: true, sessions: [here, there] },
 		'GET /screens': { success: true, screens: [salon] },
 		...passkeyRoutes(),
 		...more
@@ -130,7 +151,7 @@ describe('account page', () => {
 		await render(AccountPage);
 		await page.getByRole('button', { name: m.keys_add() }).click();
 		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.keys_added());
-		expect(say).toHaveBeenCalledWith(m.keys_reauth());
+		expect(say).toHaveBeenCalledWith(m.reauth_ask());
 		expect(api.sent('POST', '/passkeys/login/finish')).toHaveLength(1);
 	});
 
@@ -324,8 +345,82 @@ describe('account page', () => {
 	});
 
 	it('says when nobody is waiting for an invitation', async () => {
-		site({ 'GET /invites': [] });
+		site({ 'GET /invites': { success: true, invites: [] } });
 		await render(AccountPage);
 		await expect.element(page.getByText(m.invites_none())).toBeVisible();
+	});
+
+	it('lists my sessions: the device and browser in words, when opened and seen, from where; this one marked', async () => {
+		site();
+		await render(AccountPage);
+		const listed = sessionsRegion().getByRole('listitem');
+		await expect.element(listed).toHaveLength(2);
+		await expect.element(listed.nth(0).getByText('Mac · Safari')).toBeVisible();
+		await expect.element(listed.nth(0).getByText(m.sessions_this_device())).toBeVisible();
+		await expect.element(listed.nth(0).getByText(/203\.0\.113\.7/)).toBeVisible();
+		await expect.element(listed.nth(1).getByText(m.sessions_unknown_device())).toBeVisible();
+		await expect.element(listed.nth(1).getByText(m.sessions_this_device())).not.toBeInTheDocument();
+		await expect.element(listed.nth(1).getByText(new RegExp(m.sessions_since({ when: '.+' })))).toBeVisible();
+	});
+
+	it('ends another session at once; the list is read again, the focus on its title', async () => {
+		const api = site({ 'DELETE /auth/sessions/s-there': { success: true, message: 'Session ended' } });
+		await render(AccountPage);
+		await sessionsRegion()
+			.getByRole('button', { name: m.sessions_end_label({ device: m.sessions_unknown_device() }) })
+			.click();
+		await expect.poll(() => api.sent('DELETE', '/auth/sessions/s-there')).toHaveLength(1);
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.sessions_ended());
+		await expect.poll(() => api.sent('GET', '/auth/sessions').length).toBe(2);
+		await expect.element(page.getByRole('heading', { name: m.sessions_title() })).toHaveFocus();
+		expect(session.status).toBe('signed_in');
+	});
+
+	it('ending this device’s session asks first, then signs out here', async () => {
+		const api = site({ 'DELETE /auth/sessions/s-here': { success: true, message: 'Session ended' } });
+		await render(AccountPage);
+		await sessionsRegion()
+			.getByRole('button', { name: m.sessions_end_label({ device: 'Mac · Safari' }) })
+			.click();
+		const dialog = page.getByRole('alertdialog', { name: m.sessions_end_current_title() });
+		await expect.element(dialog.getByText(m.sessions_end_current_description())).toBeVisible();
+		expect(api.sent('DELETE', '/auth/sessions/s-here')).toEqual([]);
+		await dialog.getByRole('button', { name: m.sessions_end_current_action() }).click();
+		await expect.poll(() => session.status).toBe('signed_out');
+		expect(api.sent('DELETE', '/auth/sessions/s-here')).toHaveLength(1);
+	});
+
+	it('an admin signs someone out everywhere after asking; they stay listed', async () => {
+		const api = site({ 'POST /people/francia/sessions/end': { success: true, message: 'Sessions ended' } });
+		await render(AccountPage);
+		const region = page.getByRole('region', { name: m.people_title() });
+		await expect.element(region.getByRole('button', { name: m.people_end_sessions_label({ name: 'Léonard' }) })).not.toBeInTheDocument();
+		await region.getByRole('button', { name: m.people_end_sessions_label({ name: 'Francia' }) }).click();
+		const dialog = page.getByRole('alertdialog', { name: m.people_end_sessions_title({ name: 'Francia' }) });
+		await expect.element(dialog.getByText(m.people_end_sessions_description())).toBeVisible();
+		await dialog.getByRole('button', { name: m.people_end_sessions() }).click();
+		await expect.poll(() => api.sent('POST', '/people/francia/sessions/end')).toHaveLength(1);
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.people_sessions_ended({ name: 'Francia' }));
+		await expect.element(region.getByText('Francia')).toBeVisible();
+	});
+
+	it('removing someone after an old sign-in: the passkey asked, said why, then removed', async () => {
+		authenticator();
+		const say = vi.spyOn(ui, 'say');
+		const api = site({
+			'DELETE /people/francia': () =>
+				api.sent('POST', '/passkeys/login/finish').length
+					? new Response(null, { status: 204 })
+					: json({ error: 'again', code: 'reauth_needed' }, 403)
+		});
+		await render(AccountPage);
+		await page.getByRole('button', { name: m.common_remove_named({ name: 'Francia' }) }).click();
+		await page
+			.getByRole('alertdialog', { name: m.common_remove_from_maison({ name: 'Francia' }) })
+			.getByRole('button', { name: m.people_remove_action() })
+			.click();
+		await expect.poll(() => api.sent('DELETE', '/people/francia')).toHaveLength(2);
+		expect(say).toHaveBeenCalledWith(m.reauth_ask());
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.people_removed({ name: 'Francia' }));
 	});
 });

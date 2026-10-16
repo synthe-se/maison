@@ -47,7 +47,7 @@ export interface MerossElectricityResponse {
 			current: number;
 			voltage: number;
 			power: number;
-			config?: { voltageRatio: number; electricityRatio: number };
+			config: { voltageRatio: number; electricityRatio: number } | null;
 		};
 	};
 	message: string;

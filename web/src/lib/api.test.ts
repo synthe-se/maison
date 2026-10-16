@@ -166,7 +166,7 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['meross.consumption', () => merossApi.consumption('p1'), 'GET /meross/p1/consumption'],
 	['meross.dnd', () => merossApi.dnd('p1', true), 'POST /meross/p1/dnd', { enabled: true }],
 	['broadlink.discover', () => broadlinkApi.discover(), 'GET /broadlink/discover'],
-	['broadlink.discover (a new scan)', () => broadlinkApi.discover(true), 'GET /broadlink/discover?forceRefresh=true'],
+	['broadlink.rediscover (a new scan)', () => broadlinkApi.rediscover(), 'POST /broadlink/discover'],
 	['broadlink.listCodes', () => broadlinkApi.listCodes(), 'GET /broadlink/codes'],
 	['broadlink.getMitsubishiState', () => broadlinkApi.getMitsubishiState(), 'GET /broadlink/mitsubishi/state'],
 	[
@@ -184,7 +184,6 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['ir.recent', () => irApi.recent(), 'GET /ir/recent'],
 	['ir.test', () => irApi.test([]), 'POST /ir/test', { actions: [] }],
 	['nabaztag.status', () => nabaztagApi.status(), 'GET /nabaztag'],
-	['people.list', () => peopleApi.list(), 'GET /people'],
 	['people.remove', () => peopleApi.remove('alex'), 'DELETE /people/alex'],
 	['nabaztag.pushTempo (cached by default)', () => nabaztagApi.pushTempo(), 'POST /nabaztag/tempo/push', { forceRefresh: false }],
 	['tv.status', () => tvApi.status(), 'GET /tv'],

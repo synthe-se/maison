@@ -4,7 +4,7 @@
 // person, its name only.
 
 import { ApiError, UNREACHABLE, onUnauthorized } from '#lib/api.ts';
-import { authApi, signIn, type User } from '#lib/passkeys.ts';
+import { authApi, onReconfirmed, signIn, type User } from '#lib/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
 import { screensApi, takeAddress } from '#lib/screens.ts';
 
@@ -19,6 +19,12 @@ class Session {
 	constructor() {
 		// a request refused after the refresh attempt: the session is over
 		onUnauthorized(() => this.#out());
+		// a passkey asked again (a recent sign-in wanted): the session is that sign-in's now
+		onReconfirmed((user) => {
+			const same = user?.id === this.user?.id;
+			this.adopt(user);
+			return same;
+		});
 	}
 
 	async verify() {
@@ -67,6 +73,11 @@ class Session {
 	/** A lost phone: every session of mine ends, here too. */
 	async signOutEverywhere() {
 		await authApi.logoutEverywhere();
+		this.#out();
+	}
+
+	/** This browser's session was ended from the session list: its cookies are gone. */
+	ended() {
 		this.#out();
 	}
 

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { locale, switchLocale } from '#lib/i18n.svelte.ts';
 import { json, scriptFetch } from '#lib/test/fetch.ts';
+import { stubApi } from '#lib/test/api.ts';
+import { authenticator, passkeyRoutes } from '#lib/test/passkeys.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { screensApi, takeAddress } from './screens.ts';
 
@@ -53,6 +55,26 @@ describe('screensApi', () => {
 		await screensApi.claim('s3cret');
 		expect(calls[0].url).toBe('/api/screens/pairing/claim');
 		expect(JSON.parse(String(calls[0].init?.body))).toEqual({ secret: 's3cret' });
+	});
+
+	it('renews its cookie at each start with a POST (a change), never a GET', async () => {
+		const calls = scriptFetch(json({ success: true, screen: { name: 'Salon' } }));
+		expect((await screensApi.me()).screen.name).toBe('Salon');
+		expect(calls[0].url).toBe('/api/screens/me');
+		expect(calls[0].init?.method).toBe('POST');
+	});
+
+	it('pairing wants a recent passkey: asked, then sent again', async () => {
+		authenticator();
+		const api = stubApi({
+			...passkeyRoutes(),
+			'POST /screens': () =>
+				api.sent('POST', '/passkeys/login/finish').length
+					? { success: true, screen: { name: 'Salon' } }
+					: json({ error: 'again', code: 'reauth_needed' }, 403)
+		});
+		expect((await screensApi.pair('ABCD-EFGH', 'Salon')).screen.name).toBe('Salon');
+		expect(api.sent('POST', '/screens')).toHaveLength(2);
 	});
 
 	it('lists the screens an admin sees', async () => {

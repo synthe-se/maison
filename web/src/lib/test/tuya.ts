@@ -19,7 +19,7 @@ export const feederStatus = (at = Date.UTC(2026, 9, 2, 6), over: Partial<FeederS
 	system: { poweredBy: 'AC Power', ipAddress: '192.168.1.174' },
 	history: {
 		raw: `R:0 C:2 T:${Math.floor(at / 1000)}`,
-		parsed: { remaining: '0', count: '2', timestamp: String(Math.floor(at / 1000)), timestampReadable: '' }
+		parsed: { remaining: '0', count: '2', timestamp: String(Math.floor(at / 1000)) }
 	},
 	...over
 });

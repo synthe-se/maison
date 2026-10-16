@@ -8,17 +8,39 @@ import { json } from '#lib/test/fetch.ts';
 import { authenticator, leonard, passkeyRoutes } from '#lib/test/passkeys.ts';
 import InvitePage from './+page.svelte';
 
-const kit = vi.hoisted(() => ({ goto: vi.fn(async () => {}), page: { params: { token: 'tok' } } }));
+const kit = vi.hoisted(() => ({ goto: vi.fn(async () => {}), page: { url: new URL('http://localhost/invite#tok'), state: {} } }));
 vi.mock('$app/navigation', () => ({ goto: kit.goto }));
 vi.mock('$app/state', () => ({ page: kit.page }));
 
-const site = (more: Record<string, unknown> = {}) => stubApi({ 'GET /invites/tok': { name: 'Léonard' }, ...passkeyRoutes(), ...more });
+const site = (more: Record<string, unknown> = {}) =>
+	stubApi({ 'POST /invites/greet': { success: true, name: 'Léonard' }, ...passkeyRoutes(), ...more });
 const create = () => page.getByRole('button', { name: m.invite_create() });
 
 describe('invitation page', () => {
 	afterEach(() => {
 		session.status = 'loading';
 		session.user = null;
+		kit.page.url = new URL('http://localhost/invite#tok');
+	});
+
+	it('takes the token from the fragment, wipes it from the address, greets with it in a body', async () => {
+		const wipe = vi.spyOn(history, 'replaceState');
+		const api = site();
+		await render(InvitePage);
+		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_title({ name: 'Léonard' }) })).toBeVisible();
+		expect(wipe).toHaveBeenCalledWith(history.state, '', '/invite');
+		expect(api.sent('POST', '/invites/greet')[0].body).toEqual({ token: 'tok' });
+		expect(api.calls.some((c) => c.path.includes('tok'))).toBe(false);
+		wipe.mockRestore();
+	});
+
+	it('no token (a reload wiped it): the link is to be opened again, nothing asked', async () => {
+		kit.page.url = new URL('http://localhost/invite');
+		const api = site();
+		await render(InvitePage);
+		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_invalid_title() })).toBeVisible();
+		await expect.element(page.getByRole('alert')).toHaveTextContent(m.code_invite_invalid());
+		expect(api.calls).toEqual([]);
 	});
 
 	it('greets the person by name and says what a passkey is, before the system dialog', async () => {
@@ -49,7 +71,7 @@ describe('invitation page', () => {
 	});
 
 	it('a spent or unknown link says so, and offers nothing to press', async () => {
-		site({ 'GET /invites/tok': json({ error: 'x', code: 'invite_invalid' }, 404) });
+		site({ 'POST /invites/greet': json({ error: 'x', code: 'invite_invalid' }, 404) });
 		await render(InvitePage);
 		await expect.element(page.getByRole('alert')).toHaveTextContent(m.code_invite_invalid());
 		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_invalid_title() })).toBeVisible();
@@ -66,7 +88,7 @@ describe('invitation page', () => {
 	});
 
 	it('says « checking » while the link is looked up', async () => {
-		site({ 'GET /invites/tok': () => new Promise(() => {}) });
+		site({ 'POST /invites/greet': () => new Promise(() => {}) });
 		await render(InvitePage);
 		await expect.element(page.getByRole('heading', { level: 1, name: m.invite_checking() })).toBeVisible();
 	});

@@ -13,7 +13,7 @@ export const searchOver = (d: BroadlinkDiscoverResponse | undefined, since: numb
 /** The blasters; `refresh(true)` is a new scan (an admin's), which starts a new 2 min search. */
 export const blasters = source(
 	'broadlink:discover',
-	(force?: boolean) => broadlinkApi.discover(force),
+	(force?: boolean) => (force ? broadlinkApi.rediscover() : broadlinkApi.discover()),
 	(d, since) => (d?.devices.length || searchOver(d, since) ? 0 : BROADLINK_SEARCH_MS)
 );
 export const climateState = source('broadlink:climate-state', broadlinkApi.getMitsubishiState, CLIMATE_STATE_MS);
