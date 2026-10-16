@@ -9,7 +9,7 @@
 	import { longDate, separator } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending, removeRow } from '#lib/gesture.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { Draft } from '#lib/draft.svelte.ts';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
@@ -80,15 +80,11 @@
 	}
 
 	const revoke = (i: Invite) =>
-		g.run(
-			() => revokeInvite(i.id),
-			async () => {
-				ui.toast(m.invites_revoked({ name: i.name }));
-				await invites.refresh();
-				await refocus(title);
-			},
-			`revoke:${i.id}`
-		);
+		removeRow(g, `revoke:${i.id}`, () => revokeInvite(i.id), {
+			said: m.invites_revoked({ name: i.name }),
+			list: invites,
+			title: () => title
+		});
 </script>
 
 <Group id="invites-title" title={m.invites_title()} bind:heading={title}>

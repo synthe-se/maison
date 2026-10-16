@@ -6,9 +6,10 @@
 	// « Climate »). Without a blaster on the network the buttons stay, not operable, saying why.
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
+	import { Draft } from '#lib/draft.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { facts, when } from '#lib/i18n.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture, pending } from '#lib/gesture.svelte.ts';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import Group from '#lib/components/Group.svelte';
@@ -27,10 +28,11 @@
 	const remote = $derived(found.data?.devices[0]);
 	const last = $derived(stored.data?.state ?? null);
 
-	let form = $state({ ...INITIAL });
-	// once, from the first answer: re-applying the stored state later would clobber an edit
-	void stored.ready.then((r) => (form = formFrom(r.state?.settings)));
-	const command = $derived(commandOf(form));
+	const form = new Draft({ ...INITIAL });
+	// once, from the first answer, unless something was already changed: re-applying the stored
+	// state later would clobber an edit
+	void stored.ready.then((r) => !form.dirty && form.reset(formFrom(r.state?.settings)));
+	const command = $derived(commandOf(form.current));
 
 	/** Keyed by the command travelling to the unit. */
 	const sending = new Gesture();
@@ -91,7 +93,7 @@
 	<div class="tiles">
 		<DeviceTile name={m.climate_brand_name()} icon="snowflake" state={lastLine} {fact} warn={!remote && over}>
 			{#snippet settings()}
-				<ClimateForm bind:form {command} host={remote?.host} busy={sending.is()} {why} {send} />
+				<ClimateForm bind:form={form.current} {command} host={remote?.host} busy={sending.is()} {why} {send} />
 			{/snippet}
 
 			{#if !remote}
@@ -108,10 +110,10 @@
 			{/if}
 
 			<div class="btn-row">
-				<button class="btn" {...why ? unavailable(why) : pending(sending.is())} onclick={() => !why && !sending.is() && send(command)}>
+				<button class="btn" {...gate(why, sending.is())} onclick={() => !why && !sending.is() && send(command)}>
 					<Icon name="power" busy={sending.is(command)} /><span class="btn-text">{m.action_turn_on()}</span>
 				</button>
-				<button class="btn" {...why ? unavailable(why) : pending(sending.is())} onclick={() => !why && !sending.is() && send(CLIMATE_OFF)}>
+				<button class="btn" {...gate(why, sending.is())} onclick={() => !why && !sending.is() && send(CLIMATE_OFF)}>
 					<Icon name="square" busy={sending.is(CLIMATE_OFF)} /><span class="btn-text">{m.action_turn_off()}</span>
 				</button>
 			</div>

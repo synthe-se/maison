@@ -121,6 +121,13 @@ export const zigbee: LampFamily<ZigbeeLampsResponse, ZigbeeLampStatusResponse> =
 	radio: m.lamps_radio_zigbee
 };
 
+/** Why a lamp's controls (its white, its color) cannot act now: out of reach (since when), or
+ * off; '' when they can. */
+export function lampWhy(l: Lamp): string {
+	if (!l.reachable) return lampState(l);
+	return l.isOn ? '' : m.lamps_off_reason();
+}
+
 /** A lamp lit now: on, and reachable (an unreachable lamp's last state is not trusted). */
 export const isLit = (l: Lamp) => l.reachable && l.isOn;
 

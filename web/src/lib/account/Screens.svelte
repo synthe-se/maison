@@ -9,7 +9,7 @@
 	import { lifeLine } from './lines.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending, removeRow } from '#lib/gesture.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { Draft } from '#lib/draft.svelte.ts';
 	import { errorText } from '#lib/errors.ts';
@@ -69,15 +69,11 @@
 	}
 
 	const remove = (s: Screen) =>
-		g.run(
-			() => screensApi.remove(s.id),
-			async () => {
-				ui.toast(m.screens_removed({ name: s.name }));
-				await screens.refresh();
-				await refocus(title);
-			},
-			`remove:${s.id}`
-		);
+		removeRow(g, `remove:${s.id}`, () => screensApi.remove(s.id), {
+			said: m.screens_removed({ name: s.name }),
+			list: screens,
+			title: () => title
+		});
 </script>
 
 <Group id="screens-title" title={m.screens_title()} bind:heading={title}>

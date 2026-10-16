@@ -18,4 +18,11 @@ describe('Section', () => {
 		await expect.element(page.getByRole('heading', { name: 'État' })).toBeVisible();
 		expect(container.querySelector('h2 svg')).toBeNull();
 	});
+
+	it('bare, or a smaller title inside a block, its title able to take the focus', async () => {
+		const { container } = await render(Section, { title: 'Effets', tile: false, level: 3, children: text('x') });
+		const heading = page.getByRole('heading', { level: 3, name: 'Effets' });
+		await expect.element(heading).toHaveAttribute('tabindex', '-1');
+		expect(container.querySelector('section')?.classList.contains('tile')).toBe(false);
+	});
 });

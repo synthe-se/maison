@@ -1,12 +1,12 @@
 <script lang="ts">
-	// The air conditioner's settings form, unfolded in its tile (TileSettings): mode,
+	// The air conditioner's settings form, unfolded in its tile (DeviceTile `settings`): mode,
 	// temperature, fan, vane, an off timer, econo cooling, the infrared order it makes (folded,
 	// for whoever debugs), and « Envoyer ». The form belongs to the tile (`form`, bound): its
 	// order is what « Allumer » sends, settings open or not.
 	import { m } from '#lib/paraglide/messages.js';
 	import { formatMinutes } from '#lib/i18n.svelte.ts';
 	import { options } from '#lib/options.ts';
-	import { pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate } from '#lib/gesture.svelte.ts';
 	import Disclosure from '#lib/components/Disclosure.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Range from '#lib/components/Range.svelte';
@@ -100,7 +100,7 @@
 </Disclosure>
 
 <div class="actions">
-	<button class="btn primary" {...why ? unavailable(why) : pending(busy)} onclick={() => !why && !busy && send(command)}>
+	<button class="btn primary" {...gate(why, busy)} onclick={() => !why && !busy && send(command)}>
 		<Icon name="power" {busy} />{m.climate_send_structured_command()}
 	</button>
 	<button class="btn" onclick={() => (form = { ...INITIAL })}>{m.climate_reset()}</button>

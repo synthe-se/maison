@@ -3,19 +3,20 @@
 	// pointer, and the lamp's built-in effects. A lamp that is off or out of reach keeps them in
 	// place, not operable, saying why above them.
 	import { m } from '#lib/paraglide/messages.js';
+	import Section from '#lib/components/Section.svelte';
 	import { refresh } from '#lib/live.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture } from '#lib/gesture.svelte.ts';
 	import { zigbeeLampsApi, type ZigbeeLamp } from './api.ts';
 	import { css, EFFECTS, paintWheel, PRESETS, rgbToXy, STOP_EFFECT, wheelColor, wheelPosition } from './color.ts';
-	import { fromZigbee, lampState, zigbee } from './lamp.ts';
+	import { fromZigbee, lampWhy, zigbee } from './lamp.ts';
 
 	let { lamp }: { lamp: ZigbeeLamp } = $props();
 	const id = $props.id();
 
 	const g = new Gesture();
-	const why = $derived(!lamp.reachable ? lampState(fromZigbee(lamp)) : !lamp.state.isOn ? m.lamps_off_reason() : '');
+	const why = $derived(lampWhy(fromZigbee(lamp)));
 	/** What each control spreads: unavailable with its reason, else busy while an order travels. */
-	const control = $derived(why ? unavailable(`${id}-why`) : pending(g.is()));
+	const control = $derived(gate(!!why && `${id}-why`, g.is()));
 	let canvas = $state<HTMLCanvasElement | null>(null);
 	$effect(() => {
 		if (canvas) paintWheel(canvas);
@@ -59,8 +60,7 @@
 		{#if marker}<span class="marker" style:left="{marker.left * 100}%" style:top="{marker.top * 100}%"></span>{/if}
 	</div>
 
-	<section aria-labelledby="{id}-effects">
-		<h3 id="{id}-effects" class="label">{m.zigbee_lamps_effects()}</h3>
+	<Section title={m.zigbee_lamps_effects()} tile={false} level={3}>
 		<div class="actions">
 			{#each EFFECTS as eff (eff.id)}
 				<button class="btn" {...control} onclick={() => act(() => zigbeeLampsApi.effect(lamp.id, eff.id))}>{eff.name()}</button>
@@ -69,7 +69,7 @@
 				{m.zigbee_lamps_effect_stop_effect()}
 			</button>
 		</div>
-	</section>
+	</Section>
 </div>
 
 <style>
@@ -120,9 +120,5 @@
 		border: 2px solid var(--surface);
 		box-shadow: var(--shadow);
 		pointer-events: none;
-	}
-	section {
-		display: grid;
-		gap: var(--s-2);
 	}
 </style>

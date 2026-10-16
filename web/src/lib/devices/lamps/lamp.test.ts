@@ -4,7 +4,7 @@ import { json, sentBody, stubFetch } from '#lib/test/fetch.ts';
 import { hueLamp, zigbeeLamp } from '#lib/test/lamps.ts';
 import { LAMP_LIST_MS } from '#lib/paces.ts';
 import { time } from '#lib/clock.svelte.ts';
-import { fromHue, fromZigbee, hue, lampState, zigbee } from './lamp.ts';
+import { fromHue, fromZigbee, hue, lampState, lampWhy, zigbee } from './lamp.ts';
 
 describe('one lamp, whatever its radio', () => {
 	it('a Hue lamp is reachable when its Bluetooth link is up', () => {
@@ -92,5 +92,13 @@ describe('drivers', () => {
 		expect(zigbee.temperatureText(0)).toBe(m.lamps_temperature_kelvin({ kelvin: 2000, tone: m.lamps_tone_warm() }));
 		expect(zigbee.temperatureText(100)).toBe(m.lamps_temperature_kelvin({ kelvin: 6500, tone: m.lamps_tone_cool() }));
 		expect(zigbee.temperatureText(50)).toBe(m.lamps_temperature_kelvin({ kelvin: 3100, tone: m.lamps_tone_neutral() }));
+	});
+});
+
+describe('lampWhy', () => {
+	it('out of reach first, then off; nothing when it can act', () => {
+		expect(lampWhy(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })))).toBe(m.state_unreachable());
+		expect(lampWhy(fromHue(hueLamp({ state: { isOn: false } })))).toBe(m.lamps_off_reason());
+		expect(lampWhy(fromHue(hueLamp()))).toBe('');
 	});
 });

@@ -8,9 +8,7 @@
 	import { keymap as keymapData } from '#lib/devices/remote/data.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { Draft } from '#lib/draft.svelte.ts';
-	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
-	import { refocus } from '#lib/focus.ts';
+	import { Gesture, removeRow } from '#lib/gesture.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Group from '#lib/components/Group.svelte';
@@ -40,16 +38,11 @@
 
 	const g = new Gesture();
 	const remove = (code: number) =>
-		g.run(
-			() => irApi.removeBinding(code),
-			async () => {
-				ui.say(m.remote_deleted({ key: keyName(code) }));
-				await keymap.refresh();
-				// the row and its button are gone: the focus goes to the list it was in
-				await refocus(listTitle);
-			},
-			String(code)
-		);
+		removeRow(g, String(code), () => irApi.removeBinding(code), {
+			said: m.remote_deleted({ key: keyName(code) }),
+			list: keymap,
+			title: () => listTitle
+		});
 </script>
 
 <PageHead title={m.remote_title()}>

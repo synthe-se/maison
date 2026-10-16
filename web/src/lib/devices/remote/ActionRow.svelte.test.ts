@@ -35,10 +35,18 @@ describe('ActionRow', () => {
 		expect(onremove).toHaveBeenCalledOnce();
 	});
 
-	it('cannot move the first up nor the last down', async () => {
-		await row({ action: 'nabaztag', command: 'ping' }, 0, 1);
-		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 1 }) })).toBeDisabled();
-		await expect.element(page.getByRole('button', { name: m.remote_move_down({ n: 1 }) })).toBeDisabled();
+	it('cannot move the first up nor the last down, and says why (still focusable)', async () => {
+		const { onmove } = await row({ action: 'nabaztag', command: 'ping' }, 0, 1);
+		const up = page.getByRole('button', { name: m.remote_move_up({ n: 1 }) });
+		const down = page.getByRole('button', { name: m.remote_move_down({ n: 1 }) });
+		await expect.element(up).toHaveAttribute('aria-disabled', 'true');
+		await expect.element(up).toHaveAccessibleDescription(m.remote_move_first());
+		await expect.element(down).toHaveAccessibleDescription(m.remote_move_last());
+		await expect.element(up).not.toHaveAttribute('disabled');
+		// Playwright refuses to press what says it cannot act: the browser's own click
+		(up.element() as HTMLElement).click();
+		(down.element() as HTMLElement).click();
+		expect(onmove).not.toHaveBeenCalled();
 	});
 
 	it('changing the type starts a new action of that type on the first device', async () => {

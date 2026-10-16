@@ -758,6 +758,8 @@
 	"remote_missing_actions": "Ajoute au moins une action",
 	"remote_missing_code": "Choisis d’abord un code de touche",
 	"remote_move_down": "Descendre l’action {n}",
+	"remote_move_first": "Déjà la première action.",
+	"remote_move_last": "Déjà la dernière action.",
 	"remote_move_up": "Monter l’action {n}",
 	"remote_moved": "Action déplacée en position {n}",
 	"remote_new_key": "Nouvelle touche",

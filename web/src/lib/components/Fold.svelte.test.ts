@@ -7,7 +7,7 @@ import DeviceTile from './DeviceTile.svelte';
 
 const settings = html('<div><label>Adresse <input /></label></div>');
 
-describe('a tile’s settings (TileSettings)', () => {
+describe('Fold: a tile’s settings under its gear', () => {
 	it('a gear named after the device, saying whether they are open, controlling them; they exist only while open', async () => {
 		await render(DeviceTile, { name: 'TV du salon', state: 'Allumée', settings });
 		const gear = page.getByRole('button', { name: m.common_settings_of({ name: 'TV du salon' }) });

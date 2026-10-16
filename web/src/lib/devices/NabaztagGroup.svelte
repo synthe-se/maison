@@ -7,7 +7,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture } from '#lib/gesture.svelte.ts';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
@@ -50,14 +50,14 @@
 					>
 						{#snippet end(why)}
 							{@const off = !s.reachable && why}
-							<button class="btn" {...off ? unavailable(off) : pending(taichi.is())} onclick={() => s.reachable && dance()}>
+							<button class="btn" {...gate(off, taichi.is())} onclick={() => s.reachable && dance()}>
 								<Icon name="rabbit" busy={taichi.is()} />{m.nabaztag_taichi()}
 							</button>
 							<button
 								class="icon-btn"
 								aria-label={m.nabaztag_push_tempo()}
 								title={m.nabaztag_push_tempo()}
-								{...off ? unavailable(off) : pending(pushing.is())}
+								{...gate(off, pushing.is())}
 								onclick={() => s.reachable && push()}
 							>
 								<Icon name="refresh-cw" busy={pushing.is()} />

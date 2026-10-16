@@ -6,10 +6,10 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
+	import Door from '#lib/components/Door.svelte';
 	import { inviteGreeting, register, noPasskeys, type Registered } from '#lib/passkeys.ts';
 	import { errorText } from '#lib/errors.ts';
 	import { refocus } from '#lib/focus.ts';
-	import { pageTitle } from '#lib/i18n.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
 	import AuthShell from '#lib/components/AuthShell.svelte';
@@ -56,19 +56,18 @@
 	}
 </script>
 
-<svelte:head
-	><title>{pageTitle(name ? m.invite_title({ name }) : invalid ? m.invite_invalid_title() : m.invite_checking())}</title></svelte:head
->
+{#snippet done()}<p class="done" aria-hidden="true"><Icon name="check" size={28} /></p>{/snippet}
 
 <AuthShell>
-	<section class="invite" aria-labelledby="invite-title">
+	<Door
+		title={created ? m.invite_done_title() : name ? m.invite_title({ name }) : invalid ? m.invite_invalid_title() : m.invite_checking()}
+		mark={created ? done : undefined}
+		bind:heading={doneTitle}
+	>
 		{#if created}
-			<p class="done" aria-hidden="true"><Icon name="check" size={28} /></p>
-			<h1 id="invite-title" tabindex="-1" bind:this={doneTitle}>{m.invite_done_title()}</h1>
 			<p class="lead">{m.invite_done_body()}</p>
 			<button class="btn primary big" onclick={enter}>{m.invite_enter()}</button>
 		{:else if name}
-			<h1 id="invite-title" tabindex="-1">{m.invite_title({ name })}</h1>
 			<p class="lead">{m.invite_intro()}</p>
 			{#if missing}
 				<p class="banner warn" role="alert">{missing}</p>
@@ -80,23 +79,12 @@
 				<button class="btn primary big" {...pending(g.is())} onclick={create}>{g.is() ? m.pk_waiting() : m.invite_create()}</button>
 				<p class="hint">{m.pk_handshake()}</p>
 			{/if}
-		{:else if invalid}
-			<h1 id="invite-title" tabindex="-1">{m.invite_invalid_title()}</h1>
-		{:else}
-			<h1 id="invite-title" tabindex="-1">{m.invite_checking()}</h1>
 		{/if}
 		<p class="form-error" role="alert">{invalid || g.error}</p>
-	</section>
+	</Door>
 </AuthShell>
 
 <style>
-	.invite {
-		display: grid;
-		gap: var(--s-4);
-	}
-	.invite p {
-		margin: 0;
-	}
 	.why {
 		display: grid;
 		gap: var(--s-3);

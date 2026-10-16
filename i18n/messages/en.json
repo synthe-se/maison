@@ -758,6 +758,8 @@
 	"remote_missing_actions": "Add at least one action",
 	"remote_missing_code": "Pick a key code first",
 	"remote_move_down": "Move action {n} down",
+	"remote_move_first": "Already the first action.",
+	"remote_move_last": "Already the last action.",
 	"remote_move_up": "Move action {n} up",
 	"remote_moved": "Action moved to position {n}",
 	"remote_new_key": "New button",

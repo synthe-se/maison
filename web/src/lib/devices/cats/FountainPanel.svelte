@@ -15,12 +15,7 @@
 	import { fountainApi } from './api.ts';
 	import { status, TUYA } from './data.ts';
 	import { reread } from './tuya.svelte.ts';
-
-	const WATER: Record<string, () => string> = {
-		low: m.device_level_low,
-		medium: m.device_level_medium,
-		ok: m.fountain_water_level_ok
-	};
+	import { WATER_LEVEL, waterLow, wordOf } from './tokens.ts';
 	/** The device's two eco modes, by the number it takes. */
 	const ECO_MODES = ['1', '2'] as const;
 	const ECO_LABEL = { '1': m.fountain_mode1, '2': m.fountain_mode2 };
@@ -103,19 +98,14 @@
 
 	<Section title={m.fountain_status_maintenance()}>
 		<dl class="facts">
-			<StatusRow
-				icon="droplets"
-				label={m.fountain_water_level()}
-				value={s?.waterLevel ? (WATER[s.waterLevel]?.() ?? s.waterLevel) : m.common_unknown()}
-				warn={s?.waterLevel === 'low'}
-			/>
+			<StatusRow icon="droplets" label={m.fountain_water_level()} value={wordOf(WATER_LEVEL, s?.waterLevel)} warn={waterLow(s)} />
 			{#each COUNTERS as c (c.key)}
 				{#if s?.[c.field] !== undefined}
 					<StatusRow icon={c.icon} label={c.label()} value={formatMinutes(s[c.field] ?? 0)} />
 				{/if}
 			{/each}
 		</dl>
-		{#if s?.waterLevel === 'low'}<p class="warn-text">{m.fountain_add_water()}</p>{/if}
+		{#if waterLow(s)}<p class="warn-text">{m.fountain_add_water()}</p>{/if}
 		<div class="resets">
 			{#each COUNTERS as c (c.key)}
 				<ConfirmDialog

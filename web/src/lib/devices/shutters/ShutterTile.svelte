@@ -10,7 +10,7 @@
 	import { separator } from '#lib/i18n.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import type { Live } from '#lib/live.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
 	import { CONFIRM, haptic, TAP } from '#lib/haptics.ts';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
@@ -74,7 +74,7 @@
 	{#snippet children(why)}
 		{@const off = !c.online && why}
 		<div class="btn-row">
-			<button class="btn" {...off ? unavailable(off) : pending(g.is('move'))} onclick={() => c.online && act(() => shuttersApi.open(c.id))}>
+			<button class="btn" {...gate(off, g.is('move'))} onclick={() => c.online && act(() => shuttersApi.open(c.id))}>
 				<Icon name="arrow-up" /><span class="btn-text">{m.shutters_open_action()}</span>
 			</button>
 			<!-- Stop always goes, even while another order travels -->
@@ -86,11 +86,7 @@
 			>
 				<Icon name="square" /><span class="btn-text">{m.common_stop()}</span>
 			</button>
-			<button
-				class="btn"
-				{...off ? unavailable(off) : pending(g.is('move'))}
-				onclick={() => c.online && act(() => shuttersApi.close(c.id))}
-			>
+			<button class="btn" {...gate(off, g.is('move'))} onclick={() => c.online && act(() => shuttersApi.close(c.id))}>
 				<Icon name="arrow-down" /><span class="btn-text">{m.shutters_close_action()}</span>
 			</button>
 		</div>

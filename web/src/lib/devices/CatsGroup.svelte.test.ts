@@ -7,6 +7,7 @@ import type { Device } from '#lib/devices/cats/api.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { deferred, stubApi } from '#lib/test/api.ts';
 import CatsGroup from './CatsGroup.svelte';
+import { STANDBY } from '#lib/devices/cats/tokens.ts';
 
 const feeder = tuyaDevice();
 const fountain: Device = { id: 'w1', name: 'Fontaine', type: 'fountain', connected: false };
@@ -81,7 +82,7 @@ describe('CatsGroup', () => {
 			'/devices/l1/litter-box/status': {
 				success: true,
 				device: litter,
-				parsedStatus: { sensors: { litterLevel: 'half' }, system: { state: 'satnd_by' } },
+				parsedStatus: { sensors: { litterLevel: 'half' }, system: { state: STANDBY } },
 				message: ''
 			}
 		});
@@ -94,7 +95,7 @@ describe('CatsGroup', () => {
 		api.routes['/devices/l1/litter-box/status'] = {
 			success: true,
 			device: litter,
-			parsedStatus: { sensors: { litterLevel: 'full' }, system: { state: 'satnd_by' } },
+			parsedStatus: { sensors: { litterLevel: 'full' }, system: { state: STANDBY } },
 			message: ''
 		};
 		await (await import('#lib/live.svelte.ts')).refresh('tuya:');

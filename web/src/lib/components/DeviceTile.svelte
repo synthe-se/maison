@@ -5,13 +5,12 @@
 	// one control below. Unreachable (§ 4), the gesture stays where it is, said unavailable
 	// with its reason (the state line), rather than vanishing.
 	import type { Snippet } from 'svelte';
-	import { Collapsible } from 'bits-ui';
 	import { m } from '#lib/paraglide/messages.js';
 	import { separator } from '#lib/i18n.svelte.ts';
 	import type { Command } from '#lib/command.svelte.ts';
 	import { unavailable } from '#lib/gesture.svelte.ts';
 	import Icon, { type IconName } from './Icon.svelte';
-	import TileSettings from './TileSettings.svelte';
+	import Fold, { type FoldPanel, type FoldTrigger } from './Fold.svelte';
 
 	interface Props {
 		name: string;
@@ -39,7 +38,8 @@
 		 * that cannot act is described by (`unavailable(why)`, § 4). */
 		end?: Snippet<[why: string]>;
 		children?: Snippet<[why: string]>;
-		/** The tile's settings, under a gear at the end of the head row (TileSettings). */
+		/** The tile's settings, unfolded inside it under a gear at the end of the head row (Fold:
+		 * closed while the focus is in them, the focus goes back to the gear). */
 		settings?: Snippet;
 		settingsOpen?: boolean;
 		/** The state line's id, when controls outside the tile are described by it (a page's pad). */
@@ -68,7 +68,6 @@
 	const id = $props.id();
 	// svelte-ignore state_referenced_locally (an id, fixed for the tile's life)
 	const why = stateId ?? `${id}-state`;
-	let gear = $state<HTMLElement | null>(null);
 	const shown = $derived(command && on !== undefined ? command.shown(on) : on);
 	const line = $derived(
 		command?.late ? m.command_no_answer_short() : command?.slow ? (command.target ? m.command_turning_on() : m.command_turning_off()) : said
@@ -76,14 +75,16 @@
 </script>
 
 {#if settings}
-	<Collapsible.Root bind:open={settingsOpen}>
-		{#snippet child()}{@render tile()}{/snippet}
-	</Collapsible.Root>
+	<Fold bind:open={settingsOpen}>
+		{#snippet children(trigger, panel)}{@render tile(trigger, panel)}{/snippet}
+	</Fold>
 {:else}
 	{@render tile()}
 {/if}
 
-{#snippet tile()}
+{#snippet gearIcon()}<Icon name="settings-2" />{/snippet}
+
+{#snippet tile(trigger?: Snippet<[FoldTrigger]>, panel?: Snippet<[FoldPanel]>)}
 	<article class="tile" aria-labelledby="{id}-name">
 		<div class="tile-head">
 			{#if ontoggle && on !== undefined}
@@ -120,16 +121,12 @@
 				<div class="end">
 					{#if fact}<span class="fact">{fact}</span>{/if}
 					{@render end?.(why)}
-					{#if settings}
-						<Collapsible.Trigger class="icon-btn" aria-label={m.common_settings_of({ name })} bind:ref={gear}>
-							<Icon name="settings-2" />
-						</Collapsible.Trigger>
-					{/if}
+					{@render trigger?.({ class: 'icon-btn', label: m.common_settings_of({ name }), body: gearIcon })}
 				</div>
 			{/if}
 		</div>
 		{@render children?.(why)}
-		{#if settings}<TileSettings open={settingsOpen} trigger={() => gear}>{@render settings()}</TileSettings>{/if}
+		{#if settings}{@render panel?.({ class: 'inset tile-settings', body: settings })}{/if}
 	</article>
 {/snippet}
 
@@ -208,6 +205,9 @@
 	.tile-link:focus-visible::after {
 		outline: var(--focus-ring);
 		outline-offset: var(--focus-offset);
+	}
+	:global(.tile-settings) {
+		gap: var(--s-4);
 	}
 	/* « Réessayer » sits above the link's area */
 	.retry {

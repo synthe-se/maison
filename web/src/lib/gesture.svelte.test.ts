@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { ApiError } from './api.ts';
-import { Gesture, pending, unavailable } from './gesture.svelte.ts';
+import { Gesture, gate, pending, removeRow, unavailable } from './gesture.svelte.ts';
 import { ui } from './ui.svelte.ts';
 
 describe('Gesture', () => {
@@ -110,5 +110,28 @@ describe('the attributes of a control', () => {
 		expect(unavailable('tile-state')).toEqual({ 'aria-disabled': 'true', 'aria-describedby': 'tile-state' });
 		expect(unavailable(false)).toEqual({});
 		expect(unavailable(undefined)).toEqual({});
+	});
+
+	it('gate: unavailable while a reason stands, else busy while it travels', () => {
+		expect(gate('tile-state', true)).toEqual({ 'aria-disabled': 'true', 'aria-describedby': 'tile-state' });
+		expect(gate(false, true)).toEqual({ 'aria-disabled': 'true', 'aria-busy': 'true' });
+		expect(gate(undefined, false)).toEqual({});
+	});
+});
+
+describe('removeRow', () => {
+	it('sends, says it, reads the list again, then puts the focus on the list’s title', async () => {
+		const title = document.createElement('h2');
+		document.body.append(title);
+		const list = { refresh: vi.fn(async () => {}) };
+		const send = vi.fn(async () => {});
+		const g = new Gesture();
+		await removeRow(g, 'remove:a', send, { said: 'Retiré', list, title: () => title });
+		expect(send).toHaveBeenCalledOnce();
+		expect(list.refresh).toHaveBeenCalledOnce();
+		expect(ui.toasts.at(-1)?.text).toBe('Retiré');
+		expect(document.activeElement).toBe(title);
+		title.remove();
+		ui.toasts = [];
 	});
 });

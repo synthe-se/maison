@@ -4,7 +4,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { clock } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture } from '#lib/gesture.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Range from '#lib/components/Range.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
@@ -18,13 +18,7 @@
 	import DeviceTabs from './DeviceTabs.svelte';
 	import MealPlanManager from './MealPlanManager.svelte';
 	import Offline from './Offline.svelte';
-
-	/** What the backend says powers it (backend tuya/parse.rs); « Mode 7 », « Unknown » as said. */
-	const POWER: Record<string, () => string> = {
-		'AC Power': m.feeder_power_mains,
-		Battery: m.feeder_power_battery,
-		Unknown: m.common_unknown
-	};
+	import { FEEDER_POWER, wordOf } from './tokens.ts';
 
 	/** `device`: what the page knows of it (its connection); without it, taken as connected. */
 	let { id, device }: { id: string; device?: Pick<Device, 'id' | 'name' | 'connected'> } = $props();
@@ -52,7 +46,7 @@
 				oncommit={(v) => (portions = v)}
 			/>
 			<!-- a stable button: its words say the wait, the focus stays on it -->
-			<button class="btn primary wide" {...offline ? unavailable(`${uid}-offline`) : pending(g.is())} onclick={() => !offline && serve()}>
+			<button class="btn primary wide" {...gate(offline && `${uid}-offline`, g.is())} onclick={() => !offline && serve()}>
 				<Icon name="utensils" busy={g.is()} />{g.is() ? m.feeder_distributing() : m.feeder_distribute({ count: portions })}
 			</button>
 			{#if offline && device}<Offline {device} id="{uid}-offline" reason={m.cats_offline_reason()} />{/if}
@@ -64,7 +58,7 @@
 				{#if s}
 					<dl class="facts">
 						{#if s.system?.poweredBy}
-							<StatusRow icon="plug" label={m.feeder_power_source()} value={POWER[s.system.poweredBy]?.() ?? s.system.poweredBy} />
+							<StatusRow icon="plug" label={m.feeder_power_source()} value={wordOf(FEEDER_POWER, s.system.poweredBy)} />
 						{/if}
 						<StatusRow icon="clock" label={m.feeder_last_meal()} value={meal ?? m.common_unknown()} />
 					</dl>

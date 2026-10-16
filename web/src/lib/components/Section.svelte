@@ -1,22 +1,39 @@
 <script lang="ts">
-	// One block of a device page: its h2, then its rows (`ul.settings` of SettingRow,
-	// `dl.facts` of StatusRow) and actions. Every cat device page is a column of these.
+	// One block of a device page: its title, then its rows (`ul.settings` of SettingRow,
+	// `dl.facts` of StatusRow) and actions. Every device page is a column of these: framed as a
+	// tile, or bare (`tile={false}`: the lamp's details under its tile); an h2, or an h3 inside a
+	// block (`level={3}`). The title is where the focus can go back to (`bind:heading`).
 	import type { Snippet } from 'svelte';
 	import Icon, { type IconName } from './Icon.svelte';
 
-	let { title, icon, children }: { title: string; icon?: IconName; children: Snippet } = $props();
+	interface Props {
+		title: string;
+		icon?: IconName;
+		tile?: boolean;
+		level?: 2 | 3;
+		heading?: HTMLElement;
+		children: Snippet;
+	}
+	let { title, icon, tile = true, level = 2, heading = $bindable(), children }: Props = $props();
 	const id = $props.id();
 </script>
 
-<section class="tile section" aria-labelledby={id}>
-	<h2 class="group-title" {id}>
+<section class="section" class:tile aria-labelledby={id}>
+	<svelte:element this={`h${level}`} class={level === 2 ? 'group-title' : 'label'} {id} tabindex="-1" bind:this={heading}>
 		{#if icon}<Icon name={icon} />{/if}{title}
-	</h2>
+	</svelte:element>
 	{@render children()}
 </section>
 
 <style>
-	.section h2 {
+	.section {
+		display: grid;
+		gap: var(--s-3);
+	}
+	.section.tile {
+		gap: var(--s-4);
+	}
+	.section > :first-child {
 		display: flex;
 		align-items: center;
 		gap: var(--s-2);

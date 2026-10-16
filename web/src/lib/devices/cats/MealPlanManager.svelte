@@ -8,7 +8,7 @@
 	import { hhmm } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture, pending } from '#lib/gesture.svelte.ts';
 	import { refocus, sectionHeading } from '#lib/focus.ts';
 	import { Draft } from '#lib/draft.svelte.ts';
 	import Sheet from '#lib/components/Sheet.svelte';
@@ -87,12 +87,7 @@
 <div class="meals">
 	<div class="head">
 		<p class="hint">{m.meal_plan_count({ count: plan.length })}</p>
-		<button
-			class="btn"
-			bind:this={addButton}
-			{...full ? unavailable(`${uid}-full`) : pending(g.is())}
-			onclick={() => !full && !g.is() && edit('new')}
-		>
+		<button class="btn" bind:this={addButton} {...gate(full && `${uid}-full`, g.is())} onclick={() => !full && !g.is() && edit('new')}>
 			<Icon name="plus" />{m.meal_plan_add_meal()}
 		</button>
 	</div>

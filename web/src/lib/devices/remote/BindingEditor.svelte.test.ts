@@ -137,13 +137,17 @@ describe('BindingEditor', () => {
 		await expect.element(commands().nth(1)).toHaveValue('a');
 		await expect.element(page.getByRole('button', { name: m.remote_move_down({ n: 2 }) })).toHaveFocus();
 		expect(say).toHaveBeenCalledWith(m.remote_moved({ n: 2 }));
-		// to the end: the focus goes to the arrow still usable
+		// to the end: the focus stays on its arrow, which now says it cannot, and does nothing
 		await page.getByRole('button', { name: m.remote_move_down({ n: 2 }) }).click();
 		await expect.element(commands().nth(2)).toHaveValue('a');
-		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 3 }) })).toHaveFocus();
+		const last = page.getByRole('button', { name: m.remote_move_down({ n: 3 }) });
+		await expect.element(last).toHaveFocus();
+		await expect.element(last).toHaveAccessibleDescription(m.remote_move_last());
+		(last.element() as HTMLElement).click();
+		await expect.element(commands().nth(2)).toHaveValue('a');
 		await page.getByRole('button', { name: m.remote_move_up({ n: 2 }) }).click();
 		await expect.element(commands().nth(0)).toHaveValue('c');
-		await expect.element(page.getByRole('button', { name: m.remote_move_down({ n: 1 }) })).toHaveFocus();
+		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 1 }) })).toHaveFocus();
 		await page.getByRole('button', { name: m.remote_move_up({ n: 3 }) }).click();
 		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 2 }) })).toHaveFocus();
 		await expect.element(commands().nth(1)).toHaveValue('a');

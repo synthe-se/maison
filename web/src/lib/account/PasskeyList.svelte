@@ -7,7 +7,7 @@
 	import { lifeLine } from './lines.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending, removeRow } from '#lib/gesture.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import Group from '#lib/components/Group.svelte';
@@ -40,15 +40,7 @@
 		);
 
 	const remove = (k: PasskeyInfo) =>
-		g.run(
-			() => removePasskey(k.id),
-			async () => {
-				ui.toast(m.keys_removed());
-				await keys.refresh();
-				await refocus(title);
-			},
-			`remove:${k.id}`
-		);
+		removeRow(g, `remove:${k.id}`, () => removePasskey(k.id), { said: m.keys_removed(), list: keys, title: () => title });
 </script>
 
 <Group id="keys-title" title={m.keys_title()} bind:heading={title}>
