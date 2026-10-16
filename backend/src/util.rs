@@ -155,3 +155,95 @@ mod tests {
         );
     }
 }
+
+/// `base` doubled per `attempt` (from 0), `max` at most: a reconnect's wait.
+pub fn capped_backoff(
+    base: std::time::Duration,
+    attempt: u32,
+    max: std::time::Duration,
+) -> std::time::Duration {
+    base.saturating_mul(2u32.saturating_pow(attempt)).min(max)
+}
+
+/// A std mutex's guard, even after a panic while it was held: what it guards stays usable
+/// (a poisoned lock would otherwise panic every caller after the first).
+pub fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The coded refusal `code`, with why in the log (the app words the code, the reason is the
+/// owner's).
+pub fn refused(
+    code: crate::error::Refusal,
+    reason: impl std::fmt::Display,
+) -> crate::error::AppError {
+    tracing::info!(code = code.as_str(), %reason, "refused");
+    code.into()
+}
+
+/// `HH:MM` as minutes since midnight (`00:00` to `23:59`).
+pub fn minutes_of_day(value: &str) -> Option<u16> {
+    let (hours, minutes) = value.split_once(':')?;
+    let digits = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(hours) || !digits(minutes) {
+        return None;
+    }
+    let (hours, minutes) = (hours.parse::<u16>().ok()?, minutes.parse::<u16>().ok()?);
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+}
+
+#[cfg(test)]
+mod appended_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn backoff_doubles_up_to_its_cap() {
+        let (base, max) = (Duration::from_secs(1), Duration::from_secs(30));
+        let waits: Vec<u64> = (0..7)
+            .map(|n| capped_backoff(base, n, max).as_secs())
+            .collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
+        assert_eq!(capped_backoff(base, u32::MAX, max), max, "no overflow");
+    }
+
+    #[test]
+    fn a_poisoned_lock_still_opens() {
+        let mutex = std::sync::Arc::new(std::sync::Mutex::new(1));
+        let held = mutex.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap();
+            panic!("poisons");
+        })
+        .join();
+        assert!(mutex.is_poisoned());
+        *lock(&mutex) += 1;
+        assert_eq!(*lock(&mutex), 2);
+    }
+
+    #[test]
+    fn clock_times_read_as_minutes() {
+        assert_eq!(minutes_of_day("00:00"), Some(0));
+        assert_eq!(minutes_of_day("07:30"), Some(450));
+        assert_eq!(minutes_of_day("23:59"), Some(1439));
+        for bad in [
+            "24:00", "12:60", "7:30", "07:3", "0730", "aa:bb", "-1:00", "07:30 ",
+        ] {
+            assert_eq!(minutes_of_day(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_code() {
+        let error = refused(crate::error::Refusal::Invalid, "why");
+        assert!(matches!(
+            error,
+            crate::error::AppError::Coded {
+                code: "invalid",
+                ..
+            }
+        ));
+    }
+}

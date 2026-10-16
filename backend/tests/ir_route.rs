@@ -43,18 +43,20 @@ async fn an_unset_machine_token_is_a_plain_401() {
         ir_api_token: None,
         ..common::isolated_config("maison-ir-off")
     });
-    let (status, body) = post_key(
+    let unset = post_key(
         &app,
         Some(common::TEST_IR_TOKEN),
         json!({"code": 1, "value": 1}),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        body["error"],
-        json!("Invalid machine token"),
-        "nothing about the setup"
-    );
+    assert_eq!(unset.0, StatusCode::UNAUTHORIZED);
+    let wrong = post_key(
+        &test_app(None),
+        Some("wrong-token"),
+        json!({"code": 1, "value": 1}),
+    )
+    .await;
+    assert_eq!(unset, wrong, "nothing about the setup");
 }
 
 #[tokio::test]
@@ -199,33 +201,30 @@ async fn shutters_hue_lamps_and_the_ac_are_actions() {
         &app,
         Method::POST,
         "/api/ir/test",
-        Some(json!({ "actions": actions })),
+        Some(json!({ "actions": actions.clone() })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["message"], json!("0/6 actions ok"));
-    let results: Vec<&str> = body["results"]
-        .as_array()
-        .unwrap()
+    let results = body["results"].as_array().unwrap();
+    for (result, action) in results.iter().zip(actions.as_array().unwrap()) {
+        assert_eq!(&result["action"], action, "each result names its action");
+        assert_eq!(result["ok"], json!(false), "{result}");
+    }
+    let codes: Vec<&str> = results
         .iter()
-        .map(|r| r.as_str().unwrap())
+        .map(|r| r["code"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        &results[..2],
-        ["failed: Unknown shutter", "failed: Unknown shutter"]
+    assert_eq!(&codes[..2], ["not_found", "not_found"], "no such shutter");
+    assert!(
+        codes[2] != "device_unreachable" && codes[3] != "device_unreachable",
+        "no such lamp: {codes:?}"
     );
     assert!(
-        results[2].starts_with("failed: ") && results[3].starts_with("failed: "),
-        "{results:?}"
+        ["not_a_device", "invalid"].contains(&codes[4]),
+        "the address check, before any frame: {codes:?}"
     );
-    assert!(
-        results[4].starts_with("failed: \"8.8.8.8\""),
-        "the address check, before any frame: {results:?}"
-    );
-    assert!(
-        results[5].starts_with("failed: No climate settings yet"),
-        "{results:?}"
-    );
+    assert_eq!(codes[5], "not_configured", "no settings to resume yet");
 
     // the climate state was never recorded: nothing went out
     let (_, state) =

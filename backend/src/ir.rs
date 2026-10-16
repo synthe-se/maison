@@ -6,7 +6,8 @@
 //! table: loaded from `ir-keymap.json` at startup, edited at runtime through
 //! the `/api/ir` routes (the frontend configurator), persisted on every
 //! change. It also keeps a small ring buffer of the last received events so
-//! the configurator can capture a key by asking the user to press it.
+//! the configurator can capture a key by asking the user to press it, and says
+//! each event as it comes (`IrManager::subscribe`).
 //!
 //! Keymap file format (JSON object, keycodes as string keys, one binding =
 //! a label + a LIST of actions fired in order):
@@ -16,7 +17,7 @@
 //!     "label": "OK — taichi + lumière",
 //!     "actions": [
 //!       { "action": "nabaztag", "command": "chor taichi" },
-//!       { "action": "zigbee_power", "lamp": "17ff040901881700", "on": false }
+//!       { "action": "zigbee_power", "lamp": "17ff040901881700", "state": "off" }
 //!     ],
 //!     "repeat": false
 //!   }
@@ -26,25 +27,25 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
+use maison_api::lamps::{HueLamp, ZigbeeLamp};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::{
-    error::AppError,
-    lamps::HueLampView,
+    error::{AppError, Refusal},
+    json_config::{Checked, JsonConfig},
     matter::CoverCommand,
     mitsubishi_ir::{self, ClimateSettings},
     routes::lamps::LampBackend,
-    store::{self, Access, Corrupt},
     tv,
-    zigbee::ZigbeeLampView,
+    util::refused,
     AppState,
 };
 
@@ -67,12 +68,15 @@ const PRESS_DEBOUNCE: Duration = Duration::from_millis(1200);
 /// opt into it with `debounceMs`.
 const MIN_PRESS_DEBOUNCE: Duration = Duration::from_millis(50);
 
-/// How long a climate action waits before sending: the remote keeps emitting repeat frames
-/// while its button is held, and from parts of the room those reach the AC's receiver too,
-/// colliding with the blaster's frame and corrupting it.
+/// How long a climate action run from a key waits, at most, for that key's release: the
+/// remote keeps emitting repeat frames while its button is held, and from parts of the room
+/// those reach the AC's receiver too, colliding with the blaster's frame and corrupting it.
 const CLIMATE_KEY_RELEASE: Duration = Duration::from_millis(1200);
 
-pub use maison_api::remote::{CoverOrder, IrAction, SwitchState};
+/// After the release, for the remote's last frame to be over.
+const AFTER_RELEASE: Duration = Duration::from_millis(100);
+
+pub use maison_api::remote::{ActionResult, CoverOrder, IrAction, SwitchState};
 
 /// Whether a switch-like action leaves the device on.
 pub(crate) trait Resolve {
@@ -96,74 +100,117 @@ impl Resolve for SwitchState {
     }
 }
 
-/// Config-time validation so a typo'd binding fails at save, not at keypress.
-pub fn validate_actions(actions: &[IrAction]) -> Result<(), String> {
-    for action in actions {
-        if let IrAction::AndroidTvApp { package, .. } = action {
-            if crate::androidtv::validate_package(package).is_err() {
-                return Err(format!(
-                    "invalid Android package {package:?} (expected e.g. org.smarttube.beta)"
-                ));
-            }
-        }
-        if let IrAction::ClimateToggle { on_command, .. } = action {
-            if crate::mitsubishi_ir::parse_climate_settings(on_command).is_none() {
-                return Err(format!(
-                    "invalid climate onCommand {on_command:?} (expected e.g. \
-                     state-cool-16-fan-4-vane-swing, and not state-off)"
-                ));
-            }
-        }
-        if let IrAction::Scene { scene } = action {
-            if !crate::scenes::valid_id(scene) {
-                return Err(format!("invalid scene id {scene:?}"));
-            }
-        }
-        if let IrAction::Cover {
-            command, position, ..
-        } = action
-        {
-            cover_command(*command, *position)?;
-        }
-        if let IrAction::HueBrightness { brightness, .. } = action {
-            if !(1..=100).contains(brightness) {
-                return Err(format!(
-                    "invalid Hue brightness {brightness} (expected 1 to 100)"
-                ));
-            }
-        }
+/// Config-time validation so a typo'd binding fails at save, not at keypress: the coded
+/// `invalid` refusal, its reason in the log.
+pub fn validate_actions(actions: &[IrAction]) -> Result<(), AppError> {
+    match invalid_reason(actions) {
+        Some(reason) => Err(refused(Refusal::Invalid, reason)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
-/// Runs every action in order and says how each went (« ok: … » / « failed: … »); a
-/// failing action never stops the others. The one engine behind a remote key, the
-/// configurator's test and a scene: a `scene` action runs that scene's actions here, one
-/// level deep (a scene inside a scene is refused at save, and fails here if hand-written).
-pub async fn run_actions(state: &AppState, actions: &[IrAction]) -> Vec<String> {
+/// Why `actions` cannot be kept, if they cannot.
+pub fn invalid_reason(actions: &[IrAction]) -> Option<String> {
+    actions.iter().find_map(|action| match action {
+        IrAction::AndroidTvApp { package, .. } => crate::androidtv::validate_package(package)
+            .is_err()
+            .then(|| {
+                format!("invalid Android package {package:?} (expected e.g. org.smarttube.beta)")
+            }),
+        IrAction::ClimateToggle { on_command, .. } => {
+            mitsubishi_ir::parse_climate_settings(on_command)
+                .is_none()
+                .then(|| {
+                    format!(
+                        "invalid climate onCommand {on_command:?} (expected e.g. \
+                         state-cool-16-fan-4-vane-swing, and not state-off)"
+                    )
+                })
+        }
+        IrAction::Scene { scene } => {
+            (!crate::scenes::valid_id(scene)).then(|| format!("invalid scene id {scene:?}"))
+        }
+        IrAction::Cover {
+            command, position, ..
+        } => cover_command(*command, *position).err(),
+        IrAction::HueBrightness { brightness, .. }
+        | IrAction::ZigbeeBrightness { brightness, .. } => (!(1..=100).contains(brightness))
+            .then(|| format!("invalid brightness {brightness} (expected 1 to 100: 0 is off)")),
+        _ => None,
+    })
+}
+
+/// The key a run comes from, when it does (a press, not the dashboard or the configurator).
+#[derive(Debug, Clone, Copy)]
+pub struct Pressed {
+    pub code: u16,
+    /// The press's event (`IrEventLog::seq`): its release comes after.
+    pub seq: u64,
+}
+
+/// Runs every action in order and says how each went; a failing action never stops the
+/// others. The one engine behind a remote key (`pressed`), the configurator's test and a
+/// scene: a `scene` action runs that scene's actions here, one level deep (a scene inside a
+/// scene is refused at save, and fails here if hand-written). Why one failed goes to the
+/// log; the result says its refusal's code.
+pub async fn run_actions(
+    state: &AppState,
+    actions: &[IrAction],
+    pressed: Option<Pressed>,
+) -> Vec<ActionResult> {
     let mut results = Vec::with_capacity(actions.len());
     for action in actions {
         match action {
             IrAction::Scene { scene } => match state.scenes.get(scene).await {
                 Some(found) => {
                     for inner in &found.actions {
-                        results.push(outcome(execute(state, inner).await));
+                        results.push(result(inner, execute(state, inner, pressed).await));
                     }
                 }
-                None => results.push(outcome(Err(AppError::not_found(format!(
-                    "Unknown scene {scene}"
-                ))))),
+                None => results.push(result(action, Err(Refusal::NotFound.into()))),
             },
-            action => results.push(outcome(execute(state, action).await)),
+            action => results.push(result(action, execute(state, action, pressed).await)),
         }
     }
     results
 }
 
-fn outcome(result: Result<String, AppError>) -> String {
-    match result {
-        Ok(message) => format!("ok: {message}"),
-        Err(error) => format!("failed: {error}"),
+fn result(action: &IrAction, outcome: Result<(), AppError>) -> ActionResult {
+    match outcome {
+        Ok(()) => ActionResult {
+            action: action.clone(),
+            ok: true,
+            code: None,
+        },
+        Err(error) => {
+            tracing::warn!(?action, %error, "action failed");
+            ActionResult {
+                action: action.clone(),
+                ok: false,
+                code: Some(code_of(&error).as_str().to_string()),
+            }
+        }
+    }
+}
+
+/// The refusal an error stands for: its own code, or the nearest one by what it is.
+fn code_of(error: &AppError) -> Refusal {
+    use axum::http::StatusCode;
+    match error {
+        AppError::Coded { code, .. } => Refusal::parse(code).unwrap_or(Refusal::Internal),
+        AppError::Http { status, .. } => match *status {
+            StatusCode::NOT_FOUND => Refusal::NotFound,
+            StatusCode::CONFLICT => Refusal::Busy,
+            StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT => Refusal::DeviceUnreachable,
+            s if s.is_client_error() => Refusal::Invalid,
+            _ => Refusal::Internal,
+        },
+        AppError::Reqwest(_) => Refusal::DeviceUnreachable,
+        AppError::Io(_) | AppError::Json(_) | AppError::Jwt(_) | AppError::Join(_) => {
+            Refusal::Internal
+        }
     }
 }
 
@@ -184,43 +231,22 @@ fn cover_command(order: CoverOrder, position: Option<u8>) -> Result<CoverCommand
     }
 }
 
-/// A lamp as the power action reads it: is it on now?
-trait LampView {
-    fn is_on(&self) -> bool;
-}
-
-impl LampView for ZigbeeLampView {
-    fn is_on(&self) -> bool {
-        self.state.is_on
-    }
-}
-
-impl LampView for HueLampView {
-    fn is_on(&self) -> bool {
-        self.state.is_on
-    }
-}
-
-/// `zigbee_power` and `hue_power`: one lamp of either family on, off or flipped.
-async fn lamp_power<B>(lamps: &B, lamp: &str, switch: SwitchState) -> Result<String, AppError>
-where
-    B: LampBackend,
-    B::View: LampView,
-{
+/// `zigbee_power` and `hue_power`: one lamp of either family on, off or flipped (`is_on`
+/// reads the family's lamp).
+async fn lamp_power<B: LampBackend>(
+    lamps: &B,
+    lamp: &str,
+    switch: SwitchState,
+    is_on: fn(&B::View) -> bool,
+) -> Result<(), AppError> {
     let on = switch
         .resolve(|| async {
-            let view = lamps.get(lamp).await;
-            Ok(view
-                .ok_or_else(|| AppError::not_found(format!("Unknown {} {lamp}", B::NAME)))?
-                .is_on())
+            let view = lamps.get(lamp).await.ok_or(Refusal::NotFound)?;
+            Ok(is_on(&view))
         })
         .await?;
     lamps.set_power(lamp, on).await?;
-    Ok(format!(
-        "{} {lamp}: power {}",
-        B::NAME,
-        if on { "on" } else { "off" }
-    ))
+    Ok(())
 }
 
 /// `zigbee_brightness` and `hue_brightness`.
@@ -228,59 +254,61 @@ async fn lamp_brightness<B: LampBackend>(
     lamps: &B,
     lamp: &str,
     brightness: u8,
-) -> Result<String, AppError> {
+) -> Result<(), AppError> {
     lamps.set_brightness(lamp, brightness).await?;
-    Ok(format!("{} {lamp}: brightness {brightness}", B::NAME))
+    Ok(())
 }
 
 /// The settings `climate_on` sends: the last ones given, without their sleep timer.
 fn resumed(last: Option<ClimateSettings>) -> Result<ClimateSettings, AppError> {
-    let last = last.ok_or_else(|| {
-        AppError::not_found("No climate settings yet: set the air conditioner once from its page")
-    })?;
+    let last = last.ok_or(Refusal::NotConfigured)?;
     Ok(ClimateSettings {
         stop_in_minutes: None,
         ..last
     })
 }
 
-/// Sends one Mitsubishi command once the remote's own frames are over; the Broadlink
-/// manager records the AC's new state (on with these settings, or off).
+/// Sends one Mitsubishi command once the remote's own frames are over (from a key: once it
+/// is released, `CLIMATE_KEY_RELEASE` at most); the Broadlink manager records the AC's new
+/// state (on with these settings, or off).
 async fn climate(
     state: &AppState,
     host: &str,
     command: String,
     model: &Option<String>,
-) -> Result<String, AppError> {
-    tokio::time::sleep(CLIMATE_KEY_RELEASE).await;
-    let sent = state
+    pressed: Option<Pressed>,
+) -> Result<(), AppError> {
+    if let Some(Pressed { code, seq }) = pressed {
+        if state.ir.released(code, seq, CLIMATE_KEY_RELEASE).await {
+            tokio::time::sleep(AFTER_RELEASE).await;
+        }
+    }
+    state
         .broadlink
         .send_mitsubishi_command(host.to_string(), None, command, model.clone())
         .await?;
-    Ok(format!(
-        "Climate {host}: {}",
-        sent.command.unwrap_or_default()
-    ))
+    Ok(())
 }
 
 /// One device action.
-async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError> {
+async fn execute(
+    state: &AppState,
+    action: &IrAction,
+    pressed: Option<Pressed>,
+) -> Result<(), AppError> {
     match action {
-        IrAction::Nabaztag { command } => {
-            state.nabaztag.send_command(command).await?;
-            Ok(format!("Nabaztag: {command}"))
-        }
+        IrAction::Nabaztag { command } => state.nabaztag.send_command(command).await,
         IrAction::ZigbeePower {
             lamp,
             state: switch,
-        } => lamp_power(&state.zigbee, lamp, *switch).await,
+        } => lamp_power(&state.zigbee, lamp, *switch, |l: &ZigbeeLamp| l.state.is_on).await,
         IrAction::ZigbeeBrightness { lamp, brightness } => {
             lamp_brightness(&state.zigbee, lamp, *brightness).await
         }
         IrAction::HuePower {
             lamp,
             state: switch,
-        } => lamp_power(&state.hue, lamp, *switch).await,
+        } => lamp_power(&state.hue, lamp, *switch, |l: &HueLamp| l.state.is_on).await,
         IrAction::HueBrightness { lamp, brightness } => {
             lamp_brightness(&state.hue, lamp, *brightness).await
         }
@@ -289,22 +317,17 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
             command,
             position,
         } => {
-            let order = cover_command(*command, *position).map_err(AppError::bad_request)?;
+            let order =
+                cover_command(*command, *position).map_err(|r| refused(Refusal::Invalid, r))?;
             state.matter.command(cover, order).await?;
-            let done = match order {
-                CoverCommand::Open => "open".to_string(),
-                CoverCommand::Close => "close".to_string(),
-                CoverCommand::Stop => "stop".to_string(),
-                CoverCommand::OpenPercent(percent) => format!("open {percent} %"),
-            };
-            Ok(format!("Cover {cover}: {done}"))
+            Ok(())
         }
         IrAction::BroadlinkCode { host, code_id } => {
             state
                 .broadlink
                 .send_saved_code(host.clone(), None, code_id.clone())
                 .await?;
-            Ok(format!("Broadlink {host}: {code_id}"))
+            Ok(())
         }
         IrAction::MerossPower {
             device,
@@ -312,44 +335,32 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
         } => {
             let on = switch.resolve(|| state.meross.is_on(device)).await?;
             state.meross.toggle(device, on).await?;
-            Ok(format!(
-                "Meross {device}: {}",
-                if on { "on" } else { "off" }
-            ))
+            Ok(())
         }
         IrAction::TvPower {
             state: switch,
             switch_to_box,
         } => {
-            let power = tv::tv_power(state, *switch, *switch_to_box).await?;
-            Ok(format!("TV: {power:?}"))
+            tv::tv_power(state, *switch, *switch_to_box).await?;
+            Ok(())
         }
-        IrAction::TvKey { key } => {
-            state.tv.send_key(*key).await?;
-            Ok(format!("TV key: {key:?}"))
-        }
+        IrAction::TvKey { key } => state.tv.send_key(*key).await,
         IrAction::TvVolume { level } => {
-            let volume = state.tv.set_volume(*level, None).await?;
-            Ok(format!("TV volume: {}", volume.current))
+            state.tv.set_volume(*level, None).await?;
+            Ok(())
         }
         IrAction::TvAmbilight { state: switch } => {
             let on = switch
                 .resolve(|| async { Ok(state.tv.ambilight().await?.power) })
                 .await?;
             state.tv.set_ambilight_power(on).await?;
-            Ok(format!("TV Ambilight: {}", if on { "on" } else { "off" }))
+            Ok(())
         }
         IrAction::AndroidTvApp {
             package,
             ensure_tv_on,
-        } => {
-            crate::androidtv::launch_with_tv(state, package, *ensure_tv_on).await?;
-            Ok(format!("Android TV: launched {package}"))
-        }
-        IrAction::AndroidTvKey { key } => {
-            state.androidtv.send_key(*key).await?;
-            Ok(format!("Android TV key: {key:?}"))
-        }
+        } => crate::androidtv::launch_with_tv(state, package, *ensure_tv_on).await,
+        IrAction::AndroidTvKey { key } => state.androidtv.send_key(*key).await,
         IrAction::ClimateToggle {
             host,
             on_command,
@@ -360,17 +371,17 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
                 .broadlink
                 .climate_state()
                 .await
-                .map(|s| s.power)
-                .unwrap_or(false);
+                .is_some_and(|s| s.power);
             let command = if is_on {
                 mitsubishi_ir::OFF_COMMAND
             } else {
                 on_command.as_str()
             };
-            climate(state, host, command.to_string(), model).await
+            climate(state, host, command.to_string(), model, pressed).await
         }
         IrAction::ClimateOff { host, model } => {
-            climate(state, host, mitsubishi_ir::OFF_COMMAND.to_string(), model).await
+            let off = mitsubishi_ir::OFF_COMMAND.to_string();
+            climate(state, host, off, model, pressed).await
         }
         IrAction::ClimateOn { host, model } => {
             let settings = resumed(
@@ -380,25 +391,22 @@ async fn execute(state: &AppState, action: &IrAction) -> Result<String, AppError
                     .await
                     .and_then(|s| s.settings),
             )?;
-            climate(
-                state,
-                host,
-                settings.command().map_err(AppError::bad_request)?,
-                model,
-            )
-            .await
+            let command = settings
+                .command()
+                .map_err(|r| refused(Refusal::Invalid, r))?;
+            climate(state, host, command, model, pressed).await
         }
-        IrAction::Scene { scene } => Err(AppError::bad_request(format!(
-            "Scene {scene} is inside a scene"
-        ))),
+        IrAction::Scene { .. } => Err(Refusal::NestedScene.into()),
     }
 }
 
+/// A key's binding, its actions of type `A` (as kept: `IrAction`; as the configurator reads
+/// them: `Described`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IrBinding {
+pub struct IrBinding<A = IrAction> {
     /// Fired in order; one failing action does not stop the others.
-    pub actions: Vec<IrAction>,
+    pub actions: Vec<A>,
     /// Optional label shown in the configurator (e.g. "OK button").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -425,7 +433,47 @@ impl IrBinding {
             None => PRESS_DEBOUNCE,
         }
     }
+
+    /// As the configurator reads it: as kept, plus each climate toggle's `settings` (its
+    /// `onCommand` read back), so the web needs no parser of its own.
+    pub fn described(&self) -> IrBinding<Described<'_>> {
+        IrBinding {
+            actions: self
+                .actions
+                .iter()
+                .map(|action| Described {
+                    action,
+                    settings: match action {
+                        IrAction::ClimateToggle { on_command, .. } => {
+                            mitsubishi_ir::parse_climate_settings(on_command)
+                        }
+                        _ => None,
+                    },
+                })
+                .collect(),
+            label: self.label.clone(),
+            repeat: self.repeat,
+            debounce_ms: self.debounce_ms,
+        }
+    }
 }
+
+/// An action as the configurator reads it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Described<'a> {
+    #[serde(flatten)]
+    pub action: &'a IrAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClimateSettings>,
+}
+
+/// The keymap as kept (`ir-keymap.json`: keycodes as string keys).
+pub type Keymap = HashMap<u16, IrBinding>;
+
+/// Actions are checked when they come in (`validate_actions`); a hand-edited file is read
+/// as written, each action failing at its press if it must.
+impl Checked for Keymap {}
 
 /// One received key event, kept for the configurator's capture flow.
 #[derive(Debug, Clone, Serialize)]
@@ -443,13 +491,19 @@ pub struct IrEventLog {
 /// Work queued for one key, run after the key's earlier presses.
 type KeyJob = BoxFuture<'static, ()>;
 
+/// The last key events, and the last one's `seq`.
+#[derive(Default)]
+struct Recent {
+    events: VecDeque<IrEventLog>,
+    seq: u64,
+}
+
 #[derive(Clone)]
 pub struct IrManager {
-    path: Arc<PathBuf>,
-    keymap: Arc<RwLock<HashMap<u16, IrBinding>>>,
-    recent: Arc<Mutex<VecDeque<IrEventLog>>>,
-    /// The last event's `seq`.
-    seq: Arc<std::sync::atomic::AtomicU64>,
+    keymap: Arc<JsonConfig<Keymap>>,
+    recent: Arc<Mutex<Recent>>,
+    /// Every event as it comes.
+    events: broadcast::Sender<IrEventLog>,
     last_press: Arc<Mutex<HashMap<u16, Instant>>>,
     /// One bounded queue per key, each drained by its own task, in order.
     queues: Arc<std::sync::Mutex<HashMap<u16, mpsc::Sender<KeyJob>>>>,
@@ -460,21 +514,19 @@ impl IrManager {
     /// A present but invalid file is a startup error: a corrupt keymap
     /// should not silently disable the remote.
     pub fn new(path: &Path) -> Result<Self, AppError> {
-        let raw: HashMap<String, IrBinding> = store::read_json(path, Corrupt::Fail)?;
-        let keymap = numeric_keys(raw).map_err(|error| {
-            AppError::http(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid IR keymap {}: {error}", path.display()),
-            )
-        })?;
         Ok(Self {
-            path: Arc::new(path.to_path_buf()),
-            keymap: Arc::new(RwLock::new(keymap)),
-            recent: Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_EVENTS_CAP))),
-            seq: Arc::default(),
-            last_press: Arc::new(Mutex::new(HashMap::new())),
+            keymap: Arc::new(JsonConfig::load(path)?),
+            recent: Arc::default(),
+            events: broadcast::channel(RECENT_EVENTS_CAP).0,
+            last_press: Arc::default(),
             queues: Arc::default(),
         })
+    }
+
+    /// Every key event from now on, as it comes (the configurator's capture, an event
+    /// stream).
+    pub fn subscribe(&self) -> broadcast::Receiver<IrEventLog> {
+        self.events.subscribe()
     }
 
     /// Runs `job` in the background, after every job queued earlier for the same key: a
@@ -482,10 +534,7 @@ impl IrManager {
     /// key never interleave. Other keys run alongside. `false`: dropped, the key already
     /// has [`KEY_QUEUE`] presses waiting.
     pub fn run_in_order(&self, code: u16, job: impl Future<Output = ()> + Send + 'static) -> bool {
-        let mut queues = self
-            .queues
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut queues = crate::util::lock(&self.queues);
         let mut job: KeyJob = Box::pin(job);
         if let Some(queue) = queues.get(&code) {
             match queue.try_send(job) {
@@ -499,9 +548,13 @@ impl IrManager {
             }
         }
         let (queue, mut jobs) = mpsc::channel::<KeyJob>(KEY_QUEUE);
-        let _ = queue.try_send(job);
+        if queue.try_send(job).is_err() {
+            // a fresh queue has room: never here
+            tracing::error!(code, "IR key queue refused its first press");
+            return false;
+        }
         queues.insert(code, queue);
-        tokio::spawn(async move {
+        crate::supervised("IR key", async move {
             while let Some(job) = jobs.recv().await {
                 job.await;
             }
@@ -517,10 +570,11 @@ impl IrManager {
     /// double cancels the action outright, but it would swallow the second
     /// press of a D-pad being used to navigate.
     pub async fn accept_press(&self, code: u16) -> bool {
-        let window = match self.keymap.read().await.get(&code) {
-            Some(binding) => binding.debounce(),
-            None => PRESS_DEBOUNCE,
-        };
+        let window = self
+            .keymap
+            .read(|k| k.get(&code).map(IrBinding::debounce))
+            .await
+            .unwrap_or(PRESS_DEBOUNCE);
         let mut map = self.last_press.lock().await;
         let now = Instant::now();
         match map.get(&code) {
@@ -533,95 +587,97 @@ impl IrManager {
     }
 
     pub async fn binding(&self, code: u16) -> Option<IrBinding> {
-        self.keymap.read().await.get(&code).cloned()
+        self.keymap.read(|k| k.get(&code).cloned()).await
     }
 
-    pub async fn keymap(&self) -> HashMap<u16, IrBinding> {
-        self.keymap.read().await.clone()
+    pub async fn keymap(&self) -> Keymap {
+        self.keymap.get().await
     }
 
     /// Saved first, then kept: a failed save leaves memory as it is on disk.
     pub async fn set_binding(&self, code: u16, binding: IrBinding) -> Result<(), AppError> {
-        let mut map = self.keymap.write().await;
-        let mut next = map.clone();
-        next.insert(code, binding);
-        self.persist(&next).await?;
-        *map = next;
-        Ok(())
+        self.keymap
+            .update(|map| {
+                map.insert(code, binding);
+                Ok(())
+            })
+            .await
     }
 
     /// Returns `true` when a binding existed and was removed.
     pub async fn remove_binding(&self, code: u16) -> Result<bool, AppError> {
-        let mut map = self.keymap.write().await;
-        if !map.contains_key(&code) {
+        if self.binding(code).await.is_none() {
             return Ok(false);
         }
-        let mut next = map.clone();
-        next.remove(&code);
-        self.persist(&next).await?;
-        *map = next;
-        Ok(true)
+        self.keymap
+            .update(|map| Ok(map.remove(&code).is_some()))
+            .await
     }
 
-    pub async fn record_event(&self, code: u16, value: i32, mapped: bool) {
+    /// Kept and said; its `seq`.
+    pub async fn record_event(&self, code: u16, value: i32, mapped: bool) -> u64 {
         let mut recent = self.recent.lock().await;
-        if recent.len() == RECENT_EVENTS_CAP {
-            recent.pop_front();
+        if recent.events.len() == RECENT_EVENTS_CAP {
+            recent.events.pop_front();
         }
-        recent.push_back(IrEventLog {
-            seq: self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+        recent.seq += 1;
+        let event = IrEventLog {
+            seq: recent.seq,
             code,
             value,
             mapped,
             received_at: Utc::now(),
-        });
+        };
+        recent.events.push_back(event.clone());
+        // nobody listening is fine
+        let _ = self.events.send(event);
+        recent.seq
     }
 
     /// Most recent first.
     pub async fn recent_events(&self) -> Vec<IrEventLog> {
-        self.recent.lock().await.iter().rev().cloned().collect()
-    }
-
-    async fn persist(&self, map: &HashMap<u16, IrBinding>) -> Result<(), AppError> {
-        // String keys so the file round-trips through parse_keymap.
-        let as_strings: HashMap<String, &IrBinding> = map
+        self.recent
+            .lock()
+            .await
+            .events
             .iter()
-            .map(|(code, binding)| (code.to_string(), binding))
-            .collect();
-        store::write_json_async(&self.path, &as_strings, Access::Shared).await
+            .rev()
+            .cloned()
+            .collect()
     }
-}
 
-/// A binding as the configurator reads it: as kept, plus each climate toggle's `settings`
-/// (its `onCommand` read back), so the web needs no parser of its own.
-pub fn described(binding: &IrBinding) -> serde_json::Value {
-    let mut value = serde_json::to_value(binding).unwrap_or_default();
-    let actions = value
-        .get_mut("actions")
-        .and_then(serde_json::Value::as_array_mut);
-    for (json, action) in actions.into_iter().flatten().zip(&binding.actions) {
-        if let IrAction::ClimateToggle { on_command, .. } = action {
-            let settings = crate::mitsubishi_ir::parse_climate_settings(on_command);
-            json["settings"] = serde_json::to_value(settings).unwrap_or_default();
+    /// Waits, `cap` at most, for key `code`'s release after its event `after`: whether it came.
+    pub async fn released(&self, code: u16, after: u64, cap: Duration) -> bool {
+        let is_it = |e: &IrEventLog| e.code == code && e.value == 0 && e.seq > after;
+        // listening first: a release recorded after the look below is heard
+        let mut events = self.subscribe();
+        let kept = || async { self.recent.lock().await.events.iter().any(is_it) };
+        if kept().await {
+            return true;
         }
+        tokio::time::timeout(cap, async {
+            loop {
+                match events.recv().await {
+                    Ok(event) if is_it(&event) => return,
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if kept().await {
+                            return;
+                        }
+                    }
+                    // the manager lives as long as the app
+                    Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+                }
+            }
+        })
+        .await
+        .is_ok()
     }
-    value
 }
 
 /// A keymap file's text (the `keymap_file_check` test checks a hand-written one).
-pub fn parse_keymap(content: &str) -> Result<HashMap<u16, IrBinding>, String> {
-    numeric_keys(serde_json::from_str(content.trim()).map_err(|error| error.to_string())?)
-}
-
-/// JSON keys are strings; keycodes are numbers.
-fn numeric_keys(raw: HashMap<String, IrBinding>) -> Result<HashMap<u16, IrBinding>, String> {
-    raw.into_iter()
-        .map(|(key, binding)| {
-            key.parse::<u16>()
-                .map(|code| (code, binding))
-                .map_err(|_| format!("keycode {key:?} is not a u16"))
-        })
-        .collect()
+pub fn parse_keymap(content: &str) -> Result<Keymap, String> {
+    serde_json::from_str(content.trim()).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -700,7 +756,7 @@ mod tests {
             r#"{ "power": { "actions": [{ "action": "nabaztag", "command": "ping" }] } }"#,
         )
         .expect_err("keycode must be numeric");
-        assert!(error.contains("power"));
+        assert!(!error.is_empty());
     }
 
     #[test]
@@ -963,13 +1019,123 @@ mod tests {
         assert!(
             matches!(
                 resumed(None),
-                Err(AppError::Http {
-                    status: axum::http::StatusCode::NOT_FOUND,
+                Err(AppError::Coded {
+                    code: "not_configured",
                     ..
                 })
             ),
             "nothing to resume: said so"
         );
+    }
+
+    /// The codes a failed action is said with: its own refusal's, or the nearest by kind.
+    #[test]
+    fn a_failure_is_said_by_its_code() {
+        use axum::http::StatusCode;
+        assert_eq!(code_of(&Refusal::NestedScene.into()), Refusal::NestedScene);
+        assert_eq!(
+            code_of(&AppError::http(StatusCode::NOT_FOUND, "x")),
+            Refusal::NotFound
+        );
+        assert_eq!(
+            code_of(&AppError::service_unavailable("TV unreachable")),
+            Refusal::DeviceUnreachable
+        );
+        assert_eq!(code_of(&AppError::bad_request("x")), Refusal::Invalid);
+        assert_eq!(
+            code_of(&AppError::Io(std::io::Error::other("disk"))),
+            Refusal::Internal
+        );
+        let off = IrAction::MerossPower {
+            device: "p1".into(),
+            state: SwitchState::Off,
+        };
+        assert_eq!(
+            result(&off, Err(AppError::service_unavailable("Plug unreachable"))),
+            ActionResult {
+                action: off.clone(),
+                ok: false,
+                code: Some("device_unreachable".into())
+            }
+        );
+        assert!(result(&off, Ok(())).ok);
+    }
+
+    /// Brightness 0 is off, for both lamp families: an action says off with `*_power`.
+    #[test]
+    fn a_brightness_is_one_to_a_hundred_for_every_lamp() {
+        for brightness in [0, 101] {
+            for action in [
+                IrAction::HueBrightness {
+                    lamp: "aa".into(),
+                    brightness,
+                },
+                IrAction::ZigbeeBrightness {
+                    lamp: "aa".into(),
+                    brightness,
+                },
+            ] {
+                assert!(
+                    validate_actions(std::slice::from_ref(&action)).is_err(),
+                    "{action:?}"
+                );
+            }
+        }
+        assert!(validate_actions(&[IrAction::ZigbeeBrightness {
+            lamp: "aa".into(),
+            brightness: 1
+        }])
+        .is_ok());
+    }
+
+    /// A climate action from a key waits for the key's release, not a fixed time: at once
+    /// when it was released, `cap` at most when it never is.
+    #[tokio::test(start_paused = true)]
+    async fn a_release_is_waited_for_up_to_a_cap() {
+        let dir = crate::util::test_dir();
+        let manager = IrManager::new(&dir.path().join("ir-keymap.json")).unwrap();
+        let cap = Duration::from_secs(1);
+        let press = manager.record_event(353, 1, true).await;
+        manager.record_event(354, 0, false).await;
+        let start = tokio::time::Instant::now();
+        assert!(
+            !manager.released(353, press, cap).await,
+            "another key's release"
+        );
+        assert_eq!(start.elapsed(), cap, "waited the cap, no more");
+
+        let later = manager.clone();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            later.record_event(353, 0, true).await
+        });
+        let start = tokio::time::Instant::now();
+        assert!(manager.released(353, press, cap).await);
+        assert_eq!(
+            start.elapsed(),
+            Duration::from_millis(300),
+            "the release ended it"
+        );
+        let seq = release.await.unwrap();
+        assert!(
+            manager.released(353, press, cap).await,
+            "already released: at once"
+        );
+        assert!(
+            !manager.released(353, seq, Duration::ZERO).await,
+            "a release before the press does not count"
+        );
+    }
+
+    /// Every event is said as it comes.
+    #[tokio::test]
+    async fn events_are_said_as_they_come() {
+        let dir = crate::util::test_dir();
+        let manager = IrManager::new(&dir.path().join("ir-keymap.json")).unwrap();
+        let mut events = manager.subscribe();
+        manager.record_event(7, 1, false).await;
+        let event = events.recv().await.unwrap();
+        assert_eq!((event.seq, event.code, event.value), (1, 7, 1));
     }
 
     #[test]
@@ -1175,7 +1341,7 @@ mod tests {
             repeat: false,
             debounce_ms: None,
         };
-        let json = described(&binding);
+        let json = serde_json::to_value(binding.described()).unwrap();
         assert!(json["actions"][0].get("settings").is_none());
         let settings = &json["actions"][1]["settings"];
         let expected =

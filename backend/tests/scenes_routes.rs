@@ -5,12 +5,15 @@ mod common;
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tokio::sync::Notify;
+
 use axum::http::{Method, StatusCode};
 use serde_json::{json, Value};
 
-/// The rabbit has no host in a fresh config: its action fails, saying so — which shows
-/// it was run.
-const NO_RABBIT: &str = "failed: No Nabaztag host configured";
+/// The rabbit has no host in a fresh config: its action fails — which shows it was run.
+fn rabbit_failed(result: &Value) -> bool {
+    result["action"] == ping()[0] && result["ok"] == json!(false) && result["code"].is_string()
+}
 
 fn ping() -> Value {
     json!([{ "action": "nabaztag", "command": "ping" }])
@@ -80,36 +83,34 @@ async fn what_a_scene_may_hold() {
     let too_many = Value::Array(vec![ping()[0].clone(); 21]);
     let twenty = Value::Array(vec![ping()[0].clone(); 20]);
     for (id, body, code) in [
-        ("Cinema", scene("Cinéma", ping()), None),
-        (&"a".repeat(33) as &str, scene("Cinéma", ping()), None),
-        ("cinema", scene("  ", ping()), Some("bad_name")),
+        ("Cinema", scene("Cinéma", ping()), "invalid"),
+        (&"a".repeat(33) as &str, scene("Cinéma", ping()), "invalid"),
+        ("cinema", scene("  ", ping()), "bad_name"),
         (
             "cinema",
             json!({ "name": "Cinéma", "icon": "Film!", "actions": ping() }),
-            None,
+            "invalid",
         ),
-        ("cinema", scene("Cinéma", json!([])), None),
-        ("cinema", scene("Cinéma", too_many), None),
+        ("cinema", scene("Cinéma", json!([])), "invalid"),
+        ("cinema", scene("Cinéma", too_many), "too_many_actions"),
         (
             "cinema",
             scene(
                 "Cinéma",
                 json!([{ "action": "androidtv_app", "package": "not a package" }]),
             ),
-            None,
+            "invalid",
         ),
         (
             "cinema",
             scene("Cinéma", json!([{ "action": "scene", "scene": "nuit" }])),
-            Some("nested_scene"),
+            "nested_scene",
         ),
     ] {
         let (status, answer) = put(&app, id, body.clone()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{id} {body}: {answer}");
         assert_eq!(answer["success"], json!(false));
-        if let Some(code) = code {
-            assert_eq!(answer["code"], json!(code), "{body}");
-        }
+        assert_eq!(answer["code"], json!(code), "{body}");
     }
     let (status, _) = put(&app, "cinema", scene("Cinéma", twenty)).await;
     assert_eq!(status, StatusCode::OK, "twenty is the most");
@@ -159,10 +160,7 @@ async fn members_run_admins_make() {
     assert_eq!(body["message"], json!("0/1 actions ok"));
     let results = body["results"].as_array().unwrap();
     assert_eq!(results.len(), 1);
-    assert!(
-        results[0].as_str().unwrap().starts_with(NO_RABBIT),
-        "{body}"
-    );
+    assert!(rabbit_failed(&results[0]), "{body}");
 
     let (status, _) = common::send(
         &app,
@@ -195,7 +193,10 @@ async fn a_scene_action_runs_the_scene() {
     let (status, body) =
         common::send_authed(&app, Method::POST, "/api/ir/test", Some(test("gone"))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["results"], json!(["failed: Unknown scene gone"]));
+    assert_eq!(
+        body["results"],
+        json!([{ "action": { "action": "scene", "scene": "gone" }, "ok": false, "code": "not_found" }])
+    );
 
     let (status, _) =
         common::send_authed(&app, Method::POST, "/api/ir/test", Some(test("Not An Id"))).await;
@@ -207,11 +208,36 @@ async fn a_scene_action_runs_the_scene() {
 }
 
 /// What the app logs, kept for the test to read (a key's actions run after its answer: the
-/// log is where their results go).
-fn captured_log() -> Arc<Mutex<Vec<u8>>> {
-    static LOG: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+/// log is where their results go), and a bell rung at each line.
+struct Captured {
+    text: Mutex<Vec<u8>>,
+    written: Notify,
+}
+
+impl Captured {
+    /// The first line logged that holds every one of `words`, once it is.
+    async fn line_with(&self, words: &[&str]) -> String {
+        loop {
+            let written = self.written.notified();
+            tokio::pin!(written);
+            // listening before the look: a line written after it rings
+            written.as_mut().enable();
+            let text = String::from_utf8_lossy(&self.text.lock().unwrap()).to_string();
+            if let Some(line) = text.lines().find(|l| words.iter().all(|w| l.contains(w))) {
+                return line.to_string();
+            }
+            written.await;
+        }
+    }
+}
+
+fn captured_log() -> Arc<Captured> {
+    static LOG: OnceLock<Arc<Captured>> = OnceLock::new();
     LOG.get_or_init(|| {
-        let log = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::new(Captured {
+            text: Mutex::new(Vec::new()),
+            written: Notify::new(),
+        });
         let sink = log.clone();
         let subscriber = tracing_subscriber::fmt()
             .with_ansi(false)
@@ -225,11 +251,12 @@ fn captured_log() -> Arc<Mutex<Vec<u8>>> {
     .clone()
 }
 
-struct Sink(Arc<Mutex<Vec<u8>>>);
+struct Sink(Arc<Captured>);
 
 impl std::io::Write for Sink {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
+        self.0.text.lock().unwrap().extend_from_slice(bytes);
+        self.0.written.notify_waiters();
         Ok(bytes.len())
     }
 
@@ -254,22 +281,14 @@ async fn a_remote_key_bound_to_a_scene_runs_it() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    let fired = async {
-        loop {
-            let text = String::from_utf8_lossy(&log.lock().unwrap()).to_string();
-            if let Some(line) = text
-                .lines()
-                .find(|l| l.contains("IR key fired") && l.contains("code=4242"))
-            {
-                return line.to_string();
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    };
+    let fired = log.line_with(&["IR key fired", "code=4242"]);
     let line = tokio::time::timeout(std::time::Duration::from_secs(10), fired)
         .await
         .expect("the key's actions ran");
-    assert!(line.contains(NO_RABBIT), "the scene's action ran: {line}");
+    assert!(
+        line.contains("Nabaztag") && line.contains("ok: false"),
+        "the scene's action ran: {line}"
+    );
 }
 
 /// « Je pars » as the web's template makes it (lamps, Hue lamps, plugs, the AC off, the
@@ -302,7 +321,11 @@ async fn leaving_turns_off_the_ac_and_closes_the_shutters() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let results = body["results"].as_array().unwrap();
     assert_eq!(results.len(), 5, "every action ran: {body}");
-    assert_eq!(results[4], json!("failed: Unknown shutter"));
+    assert_eq!(
+        results[4],
+        json!({ "action": leave[4], "ok": false, "code": "not_found" }),
+        "no such shutter"
+    );
 
     let (status, _) = common::send(
         &app,
@@ -313,23 +336,12 @@ async fn leaving_turns_off_the_ac_and_closes_the_shutters() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let fired = async {
-        loop {
-            let text = String::from_utf8_lossy(&log.lock().unwrap()).to_string();
-            if let Some(line) = text
-                .lines()
-                .find(|l| l.contains("IR key fired") && l.contains("code=4343"))
-            {
-                return line.to_string();
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    };
+    let fired = log.line_with(&["IR key fired", "code=4343"]);
     let line = tokio::time::timeout(std::time::Duration::from_secs(10), fired)
         .await
         .expect("the key's actions ran");
     assert!(
-        line.contains("Unknown shutter") && line.contains("8.8.8.8"),
+        line.contains("Cover") && line.contains("8.8.8.8"),
         "the scene's actions ran: {line}"
     );
 }

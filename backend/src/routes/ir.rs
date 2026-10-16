@@ -1,18 +1,19 @@
-use std::collections::HashMap;
-
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
+use maison_api::{remote::KeyResponse, Message};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::{AdminUser, AuthenticatedUser, MachineClient},
-    error::AppError,
-    ir::{self, IrAction, IrBinding, IrEventLog},
-    routes::{Answer, Reply, SimpleResponse},
+    error::{AppError, Refusal},
+    ir::{self, Described, IrAction, IrBinding, IrEventLog, Pressed},
+    routes::{Answer, Reply},
+    util::refused,
     AppState,
 };
 
@@ -24,23 +25,18 @@ struct KeyEvent {
     value: i32,
 }
 
-/// What running actions answers: maison-api's, in a JSON body.
-pub(crate) use maison_api::remote::KeyResponse;
-
 fn nothing(message: String) -> Json<KeyResponse> {
     Json(KeyResponse::nothing(message))
 }
 
-pub(crate) fn ran(results: Vec<String>) -> Json<KeyResponse> {
-    Json(KeyResponse::ran(results))
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Keymap<'a> {
+    keymap: std::collections::HashMap<u16, IrBinding<Described<'a>>>,
 }
 
 #[derive(Debug, Serialize)]
-struct Keymap {
-    keymap: HashMap<u16, serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Recent {
     events: Vec<IrEventLog>,
 }
@@ -62,7 +58,7 @@ async fn key_event(
     Json(event): Json<KeyEvent>,
 ) -> Result<(StatusCode, Json<KeyResponse>), AppError> {
     let binding = state.ir.binding(event.code).await;
-    state
+    let seq = state
         .ir
         .record_event(event.code, event.value, binding.is_some())
         .await;
@@ -99,8 +95,9 @@ async fn key_event(
     let code = event.code;
     let value = event.value;
     let worker = state.clone();
+    let pressed = Pressed { code, seq };
     let queued = state.ir.run_in_order(code, async move {
-        let results = ir::run_actions(&worker, &binding.actions).await;
+        let results = ir::run_actions(&worker, &binding.actions, Some(pressed)).await;
         tracing::info!(
             code,
             value,
@@ -122,15 +119,14 @@ async fn key_event(
     ))
 }
 
-async fn keymap(State(state): State<AppState>, _user: AuthenticatedUser) -> Json<Answer<Keymap>> {
-    let keymap = state
-        .ir
-        .keymap()
-        .await
-        .into_iter()
-        .map(|(code, binding)| (code, ir::described(&binding)))
+async fn keymap(State(state): State<AppState>, _user: AuthenticatedUser) -> Response {
+    let kept = state.ir.keymap().await;
+    let keymap = kept
+        .iter()
+        .map(|(code, binding)| (*code, binding.described()))
         .collect();
-    Answer::ok(Keymap { keymap })
+    // the bindings are borrowed from `kept`: answered while it lives
+    Answer::ok(Keymap { keymap }).into_response()
 }
 
 async fn set_binding(
@@ -138,24 +134,24 @@ async fn set_binding(
     _admin: AdminUser,
     Path(code): Path<u16>,
     Json(binding): Json<IrBinding>,
-) -> Result<Json<SimpleResponse>, AppError> {
+) -> Result<Json<Answer<Message>>, AppError> {
     if binding.actions.is_empty() {
-        return Err(AppError::bad_request("A binding needs at least one action"));
+        return Err(refused(Refusal::Invalid, "a binding needs an action"));
     }
-    ir::validate_actions(&binding.actions).map_err(AppError::bad_request)?;
+    ir::validate_actions(&binding.actions)?;
     state.ir.set_binding(code, binding).await?;
-    Ok(SimpleResponse::ok(format!("Key {code} saved")))
+    Ok(Json(Answer::said(format!("Key {code} saved"))))
 }
 
 async fn remove_binding(
     State(state): State<AppState>,
     _admin: AdminUser,
     Path(code): Path<u16>,
-) -> Result<Json<SimpleResponse>, AppError> {
+) -> Result<Json<Answer<Message>>, AppError> {
     if !state.ir.remove_binding(code).await? {
-        return Err(AppError::not_found(format!("Key {code} is not mapped")));
+        return Err(Refusal::NotFound.into());
     }
-    Ok(SimpleResponse::ok(format!("Key {code} removed")))
+    Ok(Json(Answer::said(format!("Key {code} removed"))))
 }
 
 /// Last received key events, most recent first — the configurator polls this
@@ -167,6 +163,7 @@ async fn recent(State(state): State<AppState>, _admin: AdminUser) -> Json<Answer
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TestRequest {
     actions: Vec<IrAction>,
 }
@@ -180,8 +177,10 @@ async fn test_actions(
     Json(body): Json<TestRequest>,
 ) -> Result<Json<KeyResponse>, AppError> {
     if body.actions.is_empty() {
-        return Err(AppError::bad_request("Nothing to test"));
+        return Err(refused(Refusal::Invalid, "nothing to test"));
     }
-    ir::validate_actions(&body.actions).map_err(AppError::bad_request)?;
-    Ok(ran(ir::run_actions(&state, &body.actions).await))
+    ir::validate_actions(&body.actions)?;
+    Ok(Json(KeyResponse::ran(
+        ir::run_actions(&state, &body.actions, None).await,
+    )))
 }

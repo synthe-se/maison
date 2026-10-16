@@ -12,8 +12,9 @@ fn candidate_keymap_parses() {
     let keymap = maison_backend::ir::parse_keymap(&body)
         .unwrap_or_else(|error| panic!("{path} is not a valid keymap: {error}"));
     for (code, binding) in &keymap {
-        maison_backend::ir::validate_actions(&binding.actions)
-            .unwrap_or_else(|error| panic!("binding {code} is invalid: {error}"));
+        if let Some(reason) = maison_backend::ir::invalid_reason(&binding.actions) {
+            panic!("binding {code} is invalid: {reason}");
+        }
     }
     println!("{} bindings parsed and validated", keymap.len());
 }
