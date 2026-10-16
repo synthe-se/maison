@@ -23,7 +23,9 @@ UtmpIdentifier=tty7
 UtmpMode=user
 ExecStartPre=+/usr/bin/install -d -o kiosk -g kiosk -m 0700 /android-data/maison/ui
 ExecStartPost=+/usr/bin/chvt 7
-LoadCredential=target:/android-data/local/tmp/maison/target
+# root's copy of the address (the initramfs adopts what install.sh left, Android's shell-writable
+# /data/local/tmp never read here)
+LoadCredential=target:/android-data/maison/target
 Environment=HOME=/home/kiosk LANG=fr_FR.UTF-8 MAISON_STATE=/android-data/maison/ui MAISON_TURN=180 MAISON_STATS=1
 ExecStart=/usr/bin/cage -- /usr/local/sbin/maison-ui
 Restart=always

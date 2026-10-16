@@ -26,13 +26,15 @@ web app, the web app's own fonts, the turn measured on the frame.
 
 | What | Source | How the frame gets it |
 |---|---|---|
-| API types | **`api/` (maison-api)**: screens, sun, Tempo, lamps, Meross, Matter covers, scenes and the remote's actions, `KeyResponse`, `Answer`, `DeviceRef`, `HOUSE_TZ` | path dependency of the backend (which re-exports them under its old names) and of the frame |
-| Paces | `maison_api::paces` (one macro: each pace and its words) | the frame reads them; the web app imports `web/src/lib/paces.ts`, generated (`cargo run --manifest-path api/Cargo.toml --bin paces-ts > web/src/lib/paces.ts`), an api test refuses it out of step. The families the frame does not read yet keep theirs in `data.ts` |
-| Words | `i18n/messages/*.json` | embedded; `k::KEY` consts generated (a misspelt key does not build); plurals as Intl's; numbers, clocks, durations, lists as the web app's Intl writes them |
-| Tokens | `web/src/styles/tokens.css` | build.rs: colors (both sides of `light-dark()`), lengths, the type scale |
-| Icons | `web/src/lib/components/Icon.svelte` (lucide) | build.rs extracts them; resvg rasterises each once per size, white, tinted when drawn |
-| Fonts | Cal Sans, Borel (`web/static/fonts`), Fraunces (fontsource) | build.rs (allsorts): WOFF2 to TrueType, the variable faces instanced at each weight the scale draws (Cal Sans 400/500/600, Fraunces 500/600); Noto Sans behind for the three signs Cal Sans lacks |
-| Pairing, auth | `/screens/pairing`, `/claim`, `/me` | the web app's flow; the cookie kept 0600 in `/android-data/maison/ui` |
+| API types | **`api/` (maison-api)**: screens (and the cookie's names), sun, Tempo, lamps, Meross, Matter covers, scenes (and their icons) and the remote's actions, `KeyResponse`, `Answer`, `DeviceRef`, `HOUSE_TZ` and its `Tz`; the request bodies (`PowerRequest`, `BrightnessRequest`, `ToggleRequest`, `PositionRequest`, `SkipRequest`), serialized, never written as JSON by hand | path dependency of the backend and of the frame |
+| Paces | `maison_api::paces` (one macro: each pace and its words), and how long a gesture, a slider, a toast take (`COMMAND_SLOW_MS`, the families' `*_LIMIT_MS`, `SLIDER_*`, `TOAST_MS`, `WALL_WARNING_MS`), `STALE_CADENCES` | the frame reads them; the web app imports `web/src/lib/paces.ts`, generated (`cargo run --manifest-path api/Cargo.toml --bin shared-ts paces > web/src/lib/paces.ts`), an api test refuses it out of step. The families the frame does not read yet keep theirs in `data.ts` |
+| Refusals | `maison_api::codes::Code` | a refusal's `code` read as a `Code`; each said by the web app's words (`i18n.rs` `code_words`, every code named: a new one is a decision), else by its status |
+| Paths | `src/paths.rs` | every path the frame asks, once (the families, the gestures, the pairing) |
+| Words | `i18n/messages/*.json` | embedded; `k::KEY` consts generated (a misspelt key does not build), every message's shape checked by build.rs (a text, or a plural on `count`); plurals as Intl's; numbers, clocks, durations, lists as the web app's Intl writes them |
+| Tokens | `web/src/styles/tokens.css` | build.rs: colors (both sides of `light-dark()`), lengths, the type scale, what `@media (min-width: …)` and `(pointer: coarse)` change (the page margin, a finger's control heights), the red day's hatching (`--tempo-red-hatch`). The components' own few measures (Icon.svelte's 18 px, DeviceTile's 22 px glyph and 1.5 px ring, `.tiles`' 20rem, Range's 2 px thumb ring, Stale's 14 px clock, the code's 0.15em) are in their Svelte, said once in `ui/layout.rs` |
+| Icons | `web/src/lib/components/Icon.svelte` (lucide) | build.rs extracts them, one typed const each (`icon::LIGHTBULB_OFF`: a misspelt one does not build); resvg rasterises each once per size, white, tinted when drawn |
+| Fonts | Cal Sans, Borel (`web/static/fonts`), Fraunces (fontsource, from `web/node_modules`: `bun install` first) | build.rs (allsorts): WOFF2 to TrueType, the variable faces instanced at each weight the scale draws (Cal Sans 400/500/600, Fraunces 500/600); Noto Sans behind for the three signs Cal Sans lacks |
+| Pairing, auth | `/screens/pairing`, `/claim`, `/me` | the web app's flow; the cookie kept 0600 in `/android-data/maison/ui` with the origin that set it (sent nowhere else; another origin's: the screen pairs again); HTTPS only (`http://` to this computer, or a simulation's `MAISON_ALLOW_HTTP=1`), no proxy from the environment |
 | Sun theme | `/matter/place` (signed in), `/sun` (signed out) | the palette follows the side |
 
 ## Inside the app
@@ -41,21 +43,27 @@ web app, the web app's own fonts, the turn measured on the frame.
 frame/ui/
   build.rs       tokens, icons, keys, fonts (above)
   src/main.rs    SDL, the loop (wait, input, draw when dirty), the turn, a simulation's shots
-  config.rs      the address (credential `target`, else MAISON_TARGET), state dir, language,
+  config.rs      the address (credential `target`: root's /android-data/maison/target, which the
+                 initramfs adopts from install.sh's; else MAISON_TARGET), state dir, language,
                  turn, scale, a window for a simulation
-  client.rs      HTTP (ureq 3, rustls, no redirects, bounded waits), the screen cookie, four
-                 failures (signed out, refused with its code, unreachable, unreadable)
+  client.rs      HTTP (ureq 3, rustls, no redirects, no proxy, bounded waits), the screen cookie
+                 bound to its origin, four failures (signed out, refused with its `Code`,
+                 unreachable, unreadable)
+  paths.rs       the API's paths
   live.rs        the web app's live(): one thread per source at its pace, read while a drawing
-                 wants it, stopped when none does, stale after three paces, refresh(prefix)
+                 wants it, stopped when none does, stale after STALE_CADENCES paces, its last
+                 failure kept for the words, refresh(prefix)
   pairing.rs     who the screen is: /me, a code until claimed, expired, removed
-  commands.rs    gestures: target shown at once, slow after 1 s, late past the family's limit,
+  commands.rs    gestures: target shown at once, slow after COMMAND_SLOW_MS, late past the family's limit,
                  held until the family is read again after the answer (the web app's settle),
                  one order on the wire per key (the latest waits), « Tout … » said once
   i18n.rs theme.rs   words and tokens
   sim.rs         a simulation's hands and eyes (MAISON_STDIN=1): press, slide, drag, shot
-  ui/            gfx (text atlas, discs and rounded boxes, icons, pictures), model (Group,
-                 Tile, Part, Button, Slider, Screen), paint (the web app's measures, hits),
-                 slider (live sends every 300 ms, held 3 s), touch (tap, drag, fling)
+  ui/            gfx (text atlas, discs and rounded boxes, icons, pictures), icon (typed),
+                 model (Group, Tile, Part, Button, Slider, Screen), layout (the web app's
+                 measures, the painter's primitives, hits), bricks (button, slider, tile),
+                 screens (house, door, toasts), slider (live sends every SLIDER_THROTTLE_MS,
+                 held SLIDER_HOLD_MS), touch (tap, drag, fling)
   families/      tempo, lamps (Hue + Zigbee), shutters, plugs, scenes: pure functions from the
                  API's answers to a group, each tested on the backend's JSON
   simulate.sh sim/   the armv7 binary on the frame's system, emulated (below)
@@ -72,8 +80,10 @@ frame/ui/
 ## Quality and simulation
 
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo deny check` (no GPL; the
-  repository's own crates unlicensed until the owner chooses), 55 unit tests (client against a
-  stub server, pairing, live, commands, sliders, touch, words, tokens, fonts, icons, each family).
+  repository's own crates unlicensed until the owner chooses), 65 unit tests (client against a
+  stub server, pairing, live, commands, sliders, touch, words and refusals, tokens and media
+  queries, fonts, icons, each family, the app's scroll, toasts, wakes and removal, and a real
+  drawing on SDL's dummy video driver and software renderer: hits, state lines, fit).
 - **e2e/frame.ts** (in `bun run all`): the real backend on a throwaway root, the simulated house
   (e2e/house.ts, the same one the pages see) behind a proxy, the app paired for real from an
   admin's phone, then driven: a lamp off and on, its brightness slid, a plug, a shutter, a lamp

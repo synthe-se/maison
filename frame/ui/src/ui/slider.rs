@@ -1,21 +1,21 @@
 //! A slider's own state, as the web app's Range keeps it: while a finger holds it, the value is
-//! the finger's; a live slider (a lamp's brightness) sends at most every 300 ms on the way, any
-//! slider sends where it was let go; after that the value is held for 3 s, or until the device
-//! says one this near, so the thumb does not jump back to the old reading while the order
-//! travels.
+//! the finger's; a live slider (a lamp's brightness) sends at most every `SLIDER_THROTTLE_MS` on
+//! the way, any slider sends where it was let go; after that the value is held for
+//! `SLIDER_HOLD_MS`, or until the device says one this near, so the thumb does not jump back to
+//! the old reading while the order travels.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use maison_api::paces;
 
-use crate::commands::{Order, limit};
+use crate::commands::{Order, Post, limit};
 use crate::ui::model::Slider;
 
 /// A live slider's orders are this far apart at least.
-pub const THROTTLE: Duration = Duration::from_millis(300);
+pub const THROTTLE: Duration = Duration::from_millis(paces::SLIDER_THROTTLE_MS);
 /// How long a value let go is held against an older reading.
-pub const HOLD: Duration = Duration::from_secs(3);
+pub const HOLD: Duration = Duration::from_millis(paces::SLIDER_HOLD_MS);
 
 #[derive(Debug, Clone)]
 struct Held {
@@ -43,19 +43,13 @@ pub fn value_at(s: &Slider, x: f32, x0: f32, x1: f32) -> f64 {
 }
 
 fn order(s: &Slider, value: f64) -> Order {
-    let n = if value.fract() == 0.0 {
-        json!(value as i64)
-    } else {
-        json!(value)
+    let post = Post {
+        path: s.path.clone(),
+        body: Some((s.body)(value)),
     };
-    Order::one(
-        format!("{}:set", s.key),
-        s.name.clone(),
-        s.path.clone(),
-        Some(json!({ s.field: n })),
-    )
-    .within(limit::DEVICE)
-    .then_refresh(&[s.refresh])
+    Order::one(format!("{}:set", s.key), s.name.clone(), post)
+        .within(limit::DEVICE)
+        .then_refresh(&[s.refresh])
 }
 
 impl Sliders {
@@ -156,6 +150,13 @@ impl Sliders {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn brightness(v: f64) -> serde_json::Value {
+        crate::commands::json(&maison_api::lamps::BrightnessRequest {
+            brightness: v as u8,
+        })
+    }
 
     fn lamp(value: f64) -> Slider {
         Slider {
@@ -169,7 +170,7 @@ mod tests {
             near: 2.0,
             ends: None,
             path: "/hue-lamps/1/brightness".into(),
-            field: "brightness",
+            body: brightness,
             refresh: "hue-lamp",
             name: "Salon".into(),
         }

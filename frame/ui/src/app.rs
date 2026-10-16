@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use maison_api::paces;
 use maison_api::sun::Side;
 
 use crate::client::Client;
@@ -16,16 +17,20 @@ use crate::i18n::{Words, k};
 use crate::live::Live;
 use crate::pairing::{Ask, Screen as Who, Session};
 use crate::theme::{self, Palette};
+use crate::ui::icon;
+use crate::ui::layout::{Hit, Target};
 use crate::ui::model::{Act, Button, Screen};
-use crate::ui::paint::{Hit, Target};
 use crate::ui::slider::{Sliders, value_at};
 use crate::ui::touch::{Finger, Meaning, Under};
 
-/// How long a toast stays (the web app's: 4 s, a warning longer).
-const TOAST: Duration = Duration::from_secs(4);
-const TOAST_WARN: Duration = Duration::from_secs(8);
+/// How long a toast stays (`paces::TOAST_MS`, the web app's). A warning stays until dismissed
+/// on a page; on a wall, which nobody dismisses, `WALL_WARNING_MS`.
+const TOAST: Duration = Duration::from_millis(paces::TOAST_MS);
+const TOAST_WARN: Duration = Duration::from_millis(paces::WALL_WARNING_MS);
 /// A frame while something moves (a fling): the panel's 60 Hz.
 pub const FRAME: Duration = Duration::from_millis(16);
+/// Every API call's whole wait (a device's own limit is shorter: `commands::limit`).
+const HTTP_WAIT: Duration = Duration::from_secs(15);
 
 pub struct App {
     pub words: Words,
@@ -39,8 +44,9 @@ pub struct App {
     pub scroll: f32,
     /// The column's height and the panel's, from the last drawing.
     content: f32,
-    pub height: f32,
+    height: f32,
     hits: Vec<Hit>,
+    /// The toasts shown, each until when.
     toasts: Vec<(Toast, Instant)>,
     /// The sun's side, kept once known (a page signed out reads it too).
     side: Option<Side>,
@@ -50,7 +56,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: &Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let client = Client::new(&config.origin, &config.state_dir, Duration::from_secs(15));
+        let client = Client::new(&config.origin, &config.state_dir, HTTP_WAIT);
         Self {
             words: Words::new(config.lang),
             live: Live::new(client.clone(), wake.clone()),
@@ -83,7 +89,9 @@ impl App {
             .commands
             .take(&self.words, &mut |f| live.refresh(f), &mut toasts);
         let now = Instant::now();
-        self.toasts.extend(toasts.into_iter().map(|t| (t, now)));
+        for t in toasts {
+            self.toast(t, now);
+        }
         if self.live.signed_out() {
             // the screen was removed: the house goes, the pairing says so
             self.live.clear();
@@ -93,14 +101,22 @@ impl App {
         self.dirty |= changed;
     }
 
+    /// A toast, until its time is over; the same words again replace it (the web app's), and
+    /// stay their whole time from now.
+    fn toast(&mut self, t: Toast, now: Instant) {
+        let until = now + if t.warn { TOAST_WARN } else { TOAST };
+        self.toasts.retain(|(shown, _)| shown.text != t.text);
+        self.toasts.push((t, until));
+        self.dirty = true;
+    }
+
     /// Time passed: owed slider sends, toasts gone, the gestures' looks (slow, late).
     pub fn tick(&mut self, now: Instant) {
         for o in self.sliders.due(now) {
             self.commands.run(o);
         }
         let before = self.toasts.len();
-        self.toasts
-            .retain(|(t, at)| now < *at + if t.warn { TOAST_WARN } else { TOAST });
+        self.toasts.retain(|(_, until)| now < *until);
         self.dirty |= self.toasts.len() != before;
         self.sliders.sweep(now);
         if self.finger.flinging() {
@@ -121,10 +137,7 @@ impl App {
             self.live.next_stale(),
             self.commands.next_change(),
             self.sliders.next_change(now),
-            self.toasts
-                .iter()
-                .map(|(t, at)| *at + if t.warn { TOAST_WARN } else { TOAST })
-                .min(),
+            self.toasts.iter().map(|(_, until)| *until).min(),
         ]
         .into_iter()
         .flatten()
@@ -154,89 +167,22 @@ impl App {
     /// What the screen shows now, from who it is and what the house says.
     pub fn screen(&mut self, now: Instant) -> Screen {
         self.live.begin();
-        let w = &self.words;
-        let pair = |label: &str, ask: Ask| {
-            Some(Box::new(
-                Button::new(Some("refresh-cw"), label, Act::Pairing(ask)).primary(true),
-            ))
+        let mut cx = Cx {
+            live: &mut self.live,
+            words: &self.words,
+            sources: &mut self.sources,
+            now,
         };
-        let screen = match &self.session.screen {
-            Who::Paired { .. } => {
-                let mut cx = Cx {
-                    live: &mut self.live,
-                    words: &self.words,
-                    sources: &mut self.sources,
-                    now,
-                };
-                if let Some(side) = families::sun_signed_in(&mut cx) {
-                    self.side = Some(side);
-                }
-                let mut cx = Cx {
-                    live: &mut self.live,
-                    words: &self.words,
-                    sources: &mut self.sources,
-                    now,
-                };
-                Screen::House(families::house(&mut cx))
-            }
-            who => {
-                let mut cx = Cx {
-                    live: &mut self.live,
-                    words: &self.words,
-                    sources: &mut self.sources,
-                    now,
-                };
-                if let Some(side) = families::sun_signed_out(&mut cx) {
-                    self.side = Some(side);
-                }
-                match who {
-                    Who::Checking => Screen::Door {
-                        title: w.s(k::SCREEN_PAIR_TITLE),
-                        lead: vec![w.s(k::COMMON_LOADING)],
-                        code: None,
-                        hint: None,
-                        button: None,
-                        warn: false,
-                    },
-                    Who::Code { code, minutes, .. } => Screen::Door {
-                        title: w.s(k::SCREEN_PAIR_TITLE),
-                        lead: vec![w.s(k::SCREEN_PAIR_INTRO)],
-                        code: Some(code.clone()),
-                        hint: Some(w.t(
-                            k::SCREEN_PAIR_VALID,
-                            &[("minutes", crate::i18n::Arg::Count(*minutes as f64))],
-                        )),
-                        button: None,
-                        warn: false,
-                    },
-                    Who::Expired => Screen::Door {
-                        title: w.s(k::SCREEN_PAIR_TITLE),
-                        lead: vec![w.s(k::SCREEN_PAIR_EXPIRED)],
-                        code: None,
-                        hint: None,
-                        button: pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
-                        warn: false,
-                    },
-                    Who::Failed(f) => Screen::Door {
-                        title: w.s(k::SCREEN_PAIR_TITLE),
-                        lead: vec![w.failure(f)],
-                        code: None,
-                        hint: None,
-                        button: pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
-                        warn: true,
-                    },
-                    Who::Revoked => Screen::Door {
-                        title: w.s(k::SCREEN_REVOKED_TITLE),
-                        lead: vec![w.s(k::SCREEN_REVOKED_BODY)],
-                        code: None,
-                        hint: None,
-                        button: pair(&w.s(k::SCREEN_PAIR_RETRY), Ask::Pair),
-                        warn: false,
-                    },
-                    Who::Paired { .. } => unreachable!("matched above"),
-                }
-            }
+        let (side, screen) = match &self.session.screen {
+            Who::Paired => (
+                families::sun_signed_in(&mut cx),
+                Screen::House(families::house(&mut cx)),
+            ),
+            who => (families::sun_signed_out(&mut cx), door(&self.words, who)),
         };
+        if side.is_some() {
+            self.side = side;
+        }
         self.live.sweep();
         screen
     }
@@ -251,11 +197,7 @@ impl App {
 
     /// The centre of the control whose gesture is `key` (a simulation's `press`).
     pub fn center_of(&self, key: &str) -> Option<(f32, f32)> {
-        let h = self
-            .hits
-            .iter()
-            .rev()
-            .find(|h| crate::sim::key_of(&h.what) == Some(key))?;
+        let h = self.hits.iter().rev().find(|h| h.what.key() == Some(key))?;
         Some((h.x + h.w / 2.0, h.y + h.h / 2.0))
     }
 
@@ -273,13 +215,7 @@ impl App {
     pub fn keys(&self) -> Vec<(String, f32, f32)> {
         self.hits
             .iter()
-            .filter_map(|h| {
-                Some((
-                    crate::sim::key_of(&h.what)?.to_string(),
-                    h.x + h.w / 2.0,
-                    h.y + h.h / 2.0,
-                ))
-            })
+            .filter_map(|h| Some((h.what.key()?.to_string(), h.x + h.w / 2.0, h.y + h.h / 2.0)))
             .collect()
     }
 
@@ -360,5 +296,220 @@ impl App {
             Act::Pairing(ask) => self.session.ask(ask),
         }
         self.dirty = true;
+    }
+}
+
+/// The door a screen not (yet) paired shows: what the pairing says, a code, a button.
+fn door(w: &Words, who: &Who) -> Screen {
+    let pair = |label: &str, ask: Ask| {
+        Some(Box::new(
+            Button::new(Some(icon::REFRESH_CW), label, Act::Pairing(ask)).primary(true),
+        ))
+    };
+    let (title, lead, code, hint, button, warn) = match who {
+        // shown only once the house is: the door of a screen still asking who it is
+        Who::Checking | Who::Paired => (
+            k::SCREEN_PAIR_TITLE,
+            w.s(k::COMMON_LOADING),
+            None,
+            None,
+            None,
+            false,
+        ),
+        Who::Code { code, minutes } => (
+            k::SCREEN_PAIR_TITLE,
+            w.s(k::SCREEN_PAIR_INTRO),
+            Some(code.clone()),
+            Some(w.t(
+                k::SCREEN_PAIR_VALID,
+                &[("minutes", crate::i18n::Arg::Count(*minutes as f64))],
+            )),
+            None,
+            false,
+        ),
+        Who::Expired => (
+            k::SCREEN_PAIR_TITLE,
+            w.s(k::SCREEN_PAIR_EXPIRED),
+            None,
+            None,
+            pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
+            false,
+        ),
+        Who::Failed(f) => (
+            k::SCREEN_PAIR_TITLE,
+            w.failure(f),
+            None,
+            None,
+            pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
+            true,
+        ),
+        Who::Revoked => (
+            k::SCREEN_REVOKED_TITLE,
+            w.s(k::SCREEN_REVOKED_BODY),
+            None,
+            None,
+            pair(&w.s(k::SCREEN_PAIR_RETRY), Ask::Pair),
+            false,
+        ),
+    };
+    Screen::Door {
+        title: w.s(title),
+        lead: vec![lead],
+        code,
+        hint,
+        button,
+        warn,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::stub::serve;
+    use crate::i18n::Lang;
+    use crate::testing::{temp_dir, wait_until};
+    use std::path::PathBuf;
+
+    fn config(origin: &str, state_dir: PathBuf) -> Config {
+        Config {
+            origin: origin.into(),
+            state_dir,
+            lang: Lang::Fr,
+            rotate: false,
+            scale: 1.0,
+            window: None,
+        }
+    }
+
+    /// An app whose Maison answers nothing at all.
+    fn alone() -> App {
+        App::new(
+            &config("http://127.0.0.1:9", temp_dir("app")),
+            Arc::new(|| {}),
+        )
+    }
+
+    fn toast(text: &str, warn: bool) -> Toast {
+        Toast {
+            text: text.into(),
+            warn,
+        }
+    }
+
+    #[test]
+    fn the_scroll_stays_inside_the_column() {
+        let mut app = alone();
+        app.scroll = 5000.0;
+        app.drawn(Vec::new(), 3000.0, 1280.0);
+        assert_eq!(app.scroll, 3000.0 - 1280.0);
+        app.scroll = -40.0;
+        app.drawn(Vec::new(), 3000.0, 1280.0);
+        assert_eq!(app.scroll, 0.0);
+        // a column shorter than the panel does not scroll
+        app.scroll = 100.0;
+        app.drawn(Vec::new(), 600.0, 1280.0);
+        assert_eq!(app.scroll, 0.0);
+    }
+
+    #[test]
+    fn a_toast_stays_its_time_a_warning_longer_and_the_same_words_once() {
+        let mut app = alone();
+        let t0 = Instant::now();
+        app.toast(toast("Fait", false), t0);
+        app.toast(toast("Pas de réponse", true), t0);
+        assert_eq!(app.next_wake(t0), Some(t0 + TOAST));
+        app.dirty = false;
+        app.tick(t0 + TOAST - Duration::from_millis(1));
+        assert_eq!(app.toasts().len(), 2);
+        assert!(!app.dirty);
+        app.tick(t0 + TOAST);
+        assert_eq!(app.toasts(), [toast("Pas de réponse", true)]);
+        assert!(app.dirty, "a toast gone is drawn gone");
+        assert_eq!(app.next_wake(t0 + TOAST), Some(t0 + TOAST_WARN));
+        // the same words again: one toast, its time from now
+        let t1 = t0 + TOAST;
+        app.toast(toast("Pas de réponse", true), t1);
+        assert_eq!(app.toasts().len(), 1);
+        app.tick(t0 + TOAST_WARN);
+        assert_eq!(app.toasts().len(), 1);
+        app.tick(t1 + TOAST_WARN);
+        assert!(app.toasts().is_empty());
+        assert_eq!(TOAST, Duration::from_millis(paces::TOAST_MS));
+        assert_eq!(TOAST_WARN, Duration::from_millis(paces::WALL_WARNING_MS));
+    }
+
+    #[test]
+    fn the_loop_wakes_for_a_fling_every_frame_else_when_something_turns() {
+        let mut app = alone();
+        let t0 = Instant::now();
+        assert_eq!(app.next_wake(t0), None, "idle: nothing to wake for");
+        app.drawn(Vec::new(), 5000.0, 1280.0);
+        // a quick drag up, let go: a fling, a frame at a time
+        app.finger_down(10.0, 900.0, t0);
+        for i in 1..=5 {
+            app.finger_motion(10.0, 900.0 - 60.0 * i as f32, t0 + FRAME * i);
+        }
+        app.finger_up(10.0, 600.0, t0 + FRAME * 6);
+        let now = t0 + FRAME * 6;
+        assert_eq!(app.next_wake(now), Some(now + FRAME));
+        assert!(app.scroll > 0.0);
+    }
+
+    #[test]
+    fn a_removed_screen_leaves_the_house_for_its_door() {
+        let dir = temp_dir("app-removed");
+        let stub = serve(|line| match line {
+            l if l.starts_with("GET /api/screens/me") => (
+                200,
+                vec![],
+                r#"{"success":true,"screen":{"name":"Salon"}}"#.into(),
+            ),
+            // removed in « Mon compte »: every read now says 401
+            _ => (401, vec![], r#"{"code":"not_signed_in"}"#.into()),
+        });
+        std::fs::write(
+            dir.join("screen-cookie"),
+            format!("{}\nmaison_screen=t\n", stub.origin),
+        )
+        .unwrap();
+        let mut app = App::new(&config(&stub.origin, dir.clone()), Arc::new(|| {}));
+        wait_until(|| {
+            app.take();
+            matches!(app.screen(Instant::now()), Screen::House(_))
+        });
+        // the house's reads say 401: the pairing is told, the screen says it was removed
+        wait_until(|| {
+            app.take();
+            app.session.screen == Who::Revoked
+        });
+        let Screen::Door { title, button, .. } = app.screen(Instant::now()) else {
+            panic!("the door")
+        };
+        assert_eq!(title, app.words.s(k::SCREEN_REVOKED_TITLE));
+        assert!(matches!(
+            button.map(|b| b.act),
+            Some(Act::Pairing(Ask::Pair))
+        ));
+        assert!(!dir.join("screen-cookie").exists());
+    }
+
+    #[test]
+    fn every_door_says_something() {
+        let w = Words::new(Lang::Fr);
+        for who in [
+            Who::Checking,
+            Who::Code {
+                code: "ABCD-2345".into(),
+                minutes: 10,
+            },
+            Who::Expired,
+            Who::Failed(crate::client::Failure::Unreachable("x".into())),
+            Who::Revoked,
+        ] {
+            let Screen::Door { title, lead, .. } = door(&w, &who) else {
+                panic!("a door")
+            };
+            assert!(!title.is_empty() && !lead[0].is_empty(), "{who:?}");
+        }
     }
 }

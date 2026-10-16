@@ -1,30 +1,33 @@
 //! Orders to the house, as the web app's `Command` and `Gesture` send them (docs/ux.md § 2):
 //! each on its own thread (a gesture never waits on another, nor blocks a frame); a toggle
-//! shows its target at once, « slow » after a second, and past its family's limit (lamp 3 s,
-//! plug 5 s) goes back to what the device said, « Pas de réponse · Réessayer » on its tile.
-//! An answer reads its family again (`refresh`); a group's « Tout … » sends every order at
-//! once and says the outcome once, naming who did not answer.
+//! shows its target at once, « slow » after `COMMAND_SLOW_MS`, and past its family's limit
+//! (`maison_api::paces`: a lamp's, a plug's) goes back to what the device said, « Pas de
+//! réponse · Réessayer » on its tile. An answer reads its family again (`refresh`); a group's
+//! « Tout … » sends every order at once and says the outcome once, naming who did not answer.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use maison_api::paces;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::client::{Client, Failure};
 use crate::i18n::Words;
 
-/// The web app's `LIMIT` (command.svelte.ts): how long a family's device may take.
+/// How long a family's device may take (`maison_api::paces`, the web app's `LIMIT`).
 pub mod limit {
+    use maison_api::paces;
     use std::time::Duration;
-    pub const LAMP: Duration = Duration::from_secs(3);
-    pub const PLUG: Duration = Duration::from_secs(5);
-    pub const DEVICE: Duration = Duration::from_secs(10);
+    pub const LAMP: Duration = Duration::from_millis(paces::LAMP_LIMIT_MS);
+    pub const PLUG: Duration = Duration::from_millis(paces::PLUG_LIMIT_MS);
+    pub const DEVICE: Duration = Duration::from_millis(paces::DEVICE_LIMIT_MS);
 }
 
-/// After a second without an answer, the gesture says it is slow.
-pub const SLOW: Duration = Duration::from_secs(1);
+/// Without an answer this long, the gesture says it is slow.
+pub const SLOW: Duration = Duration::from_millis(paces::COMMAND_SLOW_MS);
 
 /// What an answer says once it came: a toast's words, warning or not.
 pub type Say = fn(&Words, &Outcome) -> Option<Toast>;
@@ -53,6 +56,34 @@ pub struct Post {
     pub body: Option<Value>,
 }
 
+impl Post {
+    /// A POST without a body.
+    pub fn empty(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            body: None,
+        }
+    }
+
+    /// A POST of one of the API's request types (`maison_api::lamps::PowerRequest`…): a field
+    /// the API renames no longer builds here.
+    pub fn json(path: impl Into<String>, body: &impl Serialize) -> Self {
+        Self {
+            path: path.into(),
+            body: Some(json(body)),
+        }
+    }
+}
+
+/// A request type as JSON. The API's types are plain structs: they always serialize; were one
+/// ever to fail, the order goes without a body and the server says what it lacks.
+pub fn json(body: &impl Serialize) -> Value {
+    serde_json::to_value(body).unwrap_or_else(|e| {
+        eprintln!("a request body did not serialize: {e}");
+        Value::Null
+    })
+}
+
 /// A gesture: what it sends, what it reads again after, how it is shown and said.
 #[derive(Debug, Clone)]
 pub struct Order {
@@ -70,21 +101,15 @@ pub struct Order {
 
 impl Order {
     /// One post, to the device `name`.
-    pub fn one(
-        key: impl Into<String>,
-        name: impl Into<String>,
-        path: impl Into<String>,
-        body: Option<Value>,
-    ) -> Self {
+    pub fn one(key: impl Into<String>, name: impl Into<String>, post: Post) -> Self {
+        Self::many(key, vec![(name.into(), post)])
+    }
+
+    /// One post per device, sent together (a group's « Tout … »), by the devices' names.
+    pub fn many(key: impl Into<String>, posts: Vec<(String, Post)>) -> Self {
         Self {
             key: key.into(),
-            posts: vec![(
-                name.into(),
-                Post {
-                    path: path.into(),
-                    body,
-                },
-            )],
+            posts,
             target: None,
             limit: limit::DEVICE,
             refresh: Vec::new(),
@@ -378,7 +403,7 @@ mod tests {
     use crate::client::stub::serve;
     use crate::i18n::{Lang, Words};
     use crate::testing::{temp_dir, wait_until};
-    use serde_json::json;
+    use maison_api::lamps::{BrightnessRequest, PowerRequest};
 
     fn commands(origin: &str) -> Commands {
         let client = Client::new(origin, &temp_dir("commands"), Duration::from_secs(5));
@@ -400,8 +425,7 @@ mod tests {
         let order = Order::one(
             "hue-lamp:1:power",
             "Salon",
-            "/hue-lamps/1/power",
-            Some(json!({"enabled": true})),
+            Post::json("/hue-lamps/1/power", &PowerRequest { enabled: true }),
         )
         .toggle(true)
         .within(limit::LAMP)
@@ -439,7 +463,14 @@ mod tests {
         let stub = serve(|_| (500, vec![], "{}".into()));
         let words = Words::new(Lang::Fr);
         let mut c = commands(&stub.origin);
-        c.run(Order::one("meross:p:toggle", "Bouilloire", "/meross/p/toggle", None).toggle(true));
+        c.run(
+            Order::one(
+                "meross:p:toggle",
+                "Bouilloire",
+                Post::empty("/meross/p/toggle"),
+            )
+            .toggle(true),
+        );
         settle(&mut c, &words);
         assert_eq!(c.state("meross:p:toggle"), State::Late);
         // the late toggle shows what the device said
@@ -456,12 +487,12 @@ mod tests {
         });
         let mut c = commands(&stub.origin);
         c.run(
-            Order::one("k", "x", "/x", None)
+            Order::one("k", "x", Post::empty("/x"))
                 .toggle(true)
                 .within(Duration::from_millis(100)),
         );
-        std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(c.state("k"), State::Late);
+        // late by itself, before any answer
+        wait_until(|| c.state("k") == State::Late);
         let words = Words::new(Lang::Fr);
         settle(&mut c, &words);
         // the answer past its limit does not clear what the tile said
@@ -480,8 +511,7 @@ mod tests {
             Order::one(
                 "lamp:1:brightness:set",
                 "Salon",
-                "/l/1/brightness",
-                Some(json!({ "brightness": v })),
+                Post::json("/l/1/brightness", &BrightnessRequest { brightness: v }),
             )
         };
         c.run(set(1));
@@ -516,9 +546,11 @@ mod tests {
         });
         let words = Words::new(Lang::Fr);
         let mut c = commands(&stub.origin);
-        let post = |id: &str| Post {
-            path: format!("/zigbee/lamps/{id}/power"),
-            body: Some(json!({"enabled": false})),
+        let post = |id: &str| {
+            Post::json(
+                format!("/zigbee/lamps/{id}/power"),
+                &PowerRequest { enabled: false },
+            )
         };
         fn say(w: &Words, o: &Outcome) -> Option<Toast> {
             Some(Toast {
@@ -526,18 +558,19 @@ mod tests {
                 warn: !o.failed.is_empty(),
             })
         }
-        c.run(Order {
-            key: "lamps:off".into(),
-            posts: vec![
-                ("Un".into(), post("1")),
-                ("Deux".into(), post("2")),
-                ("Trois".into(), post("3")),
-            ],
-            target: None,
-            limit: limit::LAMP,
-            refresh: vec!["hue-lamp", "zigbee-lamp"],
-            say: Some(say),
-        });
+        c.run(
+            Order::many(
+                "lamps:off",
+                vec![
+                    ("Un".into(), post("1")),
+                    ("Deux".into(), post("2")),
+                    ("Trois".into(), post("3")),
+                ],
+            )
+            .within(limit::LAMP)
+            .then_refresh(&["hue-lamp", "zigbee-lamp"])
+            .said(say),
+        );
         let (refreshed, toasts) = settle(&mut c, &words);
         assert_eq!(refreshed, ["hue-lamp", "zigbee-lamp"]);
         assert_eq!(

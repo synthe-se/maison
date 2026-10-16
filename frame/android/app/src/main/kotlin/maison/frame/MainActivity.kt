@@ -3,9 +3,14 @@ package maison.frame
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
@@ -27,14 +32,28 @@ class MainActivity : Activity() {
 	private var target: Target? = null
 	private var canGoBack = false
 	private val handler = Handler(Looper.getMainLooper())
-	private val backoff = Backoff()
 	private val retry = Runnable { target?.let { session?.loadUri(it.startUrl) } }
+	private val retries =
+		Retries(Backoff()) { delay ->
+			handler.removeCallbacks(retry)
+			handler.postDelayed(retry, delay)
+		}
+
+	// The Wi-Fi back: a page that could not load is tried again at once (on the main thread).
+	private val network =
+		object : ConnectivityManager.NetworkCallback() {
+			override fun onAvailable(network: Network) {
+				handler.post { retries.networkAvailable() }
+			}
+		}
 
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
 		window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 		view = GeckoView(this)
 		setContentView(view)
+		val internet = NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
+		getSystemService(ConnectivityManager::class.java).registerNetworkCallback(internet, network)
 		open()
 	}
 
@@ -43,10 +62,14 @@ class MainActivity : Activity() {
 		setIntent(intent)
 		when (intent.action) {
 			ACTION_RELOAD -> open()
-			ACTION_RELEASE -> {
-				stopLockTask()
-				Kiosk.release(this)
-			}
+			// only from ProvisionReceiver (the shell's): the activity is exported, its word is not enough
+			ACTION_RELEASE ->
+				if (ReleaseGrant.redeem(intent.getStringExtra(EXTRA_GRANT))) {
+					stopLockTask()
+					Kiosk.release(this)
+				} else {
+					Log.w(TAG, "release refused: not granted by the provisioning receiver")
+				}
 		}
 	}
 
@@ -70,6 +93,7 @@ class MainActivity : Activity() {
 	}
 
 	override fun onDestroy() {
+		getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(network)
 		handler.removeCallbacks(retry)
 		session?.close()
 		super.onDestroy()
@@ -102,11 +126,6 @@ class MainActivity : Activity() {
 		}
 	}
 
-	private fun retryLater() {
-		handler.removeCallbacks(retry)
-		handler.postDelayed(retry, backoff.next())
-	}
-
 	private inner class Navigation(private val target: Target) : GeckoSession.NavigationDelegate {
 		override fun onLoadRequest(session: GeckoSession, request: LoadRequest): GeckoResult<AllowOrDeny> =
 			GeckoResult.fromValue(if (target.allows(request.uri)) AllowOrDeny.ALLOW else AllowOrDeny.DENY)
@@ -120,7 +139,7 @@ class MainActivity : Activity() {
 
 		override fun onLoadError(session: GeckoSession, uri: String?, error: WebRequestError): GeckoResult<String>? {
 			view.visibility = View.INVISIBLE
-			retryLater()
+			retries.failed()
 			return null
 		}
 	}
@@ -128,7 +147,7 @@ class MainActivity : Activity() {
 	private inner class Progress : GeckoSession.ProgressDelegate {
 		override fun onPageStop(session: GeckoSession, success: Boolean) {
 			if (!success) return
-			backoff.reset()
+			retries.loaded()
 			view.visibility = View.VISIBLE
 		}
 	}
@@ -147,5 +166,9 @@ class MainActivity : Activity() {
 	companion object {
 		const val ACTION_RELOAD = "maison.frame.RELOAD"
 		const val ACTION_RELEASE = "maison.frame.RELEASE_KIOSK"
+
+		/** The one-time secret a release carries ([ReleaseGrant]). */
+		const val EXTRA_GRANT = "maison.frame.GRANT"
+		private const val TAG = "maison.frame"
 	}
 }

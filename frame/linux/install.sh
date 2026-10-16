@@ -3,7 +3,11 @@
 # no partition written): rootfs.squashfs in /data/local/tmp/maison, pushed under a temporary name
 # then renamed (a copy cut halfway never replaces the image). With --target, also Maison's address,
 # the one thing the kiosk is given: it is in as a wall screen paired from its sign-in screen
-# (docs/passkeys.md « Wall screens »), no token to carry.
+# (docs/passkeys.md « Wall screens »), no token to carry. The address lands where Android's shell
+# writes, /data/local/tmp/maison/target; the next mainline boot's initramfs adopts it into root's
+# /data/maison/target (what the units read) and removes it, but only while root keeps none: to
+# change it later, remove root's first from the mainline console
+# (`frame/linux/console.sh 'rm /android-data/maison/target'`), then --target again and reboot.
 # Usage: frame/linux/install.sh [--target https://home.example]
 set -euo pipefail
 
@@ -35,5 +39,5 @@ if [ "${1:-}" = --target ]; then
 	printf '%s' "${URL%%#*}" >"$tmp"
 	a push "$tmp" "$DIR/target.new" >/dev/null
 	a shell "chmod 600 $DIR/target.new && mv $DIR/target.new $DIR/target"
-	echo "target: ${URL%%#*}"
+	echo "target: ${URL%%#*} (adopted at the next mainline boot, unless the frame already keeps one)"
 fi

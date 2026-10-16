@@ -15,11 +15,9 @@
 use std::io::BufRead;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::app::App;
-use crate::ui::model::Act;
-use crate::ui::paint::Target;
+use crate::app::{App, FRAME};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -60,19 +58,11 @@ pub fn listen(wake: Arc<dyn Fn() + Send + Sync>) -> Receiver<String> {
     rx
 }
 
-/// The key of what a hit does: an order's, a slider's.
-pub fn key_of(t: &Target) -> Option<&str> {
-    match t {
-        Target::Act(Act::Order(o)) => Some(&o.key),
-        Target::Slider { slider, .. } => Some(&slider.key),
-        _ => None,
-    }
-}
-
 /// Runs one command; a shot asked is returned (taken after the next drawing).
 pub fn run(app: &mut App, c: Command) -> Result<Option<String>, String> {
     let now = Instant::now();
-    let step = Duration::from_millis(16);
+    // a finger's points a frame apart
+    let step = FRAME;
     match c {
         Command::Tap(x, y) => {
             app.finger_down(x, y, now);

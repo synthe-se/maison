@@ -17,6 +17,7 @@ mod families;
 mod i18n;
 mod live;
 mod pairing;
+mod paths;
 mod sim;
 #[cfg(test)]
 mod testing;
@@ -25,20 +26,26 @@ mod ui;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Keycode;
-use sdl3::render::{Canvas, Texture};
-use sdl3::video::Window;
+use sdl3::render::{Canvas, Texture, TextureCreator};
+use sdl3::video::{Window, WindowContext};
 
 use crate::app::App;
-use crate::config::Config;
+use crate::config::{Config, PANEL};
+use crate::i18n::k;
 use crate::ui::gfx::{Draw, Error, Gfx};
-use crate::ui::paint::{Ctx, paint};
+use crate::ui::layout::{Ctx, Drawn};
+use crate::ui::model::Screen;
+use crate::ui::screens::paint;
 
 /// Drawings failed in a row before the app gives up (systemd starts it again).
 const MAX_FAILURES: u32 = 20;
+/// A drawing that failed is tried again this much later.
+const RETRY: Duration = Duration::from_secs(1);
 
 /// The threads' word that something came; one in the queue at a time.
 struct Wake;
@@ -106,30 +113,80 @@ fn main() {
     }
 }
 
+/// SDL's hints, not the environment: SDL_RENDER_DRIVER set outside still wins. One SDL refuses
+/// is said (the app goes on with SDL's default).
+fn hints() {
+    for (name, value) in [
+        ("SDL_RENDER_DRIVER", "opengles2"),
+        ("SDL_RENDER_VSYNC", "1"),
+        // fingers only: the touch's synthetic mouse is noise, and a simulation's mouse is a finger
+        ("SDL_TOUCH_MOUSE_EVENTS", "0"),
+        ("SDL_MOUSE_TOUCH_EVENTS", "1"),
+    ] {
+        // SDL refuses a hint its environment variable already sets: that one wins, unsaid
+        if !sdl3::hint::set(name, value) && std::env::var_os(name).is_none() {
+            eprintln!("SDL refused the hint {name}={value}");
+        }
+    }
+}
+
+/// What the environment asks of a run besides the config.
+struct Run {
+    stats: bool,
+    /// Quit after this many drawings.
+    stop_after: Option<u64>,
+    /// A simulation's commands on stdin.
+    simulated: bool,
+}
+
+impl Run {
+    fn from_env() -> Self {
+        Self {
+            stats: std::env::var("MAISON_STATS").is_ok_and(|v| v == "1"),
+            stop_after: std::env::var("MAISON_FRAMES")
+                .ok()
+                .and_then(|n| n.parse::<u64>().ok()),
+            simulated: std::env::var("MAISON_STDIN").is_ok_and(|v| v == "1"),
+        }
+    }
+}
+
+/// The threads' way to wake the loop: one word in SDL's queue at a time; one that could not be
+/// queued lets the next one try.
+fn waker(events: &sdl3::EventSubsystem, pending: Arc<AtomicBool>) -> Arc<dyn Fn() + Send + Sync> {
+    let sender = events.event_sender();
+    Arc::new(move || {
+        if !pending.swap(true, Ordering::AcqRel)
+            && let Err(e) = sender.push_custom_event(Wake)
+        {
+            pending.store(false, Ordering::Release);
+            eprintln!("the loop could not be woken: {e}");
+        }
+    })
+}
+
 fn run() -> Result<(), Error> {
     let started = Instant::now();
     let config = Config::from_env()?;
-    // hints, not the environment: SDL_RENDER_DRIVER set outside still wins
-    sdl3::hint::set("SDL_RENDER_DRIVER", "opengles2");
-    sdl3::hint::set("SDL_RENDER_VSYNC", "1");
-    // fingers only: the touch's synthetic mouse is noise, and a simulation's mouse is a finger
-    sdl3::hint::set("SDL_TOUCH_MOUSE_EVENTS", "0");
-    sdl3::hint::set("SDL_MOUSE_TOUCH_EVENTS", "1");
-    let stats_on = std::env::var("MAISON_STATS").is_ok_and(|v| v == "1");
-    let stop_after = std::env::var("MAISON_FRAMES")
-        .ok()
-        .and_then(|n| n.parse::<u64>().ok());
-    let simulated = std::env::var("MAISON_STDIN").is_ok_and(|v| v == "1");
+    hints();
+    let opts = Run::from_env();
 
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
     let events = sdl.event()?;
     events.register_custom_event::<Wake>()?;
     let ttf = sdl3::ttf::init()?;
+
+    let pending = Arc::new(AtomicBool::new(false));
+    let wake = waker(&events, pending.clone());
+    let commands = opts.simulated.then(|| sim::listen(wake.clone()));
+    let mut app = App::new(&config, wake);
+
+    let title = app.words.s(k::BRANDING_NAME);
     let window = match config.window {
-        Some((w, h)) => video.window("Maison", w, h).build()?,
+        Some((w, h)) => video.window(&title, w, h).build()?,
         None => video
-            .window("Maison", 800, 1280)
+            .window(&title, PANEL.0, PANEL.1)
             .fullscreen()
             .borderless()
             .build()?,
@@ -145,26 +202,18 @@ fn run() -> Result<(), Error> {
         config.scale
     );
     let creator = canvas.texture_creator();
-    let mut gfx = Gfx::new(ttf, &creator)?;
-
-    let pending = Arc::new(AtomicBool::new(false));
-    let sender = events.event_sender();
-    let flag = pending.clone();
-    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-        // one word in the queue at a time; one that could not be queued lets the next one try
-        if !flag.swap(true, Ordering::AcqRel)
-            && let Err(e) = sender.push_custom_event(Wake)
-        {
-            flag.store(false, Ordering::Release);
-            eprintln!("the loop could not be woken: {e}");
-        }
-    });
-    let commands = simulated.then(|| sim::listen(wake.clone()));
-    let mut app = App::new(&config, wake);
+    let gfx = Gfx::new(ttf, &creator)?;
+    let mut panel = Panel {
+        canvas,
+        creator: &creator,
+        gfx,
+        turned: None,
+        rotate: config.rotate,
+        scale: config.scale,
+    };
+    let mut pump = sdl.event_pump()?;
     let mut shot: Option<String> = None;
     let mut said = String::new();
-    let mut pump = sdl.event_pump()?;
-    let mut turned: Option<Texture> = None;
     let mut drawings = 0_u64;
     // a drawing that failed is tried again a little later; past this many in a row, the app ends
     // (systemd starts it again): the renderer is lost
@@ -173,72 +222,19 @@ fn run() -> Result<(), Error> {
     let mut stats = Stats::new();
 
     loop {
-        let now = Instant::now();
-        let first_event = if app.dirty {
-            None
-        } else {
-            let next = [app.next_wake(now), retry].into_iter().flatten().min();
-            match next.map(|t| t.saturating_duration_since(now)) {
-                Some(t) => pump.wait_event_timeout(t),
-                None => Some(pump.wait_event()),
-            }
-        };
-        let (w, h) = canvas.output_size()?;
-        let (wf, hf) = (w as f32, h as f32);
-        // SDL says fingers in 0..1 of the window. The frame's touch is already the picture's
-        // way up (its device tree maps it to what the person sees, as cog showed: it turned its
-        // picture, never the touch), whoever turns the picture
-        let at = |x: f32, y: f32| (x * wf, y * hf);
-        for event in first_event.into_iter().chain(pump.poll_iter()) {
-            let now = Instant::now();
-            match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => return Ok(()),
-                Event::FingerDown { x, y, .. } => {
-                    let (x, y) = at(x, y);
-                    app.finger_down(x, y, now);
-                }
-                Event::FingerMotion { x, y, .. } => {
-                    let (x, y) = at(x, y);
-                    app.finger_motion(x, y, now);
-                }
-                Event::FingerUp { x, y, .. } => {
-                    let (x, y) = at(x, y);
-                    app.finger_up(x, y, now);
-                }
-                Event::Window {
-                    win_event:
-                        WindowEvent::Exposed
-                        | WindowEvent::PixelSizeChanged(..)
-                        | WindowEvent::Resized(..),
-                    ..
-                } => {
-                    turned = None;
-                    app.dirty = true;
-                }
-                e if e.is_user_event() => {
-                    // frees the boxed event; the flag lets the next one in
-                    let _ = e.as_user_event_type::<Wake>();
-                    pending.store(false, Ordering::Release);
-                    app.take();
-                }
-                _ => {}
+        let first = wait(&mut pump, &app, retry);
+        let (w, h) = panel.canvas.output_size()?;
+        for event in first.into_iter().chain(pump.poll_iter()) {
+            match on_event(&mut app, event, (w as f32, h as f32), &pending) {
+                Flow::Quit => return Ok(()),
+                Flow::Redraw => panel.turned = None,
+                Flow::Go => {}
             }
         }
-        if let Some(rx) = &commands {
-            while let Ok(line) = rx.try_recv() {
-                match sim::parse(&line).and_then(|c| sim::run(&mut app, c)) {
-                    Ok(Some(path)) => {
-                        shot = Some(path);
-                        app.dirty = true;
-                    }
-                    Ok(None) => println!("ok {line}"),
-                    Err(e) => println!("error {line}: {e}"),
-                }
-            }
+        if let Some(rx) = &commands
+            && let Some(path) = simulation(&mut app, rx)
+        {
+            shot = Some(path);
         }
         let now = Instant::now();
         if retry.is_some_and(|t| now >= t) {
@@ -251,54 +247,8 @@ fn run() -> Result<(), Error> {
         }
         app.dirty = false;
         let begun = Instant::now();
-        gfx.begin();
-        let screen = app.screen(now);
-        let toasts = app.toasts();
-        let ctx = Ctx {
-            pal: app.palette(),
-            words: &app.words,
-            commands: app.commands(),
-            sliders: app.sliders(),
-            now,
-            scale: config.scale,
-            width: wf,
-            height: hf,
-            scroll: app.scroll,
-        };
-        let mut draw = || -> Result<ui::paint::Drawn, Error> {
-            let drawn = if config.rotate {
-                if turned.is_none() {
-                    let mut t = creator.create_texture_target(None, w, h)?;
-                    t.set_blend_mode(sdl3::render::BlendMode::None);
-                    turned = Some(t);
-                }
-                let target = turned.as_mut().expect("just made");
-                let mut out = None;
-                canvas.with_texture_canvas(target, |c: &mut Canvas<Window>| {
-                    let mut d = Draw {
-                        canvas: c,
-                        gfx: &mut gfx,
-                    };
-                    out = Some(paint(&mut d, &ctx, &screen, &toasts).map_err(|e| e.to_string()));
-                })?;
-                let drawn = out.ok_or("nothing drawn")??;
-                canvas.copy_ex(target, None, None, 180.0, None, false, false)?;
-                drawn
-            } else {
-                let mut d = Draw {
-                    canvas: &mut canvas,
-                    gfx: &mut gfx,
-                };
-                paint(&mut d, &ctx, &screen, &toasts)?
-            };
-            if let Some(path) = shot.take() {
-                save_png(&canvas, &path)?;
-                println!("shot {path}");
-            }
-            canvas.present();
-            Ok(drawn)
-        };
-        let drawn = match draw() {
+        let shown = app.screen(now);
+        let drawn = match panel.draw(&app, &shown, now, shot.take()) {
             Ok(d) => {
                 failures = 0;
                 d
@@ -310,24 +260,14 @@ fn run() -> Result<(), Error> {
                     return Err(e);
                 }
                 // the turned picture's texture is made again, the drawing tried in a second
-                turned = None;
-                retry = Some(Instant::now() + Duration::from_secs(1));
+                panel.turned = None;
+                retry = Some(Instant::now() + RETRY);
                 continue;
             }
         };
-        app.drawn(drawn.hits, drawn.content, hf);
-        if simulated {
-            let now_said = match &screen {
-                ui::model::Screen::House(_) => "screen house".to_string(),
-                ui::model::Screen::Door { title, code, .. } => match code {
-                    Some(c) => format!("screen door {title}\ncode {c}"),
-                    None => format!("screen door {title}"),
-                },
-            };
-            if now_said != said {
-                println!("{now_said}");
-                said = now_said;
-            }
+        app.drawn(drawn.hits, drawn.content, h as f32);
+        if opts.simulated {
+            say_screen(&shown, &mut said);
         }
         drawings += 1;
         if drawings == 1 {
@@ -336,11 +276,177 @@ fn run() -> Result<(), Error> {
                 started.elapsed().as_secs_f64() * 1000.0
             );
         }
-        if stats_on {
+        if opts.stats {
             stats.tick(begun.elapsed());
         }
-        if stop_after.is_some_and(|n| drawings >= n) {
+        if opts.stop_after.is_some_and(|n| drawings >= n) {
             return Ok(());
         }
+    }
+}
+
+/// The first event once there is one, or none when the app is due by itself (a drawing owed,
+/// something turning with time, a failed drawing's retry).
+fn wait(pump: &mut sdl3::EventPump, app: &App, retry: Option<Instant>) -> Option<Event> {
+    if app.dirty {
+        return None;
+    }
+    let now = Instant::now();
+    let next = [app.next_wake(now), retry].into_iter().flatten().min();
+    match next.map(|t| t.saturating_duration_since(now)) {
+        Some(t) => pump.wait_event_timeout(t),
+        None => Some(pump.wait_event()),
+    }
+}
+
+/// What an event asks of the loop.
+enum Flow {
+    Go,
+    /// The window changed: everything drawn again, the turned picture made again.
+    Redraw,
+    Quit,
+}
+
+fn on_event(app: &mut App, event: Event, (wf, hf): (f32, f32), pending: &AtomicBool) -> Flow {
+    let now = Instant::now();
+    // SDL says fingers in 0..1 of the window. The frame's touch is already the picture's way up
+    // (its device tree maps it to what the person sees, as cog showed: it turned its picture,
+    // never the touch), whoever turns the picture
+    let at = |x: f32, y: f32| (x * wf, y * hf);
+    match event {
+        Event::Quit { .. }
+        | Event::KeyDown {
+            keycode: Some(Keycode::Escape),
+            ..
+        } => return Flow::Quit,
+        Event::FingerDown { x, y, .. } => {
+            let (x, y) = at(x, y);
+            app.finger_down(x, y, now);
+        }
+        Event::FingerMotion { x, y, .. } => {
+            let (x, y) = at(x, y);
+            app.finger_motion(x, y, now);
+        }
+        Event::FingerUp { x, y, .. } => {
+            let (x, y) = at(x, y);
+            app.finger_up(x, y, now);
+        }
+        Event::Window {
+            win_event:
+                WindowEvent::Exposed | WindowEvent::PixelSizeChanged(..) | WindowEvent::Resized(..),
+            ..
+        } => {
+            app.dirty = true;
+            return Flow::Redraw;
+        }
+        e if e.is_user_event() => {
+            // frees the boxed event; the flag lets the next one in
+            let _ = e.as_user_event_type::<Wake>();
+            pending.store(false, Ordering::Release);
+            app.take();
+        }
+        _ => {}
+    }
+    Flow::Go
+}
+
+/// A simulation's commands since: run, said; a shot asked is returned.
+fn simulation(app: &mut App, rx: &Receiver<String>) -> Option<String> {
+    let mut shot = None;
+    while let Ok(line) = rx.try_recv() {
+        match sim::parse(&line).and_then(|c| sim::run(app, c)) {
+            Ok(Some(path)) => {
+                shot = Some(path);
+                app.dirty = true;
+            }
+            Ok(None) => println!("ok {line}"),
+            Err(e) => println!("error {line}: {e}"),
+        }
+    }
+    shot
+}
+
+/// What the screen is, said to a simulation when it changes.
+fn say_screen(screen: &Screen, said: &mut String) {
+    let now_said = match screen {
+        Screen::House(_) => "screen house".to_string(),
+        Screen::Door { title, code, .. } => match code {
+            Some(c) => format!("screen door {title}\ncode {c}"),
+            None => format!("screen door {title}"),
+        },
+    };
+    if now_said != *said {
+        println!("{now_said}");
+        *said = now_said;
+    }
+}
+
+/// The panel and what draws on it: the canvas, the caches, the turned picture's texture.
+struct Panel<'t> {
+    canvas: Canvas<Window>,
+    creator: &'t TextureCreator<WindowContext>,
+    gfx: Gfx<'t>,
+    /// The picture drawn before it is turned (`MAISON_ROTATE=180`).
+    turned: Option<Texture<'t>>,
+    rotate: bool,
+    scale: f32,
+}
+
+impl Panel<'_> {
+    /// One drawing of `shown`, presented (and saved first to `shot`, a simulation's).
+    fn draw(
+        &mut self,
+        app: &App,
+        shown: &Screen,
+        now: Instant,
+        shot: Option<String>,
+    ) -> Result<Drawn, Error> {
+        let (w, h) = self.canvas.output_size()?;
+        self.gfx.begin();
+        let toasts = app.toasts();
+        let ctx = Ctx {
+            pal: app.palette(),
+            words: &app.words,
+            commands: app.commands(),
+            sliders: app.sliders(),
+            now,
+            scale: self.scale,
+            width: w as f32,
+            height: h as f32,
+            scroll: app.scroll,
+        };
+        let drawn = if self.rotate {
+            let target = match &mut self.turned {
+                Some(t) => t,
+                None => {
+                    let mut t = self.creator.create_texture_target(None, w, h)?;
+                    t.set_blend_mode(sdl3::render::BlendMode::None);
+                    self.turned.insert(t)
+                }
+            };
+            let gfx = &mut self.gfx;
+            let mut out = None;
+            self.canvas
+                .with_texture_canvas(target, |c: &mut Canvas<Window>| {
+                    let mut d = Draw { canvas: c, gfx };
+                    out = Some(paint(&mut d, &ctx, shown, &toasts).map_err(|e| e.to_string()));
+                })?;
+            let drawn = out.ok_or("nothing drawn")??;
+            self.canvas
+                .copy_ex(&*target, None, None, 180.0, None, false, false)?;
+            drawn
+        } else {
+            let mut d = Draw {
+                canvas: &mut self.canvas,
+                gfx: &mut self.gfx,
+            };
+            paint(&mut d, &ctx, shown, &toasts)?
+        };
+        if let Some(path) = shot {
+            save_png(&self.canvas, &path)?;
+            println!("shot {path}");
+        }
+        self.canvas.present();
+        Ok(drawn)
     }
 }

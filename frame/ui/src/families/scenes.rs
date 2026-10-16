@@ -6,21 +6,17 @@
 use maison_api::remote::KeyResponse;
 use maison_api::scenes::Scene;
 
-use super::{Cx, HUE, MEROSS, SCENES, SHUTTERS, ZIGBEE, path_segment};
-use crate::commands::{Order, Outcome, Toast, limit};
+use super::{Cx, HUE, MEROSS, SCENES, SHUTTERS, ZIGBEE};
+use crate::commands::{Order, Outcome, Post, Toast, limit};
 use crate::i18n::{Arg, Words, k};
-use crate::ui::gfx::icon_name;
+use crate::paths;
+use crate::ui::icon::{self, Icon};
 use crate::ui::model::{Act, Body, Button, Group};
 
-/// The icons a scene may have (scenes.ts `SCENE_ICONS`); another: the sparkles.
-const SCENE_ICONS: [&str; 6] = ["log-out", "moon", "film", "sun", "house", "sparkles"];
-
-pub fn icon_of(s: &Scene) -> &'static str {
-    SCENE_ICONS
-        .iter()
-        .find(|i| **i == s.icon)
-        .and_then(|i| icon_name(i))
-        .unwrap_or("sparkles")
+/// The icon a scene is drawn with (`maison_api::scenes::icon_of`: one of `ICONS`, else the
+/// sparkles), as the web app's.
+pub fn icon_of(s: &Scene) -> Icon {
+    Icon::named(maison_api::scenes::icon_of(s)).unwrap_or(icon::SPARKLES)
 }
 
 /// How a run went (scenes.ts `sayRun`).
@@ -60,7 +56,7 @@ fn run_said(w: &Words, o: &Outcome) -> Option<Toast> {
         .map(|v| serde_json::from_value::<KeyResponse>(v.clone()))
     {
         Some(Ok(r)) => Some(said(w, name, &r)),
-        // refused or unreachable: said by the button's own failure
+        // refused, unreachable, or an answer that does not read: « Pas de réponse » for it
         _ => Some(Toast {
             text: w.t(k::COMMAND_NO_ANSWER, &[("name", name.into())]),
             warn: true,
@@ -72,8 +68,7 @@ pub fn button(s: &Scene) -> Button {
     let order = Order::one(
         format!("{SCENES}:{}:run", s.id),
         s.name.clone(),
-        format!("/scenes/{}/run", path_segment(&s.id)),
-        None,
+        Post::empty(paths::of(paths::SCENES, &s.id, "run")),
     )
     .within(limit::DEVICE)
     // what a scene may have changed (the web app reads these again)
@@ -123,8 +118,12 @@ mod tests {
         .body;
         let g = scenes_group(&w, &list.scenes).unwrap();
         let Body::Buttons(b) = &g.body else { panic!() };
-        assert_eq!(b[0].icon, Some("moon"));
-        assert_eq!(b[1].icon, Some("sparkles"), "an icon the app does not know");
+        assert_eq!(b[0].icon, Some(icon::MOON));
+        assert_eq!(
+            b[1].icon,
+            Some(icon::SPARKLES),
+            "an icon the app does not know"
+        );
         let Act::Order(o) = &b[0].act else { panic!() };
         assert_eq!(o.posts[0].1.path, "/scenes/nuit/run");
         assert!(scenes_group(&w, &[]).is_none());

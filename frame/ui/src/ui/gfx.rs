@@ -2,7 +2,8 @@
 //! SDL_ttf's renderer engine (its glyphs in an atlas: a line costs one draw, not a texture),
 //! anti-aliased discs and rounded rectangles from one white disc per radius (drawn as nine
 //! pieces, tinted), the web app's icons rasterised once per size (resvg), tinted. Everything
-//! drawn is cached; a frame allocates nothing it did not need the frame before.
+//! drawn is cached: a line, a disc, an icon or a picture is made once and drawn again from its
+//! texture (looking one up still builds its key: a few small allocations a line, no texture).
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -18,17 +19,7 @@ use sdl3::ttf::{Font, Sdl3TtfContext, Text, TextEngine};
 use sdl3::video::{Window, WindowContext};
 
 use crate::theme::{Face, Rgba, Style};
-
-mod icons {
-    include!(concat!(env!("OUT_DIR"), "/icons.rs"));
-}
-pub use icons::NAMES as ICON_NAMES;
-pub use icons::markup as icon_markup;
-
-/// The web app's name for an icon, if it has it (a name from the API is no `&'static str`).
-pub fn icon_name(name: &str) -> Option<&'static str> {
-    ICON_NAMES.iter().copied().find(|n| *n == name)
-}
+use crate::ui::icon::Icon;
 
 /// The web app's faces, at the weights its type scale draws (build.rs instanced them).
 static FONTS: [(Face, u16, &[u8]); 6] = [
@@ -119,7 +110,7 @@ pub struct Gfx<'t> {
     /// after the fonts that fall back on it.
     fallbacks: HashMap<u16, Font<'static>>,
     discs: HashMap<u32, Texture<'t>>,
-    icons: HashMap<(&'static str, u32), Texture<'t>>,
+    icons: HashMap<(Icon, u32), Texture<'t>>,
     /// Pictures drawn in their own colors (a Tempo swatch), by their SVG.
     pictures: HashMap<String, Texture<'t>>,
     creator: &'t TextureCreator<WindowContext>,
@@ -248,15 +239,18 @@ impl<'t> Gfx<'t> {
         Ok(line.size)
     }
 
-    /// How much of `text` fits in `max` pixels; the rest is cut and an ellipsis said.
+    /// How much of `text` fits in `max` pixels; the rest is cut and an ellipsis said. A NUL
+    /// (never in the API's words) is dropped first, as a drawn line drops it.
     pub fn fit(&mut self, style: Style, size: u16, text: &str, max: u32) -> Result<String, Error> {
-        if self.measure(style, size, 0, text)?.0 <= max {
-            return Ok(text.to_string());
+        let text = text.replace('\0', "");
+        if self.measure(style, size, 0, &text)?.0 <= max {
+            return Ok(text);
         }
         let ellipsis = self.measure(style, size, 0, "…")?.0;
         let room = max.saturating_sub(ellipsis) as i32;
         let font = self.font(style, size)?;
-        let c = CString::new(text.replace('\0', "")).unwrap_or_default();
+        // no NUL left: the C string is the whole text, and `len` counts its bytes
+        let c = CString::new(text.as_str())?;
         let (mut w, mut len) = (0, 0usize);
         // SAFETY: a live font, a NUL-terminated string and its length, two out-parameters
         let ok = unsafe {
@@ -300,20 +294,13 @@ impl<'t> Gfx<'t> {
         Ok(self.discs.get_mut(&diameter).expect("just inserted"))
     }
 
-    fn icon_texture(
-        &mut self,
-        name: &'static str,
-        size: u32,
-    ) -> Result<Option<&mut Texture<'t>>, Error> {
-        if !self.icons.contains_key(&(name, size)) {
-            let Some(markup) = icon_markup(name) else {
-                return Ok(None);
-            };
-            let pm = rasterise_icon(markup, size)?;
+    fn icon_texture(&mut self, icon: Icon, size: u32) -> Result<&mut Texture<'t>, Error> {
+        if !self.icons.contains_key(&(icon, size)) {
+            let pm = rasterise_icon(icon.markup(), size)?;
             let t = self.white_texture(pm)?;
-            self.icons.insert((name, size), t);
+            self.icons.insert((icon, size), t);
         }
-        Ok(self.icons.get_mut(&(name, size)))
+        Ok(self.icons.get_mut(&(icon, size)).expect("just inserted"))
     }
 
     fn picture(&mut self, svg: &str, w: u32, h: u32) -> Result<&Texture<'t>, Error> {
@@ -437,25 +424,24 @@ impl Draw<'_, '_> {
         self.fill(x, y + r, w, h - 2 * r, color)
     }
 
-    /// The icon, `size` px square at (x, y), in `color`; a name the web app lacks draws nothing.
+    /// The icon, `size` px square at (x, y), in `color`.
     pub fn icon(
         &mut self,
-        name: &'static str,
+        icon: Icon,
         x: i32,
         y: i32,
         size: u32,
         color: Rgba,
     ) -> Result<(), Error> {
         let canvas = &mut *self.canvas;
-        if let Some(t) = self.gfx.icon_texture(name, size)? {
-            t.set_color_mod(color.0, color.1, color.2);
-            t.set_alpha_mod(color.3);
-            canvas.copy(
-                t,
-                None,
-                FRect::new(x as f32, y as f32, size as f32, size as f32),
-            )?;
-        }
+        let t = self.gfx.icon_texture(icon, size)?;
+        t.set_color_mod(color.0, color.1, color.2);
+        t.set_alpha_mod(color.3);
+        canvas.copy(
+            t,
+            None,
+            FRect::new(x as f32, y as f32, size as f32, size as f32),
+        )?;
         Ok(())
     }
 
@@ -478,8 +464,9 @@ mod tests {
 
     #[test]
     fn every_icon_of_the_web_app_draws() {
-        for name in ICON_NAMES {
-            let pm = rasterise_icon(icon_markup(name).unwrap(), 24).unwrap();
+        for icon in crate::ui::icon::ALL {
+            let name = icon.name();
+            let pm = rasterise_icon(icon.markup(), 24).unwrap();
             let inked = pm
                 .data()
                 .as_chunks::<4>()
@@ -488,8 +475,13 @@ mod tests {
                 .filter(|p| p[3] > 0)
                 .count();
             assert!(inked > 10, "{name} draws {inked} pixels");
+            assert_eq!(Icon::named(name), Some(*icon));
         }
-        assert!(icon_markup("no-such-icon").is_none());
+        assert!(Icon::named("no-such-icon").is_none());
+        // a scene's icons, as the API says them, are all the web app's
+        for name in maison_api::scenes::ICONS {
+            assert!(Icon::named(name).is_some(), "{name}");
+        }
     }
 
     /// Every character of the words is in the text face (the display face draws titles only).

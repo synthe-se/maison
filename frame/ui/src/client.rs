@@ -9,14 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use maison_api::codes::Code;
+use maison_api::screens::{COOKIE, COOKIE_SECURE};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use ureq::Agent;
 
-/// The cookie a paired screen holds, by the backend's name for it (`auth::screen_cookie_name`:
-/// `__Host-` over HTTPS).
-const COOKIE_NAMES: [&str; 2] = ["__Host-maison_screen", "maison_screen"];
-/// Where the cookie is kept, in the state directory.
+/// The cookie a paired screen holds, by the backend's names for it (`__Host-` over HTTPS).
+const COOKIE_NAMES: [&str; 2] = [COOKIE_SECURE, COOKIE];
+/// Where the cookie is kept, in the state directory: the origin that set it, then the cookie.
 const COOKIE_FILE: &str = "screen-cookie";
 /// No answer is bigger than this (a plug's consumption: a few kilobytes).
 const MAX_ANSWER: u64 = 4 * 1024 * 1024;
@@ -25,8 +26,8 @@ const MAX_ANSWER: u64 = 4 * 1024 * 1024;
 pub enum Failure {
     /// 401: the screen is not paired (any more).
     SignedOut,
-    /// Another refusal, its `code` when the backend said one.
-    Refused { status: u16, code: Option<String> },
+    /// Another refusal, its `code` when the backend said one the API knows.
+    Refused { status: u16, code: Option<Code> },
     /// Nothing came back in time (the detail goes to the journal).
     Unreachable(String),
     /// An answer that does not read as expected.
@@ -38,7 +39,7 @@ impl std::fmt::Display for Failure {
         match self {
             Self::SignedOut => write!(f, "not signed in"),
             Self::Refused { status, code } => {
-                write!(f, "refused {status} {}", code.as_deref().unwrap_or(""))
+                write!(f, "refused {status} {}", code.map_or("", Code::as_str))
             }
             Self::Unreachable(e) => write!(f, "unreachable: {e}"),
             Self::Unreadable(e) => write!(f, "unreadable: {e}"),
@@ -46,24 +47,64 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// The screen's cookie, in memory and in its file (0600, replaced whole).
+/// The screen's cookie, in memory and in its file (0600, replaced whole), bound to the origin
+/// that set it: one kept for another (the address changed, or was changed under it) is never
+/// sent, and the screen pairs again.
 #[derive(Debug)]
 struct Jar {
     file: PathBuf,
+    origin: String,
     cookie: Mutex<Option<String>>,
 }
 
 impl Jar {
-    fn open(dir: &Path) -> Self {
+    fn open(dir: &Path, origin: &str) -> Self {
         let file = dir.join(COOKIE_FILE);
-        let cookie = std::fs::read_to_string(&file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| COOKIE_NAMES.iter().any(|n| s.starts_with(&format!("{n}="))));
+        let cookie = match std::fs::read_to_string(&file) {
+            Ok(kept) => Self::read(&kept, origin, &file),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                eprintln!(
+                    "the screen's cookie could not be read from {}: {e}; it pairs again",
+                    file.display()
+                );
+                None
+            }
+        };
         Self {
             file,
+            origin: origin.to_string(),
             cookie: Mutex::new(cookie),
         }
+    }
+
+    /// The kept file's cookie, if `origin` set it.
+    fn read(kept: &str, origin: &str, file: &Path) -> Option<String> {
+        let mut lines = kept.lines().map(str::trim);
+        let (Some(by), Some(cookie)) = (lines.next(), lines.next()) else {
+            eprintln!(
+                "{}: no origin with the cookie (an older file); it pairs again",
+                file.display()
+            );
+            return None;
+        };
+        if by != origin {
+            eprintln!(
+                "{}: a cookie set by {by}, not by {origin}: never sent elsewhere; it pairs again",
+                file.display()
+            );
+            return None;
+        }
+        let named = COOKIE_NAMES
+            .iter()
+            .any(|n| cookie.strip_prefix(n).is_some_and(|r| r.starts_with('=')));
+        if !named {
+            eprintln!(
+                "{}: not the screen's cookie; it pairs again",
+                file.display()
+            );
+        }
+        named.then(|| cookie.to_string())
     }
 
     fn get(&self) -> Option<String> {
@@ -86,7 +127,17 @@ impl Jar {
             || set_cookie
                 .split(';')
                 .any(|a| a.trim().eq_ignore_ascii_case("max-age=0"));
-        let next = (!gone).then(|| pair.to_string());
+        self.keep((!gone).then(|| pair.to_string()));
+    }
+
+    /// The screen was removed: its cookie goes, from memory and from its file.
+    fn forget(&self) {
+        self.keep(None);
+    }
+
+    /// `next` in memory and in the file (none: the file removed); a file that cannot be
+    /// written is said, the cookie in memory used until the app ends.
+    fn keep(&self, next: Option<String>) {
         let mut cookie = self.cookie.lock().unwrap_or_else(|e| e.into_inner());
         if *cookie == next {
             return;
@@ -100,13 +151,6 @@ impl Jar {
         *cookie = next;
     }
 
-    fn forget(&self) {
-        let mut cookie = self.cookie.lock().unwrap_or_else(|e| e.into_inner());
-        if cookie.take().is_some() {
-            let _ = std::fs::remove_file(&self.file);
-        }
-    }
-
     fn save(&self, cookie: Option<&str>) -> std::io::Result<()> {
         let Some(cookie) = cookie else {
             return match std::fs::remove_file(&self.file) {
@@ -118,7 +162,8 @@ impl Jar {
         std::fs::create_dir_all(dir)?;
         let temp = dir.join(format!(".{COOKIE_FILE}.tmp"));
         let mut f = open_private(&temp)?;
-        f.write_all(cookie.as_bytes())?;
+        writeln!(f, "{}", self.origin)?;
+        writeln!(f, "{cookie}")?;
         f.sync_all()?;
         std::fs::rename(&temp, &self.file)
     }
@@ -152,12 +197,14 @@ impl Client {
             .max_redirects(0)
             .http_status_as_error(false)
             .user_agent(concat!("maison-frame-ui/", env!("CARGO_PKG_VERSION")))
+            // straight to Maison: no proxy from the environment sees the screen's cookie
+            .proxy(None)
             .build()
             .into();
         Self {
             agent,
             api: format!("{origin}/api"),
-            jar: Arc::new(Jar::open(state_dir)),
+            jar: Arc::new(Jar::open(state_dir, origin)),
         }
     }
 
@@ -223,12 +270,21 @@ impl Client {
             401 => Err(Failure::SignedOut),
             _ => Err(Failure::Refused {
                 status,
-                code: serde_json::from_str::<serde_json::Value>(&text)
-                    .ok()
-                    .and_then(|v| v.get("code")?.as_str().map(String::from)),
+                code: code_of(&text),
             }),
         }
     }
+}
+
+/// A refusal's `code`, when it is one the API says (another is said in the journal).
+fn code_of(text: &str) -> Option<Code> {
+    let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let name = v.get("code")?.as_str()?;
+    let code = Code::parse(name);
+    if code.is_none() {
+        eprintln!("a refusal with a code the API does not say: {name}");
+    }
+    code
 }
 
 /// The start of an answer, for the journal.
@@ -366,7 +422,7 @@ mod tests {
         let file = dir.join(COOKIE_FILE);
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
-            "maison_screen=tok1"
+            format!("{}\nmaison_screen=tok1\n", stub.origin)
         );
         #[cfg(unix)]
         {
@@ -377,6 +433,10 @@ mod tests {
             );
         }
         assert!(Client::new(&stub.origin, &dir, Duration::from_secs(5)).has_cookie());
+        // bound to its origin: another address never gets it
+        assert!(
+            !Client::new("https://elsewhere.example", &dir, Duration::from_secs(5)).has_cookie()
+        );
         c.forget_cookie();
         assert!(!file.exists());
         assert!(!c.has_cookie());
@@ -385,15 +445,25 @@ mod tests {
     #[test]
     fn an_expired_cookie_is_forgotten() {
         let dir = temp_dir("cookie-expired");
-        let jar = Jar::open(&dir);
+        let origin = "https://maison.example";
+        let jar = Jar::open(&dir, origin);
         jar.take("__Host-maison_screen=abc; Secure; Path=/");
         assert_eq!(jar.get().as_deref(), Some("__Host-maison_screen=abc"));
         jar.take("__Host-maison_screen=; Max-Age=0");
         assert_eq!(jar.get(), None);
         assert!(!dir.join(COOKIE_FILE).exists());
-        // a file that holds anything else is no cookie
-        std::fs::write(dir.join(COOKIE_FILE), "junk").unwrap();
-        assert_eq!(Jar::open(&dir).get(), None);
+        // a file that holds anything else is no cookie, nor one without its origin (older)
+        let file = dir.join(COOKIE_FILE);
+        std::fs::write(&file, format!("{origin}\njunk\n")).unwrap();
+        assert_eq!(Jar::open(&dir, origin).get(), None);
+        std::fs::write(&file, "maison_screen=old").unwrap();
+        assert_eq!(Jar::open(&dir, origin).get(), None);
+        std::fs::write(&file, format!("{origin}\nmaison_screen=kept\n")).unwrap();
+        assert_eq!(
+            Jar::open(&dir, origin).get().as_deref(),
+            Some("maison_screen=kept")
+        );
+        assert_eq!(Jar::open(&dir, "https://other.example").get(), None);
     }
 
     #[test]
@@ -408,7 +478,7 @@ mod tests {
             l if l.contains("/coded") => (
                 409,
                 vec![],
-                r#"{"success":false,"error":"x","code":"screens_exists"}"#.into(),
+                r#"{"success":false,"error":"x","code":"screen_exists"}"#.into(),
             ),
             l if l.contains("/moved") => (
                 302,
@@ -423,7 +493,7 @@ mod tests {
             c.get::<Hello>("/coded"),
             Err(Failure::Refused {
                 status: 409,
-                code: Some("screens_exists".into())
+                code: Some(Code::ScreenExists)
             })
         );
         // a redirect is never followed

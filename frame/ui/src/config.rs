@@ -1,17 +1,25 @@
 //! What the app is told at start, from its environment (the service's, or a simulation's):
 //!
-//! - Maison's address: the systemd credential `target` (`$CREDENTIALS_DIRECTORY/target`, the
-//!   one `install.sh --target` wrote for the kiosk), else `MAISON_TARGET`; its fragment and path
-//!   are dropped (the kiosk's `#lang=…`, an older target's token);
-//! - where it keeps its cookie: `MAISON_STATE`, else `$XDG_DATA_HOME/maison-ui` (userdata);
+//! - Maison's address: the systemd credential `target` (`$CREDENTIALS_DIRECTORY/target`, root's
+//!   `/android-data/maison/target`: `maison-target` adopts what `install.sh --target` left),
+//!   else `MAISON_TARGET`; its fragment and path are dropped (the kiosk's `#lang=…`, an older
+//!   target's token). HTTPS only, but for this computer (`localhost`, a loopback address) and a
+//!   simulation that says `MAISON_ALLOW_HTTP=1` (its Mac seen from a container): the screen's
+//!   cookie never crosses the Wi-Fi in clear;
+//! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
+//!   `$XDG_DATA_HOME/maison-ui`;
 //! - its language: `MAISON_LANG`, else `LANG` (`fr_FR.UTF-8`);
 //! - `MAISON_ROTATE=180` (the app turns its picture, when the compositor does not; the touch
-//!   is already the person's way up on the frame), `MAISON_SCALE` (CSS pixels to the panel's, 1 as the kiosk drew), `MAISON_WINDOW`
-//!   (`800x1280`: a window in place of the full screen, for a simulation).
+//!   is already the person's way up on the frame), `MAISON_SCALE` (CSS pixels to the panel's, 1
+//!   as the kiosk drew), `MAISON_WINDOW` (`800x1280`: a window in place of the full screen, for
+//!   a simulation).
 
 use std::path::PathBuf;
 
 use crate::i18n::Lang;
+
+/// The frame's panel, portrait, in its pixels (the full screen's size before SDL says it).
+pub const PANEL: (u32, u32) = (800, 1280);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -28,8 +36,18 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let credential = env("CREDENTIALS_DIRECTORY")
-            .and_then(|d| std::fs::read_to_string(PathBuf::from(d).join("target")).ok());
+        let credential = env("CREDENTIALS_DIRECTORY").and_then(|d| {
+            let file = PathBuf::from(d).join("target");
+            match std::fs::read_to_string(&file) {
+                Ok(t) => Some(t),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                // said, then MAISON_TARGET if there is one
+                Err(e) => {
+                    eprintln!("the credential {} could not be read: {e}", file.display());
+                    None
+                }
+            }
+        });
         Self::from(credential, env)
     }
 
@@ -41,7 +59,10 @@ impl Config {
         let target = credential
             .or_else(|| env("MAISON_TARGET"))
             .ok_or("no Maison address: the credential `target` or MAISON_TARGET")?;
-        let origin = origin(target.trim())?;
+        let origin = origin(
+            target.trim(),
+            env("MAISON_ALLOW_HTTP").as_deref() == Some("1"),
+        )?;
         let state_dir = env("MAISON_STATE")
             .map(PathBuf::from)
             .or_else(|| env("XDG_DATA_HOME").map(|d| PathBuf::from(d).join("maison-ui")))
@@ -83,8 +104,9 @@ impl Config {
     }
 }
 
-/// `https://maison.example/some/path#lang=fr` → `https://maison.example`.
-fn origin(target: &str) -> Result<String, String> {
+/// `https://maison.example/some/path#lang=fr` → `https://maison.example`; `http://` only to this
+/// computer, or anywhere when `allow_http` (a simulation's).
+fn origin(target: &str, allow_http: bool) -> Result<String, String> {
     let (scheme, rest) = target
         .split_once("://")
         .filter(|(s, _)| *s == "https" || *s == "http")
@@ -93,7 +115,24 @@ fn origin(target: &str) -> Result<String, String> {
     if host.is_empty() || host.contains('@') {
         return Err(format!("{target}: no host"));
     }
+    if scheme == "http" && !allow_http && !loopback(host) {
+        return Err(format!(
+            "{target}: HTTPS (the screen's cookie never travels in clear), or this computer"
+        ));
+    }
     Ok(format!("{scheme}://{host}"))
+}
+
+/// `localhost`, `127.x.y.z`, `[::1]`, with or without a port.
+fn loopback(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
+    };
+    name.eq_ignore_ascii_case("localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[cfg(test)]
@@ -161,6 +200,24 @@ mod tests {
         );
         assert!(Config::from(Some("ftp://x".into()), vars(&[state])).is_err());
         assert!(Config::from(Some("https://".into()), vars(&[state])).is_err());
+        // in clear, only to this computer, or for a simulation that says so
+        let http = |t: &str, allow: &str| {
+            Config::from(Some(t.into()), vars(&[state, ("MAISON_ALLOW_HTTP", allow)]))
+                .map(|c| c.origin)
+        };
+        assert!(http("http://maison.lan", "").unwrap_err().contains("HTTPS"));
+        assert!(http("http://192.168.1.103:3000", "0").is_err());
+        assert_eq!(
+            http("http://localhost:3999/x", "").unwrap(),
+            "http://localhost:3999"
+        );
+        assert!(http("http://127.0.0.1:9", "").is_ok());
+        assert!(http("http://[::1]:9", "").is_ok());
+        assert!(http("http://localhost.evil.example", "").is_err());
+        assert_eq!(
+            http("http://host.docker.internal:4000", "1").unwrap(),
+            "http://host.docker.internal:4000"
+        );
         assert!(
             Config::from(Some("https://a".into()), vars(&[]))
                 .unwrap_err()

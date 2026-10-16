@@ -1,7 +1,8 @@
 //! The house as the dashboard shows it, family by family (web/src/lib/devices): each family
 //! says its group from what it reads, in pure functions tested on the backend's answers. The
 //! sources are declared once here, under the web app's keys (a family's prefix first, so
-//! `refresh("meross")` reads every plug value again), at the paces of `maison_api::paces`.
+//! `refresh("meross")` reads every plug value again), at the paces of `maison_api::paces`, from
+//! the paths of `crate::paths`.
 
 pub mod lamps;
 pub mod plugs;
@@ -13,23 +14,21 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use maison_api::lamps::{HueLamp, LampList, LampStats, ZigbeeLamp};
 use maison_api::matter::Covers;
 use maison_api::meross::{ElectricityAnswer, PlugList};
 use maison_api::scenes::SceneList;
 use maison_api::sun::{Side, SunNow, Where};
 use maison_api::tempo::{Forecast, Today};
-use maison_api::{Answer, HOUSE_TZ, paces};
+use maison_api::{Answer, HOUSE_TZ, Tz, paces};
 
 use crate::client::Client;
+use crate::commands::{Outcome, Toast};
 use crate::i18n::{Words, k};
 use crate::live::{Live, Source, View};
+use crate::paths;
+use crate::ui::icon;
 use crate::ui::model::{Act, Body, Button, Group};
-
-/// A source read once (the web app's sources without a pace): the frame has no editor that
-/// would read them again, so once an hour.
-const ONCE: Duration = Duration::from_secs(3600);
 
 fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
@@ -37,9 +36,10 @@ fn ms(n: u64) -> Duration {
 
 /// GET `path`, the envelope's body.
 fn get<T: serde::de::DeserializeOwned>(
-    path: &'static str,
+    path: impl Into<String>,
 ) -> impl Fn(&Client) -> Result<T, crate::client::Failure> + Send + Sync {
-    move |c: &Client| c.get::<Answer<T>>(path).map(|a| a.body)
+    let path = path.into();
+    move |c: &Client| c.get::<Answer<T>>(&path).map(|a| a.body)
 }
 
 /// Every source the dashboard reads, declared once.
@@ -72,67 +72,62 @@ fn until_sun(sun: Option<&maison_api::sun::NextSun>) -> Duration {
 impl Sources {
     pub fn new() -> Self {
         Self {
-            tempo: Source::every("tempo:today", ms(paces::TEMPO_MS), get("/tempo")),
+            tempo: Source::every("tempo:today", ms(paces::TEMPO_MS), get(paths::TEMPO)),
             forecast: Source::every(
                 "tempo:forecast",
                 ms(paces::TEMPO_MS),
-                get("/tempo/forecast"),
+                get(paths::TEMPO_FORECAST),
             ),
-            hue_stats: Source::every("hue-lamp:stats", ONCE, get("/hue-lamps/stats")),
-            zigbee_stats: Source::every("zigbee-lamp:stats", ONCE, get("/zigbee/lamps/stats")),
-            hue: Source::every("hue-lamp:list", ms(paces::LAMP_LIST_MS), get("/hue-lamps")),
+            // whether the server runs a radio changes only when it restarts: the web app reads
+            // it once; a wall screen, which nobody reloads, as seldom as the scenes
+            hue_stats: Source::every(
+                "hue-lamp:stats",
+                ms(paces::SCENES_MS),
+                get(paths::HUE_LAMPS_STATS),
+            ),
+            zigbee_stats: Source::every(
+                "zigbee-lamp:stats",
+                ms(paces::SCENES_MS),
+                get(paths::ZIGBEE_LAMPS_STATS),
+            ),
+            hue: Source::every(
+                "hue-lamp:list",
+                ms(paces::LAMP_LIST_MS),
+                get(paths::HUE_LAMPS),
+            ),
             zigbee: Source::every(
                 "zigbee-lamp:list",
                 ms(paces::LAMP_LIST_MS),
-                get("/zigbee/lamps"),
+                get(paths::ZIGBEE_LAMPS),
             ),
             covers: Source::paced(
                 "shutters:list",
                 |d: Option<&Covers>| ms(paces::shutters(d)),
-                get("/matter/covers"),
+                get(paths::COVERS),
             ),
-            plugs: Source::every("meross:list", ms(paces::MEROSS_LIST_MS), get("/meross")),
+            plugs: Source::every("meross:list", ms(paces::MEROSS_LIST_MS), get(paths::MEROSS)),
             electricity: HashMap::new(),
-            scenes: Source::every(
-                "scenes:list",
-                ms(paces::SCENES_MS.unwrap_or(ONCE.as_millis() as u64)),
-                get("/scenes"),
-            ),
+            scenes: Source::every("scenes:list", ms(paces::SCENES_MS), get(paths::SCENES)),
             place: Source::paced(
                 "shutters:place",
                 |d: Option<&Where>| until_sun(d.and_then(|w| w.sun.as_ref())),
-                get("/matter/place"),
+                get(paths::PLACE),
             ),
-            // signed out, the side alone, every ten minutes (web/src/lib/sun/data.ts `sideNow`)
-            sun: Source::every("sun:side", ms(paces::SUN_SIGNED_OUT_MS), get("/sun")),
+            // signed out, the side alone (web/src/lib/sun/data.ts `sideNow`)
+            sun: Source::every("sun:side", ms(paces::SUN_SIGNED_OUT_MS), get(paths::SUN)),
         }
     }
 
     /// A plug's live power, its source made on first ask.
     pub fn electricity(&mut self, id: &str) -> &Source<ElectricityAnswer> {
         self.electricity.entry(id.to_string()).or_insert_with(|| {
-            let path = format!("/meross/{}/electricity", path_segment(id));
             Source::every(
                 format!("meross:electricity:{id}"),
                 ms(paces::MEROSS_ELECTRICITY_MS),
-                move |c: &Client| c.get::<Answer<ElectricityAnswer>>(&path).map(|a| a.body),
+                get(paths::of(paths::MEROSS, id, "electricity")),
             )
         })
     }
-}
-
-/// An id in a path, as the web app's `path` tag writes it.
-pub fn path_segment(id: &str) -> String {
-    let mut out = String::with_capacity(id.len());
-    for b in id.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// What a family reads the house with.
@@ -183,35 +178,32 @@ pub fn sun_signed_out(cx: &mut Cx) -> Option<Side> {
     cx.live.want(&cx.sources.sun).data.and_then(|s| s.side)
 }
 
-/// Loaded.svelte: what a group shows while it reads, when it cannot, when it read nothing.
+/// Loaded.svelte: what a group shows while it reads, when it cannot (the failure in words),
+/// when it read nothing; else `body` of what it read.
 pub fn loaded<T>(
     w: &Words,
     v: &View<T>,
     refresh: &'static [&'static str],
-    empty: bool,
     none: (&str, &str),
-    body: impl FnOnce() -> Body,
+    body: impl FnOnce(&T) -> Option<Body>,
 ) -> Body {
-    if v.data.is_none() {
-        if v.failed {
-            return Body::Failed {
-                text: w.s(k::ERROR_NETWORK),
+    let Some(data) = v.data.as_deref() else {
+        return match &v.failure {
+            Some(f) => Body::Failed {
+                text: w.failure(f),
                 retry: Button::new(
-                    Some("refresh-cw"),
+                    Some(icon::REFRESH_CW),
                     w.s(k::COMMON_RETRY),
                     Act::Refresh(refresh),
                 ),
-            };
-        }
-        return Body::Loading;
-    }
-    if empty {
-        return Body::Empty {
-            text: w.s(none.0),
-            hint: w.s(none.1),
+            },
+            None => Body::Loading,
         };
-    }
-    body()
+    };
+    body(data).unwrap_or_else(|| Body::Empty {
+        text: w.s(none.0),
+        hint: w.s(none.1),
+    })
 }
 
 /// Stale.svelte: « Dernière lecture 14:02 · Réessayer » when the value is old.
@@ -235,18 +227,14 @@ pub fn stale<T>(
 
 /// How a group's « Tout … » went (everyone.ts `sayOutcome`): all done in `said(count)`; else a
 /// warning naming who did not answer.
-pub fn outcome(
-    w: &Words,
-    o: &crate::commands::Outcome,
-    said: impl Fn(usize) -> String,
-) -> crate::commands::Toast {
+pub fn outcome(w: &Words, o: &Outcome, said: impl Fn(usize) -> String) -> Toast {
     if o.failed.is_empty() {
-        return crate::commands::Toast {
+        return Toast {
             text: said(o.done.len()),
             warn: false,
         };
     }
-    crate::commands::Toast {
+    Toast {
         text: w.t(
             k::GROUP_PARTIAL,
             &[
@@ -261,11 +249,51 @@ pub fn outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::Failure;
+    use crate::i18n::Lang;
+    use maison_api::codes::Code;
 
     #[test]
-    fn ids_go_in_paths_escaped() {
-        assert_eq!(path_segment("ab-12_x.y~"), "ab-12_x.y~");
-        assert_eq!(path_segment("a/b c"), "a%2Fb%20c");
-        assert_eq!(path_segment("é"), "%C3%A9");
+    fn a_group_reads_loading_failed_empty_then_its_body() {
+        let w = Words::new(Lang::Fr);
+        let none = (k::MEROSS_NONE, k::MEROSS_NONE_HINT);
+        let body = |v: &View<Vec<u8>>| {
+            loaded(&w, v, &[MEROSS], none, |d: &Vec<u8>| {
+                (!d.is_empty()).then(|| Body::Buttons(Vec::new()))
+            })
+        };
+        let loading = View::<Vec<u8>> {
+            data: None,
+            loading: true,
+            failure: None,
+            stale: false,
+            at: None,
+        };
+        assert!(matches!(body(&loading), Body::Loading));
+        // the failure said as the web app says it: by its code when it has one
+        let refused = View::<Vec<u8>> {
+            failure: Some(Failure::Refused {
+                status: 409,
+                code: Some(Code::NotConfigured),
+            }),
+            loading: false,
+            ..loading
+        };
+        let Body::Failed { text, retry } = body(&refused) else {
+            panic!("failed")
+        };
+        assert_eq!(text, w.failure(refused.failure.as_ref().unwrap()));
+        assert_ne!(text, w.s(k::ERROR_NETWORK));
+        assert!(matches!(retry.act, Act::Refresh([MEROSS])));
+        let offline = View::<Vec<u8>> {
+            failure: Some(Failure::Unreachable("x".into())),
+            ..refused
+        };
+        let Body::Failed { text, .. } = body(&offline) else {
+            panic!("failed")
+        };
+        assert_eq!(text, w.s(k::ERROR_NETWORK));
+        assert!(matches!(body(&View::ready(Vec::new())), Body::Empty { .. }));
+        assert!(matches!(body(&View::ready(vec![1])), Body::Buttons(_)));
     }
 }

@@ -1,11 +1,14 @@
-"""The first mainline boot's initramfs: no distribution yet, only what tells us how far the kernel
-got. Its /init (mksh) writes nothing to the eMMC (only reads, and reports); makes the USB-C port
-a serial console (CDC ACM: /dev/cu.usbmodem* on the Mac); blinks the backlight five times first
-(a sign with no console at all); and prints on the panel (the kernel's console, fbcon) what came up: the display,
-the touch, the eMMC, the SDIO card, the Wi-Fi interface. Tools: rescue-tools.sh's static mksh and toybox; the touch
-firmware extracted from the vendor kernel (~/maison-frame/recon, never in the repo).
+"""The mainline boot's initramfs: its /init (mksh) makes the USB-C port a serial console (CDC ACM:
+/dev/cu.usbmodem* on the Mac), prints on the panel (the kernel's console, fbcon) what came up (the
+display, the touch, the eMMC, the SDIO card, the Wi-Fi interface), then starts the system from
+Android's userdata. It writes to the eMMC only there: Maison's address, adopted once from where
+install.sh can leave it (Android's shell-writable /data/local/tmp) into root's /data/maison (the
+units' `target` credential). With --debug (bring-up), it first blinks the backlight five times (a
+sign with no console at all, ~10 s) and waits 8 s before saying what came up. Tools:
+rescue-tools.sh's static mksh and toybox; the touch firmware extracted from the vendor kernel
+(~/maison-frame/recon, never in the repo).
 
-    python3 frame/linux/initramfs.py <tools dir> <touch firmware> <out.cpio.gz>
+    python3 frame/linux/initramfs.py [--debug] <tools dir> <touch firmware> <out.cpio.gz>
 """
 
 import gzip
@@ -20,7 +23,20 @@ FIRMWARE = "lib/firmware/silead/gsl-amaboo-gbzk-y1000.fw"  # the DT's firmware-n
 AIC8800 = Path(__file__).resolve().parents[1] / "build/linux/aic8800"
 AIC8800_FIRMWARE = "lib/firmware/aic8800_fw/SDIO/aic8800DC"
 
-INIT = f"""#!/bin/mksh
+# --debug only: a sign without any console, the backlight blinking 5 times as soon as init runs
+BLINK = """
+# 0. a sign without any console: the backlight blinks 5 times as soon as init runs
+for _ in 1 2 3 4 5 6 7 8 9 10; do ls /sys/class/backlight/*/brightness >/dev/null 2>&1 && break; sleep 1; done
+for b in /sys/class/backlight/*/brightness; do
+	for _ in 1 2 3 4 5; do echo 10 >$b; sleep 1; echo 255 >$b; sleep 1; done
+done
+"""
+# --debug: what came up is said once everything had its time; else once the display says its
+# state (bounded: a panel that never probes is said as such)
+SETTLE_DEBUG = "sleep 8"
+SETTLE = 'for _ in 1 2 3 4 5 6 7 8 9 10; do ls /sys/class/drm/*/status >/dev/null 2>&1 && break; sleep 1; done'
+
+INIT = """#!/bin/mksh
 export PATH=/bin
 mount -t proc proc /proc
 mount -t sysfs sys /sys
@@ -29,14 +45,8 @@ mount -t configfs none /sys/kernel/config
 mkdir -p /tmp
 say() {{ echo "maison: $*" >/dev/kmsg; }}
 say "init up, $(uname -r)"
-
-# 0. a sign without any console: the backlight blinks 5 times as soon as init runs
-for _ in 1 2 3 4 5 6 7 8 9 10; do ls /sys/class/backlight/*/brightness >/dev/null 2>&1 && break; sleep 1; done
-for b in /sys/class/backlight/*/brightness; do
-	for _ in 1 2 3 4 5; do echo 10 >$b; sleep 1; echo 255 >$b; sleep 1; done
-done
-
-# 1. nothing is written to the eMMC: only read, to say what is there (the vendor's U-Boot
+{blink}
+# 1. nothing is written to the eMMC but Maison's address (5.): only read, to say what is there (the vendor's U-Boot
 #    does not resume a recovery from misc: a power cycle is Android's boot, proved on the frame)
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -b /dev/mmcblk0 ] && break; sleep 1; done
 [ -b /dev/mmcblk0 ] && say "eMMC: $(cat /sys/block/mmcblk0/size) sectors" || say "no eMMC"
@@ -57,7 +67,7 @@ udc=$(ls /sys/class/udc | head -1)
 console=$!
 
 # 3. what came up, on the panel
-sleep 8
+{settle}
 # (echo $(…) joins the lines: toybox has no tr)
 say "display: $(echo $(cat /sys/class/drm/*/status 2>/dev/null))"
 say "backlight: $(echo $(ls /sys/class/backlight 2>/dev/null))"
@@ -80,6 +90,20 @@ if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data |
 	mount -t squashfs -o ro,loop $img /lower && mount -t tmpfs -o mode=755 tmpfs /rw &&
 	mkdir -p /rw/upper /rw/work && mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot; then
 	say "system: $img"
+	# Maison's address: root's, read by the units (LoadCredential); install.sh's copy, where
+	# Android's shell (any ADB key) writes, is adopted only while root keeps none, then removed
+	kept=/android-data/maison/target
+	left=/android-data/local/tmp/maison/target
+	mkdir -p /android-data/maison && chown 0:0 /android-data/maison && chmod 755 /android-data/maison
+	if [ -s $left ]; then
+		if [ -s $kept ]; then
+			say "address: $left ignored, $kept kept (removed from the console to adopt another)"
+		elif cp $left $kept.new && chown 0:0 $kept.new && chmod 600 $kept.new && mv $kept.new $kept; then
+			say "address: adopted from $left"
+		fi
+		rm -f $left
+	fi
+	[ -s $kept ] || say "address: none yet (install.sh --target)"
 	mkdir -p /newroot/android-data
 	mount --move /android-data /newroot/android-data
 	# the system's own getty takes the USB console: the loop is told first, so the shell it runs,
@@ -96,7 +120,12 @@ while :; do sleep 3600; done
 """
 
 
-def build(tools: Path, firmware: Path) -> bytes:
+def init(debug: bool) -> str:
+    """The /init script; `debug` adds the blinks and the fixed wait of the bring-up."""
+    return INIT.format(blink=BLINK if debug else "", settle=SETTLE_DEBUG if debug else SETTLE)
+
+
+def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
     entries, ino = [], [300000]
 
     def add(name, data=b"", mode=0o100644):
@@ -108,7 +137,7 @@ def build(tools: Path, firmware: Path) -> bytes:
     parts = AIC8800_FIRMWARE.split("/")
     for i in range(2, len(parts)):
         add("/".join(parts[: i + 1]), mode=0o40755)
-    add("init", INIT.encode(), 0o100755)
+    add("init", init(debug).encode(), 0o100755)
     add("bin/mksh", (tools / "mksh").read_bytes(), 0o100755)
     add("bin/toybox", (tools / "toybox").read_bytes(), 0o100755)
     for applet in (tools / "applets.txt").read_text().split():
@@ -124,11 +153,14 @@ def build(tools: Path, firmware: Path) -> bytes:
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
+    args = sys.argv[1:]
+    debug = args[:1] == ["--debug"]
+    args = args[1:] if debug else args
+    if len(args) != 3:
         print(__doc__, file=sys.stderr)
         return 2
-    out = Path(sys.argv[3])
-    out.write_bytes(build(Path(sys.argv[1]), Path(sys.argv[2])))
+    out = Path(args[2])
+    out.write_bytes(build(Path(args[0]), Path(args[1]), debug))
     print(f"{out}: {out.stat().st_size} bytes")
     return 0
 

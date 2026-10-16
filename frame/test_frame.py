@@ -13,9 +13,10 @@ import zlib
 from pathlib import Path
 
 HERE = Path(__file__).parent
-sys.path[:0] = [str(HERE / "system"), str(HERE)]
+sys.path[:0] = [str(HERE / "system"), str(HERE), str(HERE / "linux")]
 import bootimg  # noqa: E402
 import build  # noqa: E402
+import initramfs  # noqa: E402
 import rkwrite  # noqa: E402
 
 
@@ -130,7 +131,7 @@ class InitAndProps(unittest.TestCase):
         out = build.build_prop(prop)
         self.assertNotIn("frameo", out)
         self.assertNotIn("baidu", out)
-        for line in ("ro.keep=1", "ro.product.locale=fr-FR", "persist.sys.timezone=Europe/Paris", "service.adb.tcp.port=5555"):
+        for line in ("ro.keep=1", "ro.product.locale=fr-FR", "persist.sys.timezone=Europe/Paris", "service.adb.tcp.port=5555", "ro.adb.secure=1"):
             self.assertIn(line, out.splitlines())
 
 
@@ -202,6 +203,36 @@ class Rkwrite(unittest.TestCase):
                     rkwrite.write(image, "mmcblk0p5")
             finally:
                 rkwrite.BACKUP = old
+
+
+class Initramfs(unittest.TestCase):
+    def test_a_boot_waits_on_what_it_says_and_blinks_only_in_bring_up(self):
+        boot, debug = initramfs.init(False), initramfs.init(True)
+        # every boot: no blinks, no fixed 8 s; the display's state waited for, bounded
+        self.assertNotIn("echo 10 >$b", boot)
+        self.assertNotIn("sleep 8", boot)
+        self.assertIn("ls /sys/class/drm/*/status", boot)
+        self.assertIn("echo 10 >$b", debug)
+        self.assertIn("sleep 8", debug)
+        # the braces of the shell survive the template
+        self.assertIn('say() { echo "maison: $*" >/dev/kmsg; }', boot)
+
+    def test_the_address_is_adopted_once_into_roots_and_never_read_from_the_shells(self):
+        boot = initramfs.init(False)
+        self.assertIn("kept=/android-data/maison/target", boot)
+        self.assertIn("left=/android-data/local/tmp/maison/target", boot)
+        adopt = boot[boot.index("kept=") :]
+        # root's copy, 0600, only while root keeps none; the shell's copy always removed
+        self.assertIn("chown 0:0 $kept.new && chmod 600 $kept.new && mv $kept.new $kept", adopt)
+        self.assertLess(adopt.index("if [ -s $kept ]"), adopt.index("cp $left"))
+        self.assertIn("rm -f $left", adopt)
+        # before the system starts
+        self.assertLess(boot.index("rm -f $left"), boot.index("switch_root"))
+        units = HERE / "linux/rootfs/etc/systemd/system"
+        for unit in ("maison-ui.service", "maison-kiosk.service"):
+            text = (units / unit).read_text()
+            self.assertIn("LoadCredential=target:/android-data/maison/target\n", text)
+            self.assertNotIn("local/tmp", text.split("LoadCredential=")[1])
 
 
 if __name__ == "__main__":

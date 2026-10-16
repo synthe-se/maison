@@ -5,14 +5,15 @@
 //! renaming, the sun schedule and removal to the web app.
 
 use chrono::{DateTime, Duration as Days, Utc};
-use chrono_tz::Tz;
-use maison_api::matter::{Cover, CoverMotion};
-use serde_json::json;
+use maison_api::Tz;
+use maison_api::matter::{Cover, CoverMotion, PositionRequest, SkipRequest, SunEvent};
 
-use super::{Cx, SHUTTERS, loaded, outcome, path_segment, stale};
-use crate::commands::{Order, Outcome, Toast, limit};
+use super::{Cx, SHUTTERS, loaded, outcome, stale};
+use crate::commands::{Order, Outcome, Post, Say, Toast, json, limit};
 use crate::i18n::{Arg, Words, count, k};
 use crate::live::View;
+use crate::paths;
+use crate::ui::icon::{self, Icon};
 use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Slider, Tile};
 
 /// « Fermé », « Ouvert à 40 % », « Ouvert ».
@@ -50,12 +51,6 @@ pub fn describe(w: &Words, c: &Cover) -> String {
         (_, None) => w.s(k::SHUTTERS_UNCALIBRATED),
         (_, Some(p)) => at(w, p),
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SunEvent {
-    Open,
-    Close,
 }
 
 /// The next scheduled move: which, when, whether it will be skipped once.
@@ -99,35 +94,41 @@ pub fn skip_label(w: &Words, event: SunEvent, t: DateTime<Utc>, now: &DateTime<T
 }
 
 fn cover_path(c: &Cover, what: &str) -> String {
-    format!("/matter/covers/{}/{what}", path_segment(&c.id))
+    paths::of(paths::COVERS, &c.id, what)
 }
 
 fn mv(c: &Cover, what: &'static str, key: &str) -> Order {
     Order::one(
         format!("{SHUTTERS}:{}:{key}", c.id),
         c.name.clone(),
-        cover_path(c, what),
-        None,
+        Post::empty(cover_path(c, what)),
     )
     .within(limit::DEVICE)
     .then_refresh(&[SHUTTERS])
 }
 
+/// The position slider's body (0 closed – 100 open).
+fn position(value: f64) -> serde_json::Value {
+    json(&PositionRequest {
+        open_percent: value.round().clamp(0.0, 100.0) as u8,
+    })
+}
+
 pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
     let off = !c.online;
-    let button = |icon, label: &str, order: Order| {
+    let button = |icon: Icon, label: &str, order: Order| {
         Button::new(Some(icon), label, Act::Order(order)).unavailable(off)
     };
     let mut parts = vec![Part::Row(vec![
         button(
-            "arrow-up",
+            icon::ARROW_UP,
             &w.s(k::SHUTTERS_OPEN_ACTION),
             mv(c, "open", "move"),
         ),
         // Stop always goes, even while another order travels: its own key
-        button("square", &w.s(k::COMMON_STOP), mv(c, "stop", "stop")).primary(c.moving()),
+        button(icon::SQUARE, &w.s(k::COMMON_STOP), mv(c, "stop", "stop")).primary(c.moving()),
         button(
-            "arrow-down",
+            icon::ARROW_DOWN,
             &w.s(k::SHUTTERS_CLOSE_ACTION),
             mv(c, "close", "move"),
         ),
@@ -138,15 +139,16 @@ pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
         } else {
             skip_label(w, event, t, now)
         };
-        let ev = match event {
-            SunEvent::Open => "open",
-            SunEvent::Close => "close",
-        };
         let skip = Order::one(
             format!("{SHUTTERS}:{}:skip", c.id),
             c.name.clone(),
-            cover_path(c, "skip"),
-            Some(json!({ "event": ev, "skip": !skipped })),
+            Post::json(
+                cover_path(c, "skip"),
+                &SkipRequest {
+                    event,
+                    skip: !skipped,
+                },
+            ),
         )
         .then_refresh(&[SHUTTERS]);
         parts.push(Part::Note {
@@ -164,10 +166,11 @@ pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
             step: 5.0,
             mark: c.moving().then_some(f64::from(open)),
             live: false,
-            near: 0.0,
+            // Range's `near = step`: a reading within a step lets the held value go
+            near: 5.0,
             ends: Some((w.s(k::SHUTTERS_CLOSED), w.s(k::SHUTTERS_OPEN))),
             path: cover_path(c, "position"),
-            field: "openPercent",
+            body: position,
             refresh: SHUTTERS,
             name: c.name.clone(),
         })),
@@ -179,7 +182,7 @@ pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
         state: describe(w, c),
         warn: off,
         lead: Lead::Glyph {
-            icon: "blinds",
+            icon: icon::BLINDS,
             on: c.online && c.open_percent.unwrap_or(0) > 0,
         },
         fact: None,
@@ -205,32 +208,23 @@ pub fn shutters_group(
     let online: Vec<&Cover> = covers.iter().filter(|c| c.online).collect();
     let mut actions = Vec::new();
     if !online.is_empty() {
-        let all = |what: &'static str, say: crate::commands::Say| Order {
-            key: format!("{SHUTTERS}:all-{what}"),
-            posts: online
+        let all = |what: &'static str, say: Say| {
+            let posts = online
                 .iter()
-                .map(|c| {
-                    (
-                        c.name.clone(),
-                        crate::commands::Post {
-                            path: cover_path(c, what),
-                            body: None,
-                        },
-                    )
-                })
-                .collect(),
-            target: None,
-            limit: limit::DEVICE,
-            refresh: vec![SHUTTERS],
-            say: Some(say),
+                .map(|c| (c.name.clone(), Post::empty(cover_path(c, what))))
+                .collect();
+            Order::many(format!("{SHUTTERS}:all-{what}"), posts)
+                .within(limit::DEVICE)
+                .then_refresh(&[SHUTTERS])
+                .said(say)
         };
         actions.push(Button::new(
-            Some("arrow-up"),
+            Some(icon::ARROW_UP),
             w.s(k::SHUTTERS_ALL_OPEN),
             Act::Order(all("open", all_opening)),
         ));
         actions.push(Button::new(
-            Some("arrow-down"),
+            Some(icon::ARROW_DOWN),
             w.s(k::SHUTTERS_ALL_CLOSE),
             Act::Order(all("close", all_closing)),
         ));
@@ -239,9 +233,11 @@ pub fn shutters_group(
         w,
         v,
         &[SHUTTERS],
-        covers.is_empty(),
         (k::SHUTTERS_NONE, k::SHUTTERS_NONE_HINT),
-        || Body::Tiles(covers.iter().map(|c| tile(w, c, now)).collect()),
+        |covers| {
+            (!covers.is_empty())
+                .then(|| Body::Tiles(covers.iter().map(|c| tile(w, c, now)).collect()))
+        },
     );
     Group {
         title: w.s(k::SHUTTERS_TITLE),
@@ -253,14 +249,7 @@ pub fn shutters_group(
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
-    let v = cx.live.want(&cx.sources.covers);
-    let v = View {
-        data: v.data.map(|d| std::sync::Arc::new(d.covers.clone())),
-        loading: v.loading,
-        failed: v.failed,
-        stale: v.stale,
-        at: v.at,
-    };
+    let v = cx.live.want(&cx.sources.covers).map(|d| d.covers.clone());
     let now = cx.house_now();
     let old = stale(cx, &v, &[SHUTTERS]);
     Some(shutters_group(cx.words, &v, &now, old))
@@ -273,7 +262,6 @@ mod tests {
     use chrono::TimeZone;
     use maison_api::matter::Covers;
     use maison_api::{Answer, HOUSE_TZ};
-    use std::sync::Arc;
 
     const COVERS: &str = r#"{"success":true,"covers":[{"id":"c1","name":"Salon","endpoint":1,"online":true,"openPercent":40,"targetOpenPercent":100,"motion":"opening","vendorId":4874,"productId":1,"schedule":{"openAtSunrise":true,"closeAtSunset":true,"sunriseOffsetMin":0,"sunsetOffsetMin":60},"nextOpen":"2026-11-13T06:12:00Z","nextClose":"2026-11-12T17:42:00Z","skipNextOpen":false,"skipNextClose":false},{"id":"c2","name":"Chambre","endpoint":1,"online":false,"openPercent":null,"targetOpenPercent":null,"motion":null,"vendorId":null,"productId":null,"schedule":{"openAtSunrise":false,"closeAtSunset":false,"sunriseOffsetMin":0,"sunsetOffsetMin":0},"nextOpen":null,"nextClose":null,"skipNextOpen":false,"skipNextClose":false}]}"#;
 
@@ -334,13 +322,16 @@ mod tests {
         };
         assert_eq!(
             skip.posts[0].1.body,
-            Some(json!({"event": "close", "skip": true}))
+            Some(serde_json::json!({"event": "close", "skip": true}))
         );
         let Part::Slider(s) = &t.parts[2] else {
             panic!("slider")
         };
-        assert_eq!((s.value, s.mark, s.step), (100.0, Some(40.0), 5.0));
-        assert_eq!(s.field, "openPercent");
+        assert_eq!(
+            (s.value, s.mark, s.step, s.near),
+            (100.0, Some(40.0), 5.0, 5.0)
+        );
+        assert_eq!((s.body)(35.0), serde_json::json!({"openPercent": 35}));
         assert!(!s.live);
         // unreachable: the buttons stay, not operable; no slider
         let off = tile(&w, &cs[1], &now());
@@ -355,13 +346,7 @@ mod tests {
     #[test]
     fn the_group_moves_every_shutter_that_answers() {
         let w = Words::new(Lang::Fr);
-        let v = View {
-            data: Some(Arc::new(covers())),
-            loading: false,
-            failed: false,
-            stale: false,
-            at: None,
-        };
+        let v = View::ready(covers());
         let g = shutters_group(&w, &v, &now(), None);
         assert_eq!(g.title, "Volets");
         assert_eq!(g.actions.len(), 2);

@@ -12,7 +12,9 @@ After=network-online.target time-sync.target systemd-user-sessions.service
 User=kiosk
 ExecStartPre=+/usr/bin/install -d -o kiosk -g kiosk -m 0700 /android-data/maison/kiosk
 SupplementaryGroups=video render input
-LoadCredential=target:/android-data/local/tmp/maison/target
+# root's copy of the address (the initramfs adopts what install.sh left, Android's shell-writable
+# /data/local/tmp never read here)
+LoadCredential=target:/android-data/maison/target
 # the frame's language: the page's (maison-kiosk), and the system's locale
 Environment=HOME=/home/kiosk XDG_RUNTIME_DIR=/run/kiosk LANG=fr_FR.UTF-8
 Environment=XDG_DATA_HOME=/android-data/maison/kiosk/data XDG_CACHE_HOME=/android-data/maison/kiosk/cache

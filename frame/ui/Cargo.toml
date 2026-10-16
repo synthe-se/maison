@@ -13,15 +13,16 @@ maison-api = { path = "../../api" }
 # SDL itself opens the system's Wayland, EGL and GLES libraries at run time
 sdl3 = { version = "0.20.0", features = ["build-from-source-static", "ttf"] }
 # SDL_ttf from its sources with its own FreeType, HarfBuzz and PlutoSVG, linked in: nothing of
-# the system's text stack (the feature reaches sdl3's own dependency)
+# the system's text stack (the feature reaches sdl3's own dependency, `^0.7.1`, the same crate).
+# `=`: a sys crate's version carries the C library it vendors (`0.7.1+SDL-ttf-3.2.2`), so the
+# SDL_ttf linked in changes only when chosen here, never by a `cargo update`
 sdl3-ttf-sys = { version = "=0.7.1", features = ["build-static-vendored"] }
 # HTTP without an async runtime: rustls (ring) and the webpki roots, gzip
 ureq = "3.4.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-# the house's clock (Tempo's hours, the shutters' times): Europe/Paris, as the backend
+# the house's clock (Tempo's hours, the shutters' times): maison_api's HOUSE_TZ and its Tz
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-chrono-tz = "0.10.4"
 # the web app's icons (lucide SVG) and the anti-aliased shapes, rasterised once into textures
 resvg = { version = "0.48.1", default-features = false }
 

@@ -30,12 +30,15 @@ class ProvisionReceiver : BroadcastReceiver() {
 				resultCode = Activity.RESULT_OK
 				show(context, MainActivity.ACTION_RELOAD)
 			}
-			ACTION_RELEASE -> show(context, MainActivity.ACTION_RELEASE)
+			// the activity lifts the kiosk only with the secret granted here
+			ACTION_RELEASE -> show(context, MainActivity.ACTION_RELEASE) { putExtra(MainActivity.EXTRA_GRANT, ReleaseGrant.issue()) }
 		}
 	}
 
-	private fun show(context: Context, action: String) =
-		context.startActivity(Intent(context, MainActivity::class.java).setAction(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+	private fun show(context: Context, action: String, extras: Intent.() -> Unit = {}) =
+		context.startActivity(
+			Intent(context, MainActivity::class.java).setAction(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).apply(extras),
+		)
 
 	private companion object {
 		const val TAG = "maison.frame"

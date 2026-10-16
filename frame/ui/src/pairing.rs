@@ -11,9 +11,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use maison_api::codes::Code;
 use maison_api::screens::{ClaimAnswer, ClaimRequest, Me, Pairing};
 
 use crate::client::{Client, Failure};
+use crate::paths;
 
 /// How long before asking again after a failure (the Wi-Fi a moment away, a refusal).
 const RETRY: [Duration; 4] = [
@@ -28,18 +30,14 @@ const RETRY: [Duration; 4] = [
 pub enum Screen {
     /// Asking who it is (its cookie held).
     Checking,
-    /// The code to give from a phone, until when it holds, for how many minutes it was given.
-    Code {
-        code: String,
-        until: Instant,
-        minutes: u64,
-    },
+    /// The code to give from a phone, for how many minutes it was given.
+    Code { code: String, minutes: u64 },
     /// The code's time is over: a new one on a tap.
     Expired,
     /// A failure, said (asked again by itself after a while).
     Failed(Failure),
-    /// The house's screen, by its name.
-    Paired { name: String },
+    /// The house's screen.
+    Paired,
     /// It was paired and the house no longer knows it: said, then a code.
     Revoked,
 }
@@ -112,9 +110,9 @@ fn run(
         if client.has_cookie() {
             let mut tries = 0;
             let me = loop {
-                match client.get::<maison_api::Answer<Me>>("/screens/me") {
-                    Ok(me) => break Some(me.body.screen.name),
-                    Err(Failure::SignedOut) => break None,
+                match client.get::<maison_api::Answer<Me>>(paths::SCREEN_ME) {
+                    Ok(_) => break true,
+                    Err(Failure::SignedOut) => break false,
                     Err(f) => {
                         if !say(Screen::Failed(f)) {
                             return;
@@ -126,9 +124,9 @@ fn run(
                     }
                 }
             };
-            if let Some(name) = me {
+            if me {
                 was_paired = true;
-                if !say(Screen::Paired { name }) {
+                if !say(Screen::Paired) {
                     return;
                 }
                 // the house shows until a read says 401
@@ -186,7 +184,7 @@ fn wait(asks: &Receiver<Ask>, d: Duration) -> Waited {
 fn pair(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> Paired {
     let mut tries = 0;
     loop {
-        let p = match client.post::<maison_api::Answer<Pairing>>("/screens/pairing", None::<&()>) {
+        let p = match client.post::<maison_api::Answer<Pairing>>(paths::PAIRING, None::<&()>) {
             Ok(p) => p.body,
             Err(f) => {
                 if !say(Screen::Failed(f)) {
@@ -205,7 +203,6 @@ fn pair(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> 
         let until = Instant::now() + Duration::from_millis(p.expires_in_ms.min(86_400_000));
         let code = Screen::Code {
             code: p.code.clone(),
-            until,
             minutes: (p.expires_in_ms as f64 / 60_000.0).round() as u64,
         };
         if !say(code) {
@@ -223,15 +220,15 @@ fn pair(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> 
             if Instant::now() >= until {
                 break true;
             }
-            match client
-                .post::<maison_api::Answer<ClaimAnswer>>("/screens/pairing/claim", Some(&claim))
+            match client.post::<maison_api::Answer<ClaimAnswer>>(paths::PAIRING_CLAIM, Some(&claim))
             {
                 Ok(a) if a.body.paired => return Paired::Yes,
                 Ok(_) => {}
                 // its time is over on the server's side
-                Err(Failure::Refused { code: Some(c), .. }) if c == "pairing_unknown" => {
-                    break true;
-                }
+                Err(Failure::Refused {
+                    code: Some(Code::PairingUnknown),
+                    ..
+                }) => break true,
                 // anything else (the Wi-Fi a moment away): asked again at the next round
                 Err(f) => eprintln!("pairing claim: {f}"),
             }
@@ -262,6 +259,11 @@ mod tests {
     fn session(origin: &str, dir: &std::path::Path) -> Session {
         let client = Client::new(origin, dir, Duration::from_secs(5));
         Session::start(client, Arc::new(|| {}))
+    }
+
+    /// A cookie kept from an earlier life, as the jar writes it (its origin first).
+    fn keep_cookie(dir: &std::path::Path, origin: &str, cookie: &str) {
+        std::fs::write(dir.join("screen-cookie"), format!("{origin}\n{cookie}\n")).unwrap();
     }
 
     /// Takes until the screen is `want`'s, or fails after five seconds.
@@ -312,11 +314,7 @@ mod tests {
             &mut s,
             |s| matches!(s, Screen::Code { code, minutes: 10, .. } if code == "ABCD-2345"),
         );
-        until(&mut s, |s| {
-            *s == Screen::Paired {
-                name: "Salon".into(),
-            }
-        });
+        until(&mut s, |s| *s == Screen::Paired);
         assert_eq!(claims.load(Ordering::SeqCst), 2);
         // the secret went in the claim's body, never in an address
         let asked = stub.asked.lock().unwrap().clone();
@@ -335,7 +333,6 @@ mod tests {
     #[test]
     fn a_kept_cookie_opens_the_house_and_a_refused_one_shows_a_code() {
         let dir = temp_dir("pairing-kept");
-        std::fs::write(dir.join("screen-cookie"), "maison_screen=old").unwrap();
         let stub = serve(|line| match line {
             l if l.starts_with("GET /api/screens/me") => (
                 200,
@@ -344,12 +341,9 @@ mod tests {
             ),
             _ => (404, vec![], "{}".into()),
         });
+        keep_cookie(&dir, &stub.origin, "maison_screen=old");
         let mut s = session(&stub.origin, &dir);
-        until(&mut s, |s| {
-            *s == Screen::Paired {
-                name: "Entrée".into(),
-            }
-        });
+        until(&mut s, |s| *s == Screen::Paired);
         let asked = stub.asked.lock().unwrap().clone();
         assert!(
             asked[0]
@@ -359,7 +353,6 @@ mod tests {
         );
 
         let dir = temp_dir("pairing-refused");
-        std::fs::write(dir.join("screen-cookie"), "maison_screen=gone").unwrap();
         let stub = serve(|line| match line {
             l if l.starts_with("GET /api/screens/me") => (401, vec![], "{}".into()),
             l if l.starts_with("POST /api/screens/pairing/claim") => {
@@ -368,6 +361,7 @@ mod tests {
             l if l.starts_with("POST /api/screens/pairing") => (200, vec![], PAIRING.into()),
             _ => (404, vec![], "{}".into()),
         });
+        keep_cookie(&dir, &stub.origin, "maison_screen=gone");
         let mut s = session(&stub.origin, &dir);
         // never paired in this life: straight to a code, no « removed » notice
         until(&mut s, |s| matches!(s, Screen::Code { .. }));

@@ -4,15 +4,16 @@
 //! warning style. A plug that does not answer is not asked (its tile stays, saying since when).
 
 use chrono::{DateTime, TimeZone};
-use chrono_tz::Tz;
-use maison_api::meross::Plug;
-use serde_json::json;
+use maison_api::Tz;
+use maison_api::meross::{Plug, ToggleRequest};
 
 use super::tempo::{Period, PriceNow, price_now};
-use super::{Cx, MEROSS, loaded, path_segment, stale};
-use crate::commands::{Order, limit};
+use super::{Cx, MEROSS, loaded, stale};
+use crate::commands::{Order, Post, limit};
 use crate::i18n::{Words, count, k};
 use crate::live::View;
+use crate::paths;
+use crate::ui::icon;
 use crate::ui::model::{Body, Button, Group, Lead, Tile};
 
 /// Above this a plug draws enough to matter during red peak hours (standby leaks do not).
@@ -84,8 +85,10 @@ pub fn tile(
         Order::one(
             format!("{MEROSS}:{}:toggle", plug.id),
             plug.name.clone(),
-            format!("/meross/{}/toggle", path_segment(&plug.id)),
-            Some(json!({ "on": on })),
+            Post::json(
+                paths::of(paths::MEROSS, &plug.id, "toggle"),
+                &ToggleRequest { on },
+            ),
         )
         .toggle(on)
         .within(limit::PLUG)
@@ -112,7 +115,11 @@ pub fn tile(
         state,
         warn: nudge.is_some() && plug.is_on,
         lead: Lead::Toggle {
-            icon: if plug.is_on { "plug-zap" } else { "plug" },
+            icon: if plug.is_on {
+                icon::PLUG_ZAP
+            } else {
+                icon::PLUG
+            },
             on: plug.is_on,
             offline: !plug.is_online,
             turn_on: Box::new(toggle(true)),
@@ -157,9 +164,8 @@ pub fn plugs_group(
         w,
         v,
         &[MEROSS],
-        plugs.is_empty(),
         (k::MEROSS_NONE, k::MEROSS_NONE_HINT),
-        || Body::Tiles(tiles(plugs)),
+        |plugs| (!plugs.is_empty()).then(|| Body::Tiles(tiles(plugs))),
     );
     Group {
         title: w.s(k::MEROSS_TITLE),
@@ -173,13 +179,7 @@ pub fn plugs_group(
 pub fn group(cx: &mut Cx) -> Option<Group> {
     let list = cx.live.want(&cx.sources.plugs);
     let total = list.data.as_ref().map(|d| d.total);
-    let v = View {
-        data: list.data.map(|d| std::sync::Arc::new(d.devices.clone())),
-        loading: list.loading,
-        failed: list.failed,
-        stale: list.stale,
-        at: list.at,
-    };
+    let v = list.map(|d| d.devices.clone());
     let now = cx.house_now();
     let tempo = cx.live.want(&cx.sources.tempo).data;
     let price = tempo.as_deref().and_then(|t| price_now(&now, t));
@@ -222,7 +222,6 @@ mod tests {
     use maison_api::meross::{ElectricityAnswer, PlugList};
     use maison_api::tempo::Color;
     use maison_api::{Answer, HOUSE_TZ};
-    use std::sync::Arc;
 
     const PLUGS: &str = r#"{"success":true,"devices":[{"id":"p1","name":"Bouilloire","ip":"192.168.1.20","isOnline":true,"isOn":true,"lastPing":1763000000000},{"id":"p2","name":"Lampe bureau","ip":"192.168.1.21","isOnline":false,"isOn":false,"lastPing":0}],"total":2,"message":"ok"}"#;
 
@@ -289,17 +288,14 @@ mod tests {
             panic!()
         };
         assert_eq!(order.posts[0].1.path, "/meross/p1/toggle");
-        assert_eq!(order.posts[0].1.body, Some(json!({"on": false})));
+        assert_eq!(
+            order.posts[0].1.body,
+            Some(serde_json::json!({"on": false}))
+        );
         let off = tile(&w, &list.devices[1], None, Some(&price), &now());
         assert_eq!(off.state, "Injoignable");
         assert!(off.fact.is_none());
-        let v = View {
-            data: Some(Arc::new(list.devices.clone())),
-            loading: false,
-            failed: false,
-            stale: false,
-            at: None,
-        };
+        let v = View::ready(list.devices.clone());
         let g = plugs_group(&w, &v, Some(2), |_| Vec::new(), None);
         assert_eq!(g.fact.as_deref(), Some("2 prises · 1 en ligne"));
     }

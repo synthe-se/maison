@@ -5,7 +5,7 @@
 //! drawing stops (`sweep`), as a component unmounted. After a gesture, `refresh(prefix)` reads
 //! a family again at once. Values reach the drawing thread over a channel, which then wakes.
 //!
-//! A value is stale once it is older than three times its pace (a source that stopped
+//! A value is stale once it is older than `STALE_CADENCES` times its pace (a source that stopped
 //! answering), or when its last read failed: the screen says it is old, never blank.
 
 use std::any::Any;
@@ -86,23 +86,53 @@ pub enum Read {
 }
 
 /// A value as a view sees it (shared: a view reads several at once).
+#[derive(Debug)]
 pub struct View<T> {
     pub data: Option<Arc<T>>,
     /// Asked, nothing back yet.
     pub loading: bool,
-    /// The last read failed (and nothing else is known when `data` is none).
-    pub failed: bool,
-    /// Older than three paces, or its last read failed: shown, said old.
+    /// How the last read failed (and nothing else is known when `data` is none).
+    pub failure: Option<Failure>,
+    /// Older than `STALE_CADENCES` paces, or its last read failed: shown, said old.
     pub stale: bool,
     /// When the value shown was read.
     pub at: Option<Instant>,
+}
+
+impl<T> View<T> {
+    /// A value read just now, without a failure (a test's, a family's own).
+    #[cfg(test)]
+    pub fn ready(data: T) -> Self {
+        Self {
+            data: Some(Arc::new(data)),
+            loading: false,
+            failure: None,
+            stale: false,
+            at: None,
+        }
+    }
+
+    pub fn failed(&self) -> bool {
+        self.failure.is_some()
+    }
+
+    /// The same read, its value seen through `f` (a list's items), its state kept.
+    pub fn map<U>(self, f: impl FnOnce(&T) -> U) -> View<U> {
+        View {
+            data: self.data.map(|d| Arc::new(f(&d))),
+            loading: self.loading,
+            failure: self.failure,
+            stale: self.stale,
+            at: self.at,
+        }
+    }
 }
 
 struct Entry {
     value: Option<Arc<dyn Any + Send + Sync>>,
     at: Option<Instant>,
     pace: Duration,
-    failed: bool,
+    failure: Option<Failure>,
     /// The worker's ear: dropped, it ends; a message reads again at once.
     poke: Option<Sender<()>>,
     /// The drawing that last wanted it.
@@ -143,40 +173,36 @@ impl Live {
     /// The source's value now; its worker started on the first ask.
     pub fn want<T: Send + Sync + 'static>(&mut self, source: &Source<T>) -> View<T> {
         let drawing = self.drawing;
-        if !self.entries.contains_key(&source.key) {
-            let poke = self.spawn(source.clone());
-            self.entries.insert(
-                source.key.clone(),
-                Entry {
-                    value: None,
-                    at: None,
-                    pace: (source.pace)(None),
-                    failed: false,
-                    poke: Some(poke),
-                    wanted: drawing,
-                },
-            );
-        }
-        let e = self.entries.get_mut(&source.key).expect("just inserted");
+        // its worker started on the first ask, or again when wanted after a sweep (its last
+        // value shown while it reads again)
+        let running = self
+            .entries
+            .get(&source.key)
+            .is_some_and(|e| e.poke.is_some());
+        let poke = (!running).then(|| self.spawn(source.clone()));
+        let e = self
+            .entries
+            .entry(source.key.clone())
+            .or_insert_with(|| Entry {
+                value: None,
+                at: None,
+                pace: (source.pace)(None),
+                failure: None,
+                poke: None,
+                wanted: drawing,
+            });
         e.wanted = drawing;
-        if e.poke.is_none() {
-            // wanted again after a sweep: its last value shown while it reads again
-            e.poke = Some(spawn(
-                &self.client,
-                source.clone(),
-                self.tx.clone(),
-                self.wake.clone(),
-            ));
+        if poke.is_some() {
+            e.poke = poke;
         }
-        let e = &self.entries[&source.key];
         let data = e.value.clone().and_then(|v| v.downcast::<T>().ok());
         let old =
             e.at.is_some_and(|at| at.elapsed() > e.pace.saturating_mul(STALE_CADENCES));
-        let stale = data.is_some() && (old || e.failed);
+        let stale = data.is_some() && (old || e.failure.is_some());
         View {
             data,
-            loading: e.at.is_none() && !e.failed,
-            failed: e.failed,
+            loading: e.at.is_none() && e.failure.is_none(),
+            failure: e.failure.clone(),
             stale,
             at: e.at,
         }
@@ -225,7 +251,7 @@ impl Live {
                         e.value = Some(value);
                         e.at = Some(Instant::now());
                         e.pace = pace;
-                        e.failed = false;
+                        e.failure = None;
                     }
                     self.signed_out = false;
                 }
@@ -237,7 +263,7 @@ impl Live {
                         eprintln!("{key}: {failure}");
                     }
                     if let Some(e) = self.entries.get_mut(&key) {
-                        e.failed = true;
+                        e.failure = Some(failure);
                         e.pace = pace;
                     }
                 }
@@ -261,7 +287,7 @@ impl Live {
     pub fn next_stale(&self) -> Option<Instant> {
         self.entries
             .values()
-            .filter(|e| e.poke.is_some() && !e.failed)
+            .filter(|e| e.poke.is_some() && e.failure.is_none())
             .filter_map(|e| e.at?.checked_add(e.pace.saturating_mul(STALE_CADENCES)))
             .filter(|t| *t > Instant::now())
             .min()
@@ -430,7 +456,11 @@ mod tests {
         live.take();
         let v = live.want(&source);
         assert_eq!(v.data.as_deref(), Some(&7));
-        assert!(v.failed && v.stale);
+        assert!(v.failed() && v.stale);
+        assert!(matches!(
+            v.failure,
+            Some(Failure::Refused { status: 500, .. })
+        ));
         assert!(!live.signed_out());
         live.refresh("n:");
         wait_until(|| wakes.load(Ordering::SeqCst) == 3);
