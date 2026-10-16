@@ -8,14 +8,19 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime};
+use maison_api::tempo::DAY_START_HOUR;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::forecast::{
     effective_temperature, wind_power, DayWeather, Levels, Model, PastDay, WeatherPoint,
 };
-use crate::{error::AppError, util::HOUSE_TZ};
+use crate::{
+    error::{AppError, Refusal},
+    net::fetch_json,
+    util::{house_time, HOUSE_TZ},
+};
 
 /// The weather model the forecast was fitted and replayed with.
 pub const WEATHER_MODEL: &str = "ecmwf_ifs025";
@@ -43,7 +48,8 @@ pub fn parse_hourly(body: &Value, key: &str) -> Result<Vec<Series>, AppError> {
         .map(|place| {
             let hourly = &place["hourly"];
             let bad = || {
-                AppError::service_unavailable(format!("Open-Meteo answered without hourly {key}"))
+                tracing::warn!(key, "Open-Meteo answered without its hourly values");
+                AppError::from(Refusal::ServiceUnreachable)
             };
             let times = hourly["time"].as_array().ok_or_else(bad)?;
             let values = hourly[key].as_array().ok_or_else(bad)?;
@@ -62,9 +68,9 @@ pub fn parse_hourly(body: &Value, key: &str) -> Result<Vec<Series>, AppError> {
         .collect()
 }
 
-/// The Tempo day a local time belongs to: 06:00 to 06:00.
+/// The Tempo day a local time belongs to: [`DAY_START_HOUR`] to the next one.
 pub fn tempo_day_of(local: NaiveDateTime) -> NaiveDate {
-    (local - Duration::hours(6)).date()
+    (local - Duration::hours(i64::from(DAY_START_HOUR))).date()
 }
 
 /// Per day (`day_of` a time), each place's mean of `f(value)`; days missing hours anywhere
@@ -178,27 +184,16 @@ pub async fn fetch_weather(
             ("models", WEATHER_MODEL.into()),
         ]);
         async move {
-            let response = client
-                .get(format!("{url}/v1/forecast"))
-                .query(&query)
-                .send()
-                .await?;
-            if !response.status().is_success() {
-                return Err(AppError::service_unavailable(format!(
-                    "Open-Meteo: {}",
-                    response.status()
-                )));
-            }
-            parse_hourly(&response.json::<Value>().await?, key)
+            let request = client.get(format!("{url}/v1/forecast")).query(&query);
+            parse_hourly(&fetch_json::<Value>(request, "Open-Meteo").await?, key)
         }
     };
     let temperature =
         daily_temperature(&ask(&model.cities, "temperature_2m").await?, &model.cities);
     let wind_power = daily_wind_power(&ask(&model.wind_sites, "wind_speed_100m").await?);
     if temperature.is_empty() || wind_power.is_empty() {
-        return Err(AppError::service_unavailable(
-            "Open-Meteo answered without full days",
-        ));
+        tracing::warn!("Open-Meteo answered without full days");
+        return Err(Refusal::ServiceUnreachable.into());
     }
     Ok(Weather {
         issued: Some(today),
@@ -239,14 +234,10 @@ pub fn tempo_days(rows: &[OdreRow]) -> BTreeMap<NaiveDate, [f64; 3]> {
         .collect()
 }
 
-/// 06:00 in Paris on `day`, in UTC (where ODRE's rows start a Tempo day).
+/// When the Tempo day `day` starts ([`DAY_START_HOUR`] at the house), in UTC (where ODRE's
+/// rows start it).
 pub fn tempo_day_start(day: NaiveDate) -> DateTime<chrono::Utc> {
-    let six = day.and_time(NaiveTime::from_hms_opt(6, 0, 0).expect("06:00"));
-    HOUSE_TZ
-        .from_local_datetime(&six)
-        .earliest()
-        .expect("06:00 exists in Paris")
-        .with_timezone(&chrono::Utc)
+    house_time(day, DAY_START_HOUR, 0)
 }
 
 /// The Tempo days of `dataset` (`eco2mix-national-tr`: the current months) since `since`.
@@ -257,25 +248,24 @@ pub async fn fetch_load(
     since: NaiveDate,
 ) -> Result<BTreeMap<NaiveDate, [f64; 3]>, AppError> {
     let start = tempo_day_start(since).format("%Y-%m-%dT%H:%M:%SZ");
-    let response = client
+    let request = client
         .get(format!("{url}/{dataset}/exports/json"))
-        .query(&[
-            (
-                "select",
-                "date_heure,consommation,eolien,solaire".to_string(),
-            ),
-            ("where", format!("date_heure >= '{start}'")),
-            ("order_by", "date_heure".to_string()),
-        ])
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Err(AppError::service_unavailable(format!(
-            "ODRE éCO2mix: {}",
-            response.status()
-        )));
-    }
-    Ok(tempo_days(&response.json::<Vec<OdreRow>>().await?))
+        .query(&odre_query(&format!("date_heure >= '{start}'")));
+    Ok(tempo_days(
+        &fetch_json::<Vec<OdreRow>>(request, "ODRE éCO2mix").await?,
+    ))
+}
+
+/// What éCO2mix is asked (`where`: from when), the service and `fit_tempo` alike.
+pub fn odre_query(since: &str) -> [(&'static str, String); 3] {
+    [
+        (
+            "select",
+            "date_heure,consommation,eolien,solaire".to_string(),
+        ),
+        ("where", since.to_string()),
+        ("order_by", "date_heure".to_string()),
+    ]
 }
 
 /// `cache/tempo/netload.json`: the past Tempo days' `[consumption, wind, solar]` and the

@@ -45,6 +45,8 @@ pub struct Cover {
     /// The next opening / closing will not happen (they stay in `next_open` / `next_close`).
     pub skip_next_open: bool,
     pub skip_next_close: bool,
+    /// Why it is offline, as a refusal's code (`device_unreachable`, `internal`: see
+    /// `codes`); the detail is the server's log's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

@@ -212,7 +212,10 @@ async fn shutters_hue_lamps_and_the_ac_are_actions() {
         .collect();
     assert_eq!(
         &results[..2],
-        ["failed: Unknown shutter", "failed: Unknown shutter"]
+        [
+            "failed: not_found: Not found",
+            "failed: not_found: Not found"
+        ]
     );
     assert!(
         results[2].starts_with("failed: ") && results[3].starts_with("failed: "),

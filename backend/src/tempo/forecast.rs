@@ -14,7 +14,9 @@
 use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
-use super::rules::{is_holiday, Color, DayRules, Stock};
+use maison_api::tempo::Color;
+
+use super::rules::{is_holiday, DayRules, Stock};
 
 /// RTE's temperature correction of the normalisation (γ, k).
 const GAMMA: f64 = -0.1176;
@@ -51,7 +53,7 @@ fn one() -> f64 {
 
 /// The fitted model and how it scored (`cache/tempo/model.json`, written by `fit_tempo`).
 /// Written camelCase; a file from before reads through the snake_case aliases.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Model {
     /// When it was fitted (`2026-10-03`).

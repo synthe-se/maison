@@ -4,23 +4,28 @@
 //! its content over HTTP from the clapier server and accepts commands over
 //! UDP port 9998 with a `grn1 ` magic prefix. This module drives that control
 //! port directly (no dependency on clapier) and mirrors the daily Tempo
-//! colors on the rabbit: today's color as the breathing LED, tomorrow's as
-//! the ear position.
+//! colors on the rabbit: today's color on the belly LED (a static color),
+//! tomorrow's as the ear position ([`NabaztagManager::follow_tempo`]: when
+//! Tempo's answer changes, when the day turns, and every hour).
 
 use std::{path::Path, sync::Arc, time::Duration};
 
+use maison_api::tempo::Color;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
-    error::AppError,
+    error::{AppError, Refusal},
     json_config::{Checked, JsonConfig},
     net::{device_client, device_host, unreachable},
-    tempo::Color,
-    util::non_blank,
+    util::{house_time, house_today, non_blank},
     TempoService,
 };
+
+/// The colors are pushed again this often whatever happened: a rabbit that rebooted gets
+/// them back.
+pub const TEMPO_SAFETY_NET: Duration = Duration::from_secs(3600);
 
 /// Garenne control port on the rabbit.
 const CTL_PORT: u16 = 9998;
@@ -92,8 +97,8 @@ impl Default for NabaztagConfig {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TempoPushResult {
-    pub today_color: String,
-    pub tomorrow_color: Option<String>,
+    pub today_color: Color,
+    pub tomorrow_color: Option<Color>,
     pub led_hex: String,
     pub ear_position: Option<u8>,
     /// Tomorrow's colour is a forecast (RTE has not published it yet).
@@ -140,22 +145,22 @@ impl NabaztagManager {
     }
 
     /// Checked where it came in (the file by `Checked`, the environment by `new`).
+    /// No host yet (`NABAZTAG_HOST` or the file): the coded `not_configured`.
     async fn host(&self) -> Result<String, AppError> {
-        self.config().await.host.ok_or_else(|| {
-            AppError::service_unavailable(
-                "No Nabaztag host configured (set NABAZTAG_HOST or the nabaztag config)",
-            )
-        })
+        self.config()
+            .await
+            .host
+            .ok_or_else(|| Refusal::NotConfigured.into())
     }
 
     /// Sends one garenne control command to the rabbit. Fire-and-forget by
-    /// protocol design; delivery is not acknowledged.
+    /// protocol design; delivery is not acknowledged. A command off the allow-list is the
+    /// coded `invalid`.
     pub async fn send_command(&self, command: &str) -> Result<(), AppError> {
         let command = command.trim();
         if !command_is_allowed(command) {
-            return Err(AppError::bad_request(format!(
-                "Command not allowed: {command}"
-            )));
+            debug!(command, "rabbit command not allowed");
+            return Err(Refusal::Invalid.into());
         }
 
         let host = self.host().await?;
@@ -224,25 +229,63 @@ impl NabaztagManager {
         }
         let ear_position = ears.map(|(left, _)| left);
         let tomorrow_forecast = tomorrow.is_some_and(|(_, forecast)| forecast);
-        let tomorrow = tomorrow.map(|(color, _)| color.as_str());
+        let tomorrow = tomorrow.map(|(color, _)| color);
 
         info!(
             today = today.as_str(),
-            tomorrow = tomorrow.unwrap_or("unknown"),
+            tomorrow = tomorrow.map_or("unknown", Color::as_str),
             led = led_hex,
             ears = ?ear_position,
             "tempo pushed to the rabbit"
         );
 
         Ok(TempoPushResult {
-            today_color: today.as_str().to_string(),
-            tomorrow_color: tomorrow.map(str::to_string),
+            today_color: today,
+            tomorrow_color: tomorrow,
             led_hex: led_hex.to_string(),
             ear_position,
             tomorrow_forecast,
         })
     }
+
+    /// Mirrors Tempo on the rabbit for good: pushes when Tempo's answer changes (a reader
+    /// asked, and today's or tomorrow's colors moved), when the day turns at the house, and
+    /// every [`TEMPO_SAFETY_NET`] whatever happened (a rabbit that rebooted). Nothing while
+    /// the push is off or no rabbit is set. Ends only when Tempo goes away.
+    pub async fn follow_tempo(&self, tempo: &TempoService) {
+        let mut answers = tempo.subscribe();
+        let mut pushed: Option<TempoColors> = None;
+        loop {
+            let config = self.config().await;
+            if config.tempo_enabled && config.host.is_some() {
+                match tempo.rabbit_colors(false).await {
+                    Ok(colors) if pushed != Some(colors) => {
+                        match self.push_tempo(colors.0, colors.1).await {
+                            Ok(_) => pushed = Some(colors),
+                            Err(error) => warn!(%error, "tempo push to the rabbit failed"),
+                        }
+                    }
+                    Ok(_) => debug!("tempo: the rabbit has these colors already"),
+                    Err(error) => warn!(%error, "tempo colors unavailable for the rabbit"),
+                }
+            }
+            let tomorrow = house_time(house_today() + chrono::Duration::days(1), 0, 1);
+            let new_day = (tomorrow - chrono::Utc::now()).to_std().unwrap_or_default();
+            tokio::select! {
+                changed = answers.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep(new_day) => {}
+                _ = tokio::time::sleep(TEMPO_SAFETY_NET) => pushed = None,
+            }
+        }
+    }
 }
+
+/// Today's color and tomorrow's (`true`: a forecast), as last pushed.
+type TempoColors = (Color, Option<(Color, bool)>);
 
 /// Allow-list mirroring clapier's `vet_ctl`: safe garenne commands only.
 /// `conf` is deliberately excluded — it can rewrite the rabbit's flash
@@ -304,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_host_must_be_a_lan_device() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::util::test_dir();
         let path = dir.path().join("nabaztag.json");
         let manager = NabaztagManager::new(&path, None).expect("manager");
         for bad in [
@@ -340,5 +383,38 @@ mod tests {
         // a hand-edited file is checked on load
         std::fs::write(&path, r#"{"host": "8.8.8.8"}"#).expect("written");
         assert!(NabaztagManager::new(&path, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn refusals_are_coded() {
+        let dir = crate::util::test_dir();
+        let manager = NabaztagManager::new(&dir.path().join("nabaztag.json"), None).unwrap();
+        let code = |error: AppError| match error {
+            AppError::Coded { code, .. } => code,
+            other => panic!("uncoded: {other}"),
+        };
+        assert_eq!(
+            code(manager.send_command("conf x").await.unwrap_err()),
+            "invalid"
+        );
+        assert_eq!(
+            code(manager.send_command("ping").await.unwrap_err()),
+            "not_configured"
+        );
+    }
+
+    /// The push answer says colors as Tempo says them.
+    #[test]
+    fn a_push_answer_names_its_colors() {
+        let answer = TempoPushResult {
+            today_color: Color::Red,
+            tomorrow_color: None,
+            led_hex: "ff0000".into(),
+            ear_position: None,
+            tomorrow_forecast: false,
+        };
+        let json = serde_json::to_value(answer).unwrap();
+        assert_eq!(json["todayColor"], "RED");
+        assert!(crate::util::casing_offences(&json).is_empty());
     }
 }
