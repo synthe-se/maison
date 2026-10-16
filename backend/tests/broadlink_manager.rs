@@ -82,20 +82,17 @@ fn test_app() -> axum::Router {
     common::app(common::isolated_config("maison-rust-broadlink-tests"))
 }
 
-/// Setting the blasters up is for admins; the climate tile (cached list, codes, sending)
+/// Setting the blasters up is for admins; the climate tile (the found list, codes, sending)
 /// is everyday use.
 #[tokio::test]
 async fn setting_up_blasters_is_admin_only() {
     let app = test_app();
     let member = common::member_token();
     for (method, path, body) in [
+        // a search now (a POST: a link cannot start it), from an interface or not
+        (Method::POST, "/api/broadlink/discover", None),
         (
-            Method::GET,
-            "/api/broadlink/discover?forceRefresh=true",
-            None,
-        ),
-        (
-            Method::GET,
+            Method::POST,
             "/api/broadlink/discover?localIp=192.168.1.10",
             None,
         ),
