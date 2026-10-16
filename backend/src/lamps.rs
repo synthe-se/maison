@@ -20,9 +20,6 @@ use crate::{
 
 pub use maison_api::lamps::{HueLamp, LampColor, LampState, LampStats, ZigbeeLamp};
 
-/// The old name, kept only for `ir.rs` until it says `HueLamp`.
-pub use maison_api::lamps::HueLamp as HueLampView;
-
 /// A lamp of either family, as what reads it needs it.
 pub trait Lamp {
     fn state(&self) -> &LampState;

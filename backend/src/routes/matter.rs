@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use maison_api::{
     lamps::RenameRequest,
     matter::{Covers, OneCover, PositionRequest, SkipRequest, SunEvent},
-    sun::{NextSun, Where},
+    sun::Where,
     Message,
 };
 
@@ -33,12 +33,6 @@ struct CommissionRequest {
     /// Manual pairing code or `MT:` QR payload.
     code: String,
     name: String,
-}
-
-/// The sun at the house, as `GET /api/sun` says it too (`routes/root.rs`); the manager
-/// computes it.
-pub(crate) async fn sun_now(state: &AppState) -> Option<NextSun> {
-    state.matter.sun_now().await
 }
 
 async fn where_now(state: &AppState) -> Where {

@@ -4,7 +4,7 @@ use serde::Serialize;
 use maison_api::sun::SunNow;
 
 use crate::{
-    routes::{matter::sun_now, Answer, Reply},
+    routes::{Answer, Reply},
     AppState,
 };
 
@@ -60,6 +60,6 @@ async fn health_handler() -> Json<Answer<Health>> {
 /// sun times stay with those signed in, `GET /api/matter/place`).
 async fn sun_handler(State(state): State<AppState>) -> Json<Answer<SunNow>> {
     Answer::ok(SunNow {
-        side: sun_now(&state).await.and_then(|sun| sun.side),
+        side: state.matter.sun_now().await.and_then(|sun| sun.side),
     })
 }

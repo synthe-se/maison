@@ -123,32 +123,6 @@ impl AppError {
         }
     }
 
-    /// Deprecated: an uncoded 400 the apps cannot word. Use `Refusal::Invalid` (or a closer
-    /// code). Kept only while the device modules move to codes; removed afterwards.
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self::Http {
-            status: StatusCode::BAD_REQUEST,
-            message: message.into(),
-        }
-    }
-
-    /// Deprecated: an uncoded 404. Use `Refusal::NotFound`. Removed once nothing calls it.
-    pub fn not_found(message: impl Into<String>) -> Self {
-        Self::Http {
-            status: StatusCode::NOT_FOUND,
-            message: message.into(),
-        }
-    }
-
-    /// Deprecated: an uncoded 403. Use `Refusal::Forbidden` (an admin's) or a closer code.
-    /// Removed once nothing calls it.
-    pub fn forbidden(message: impl Into<String>) -> Self {
-        Self::Http {
-            status: StatusCode::FORBIDDEN,
-            message: message.into(),
-        }
-    }
-
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::http(StatusCode::SERVICE_UNAVAILABLE, message)
     }

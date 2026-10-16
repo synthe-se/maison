@@ -5,8 +5,8 @@
 //! - `POST /api/auth/refresh`: a new pair of cookies, until `SESSION_MAX_DAYS` after the
 //!   passkey sign-in.
 //! - `POST /api/auth/logout`: this sign-in ends (its access tokens too); `POST
-//!   /api/auth/logout-everywhere`: every one of mine. Both clear the browser's cookies and
-//!   storage (`Clear-Site-Data`).
+//!   /api/auth/logout-everywhere`: every one of mine. Both empty the cookies and clear the
+//!   page's storage (`Clear-Site-Data`).
 //! - `GET /api/auth/sessions`: my sign-ins (when, where, from what); `DELETE
 //!   /api/auth/sessions/{id}`: one of them ends.
 
@@ -165,12 +165,14 @@ fn closed_session(state: &AppState) -> SessionCookies {
     AppendHeaders([empty(CookieName::Access), empty(CookieName::Refresh)])
 }
 
-/// What signing out asks the browser to forget: its cookies and what the page stored (theme,
-/// language, the sun's side: nothing secret, but nothing of the person stays behind).
+/// What signing out asks the browser to forget: what the page stored (theme, language, the sun's
+/// side: nothing secret, but nothing of the person stays behind). Not `"cookies"`: that would
+/// clear every cookie of the registrable domain (sibling sites' too); Maison's own are emptied by
+/// the answer's Set-Cookie.
 fn clear_site_data() -> [(HeaderName, HeaderValue); 1] {
     [(
         HeaderName::from_static("clear-site-data"),
-        HeaderValue::from_static("\"cookies\", \"storage\""),
+        HeaderValue::from_static("\"storage\""),
     )]
 }
 

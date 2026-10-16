@@ -4,6 +4,7 @@
 use std::{net::Ipv4Addr, time::Duration};
 
 use crate::error::{AppError, Refusal};
+use crate::util::refused;
 
 /// How long a TCP connection may take to open, for every client: a host that is gone
 /// should not hold a request for the whole timeout.
@@ -105,13 +106,16 @@ const NOT_A_DEVICE: &str =
 pub fn device_host(value: &str) -> Result<String, AppError> {
     match device_address(value)? {
         (host, None) => Ok(host),
-        (_, Some(_)) => Err(AppError::bad_request(format!("{value:?}: no port here"))),
+        (_, Some(_)) => Err(refused(
+            Refusal::NotADevice,
+            format!("{value:?}: no port here"),
+        )),
     }
 }
 
 /// A device host with an optional port, for the protocols whose port varies.
 pub fn device_address(value: &str) -> Result<(String, Option<u16>), AppError> {
-    let refuse = || AppError::bad_request(format!("{value:?} is {NOT_A_DEVICE}"));
+    let refuse = || refused(Refusal::NotADevice, format!("{value:?} is {NOT_A_DEVICE}"));
     let (host, port) = match value.rsplit_once(':') {
         Some((host, port)) => {
             let digits =
@@ -141,7 +145,7 @@ pub fn device_ipv4(value: &str) -> Result<Ipv4Addr, AppError> {
         .parse::<Ipv4Addr>()
         .ok()
         .filter(Ipv4Addr::is_private)
-        .ok_or_else(|| AppError::bad_request(format!("{value:?} is {NOT_A_DEVICE}")))
+        .ok_or_else(|| refused(Refusal::NotADevice, format!("{value:?} is {NOT_A_DEVICE}")))
 }
 
 /// `name.local`, `living-room.tv.local`: DNS labels only.

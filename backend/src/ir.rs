@@ -1041,7 +1041,10 @@ mod tests {
             code_of(&AppError::service_unavailable("TV unreachable")),
             Refusal::DeviceUnreachable
         );
-        assert_eq!(code_of(&AppError::bad_request("x")), Refusal::Invalid);
+        assert_eq!(
+            code_of(&AppError::http(StatusCode::BAD_REQUEST, "x")),
+            Refusal::Invalid
+        );
         assert_eq!(
             code_of(&AppError::Io(std::io::Error::other("disk"))),
             Refusal::Internal
@@ -1204,7 +1207,7 @@ mod tests {
             .await
             .unwrap());
         assert!(SwitchState::Toggle
-            .resolve(|| async { Err(AppError::not_found("x")) })
+            .resolve(|| async { Err(Refusal::NotFound.into()) })
             .await
             .is_err());
     }

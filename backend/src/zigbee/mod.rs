@@ -57,9 +57,6 @@ const SAVE_RETRY: Duration = Duration::from_secs(30);
 /// The save loop, should it end or panic, starts again after this.
 const SAVE_LOOP_RESTART: Duration = Duration::from_secs(5);
 
-/// The old name, kept only for `ir.rs` until it says `ZigbeeLamp`.
-pub use maison_api::lamps::ZigbeeLamp as ZigbeeLampView;
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZigbeePairingStatus {

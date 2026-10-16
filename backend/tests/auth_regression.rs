@@ -493,7 +493,7 @@ async fn signing_out_everywhere_clears_the_browser() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         headers.get("clear-site-data").and_then(|v| v.to_str().ok()),
-        Some("\"cookies\", \"storage\"")
+        Some("\"storage\"")
     );
 }
 

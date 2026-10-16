@@ -87,7 +87,7 @@ mod tests {
     impl Checked for Vec<u8> {
         fn checked(self) -> Result<Self, AppError> {
             if self.contains(&0) {
-                Err(AppError::bad_request("no zero"))
+                Err(crate::error::Refusal::Invalid.into())
             } else {
                 Ok(self)
             }
