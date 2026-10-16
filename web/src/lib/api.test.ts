@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { json as jsonBody, scriptFetch as script, sentBody, stubFetch } from '#lib/test/fetch.ts';
-import { ApiError, UNREACHABLE, api, onUnauthorized, path, toApiError } from './api.ts';
+import { ApiError, UNREACHABLE, api, get, isNotFound, onUnauthorized, path } from './api.ts';
 import { authApi, peopleApi } from './passkeys.ts';
 import { devicesApi, feederApi, fountainApi, litterBoxApi } from './devices/cats/api.ts';
 import { hueLampsApi, zigbeeLampsApi } from './devices/lamps/api.ts';
@@ -221,18 +221,29 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['androidTv.pairFinish', () => androidTvApi.pairFinish('A1B2C3'), 'POST /androidtv/pair/finish', { code: 'A1B2C3' }]
 ];
 
-describe('toApiError', () => {
-	it('keeps the server’s words, its refusal’s name and what goes with it', () => {
-		const e = toApiError(409, { success: false, error: 'Taken', code: 'person_exists', detail: { person: { id: 'leonard' } } });
+describe('a refusal as the server said it', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('keeps the server’s words, its refusal’s name and what goes with it', async () => {
+		stubFetch(() => jsonBody({ success: false, error: 'Taken', code: 'person_exists', detail: { person: { id: 'leonard' } } }, 409));
+		const e = await get('/x').catch((x: unknown) => x);
 		expect(e).toBeInstanceOf(ApiError);
-		expect([e.message, e.status, e.code, e.detail]).toEqual(['Taken', 409, 'person_exists', { person: { id: 'leonard' } }]);
+		const { message, status, code, detail } = e as ApiError;
+		expect([message, status, code, detail]).toEqual(['Taken', 409, 'person_exists', { person: { id: 'leonard' } }]);
 	});
 
-	it('nothing to read (a proxy’s page, an empty body): the status alone', () => {
-		for (const body of [undefined, null, 'oops', { error: 42, code: {} }]) {
-			const e = toApiError(502, body);
+	it('nothing to read (a proxy’s page, an empty body): the status alone', async () => {
+		for (const body of ['', 'null', '"oops"', '{"error":42,"code":{}}']) {
+			stubFetch(() => new Response(body, { status: 502 }));
+			const e = (await get('/x').catch((x: unknown) => x)) as ApiError;
 			expect([e.message, e.status, e.code, e.detail]).toEqual(['', 502, undefined, undefined]);
 		}
+	});
+
+	it('isNotFound: a 404 alone', () => {
+		expect(isNotFound(new ApiError('', 404))).toBe(true);
+		expect(isNotFound(new ApiError('', 500))).toBe(false);
+		expect(isNotFound(new TypeError('Failed to fetch'))).toBe(false);
 	});
 });
 
@@ -371,5 +382,17 @@ describe('androidTvApi.installApk', () => {
 		expect(calls.map((c) => c.url)).toEqual(['/api/auth/refresh']);
 		FakeXhr.last.answer(200, { success: true, message: 'installed' });
 		await expect(done).resolves.toEqual({ success: true, message: 'installed' });
+	});
+
+	it('an upload refused after the renewal ends the session, as any request does', async () => {
+		vi.stubGlobal('XMLHttpRequest', FakeXhr);
+		let ended = 0;
+		onUnauthorized(() => ended++);
+		stubFetch(() => jsonBody({}, 401));
+		const done = androidTvApi.installApk(apk());
+		FakeXhr.last.answer(401, { error: 'expired' });
+		await expect(done).rejects.toMatchObject({ status: 401 });
+		expect(ended).toBe(1);
+		onUnauthorized(() => {});
 	});
 });

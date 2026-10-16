@@ -4,11 +4,11 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { refresh } from '#lib/live.svelte.ts';
 	import Range from '#lib/components/Range.svelte';
-	import { lampState, type Lamp, type LampDriver } from './lamp.ts';
+	import { lampWhy, type Lamp, type LampDriver } from './lamp.ts';
 
 	let { lamp, driver }: { lamp: Lamp & { temperature: number }; driver: LampDriver } = $props();
 	const id = $props.id();
-	const why = $derived(!lamp.reachable ? lampState(lamp) : !lamp.isOn ? m.lamps_off_reason() : '');
+	const why = $derived(lampWhy(lamp));
 </script>
 
 <Range

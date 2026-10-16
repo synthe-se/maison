@@ -1,17 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import {
-	PAD_KEY,
-	REMOTE_POLL,
-	REPEAT_DELAY,
-	REPEAT_EVERY,
-	REPEAT_EVERY_VOLUME,
-	holdRepeat,
-	paced,
-	pacedKeys,
-	repeatEvery,
-	type PadKey
-} from './remote.ts';
+import { PAD_KEY, holdRepeat, paced, pacedKeys, repeatEvery, type PadKey } from './remote.ts';
 
 /** A send that resolves when told to. */
 function deferred() {
@@ -21,12 +10,7 @@ function deferred() {
 }
 
 describe('remote timing', () => {
-	it('reads the remotes once a minute, never faster (the TV dies under bursts)', () => {
-		expect(REMOTE_POLL).toBe(60_000);
-	});
-
 	it('repeats the arrows ten times a second, the volume five, never OK / Back / Home / mute', () => {
-		expect([REPEAT_DELAY, REPEAT_EVERY, REPEAT_EVERY_VOLUME]).toEqual([500, 100, 200]);
 		for (const k of ['up', 'down', 'left', 'right'] as const) expect(repeatEvery(k)).toBe(100);
 		expect(repeatEvery('volume_up')).toBe(200);
 		expect(repeatEvery('volume_down')).toBe(200);
@@ -82,7 +66,7 @@ describe('holdRepeat', () => {
 
 	it('waits 500 ms, then repeats every 100 ms until stopped', () => {
 		const fire = vi.fn();
-		const stop = holdRepeat(fire, REPEAT_EVERY);
+		const stop = holdRepeat(fire, repeatEvery('up'));
 		vi.advanceTimersByTime(499);
 		expect(fire).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(1);
@@ -96,7 +80,7 @@ describe('holdRepeat', () => {
 
 	it('repeats the volume every 200 ms', () => {
 		const fire = vi.fn();
-		const stop = holdRepeat(fire, REPEAT_EVERY_VOLUME);
+		const stop = holdRepeat(fire, repeatEvery('volume_up'));
 		vi.advanceTimersByTime(500 + 1000);
 		expect(fire).toHaveBeenCalledTimes(6);
 		stop();
@@ -105,7 +89,7 @@ describe('holdRepeat', () => {
 	it('never repeats a key that does not repeat; stopping before the delay sends nothing', () => {
 		const fire = vi.fn();
 		holdRepeat(fire, 0)();
-		holdRepeat(fire, REPEAT_EVERY)();
+		holdRepeat(fire, repeatEvery('up'))();
 		vi.advanceTimersByTime(5000);
 		expect(fire).not.toHaveBeenCalled();
 	});

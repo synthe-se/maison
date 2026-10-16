@@ -36,10 +36,9 @@
 		onedit();
 		const to = i + direction;
 		ui.say(m.remote_moved({ n: to + 1 }));
-		// the focus follows the action; at an end, to the arrow still usable
+		// the focus follows the action, on the same arrow (at an end it stays, saying why it cannot)
 		await tick();
-		const atEnd = (direction === -1 && to === 0) || (direction === 1 && to === rows.length - 1);
-		const which = direction === -1 ? (atEnd ? 'down' : 'up') : atEnd ? 'up' : 'down';
+		const which = direction === -1 ? 'up' : 'down';
 		document.getElementById(`${id}-actions`)?.children[to]?.querySelector<HTMLButtonElement>(`[id$='-${which}']`)?.focus();
 	}
 

@@ -2,7 +2,7 @@
 // written or forgotten, and never a failure — private mode or a blocked storage keeps the
 // choice for the visit. The keys come from src/env.ts (`$app/env/public`).
 
-export interface Stored<T> {
+interface Stored<T> {
 	get(): T;
 	/** `undefined` forgets it (the fallback comes back). */
 	set(value: T | undefined): void;
@@ -10,7 +10,7 @@ export interface Stored<T> {
 
 /** How a value is written: JSON by default; `text` for a word app.html reads before any
  * script (the theme). `read` gives undefined for what it does not accept. */
-export interface Codec<T> {
+interface Codec<T> {
 	read(raw: string): T | undefined;
 	write(value: T): string;
 }

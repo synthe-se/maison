@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { time } from '#lib/clock.svelte.ts';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
@@ -36,6 +37,7 @@ describe('TempoCalendar', () => {
 	beforeEach(() => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2026-12-28T12:00:00'));
+		time.now = new Date();
 		api = stubApi({
 			'/tempo/calendar?season=2026-2027': season,
 			'/tempo/calendar?season=2025-2026': { success: true, season: '2025-2026', calendar: [], stock: tempoStock({ season: '2025-2026' }) }
@@ -43,6 +45,7 @@ describe('TempoCalendar', () => {
 	});
 	afterEach(() => {
 		vi.useRealTimers();
+		time.now = new Date();
 	});
 
 	it('is a table named by its month, weekdays from Monday with their full names', async () => {

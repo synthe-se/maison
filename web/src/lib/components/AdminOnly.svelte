@@ -13,7 +13,7 @@
 {#if session.admin}
 	{@render children?.()}
 {:else if reason !== false}
-	<p class="hint admin-only"><Icon name="lock" size={14} />{reason ?? m.admin_only()}</p>
+	<p class="hint admin-only"><Icon name="lock" size={14} />{reason ?? m.code_forbidden()}</p>
 {/if}
 
 <style>

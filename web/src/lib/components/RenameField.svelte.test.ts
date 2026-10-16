@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '#lib/api.ts';
 import { page, userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { m } from '#lib/paraglide/messages.js';
-import { MAX_NAME } from '#lib/api.ts';
+import { MAX_NAME } from '#lib/limits.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { deferred } from '#lib/test/api.ts';
 import RenameField from './RenameField.svelte';
@@ -51,11 +52,11 @@ describe('RenameField', () => {
 	});
 
 	it('a refusal is said under the field; the draft stays', async () => {
-		const p = props({ save: vi.fn(async () => Promise.reject(new Error('Nom trop long'))) });
+		const p = props({ save: vi.fn(async () => Promise.reject(new ApiError('Too long', 400, 'bad_name'))) });
 		await render(RenameField, p);
 		await field().fill('Chambre');
 		await userEvent.keyboard('{Enter}');
-		await expect.element(field()).toHaveAccessibleDescription('Nom trop long');
+		await expect.element(field()).toHaveAccessibleDescription(m.code_bad_name());
 		await expect.element(field()).toHaveValue('Chambre');
 		await expect.element(field()).toHaveFocus();
 	});

@@ -4,9 +4,8 @@
 // person, its name only.
 
 import { ApiError, UNREACHABLE, onUnauthorized } from '#lib/api.ts';
-import { authApi, type User } from '#lib/passkeys.ts';
+import { authApi, signIn, type User } from '#lib/passkeys.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
-import * as passkeys from '#lib/passkeys.ts';
 import { screensApi, takeAddress } from '#lib/screens.ts';
 
 class Session {
@@ -55,7 +54,7 @@ class Session {
 
 	/** Signs in with a passkey: no name, no password. Throws what went wrong (errors.ts words it). */
 	async signIn() {
-		this.adopt((await passkeys.signIn()).user);
+		this.adopt((await signIn()).user);
 	}
 
 	/** In, as this person: the server has just opened the session (a sign-in, an invitation). */

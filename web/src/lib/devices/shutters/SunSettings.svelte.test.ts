@@ -81,7 +81,7 @@ describe('SunSettings', () => {
 		);
 		render(SunSettings, { cover: shutter(), onchange: () => {} });
 		await userEvent.fill(page.getByLabelText(m.place_search()), 'Paris');
-		await expect.element(page.getByLabelText(m.place_search())).toHaveAccessibleDescription(new RegExp('Geocoding down'));
+		await expect.element(page.getByLabelText(m.place_search())).toHaveAccessibleDescription(new RegExp(m.error_network()));
 	});
 
 	it('with a place: closing at sunset starts an hour after it, and the offset can change', async () => {

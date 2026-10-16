@@ -11,6 +11,7 @@
 	import type { Live } from '#lib/live.svelte.ts';
 	import { date, isoDay, longDay, percent, weekday } from '#lib/i18n.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
+	import { time } from '#lib/clock.svelte.ts';
 	import { unavailable } from '#lib/gesture.svelte.ts';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
@@ -26,19 +27,24 @@
 	/** Forecasts reach a week ahead: no month beyond that one. */
 	const FORECAST_DAYS = 7;
 
-	const now = new Date();
-	const todayIso = isoDay(now);
+	// today from the shared clock: the calendar rolls over at midnight
+	const now = $derived(time.now);
+	const todayIso = $derived(isoDay(now));
 	const index = (y: number, mo: number) => y * 12 + mo;
 	const MIN = index(FIRST_SEASON_YEAR, 8);
-	const lastDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + FORECAST_DAYS);
-	const MAX = index(lastDay.getFullYear(), lastDay.getMonth());
-	const thisMonth = index(now.getFullYear(), now.getMonth());
-	const currentSeason = seasonOf(now.getFullYear(), now.getMonth());
-	const seasons = Array.from({ length: Number(currentSeason.slice(0, 4)) - FIRST_SEASON_YEAR + 1 }, (_, i) =>
-		seasonOf(FIRST_SEASON_YEAR + i, 8)
-	).toReversed();
+	const max = $derived.by(() => {
+		const lastDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + FORECAST_DAYS);
+		return index(lastDay.getFullYear(), lastDay.getMonth());
+	});
+	const thisMonth = $derived(index(now.getFullYear(), now.getMonth()));
+	const currentSeason = $derived(seasonOf(now.getFullYear(), now.getMonth()));
+	const seasons = $derived(
+		Array.from({ length: Number(currentSeason.slice(0, 4)) - FIRST_SEASON_YEAR + 1 }, (_, i) =>
+			seasonOf(FIRST_SEASON_YEAR + i, 8)
+		).toReversed()
+	);
 
-	let month = $state(thisMonth);
+	let month = $state(index(time.now.getFullYear(), time.now.getMonth()));
 	const year = $derived(Math.floor(month / 12));
 	const mo = $derived(month % 12);
 	const season = $derived(seasonOf(year, mo));
@@ -62,7 +68,7 @@
 	});
 
 	function go(to: number) {
-		const next = Math.min(MAX, Math.max(MIN, to));
+		const next = Math.min(max, Math.max(MIN, to));
 		if (next === month) return;
 		month = next;
 		ui.say(caption(next));
@@ -120,11 +126,12 @@
 			<Icon name="chevron-left" />
 		</button>
 		<!-- always there: pressed on another month, it does not vanish under the focus -->
-		<button class="btn" aria-disabled={month === thisMonth ? 'true' : undefined} onclick={() => go(thisMonth)}>{m.day_today()}</button>
-		<button class="btn" aria-label={m.tempo_next_month()} {...unavailable(month >= MAX && `${id}-last`)} onclick={() => go(month + 1)}>
+		<button class="btn" {...unavailable(month === thisMonth && `${id}-now`)} onclick={() => go(thisMonth)}>{m.day_today()}</button>
+		<button class="btn" aria-label={m.tempo_next_month()} {...unavailable(month >= max && `${id}-last`)} onclick={() => go(month + 1)}>
 			<Icon name="chevron-right" />
 		</button>
 		<span class="sr-only" id="{id}-first">{m.tempo_calendar_first({ year: FIRST_SEASON_YEAR })}</span>
+		<span class="sr-only" id="{id}-now">{m.tempo_calendar_this_month()}</span>
 		<span class="sr-only" id="{id}-last">{m.tempo_calendar_last()}</span>
 	</div>
 

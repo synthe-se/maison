@@ -82,7 +82,7 @@
 	.top {
 		position: sticky;
 		top: 0;
-		z-index: 20;
+		z-index: var(--z-bar);
 		border-bottom: 1px solid var(--line);
 		background: var(--ground);
 	}
@@ -154,7 +154,7 @@
 		.bottom {
 			position: fixed;
 			inset: auto 0 0 0;
-			z-index: 20;
+			z-index: var(--z-bar);
 			display: grid;
 			grid-auto-flow: column;
 			grid-auto-columns: 1fr;

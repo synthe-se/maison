@@ -303,19 +303,10 @@ impl Words {
         use crate::client::Failure;
         match f {
             Failure::Unreachable(_) => self.s(k::ERROR_NETWORK),
-            Failure::SignedOut => self.s(k::ERROR_SIGNED_OUT),
-            Failure::Refused {
-                code: Some(c),
-                status,
-            } => match code_words(*c) {
-                Some(key) => self.s(key),
-                None => self.failure(&Failure::Refused {
-                    status: *status,
-                    code: None,
-                }),
-            },
-            Failure::Refused { status: 403, .. } => self.s(k::ADMIN_ONLY),
-            Failure::Refused { status: 404, .. } => self.s(k::ERROR_NOT_FOUND),
+            Failure::SignedOut => self.s(&code_key(maison_api::codes::Code::NotSignedIn)),
+            Failure::Refused { code: Some(c), .. } => self.s(&code_key(*c)),
+            Failure::Refused { status: 403, .. } => self.s(k::CODE_FORBIDDEN),
+            Failure::Refused { status: 404, .. } => self.s(k::CODE_NOT_FOUND),
             Failure::Refused {
                 status: 502..=504, ..
             } => self.s(k::ERROR_NETWORK),
@@ -333,46 +324,10 @@ impl Words {
     }
 }
 
-/// The words of a refusal's code (errors.ts `BY_CODE`): every code of the API is named here, so a
-/// new one is a decision; `None` is said by its status (the web app's own fallback).
-fn code_words(code: maison_api::codes::Code) -> Option<&'static str> {
-    use maison_api::codes::Code;
-    Some(match code {
-        Code::NotSignedIn => k::ERROR_SIGNED_OUT,
-        Code::Forbidden => k::ADMIN_ONLY,
-        Code::BadName => k::ERROR_BAD_NAME,
-        Code::PasskeyOff => k::PK_OFF,
-        Code::InviteInvalid => k::PK_INVITE_INVALID,
-        Code::CeremonyExpired => k::PK_EXPIRED,
-        Code::PasskeyRejected => k::PK_REJECTED,
-        Code::UnknownPasskey => k::PK_UNKNOWN,
-        Code::PasskeyExists => k::PK_EXISTS,
-        Code::LastPasskey => k::PK_LAST,
-        Code::NotFound => k::ERROR_NOT_FOUND,
-        Code::ReauthNeeded => k::KEYS_REAUTH,
-        Code::PersonExists => k::INVITES_PERSON_EXISTS_SHORT,
-        Code::PairingUnknown => k::SCREENS_PAIRING_UNKNOWN,
-        Code::PairingElsewhere => k::SCREENS_PAIRING_ELSEWHERE,
-        Code::ScreenExists => k::SCREENS_EXISTS,
-        Code::TooManyAttempts => k::PK_TOO_MANY,
-        Code::NestedScene => k::SCENES_NESTED,
-        Code::DeviceUnreachable | Code::ServiceUnreachable => k::ERROR_NETWORK,
-        Code::Internal => k::ERROR_SERVER,
-        Code::UsePublicAddress => k::CODE_USE_PUBLIC_ADDRESS,
-        Code::CrossSite => k::CODE_CROSS_SITE,
-        Code::LanOnly => k::CODE_LAN_ONLY,
-        Code::TooLarge => k::CODE_TOO_LARGE,
-        // no words of their own yet in i18n/messages: said by their status
-        Code::NotForScreens
-        | Code::BadPerson
-        | Code::NotYourself
-        | Code::TooManyActions
-        | Code::NotADevice
-        | Code::Invalid
-        | Code::NotConfigured
-        | Code::Busy
-        | Code::Unsupported => return None,
-    })
+/// The key of a refusal's words: `code_<code>` for every code (errors.ts `CODE_WORDS`, the same
+/// convention; a test checks each one has its words).
+fn code_key(code: maison_api::codes::Code) -> String {
+    format!("code_{}", code.as_str())
 }
 
 /// `{name}` → its value; a name without one stays as written.
@@ -529,24 +484,40 @@ mod tests {
         let refused = |status, code| fr.failure(&Failure::Refused { status, code });
         assert_eq!(
             refused(404, Some(Code::PairingUnknown)),
-            fr.s(k::SCREENS_PAIRING_UNKNOWN)
+            fr.s(k::CODE_PAIRING_UNKNOWN)
         );
         assert_eq!(
             refused(429, Some(Code::TooManyAttempts)),
-            fr.s(k::PK_TOO_MANY)
+            fr.s(k::CODE_TOO_MANY_ATTEMPTS)
         );
         assert_eq!(
             refused(503, Some(Code::DeviceUnreachable)),
-            fr.s(k::ERROR_NETWORK)
+            fr.s(k::CODE_DEVICE_UNREACHABLE)
         );
-        // a code without words of its own: its status
-        assert_eq!(refused(409, Some(Code::Busy)), fr.s(k::ERROR_SERVER));
-        assert_eq!(refused(403, Some(Code::NotForScreens)), fr.s(k::ADMIN_ONLY));
-        assert_eq!(refused(404, None), fr.s(k::ERROR_NOT_FOUND));
+        assert_eq!(refused(409, Some(Code::Busy)), fr.s(k::CODE_BUSY));
+        // without a code: its status
+        assert_eq!(refused(403, None), fr.s(k::CODE_FORBIDDEN));
+        assert_eq!(refused(404, None), fr.s(k::CODE_NOT_FOUND));
         assert_eq!(refused(502, None), fr.s(k::ERROR_NETWORK));
         // every code is said with words that exist
         for c in Code::ALL {
             assert!(!refused(c.status(), Some(*c)).is_empty());
+        }
+    }
+
+    /// Every refusal the API answers has its words, in both languages.
+    #[test]
+    fn every_code_has_its_words() {
+        for lang in [Lang::Fr, Lang::En] {
+            let w = Words::new(lang);
+            for c in maison_api::codes::Code::ALL {
+                assert!(
+                    w.messages.contains_key(&code_key(*c)),
+                    "{:?}: no {}",
+                    lang,
+                    code_key(*c)
+                );
+            }
         }
     }
 

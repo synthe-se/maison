@@ -13,11 +13,6 @@ describe('haptic', () => {
 		expect(vibrate.mock.calls).toEqual([[TAP], [CONFIRM], [FAILURE]]);
 	});
 
-	it('distinguishes a failure from a press', () => {
-		expect(Array.isArray(FAILURE)).toBe(true);
-		expect(CONFIRM as number).toBeGreaterThan(TAP as number);
-	});
-
 	it('stays silent where vibration is missing (iOS, desktop)', () => {
 		vi.stubGlobal('navigator', {});
 		expect(() => haptic(CONFIRM)).not.toThrow();

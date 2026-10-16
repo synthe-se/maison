@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { json, sentBody, stubFetch } from '#lib/test/fetch.ts';
 import { hueLamp, zigbeeLamp } from '#lib/test/lamps.ts';
-import { LAMP_DETAIL_MS, LAMP_LIST_MS } from '#lib/paces.ts';
-import { fromHue, fromZigbee, hue, lampState, zigbee } from './lamp.ts';
+import { LAMP_LIST_MS } from '#lib/paces.ts';
+import { time } from '#lib/clock.svelte.ts';
+import { fromHue, fromZigbee, hue, lampState, lampWhy, zigbee } from './lamp.ts';
 
 describe('one lamp, whatever its radio', () => {
 	it('a Hue lamp is reachable when its Bluetooth link is up', () => {
@@ -16,13 +17,22 @@ describe('one lamp, whatever its radio', () => {
 		expect(l).toMatchObject({ id: 'zb-1', reachable: false, connecting: false, isOn: true, brightness: 60, temperature: 40 });
 	});
 
-	it('polls the list every 5 s, a lamp’s page every 3 s', () => {
-		expect([hue.list.every, zigbee.list.every, hue.detail('a').every]).toEqual([LAMP_LIST_MS, LAMP_LIST_MS, LAMP_DETAIL_MS]);
+	it('stops polling the Hue list once the server says it has no Bluetooth', async () => {
+		const pace = hue.list.every as (d: undefined, since: number) => number;
+		stubFetch(() => json({ success: true, total: 0, connected: 0, reachable: 0, disabled: false }));
+		await hue.stats.fetch();
+		expect(pace(undefined, 0)).toBe(LAMP_LIST_MS);
+		stubFetch(() => json({ success: true, total: 0, connected: 0, reachable: 0, disabled: true }));
+		await hue.stats.fetch();
+		expect(pace(undefined, 0)).toBe(0);
 	});
 });
 
 describe('lampState (line 2 of the tile)', () => {
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		vi.useRealTimers();
+		time.now = new Date();
+	});
 
 	it('on with its brightness, or off', () => {
 		expect(lampState(fromHue(hueLamp()))).toBe(m.lamps_on_percent({ percent: 80 }));
@@ -36,6 +46,7 @@ describe('lampState (line 2 of the tile)', () => {
 	it('unreachable: since when, at least a minute; or never seen', () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date('2026-10-02T12:00:00Z'));
+		time.now = new Date();
 		expect(lampState(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: '2026-10-02T11:48:00Z' })))).toBe(
 			m.state_unreachable_for({ duration: m.duration_minutes({ m: 12 }) })
 		);
@@ -81,5 +92,13 @@ describe('drivers', () => {
 		expect(zigbee.temperatureText(0)).toBe(m.lamps_temperature_kelvin({ kelvin: 2000, tone: m.lamps_tone_warm() }));
 		expect(zigbee.temperatureText(100)).toBe(m.lamps_temperature_kelvin({ kelvin: 6500, tone: m.lamps_tone_cool() }));
 		expect(zigbee.temperatureText(50)).toBe(m.lamps_temperature_kelvin({ kelvin: 3100, tone: m.lamps_tone_neutral() }));
+	});
+});
+
+describe('lampWhy', () => {
+	it('out of reach first, then off; nothing when it can act', () => {
+		expect(lampWhy(fromZigbee(zigbeeLamp({ reachable: false, lastSeen: null })))).toBe(m.state_unreachable());
+		expect(lampWhy(fromHue(hueLamp({ state: { isOn: false } })))).toBe(m.lamps_off_reason());
+		expect(lampWhy(fromHue(hueLamp()))).toBe('');
 	});
 });

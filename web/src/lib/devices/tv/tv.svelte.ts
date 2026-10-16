@@ -40,7 +40,7 @@ const lastOrder = stored<Order | null>(
 
 export class TvRemote {
 	// Slow on purpose: the set's JointSPACE server is single-threaded and dies for good under
-	// bursts, so it is asked once a minute and the backend spaces every call (REMOTE_POLL).
+	// bursts, so it is asked once a minute and the backend spaces every call (TV_MS).
 	// Nothing here polls faster; a gesture re-reads once, or takes what its answer says.
 	tv = live(tvData);
 	status = $derived(this.tv.data?.status);

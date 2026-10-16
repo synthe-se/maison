@@ -3,7 +3,7 @@
 	// saves, Échap gives up and the name it had comes back, the focus stays in the field, the
 	// outcome is said once, a refusal is shown under the field (not only in a toast).
 	import { m } from '#lib/paraglide/messages.js';
-	import { MAX_NAME } from '#lib/api.ts';
+	import { MAX_NAME } from '#lib/limits.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import Icon from './Icon.svelte';

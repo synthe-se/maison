@@ -2,15 +2,14 @@
 // home-monitor-v* (the app has none today: live state only); a wall screen's service token, kept
 // in storage before screens were paired (docs/passkeys.md « Wall screens »): no secret lingers.
 
-/** Where a wall screen kept its token before pairing (no longer a key of `STORAGE`). */
-const OLD_SCREEN_TOKEN = 'maison-screen-token';
+import { stored, text } from '#lib/stored.ts';
+
+/** Where a wall screen kept its token before pairing (no longer a key of `STORAGE`): read as
+ * nothing, only forgotten. */
+const oldScreenToken = stored<string>('maison-screen-token', '', text([]));
 
 export function forgetLegacyScreenToken() {
-	try {
-		localStorage.removeItem(OLD_SCREEN_TOKEN);
-	} catch {
-		// storage refused (private mode): nothing kept there either
-	}
+	oldScreenToken.set(undefined);
 }
 
 export async function cleanupLegacyServiceWorker(): Promise<void> {

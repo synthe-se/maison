@@ -133,7 +133,7 @@ describe('ShuttersGroup', () => {
 		let refuse!: () => void;
 		stubFetch((url) => {
 			if (url === '/api/matter/commission')
-				return new Promise<Response>((r) => (refuse = () => r(json({ success: false, error: 'Code refusé' }, 400))));
+				return new Promise<Response>((r) => (refuse = () => r(json({ success: false, error: 'Bad code', code: 'invalid' }, 400))));
 			return json({ success: true, covers: [] });
 		});
 		await render(ShuttersGroup);
@@ -146,7 +146,7 @@ describe('ShuttersGroup', () => {
 		await expect.element(pair).toHaveAttribute('aria-busy', 'true');
 		refuse();
 		const code = page.getByLabelText(m.shutters_code());
-		await expect.element(code).toHaveAccessibleDescription('Code refusé');
+		await expect.element(code).toHaveAccessibleDescription(m.code_invalid());
 		await expect.element(code).toHaveFocus();
 		await expect.element(code).toHaveValue('1111-111-1111');
 	});
@@ -168,7 +168,7 @@ describe('ShuttersGroup', () => {
 
 	it('a refused rename keeps the draft and says why under the field', async () => {
 		stubFetch((url, init) => {
-			if (init?.method === 'PATCH') return json({ success: false, error: 'Nom trop long' }, 400);
+			if (init?.method === 'PATCH') return json({ success: false, error: 'Too long', code: 'bad_name' }, 400);
 			if (url === '/api/matter/place') return json({ success: true, place: null });
 			return json({ success: true, covers: [shutter()] });
 		});
@@ -177,7 +177,7 @@ describe('ShuttersGroup', () => {
 		const field = page.getByLabelText(m.common_name());
 		await field.fill('Séjour');
 		await userEvent.keyboard('{Enter}');
-		await expect.element(field).toHaveAccessibleDescription('Nom trop long');
+		await expect.element(field).toHaveAccessibleDescription(m.code_bad_name());
 		await expect.element(field).toHaveValue('Séjour');
 		await expect.element(field).toHaveFocus();
 	});

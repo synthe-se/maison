@@ -1,6 +1,7 @@
 // Tuya device fixtures as `/api/devices` lists them, for the unit tests and the e2e house.
 
-import type { Device, FeederStatus } from '#lib/devices/cats/api.ts';
+import type { Device, FeederStatus, FountainStatus, LitterBoxStatus } from '#lib/devices/cats/api.ts';
+import type { LitterState } from '#lib/devices/cats/tokens.ts';
 
 export const tuyaDevice = (over: Partial<Device> = {}): Device => ({
 	id: 'f1',
@@ -20,5 +21,20 @@ export const feederStatus = (at = Date.UTC(2026, 9, 2, 6), over: Partial<FeederS
 		raw: `R:0 C:2 T:${Math.floor(at / 1000)}`,
 		parsed: { remaining: '0', count: '2', timestamp: String(Math.floor(at / 1000)), timestampReadable: '' }
 	},
+	...over
+});
+
+/** A fountain whose water is low. */
+export const fountainStatus = (over: Partial<FountainStatus> = {}): FountainStatus => ({
+	waterLevel: 'low',
+	power: true,
+	filterLife: 2400,
+	...over
+});
+
+/** A litter box half full, waiting between two visits (the device's own spelling of standby). */
+export const litterBoxStatus = (state: LitterState = 'satnd_by', over: Partial<LitterBoxStatus> = {}): LitterBoxStatus => ({
+	sensors: { litterLevel: 'half' },
+	system: { state },
 	...over
 });

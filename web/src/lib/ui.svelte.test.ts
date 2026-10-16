@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { m } from '#lib/paraglide/messages.js';
+import { ApiError } from '#lib/api.ts';
 import { ui } from './ui.svelte.ts';
 
 describe('ui', () => {
@@ -29,9 +31,9 @@ describe('ui', () => {
 	});
 
 	it('a failure is assertive and stays until dismissed', async () => {
-		ui.fail(new Error('TV unreachable'));
+		ui.fail(new ApiError('TV unreachable', 503, 'device_unreachable'));
 		await vi.advanceTimersByTimeAsync(0);
-		expect(ui.assertive).toContain('TV unreachable');
+		expect(ui.assertive).toBe(m.code_device_unreachable());
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(ui.toasts).toHaveLength(1);
 		expect(ui.toasts[0].warn).toBe(true);
@@ -39,9 +41,9 @@ describe('ui', () => {
 		expect(ui.toasts).toHaveLength(0);
 	});
 
-	it('a failure says plain words, without « Erreur. » in front', async () => {
-		ui.fail(new Error('Volet injoignable'));
-		expect(ui.toasts[0].text).toBe('Volet injoignable');
+	it('a failure says plain words, without « Erreur. » in front, never the server’s', async () => {
+		ui.fail(new ApiError('Shutter unreachable', 503, 'device_unreachable'));
+		expect(ui.toasts[0].text).toBe(m.code_device_unreachable());
 	});
 
 	it('the same failure twice does not stack two toasts', () => {

@@ -4,8 +4,9 @@
 	// it says so with a retry; a lamp the server does not know (404) is « not found ».
 	import type { Snippet } from 'svelte';
 	import { m } from '#lib/paraglide/messages.js';
+	import Section from '#lib/components/Section.svelte';
 	import { when } from '#lib/i18n.svelte.ts';
-	import { ApiError } from '#lib/api.ts';
+	import { isNotFound } from '#lib/api.ts';
 	import type { Loadable } from '#lib/live.svelte.ts';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
@@ -29,7 +30,7 @@
 		children?: Snippet<[Lamp]>;
 	}
 	let { lamp, status, driver, rows = [], color, notes, children }: Props = $props();
-	const missing = $derived(status.error instanceof ApiError && status.error.status === 404);
+	const missing = $derived(isNotFound(status.error));
 	const title = $derived(
 		lamp?.name ?? (status.loading ? m.common_loading() : missing || !status.failed ? m.lamps_not_found() : m.lamps_lamp())
 	);
@@ -61,20 +62,18 @@
 				{#if color}
 					{@render color(lamp)}
 				{:else if lamp.temperature !== null}
-					<section class="tile" aria-labelledby="lamp-temperature">
-						<h2 id="lamp-temperature" class="group-title">{m.lamps_temperature()}</h2>
+					<Section title={m.lamps_temperature()}>
 						<LampTemperature lamp={{ ...lamp, temperature: lamp.temperature }} {driver} />
-					</section>
+					</Section>
 				{/if}
 
-				<section aria-labelledby="lamp-details">
-					<h2 id="lamp-details" class="group-title">{m.lamps_device_info()}</h2>
+				<Section title={m.lamps_device_info()} tile={false}>
 					<dl class="facts">
 						{#each details as [label, value] (label)}
 							<StatusRow {label} {value} />
 						{/each}
 					</dl>
-				</section>
+				</Section>
 
 				{@render children?.(lamp)}
 			</div>
@@ -86,9 +85,5 @@
 	.body {
 		display: grid;
 		gap: var(--s-6);
-	}
-	section {
-		display: grid;
-		gap: var(--s-3);
 	}
 </style>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { clock, when } from '#lib/i18n.svelte.ts';
 import { lastMeal, statusLine, tileLine } from './alerts.ts';
+import { STANDBY } from '#lib/devices/cats/tokens.ts';
 
 describe('statusLine', () => {
 	it('nothing to say without a status, or when all is well', () => {
@@ -13,7 +14,7 @@ describe('statusLine', () => {
 
 	it('what needs a hand, in the warning style', () => {
 		expect(statusLine('fountain', { waterLevel: 'low' })).toEqual({ text: m.cats_water_low(), warn: true });
-		expect(statusLine('litter-box', { sensors: { litterLevel: 'half' }, system: { state: 'satnd_by' } })).toEqual({
+		expect(statusLine('litter-box', { sensors: { litterLevel: 'half' }, system: { state: STANDBY } })).toEqual({
 			text: m.cats_litter_half(),
 			warn: true
 		});
@@ -25,7 +26,7 @@ describe('statusLine', () => {
 	});
 
 	it('what the litter box is doing, plainly', () => {
-		expect(statusLine('litter-box', { sensors: { litterLevel: 'full' }, system: { state: 'satnd_by' } })).toEqual({
+		expect(statusLine('litter-box', { sensors: { litterLevel: 'full' }, system: { state: STANDBY } })).toEqual({
 			text: m.cats_clean(),
 			warn: false
 		});

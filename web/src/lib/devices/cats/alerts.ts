@@ -7,6 +7,7 @@ import { m } from '#lib/paraglide/messages.js';
 import { clock, when } from '#lib/i18n.svelte.ts';
 import type { Device, FeederStatus, FountainStatus, LitterBoxStatus } from './api.ts';
 import type { Kind } from './data.ts';
+import { LITTER_STATE, STANDBY, litterHalf, waterLow } from './tokens.ts';
 
 export interface Line {
 	text: string;
@@ -24,17 +25,16 @@ export function statusLine(kind: Kind, status: unknown): Line | null {
 	if (kind === 'feeder') return null;
 	if (kind === 'fountain') {
 		const s = status as FountainStatus;
-		return s.waterLevel === 'low' ? warn(m.cats_water_low()) : null;
+		return waterLow(s) ? warn(m.cats_water_low()) : null;
 	}
 	if (kind === 'litter-box') {
 		const s = status as LitterBoxStatus;
 		if (s.sensors?.faultAlarm) return warn(m.litter_box_fault_alarm({ code: s.sensors.faultAlarm }));
 		if (s.system?.maintenanceRequired) return warn(m.litter_box_maintenance_required());
-		if (s.sensors?.litterLevel === 'half') return warn(m.cats_litter_half());
-		if (s.system?.state === 'cleaning') return fact(m.litter_box_status_cleaning());
-		if (s.system?.state === 'cat_inside') return fact(m.litter_box_status_cat_inside());
-		// waiting between two visits: the litter has been cleaned
-		if (s.system?.state === 'satnd_by') return fact(m.cats_clean());
+		if (litterHalf(s)) return warn(m.cats_litter_half());
+		const state = s.system?.state;
+		if (state === 'cleaning' || state === 'cat_inside') return fact(LITTER_STATE[state]());
+		if (state === STANDBY) return fact(m.cats_clean());
 	}
 	return null;
 }

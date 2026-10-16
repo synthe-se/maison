@@ -2,7 +2,7 @@
 // language: call it where it renders (in the template), never once at load, so a change of
 // language reaches it.
 
-export interface Option<T extends string> {
+interface Option<T extends string> {
 	value: T;
 	label: string;
 }

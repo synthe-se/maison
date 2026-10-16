@@ -65,7 +65,7 @@ describe('SignIn', () => {
 		stubApi({ ...passkeyRoutes(), 'POST /passkeys/login/finish': json({ error: 'x', code: 'passkey_rejected' }, 400) });
 		await render(SignIn);
 		await button().click();
-		await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_rejected());
+		await expect.element(page.getByRole('alert')).toHaveTextContent(m.code_passkey_rejected());
 	});
 
 	it('cannot be pressed twice while the device waits', async () => {

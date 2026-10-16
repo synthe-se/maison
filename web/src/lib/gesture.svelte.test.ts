@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { m } from '#lib/paraglide/messages.js';
 import { ApiError } from './api.ts';
-import { Gesture, pending, unavailable } from './gesture.svelte.ts';
+import { Gesture, gate, pending, removeRow, unavailable } from './gesture.svelte.ts';
 import { ui } from './ui.svelte.ts';
 
 describe('Gesture', () => {
@@ -33,8 +34,8 @@ describe('Gesture', () => {
 		const field = document.createElement('input');
 		document.body.append(field);
 		const g = new Gesture();
-		await g.run(() => Promise.reject(new Error('Code refusé')), undefined, 'pair', { field: () => field });
-		expect(g.error).toBe('Code refusé');
+		await g.run(() => Promise.reject(new ApiError('Bad code', 400, 'invalid')), undefined, 'pair', { field: () => field });
+		expect(g.error).toBe(m.code_invalid());
 		expect(fail).not.toHaveBeenCalled();
 		expect(document.activeElement).toBe(field);
 		// the next try starts clean
@@ -80,8 +81,8 @@ describe('Gesture', () => {
 		const button = document.createElement('button');
 		document.body.append(button);
 		button.focus();
-		await g.run(() => Promise.reject(new Error('Clé refusée')), undefined, 'signin', { inline: true });
-		expect(g.error).toBe('Clé refusée');
+		await g.run(() => Promise.reject(new ApiError('Rejected', 400, 'passkey_rejected')), undefined, 'signin', { inline: true });
+		expect(g.error).toBe(m.code_passkey_rejected());
 		expect(fail).not.toHaveBeenCalled();
 		expect(document.activeElement).toBe(button);
 		button.remove();
@@ -109,5 +110,28 @@ describe('the attributes of a control', () => {
 		expect(unavailable('tile-state')).toEqual({ 'aria-disabled': 'true', 'aria-describedby': 'tile-state' });
 		expect(unavailable(false)).toEqual({});
 		expect(unavailable(undefined)).toEqual({});
+	});
+
+	it('gate: unavailable while a reason stands, else busy while it travels', () => {
+		expect(gate('tile-state', true)).toEqual({ 'aria-disabled': 'true', 'aria-describedby': 'tile-state' });
+		expect(gate(false, true)).toEqual({ 'aria-disabled': 'true', 'aria-busy': 'true' });
+		expect(gate(undefined, false)).toEqual({});
+	});
+});
+
+describe('removeRow', () => {
+	it('sends, says it, reads the list again, then puts the focus on the list’s title', async () => {
+		const title = document.createElement('h2');
+		document.body.append(title);
+		const list = { refresh: vi.fn(async () => {}) };
+		const send = vi.fn(async () => {});
+		const g = new Gesture();
+		await removeRow(g, 'remove:a', send, { said: 'Retiré', list, title: () => title });
+		expect(send).toHaveBeenCalledOnce();
+		expect(list.refresh).toHaveBeenCalledOnce();
+		expect(ui.toasts.at(-1)?.text).toBe('Retiré');
+		expect(document.activeElement).toBe(title);
+		title.remove();
+		ui.toasts = [];
 	});
 });

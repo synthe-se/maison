@@ -5,7 +5,7 @@
 import { m } from '#lib/paraglide/messages.js';
 import type { IconName } from '#lib/components/Icon.svelte';
 
-export interface RemoteKey {
+interface RemoteKey {
 	code: number;
 	/** What the key is called, for the reader and in lists. */
 	name: () => string;

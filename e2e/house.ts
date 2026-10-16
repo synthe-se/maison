@@ -4,14 +4,7 @@
 // answer is typed with the app's own types and built from the unit tests' fixtures
 // (web/src/lib/test), so a changed API fails to type-check here too (`bun run check`).
 import type { Page, Request, Route } from 'playwright';
-import type {
-	DeviceStatusResponse,
-	DevicesResponse,
-	FountainStatus,
-	LitterBoxStatus,
-	MealPlanEntry,
-	MealPlanResponse
-} from '../web/src/lib/devices/cats/api.ts';
+import type { DeviceStatusResponse, DevicesResponse, MealPlanEntry, MealPlanResponse } from '../web/src/lib/devices/cats/api.ts';
 import type { HueLampActionResponse, HueLampsResponse, HueLampStatusResponse, LampStats } from '../web/src/lib/devices/lamps/api.ts';
 import type {
 	MerossConsumptionResponse,
@@ -25,7 +18,7 @@ import type { SimpleResponse } from '../web/src/lib/api.ts';
 import { hueLamp } from '../web/src/lib/test/lamps.ts';
 import { merossElectricity, merossPlug, merossStatus } from '../web/src/lib/test/meross.ts';
 import { shutter } from '../web/src/lib/test/shutters.ts';
-import { feederStatus, tuyaDevice } from '../web/src/lib/test/tuya.ts';
+import { feederStatus, fountainStatus, litterBoxStatus, tuyaDevice } from '../web/src/lib/test/tuya.ts';
 import { broadlinkHost } from '../web/src/lib/test/broadlink.ts';
 
 /** Today at 23:30, the sun schedule's next closing (ISO). */
@@ -39,12 +32,12 @@ function tonight(): string {
 const FEEDER_SAVE_MS = 300;
 
 /** A house's JSON answer. */
-export interface Answer {
+interface Answer {
 	body: string;
 }
 
 /** A request's JSON body, as Playwright reads one (whoever forwards it). */
-export type Body = ReturnType<Request['postDataJSON']>;
+type Body = ReturnType<Request['postDataJSON']>;
 
 export function house() {
 	const state = {
@@ -83,8 +76,8 @@ export function house() {
 			tuyaDevice({ id: 'litter-1', name: 'Litière', type: 'litter-box', ip: '192.168.1.176', connected: false })
 		],
 		/** What the fountain and the litter box report. */
-		fountain: { waterLevel: 'low', power: true, filterLife: 2400 } as FountainStatus,
-		litter: { sensors: { litterLevel: 'half' }, system: { state: 'satnd_by' } } as LitterBoxStatus,
+		fountain: fountainStatus(),
+		litter: litterBoxStatus(),
 		meals: [
 			{
 				daysOfWeek: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],

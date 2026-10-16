@@ -459,7 +459,7 @@ mod tests {
     fn a_removed_screen_leaves_the_house_for_its_door() {
         let dir = temp_dir("app-removed");
         let stub = serve(|line| match line {
-            l if l.starts_with("GET /api/screens/me") => (
+            l if l.starts_with("POST /api/screens/me") => (
                 200,
                 vec![],
                 r#"{"success":true,"screen":{"name":"Salon"}}"#.into(),

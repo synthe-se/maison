@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { ui } from '#lib/ui.svelte.ts';
 import { remoteSources } from '#lib/test/remote.ts';
-import { iconOf, sayRun, slug, templates, TEMPLATE_IDS } from './scenes.ts';
+import { iconOf, slug, templates, TEMPLATE_IDS } from './scenes.ts';
 
 afterEach(() => (ui.toasts = []));
 
@@ -46,15 +46,5 @@ describe('scenes', () => {
 	it('an icon it does not know is drawn as sparkles', () => {
 		expect(iconOf({ icon: 'moon' })).toBe('moon');
 		expect(iconOf({ icon: 'rocket' })).toBe('sparkles');
-	});
-
-	it('says a run: every action done, or the failed ones named in a warning', () => {
-		sayRun({ name: 'Nuit' }, { success: true, results: ['ok: a', 'ok: b'] });
-		expect(ui.toasts.at(-1)).toMatchObject({ text: m.scenes_done({ name: 'Nuit', count: 2 }), warn: false });
-		sayRun({ name: 'Nuit' }, { success: false, results: ['ok: a', 'failed: Chevet timed out'] });
-		expect(ui.toasts.at(-1)).toMatchObject({
-			text: m.scenes_failed({ name: 'Nuit', count: 1, total: 2, details: 'Chevet timed out' }),
-			warn: true
-		});
 	});
 });

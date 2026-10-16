@@ -15,7 +15,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { BASE, SHOTS, check, done, fr, launch, open, signIn, toast, until } from './lib.ts';
+import { LAMP_LIMIT_MS } from '../web/src/lib/paces.ts';
+import { PAIRING_CODE, SHOTS, BASE, check, done, fr, launch, open, pairScreen, removeScreen, signIn, until } from './lib.ts';
 import { house } from './house.ts';
 
 const ARMV7 = process.env.FRAME_SIM === 'armv7';
@@ -23,6 +24,18 @@ const APP = new URL(ARMV7 ? '../frame/ui/simulate.sh' : '../frame/ui/target/debu
 /** Emulated, every wait is this many times longer. */
 const SLOW = ARMV7 ? 4 : 1;
 const { state, answer } = house();
+
+/** Every read the house answered for the app, when it was asked and once it was answered: what
+ * the waits below wait on (never a fixed delay). */
+const reads: { path: string; at: number; answered: boolean }[] = [];
+/** The app has read `path` (an answer sent) since `since` (ms), `times` times. */
+const readSince = (path: string, since: number, times = 1) =>
+	reads.filter((r) => r.path === path && r.at >= since && r.answered).length >= times;
+/** Waits for the app to read `path` again: answered once more after now. */
+const readAgain = (path: string, timeout = 15_000) => {
+	const now = Date.now();
+	return until(() => readSince(path, now), timeout * SLOW);
+};
 
 // the proxy: the house answers its routes, the backend the rest (its cookies passed both ways)
 const proxy = createServer(async (req, res) => {
@@ -33,10 +46,12 @@ const proxy = createServer(async (req, res) => {
 	// a screen's own routes go straight to the backend, never into the house's log (its
 	// pairing secret is no test's to print)
 	const device = url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/screens/');
+	const read = device && req.method === 'GET' ? { path: url.pathname, at: Date.now(), answered: false } : undefined;
+	if (read) reads.push(read);
 	const a = device ? await answer(req.method ?? 'GET', url.pathname, text ? JSON.parse(text) : null) : undefined;
 	if (a === 'silent') return; // never answers
 	if (a) {
-		res.writeHead(200, { 'content-type': 'application/json' }).end(a.body);
+		res.writeHead(200, { 'content-type': 'application/json' }).end(a.body, () => read && (read.answered = true));
 		return;
 	}
 	const headers = new Headers();
@@ -111,19 +126,14 @@ async function picture(name: string) {
 check('the app shows the pairing door', await saidLine((l) => l === `screen door ${fr.screen_pair_title()}`));
 check('with a code', await saidLine((l) => l.startsWith('code ')));
 const code = said.find((l) => l.startsWith('code '))!.slice(5);
-check('the code is the backend’s kind', /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code), code);
+check('the code is the backend’s kind', PAIRING_CODE.test(code), code);
 await picture('pairing');
 
 // the admin pairs it from their phone, in « Mon compte »
 const browser = await launch();
 const phone = await open(browser);
 await signIn(phone, '/account');
-await phone.getByRole('button', { name: fr.screens_pair() }).click();
-const sheet = phone.getByRole('dialog', { name: fr.screens_pair() });
-await sheet.getByLabel(fr.screens_code()).fill(code);
-await sheet.getByLabel(fr.screens_name()).fill('Cadre natif');
-await sheet.getByRole('button', { name: fr.screens_pair() }).click();
-await toast(phone, fr.screens_paired({ name: 'Cadre natif' }));
+await pairScreen(phone, code, 'Cadre natif');
 
 // it opens by itself, and reads the house
 check('paired, the app shows the house', await saidLine((l) => l === 'screen house', 15_000));
@@ -132,8 +142,10 @@ check(
 	await until(() => ['/api/hue-lamps', '/api/meross', '/api/matter/covers'].every((p) => state.asked.includes(p)), 10_000 * SLOW),
 	state.asked.join(' ')
 );
-await until(() => state.asked.includes('/api/meross/plug-1/electricity'), 10_000 * SLOW);
-await new Promise((r) => setTimeout(r, 500 * SLOW));
+// the plug's power answered, and the app on to its next read: what it read is on screen
+await until(() => readSince('/api/meross/plug-1/electricity', 0), 10_000 * SLOW);
+const after = reads.length;
+await until(() => reads.slice(after).some((r) => r.answered), 10_000 * SLOW);
 await picture('house');
 
 // a finger: the lamp off, its brightness, the plug, the shutter
@@ -143,7 +155,8 @@ check('a tap on the lamp’s icon turns it off', await sent('POST /api/hue-lamps
 await tell('press hue-lamp:hue-01:power');
 check('and on again', await sent('POST /api/hue-lamps/hue-01/power {"enabled":true}'));
 await until(() => state.hue[0].state.isOn, 5_000 * SLOW);
-await new Promise((r) => setTimeout(r, 6_000 * SLOW)); // the next read shows it on, with its slider
+// the next read of the lamps shows it on, with its slider
+check('the app reads the lamp on again', await readAgain('/api/hue-lamps'));
 await tell('slide hue-lamp:hue-01:brightness 0.25');
 check('the brightness slider sends where it is let go', await sent('POST /api/hue-lamps/hue-01/brightness'), state.sent.join(' | '));
 await tell('press meross:plug-1:toggle');
@@ -158,14 +171,15 @@ await picture('scrolled');
 state.silent.add('hue');
 await tell('drag 300 1100');
 await tell('press hue-lamp:hue-01:power');
-await new Promise((r) => setTimeout(r, 3_500 * SLOW));
+// past the lamps' limit the app gives up on its own: its next read of them after the limit has
+// it drawn « Pas de réponse » (the same limit as the web app's, paces.ts)
+const pressed = Date.now();
+await until(() => readSince('/api/hue-lamps', pressed + LAMP_LIMIT_MS * SLOW), 15_000 * SLOW);
 await picture('no-answer');
 state.silent.delete('hue');
 
 // removed in « Mon compte »: the app says so, then offers a new code
-await phone.getByRole('button', { name: fr.common_remove_named({ name: 'Cadre natif' }) }).click();
-await phone.getByRole('alertdialog').getByRole('button', { name: fr.screens_remove_action() }).click();
-await toast(phone, fr.screens_removed({ name: 'Cadre natif' }));
+await removeScreen(phone, 'Cadre natif');
 check('removed, the app says so', await saidLine((l) => l === `screen door ${fr.screen_revoked_title()}`, 15_000));
 await picture('revoked');
 check('the app is still running', !gone);

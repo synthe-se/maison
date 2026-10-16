@@ -4,9 +4,7 @@
 	// then goes to the list's title.
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
-	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
-	import { refocus } from '#lib/focus.ts';
+	import { Gesture, removeRow } from '#lib/gesture.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import Group from '#lib/components/Group.svelte';
@@ -19,15 +17,7 @@
 	let title = $state<HTMLElement>();
 
 	const remove = (p: Person) =>
-		g.run(
-			() => peopleApi.remove(p.id),
-			async () => {
-				ui.toast(m.people_removed({ name: p.name }));
-				await people.refresh();
-				await refocus(title);
-			},
-			p.id
-		);
+		removeRow(g, p.id, () => peopleApi.remove(p.id), { said: m.people_removed({ name: p.name }), list: people, title: () => title });
 </script>
 
 <Group id="people-title" title={m.people_title()} bind:heading={title}>

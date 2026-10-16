@@ -5,7 +5,7 @@
 	import { merossApi } from './api.ts';
 	import { refresh } from '#lib/live.svelte.ts';
 	import { Command, LIMIT } from '#lib/command.svelte.ts';
-	import { unreachableSince } from '#lib/format.ts';
+	import { unreachableSince } from '#lib/i18n.svelte.ts';
 	import { MEROSS } from './data.ts';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 

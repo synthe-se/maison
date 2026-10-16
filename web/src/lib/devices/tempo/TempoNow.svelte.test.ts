@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { clock, num } from '#lib/i18n.svelte.ts';
+import { clock, num, facts } from '#lib/i18n.svelte.ts';
 import { time } from '#lib/clock.svelte.ts';
 import { stubApi } from '#lib/test/api.ts';
 import { TARIFFS, forecastDay, tempoForecast, tempoToday } from '#lib/test/tempo.ts';
-import { probable } from './colors.ts';
+import { dayWords } from './colors.ts';
 import TempoNow from './TempoNow.svelte';
 
 const price = (eur: number) => m.tempo_cents({ cents: num(eur * 100, 1) });
@@ -63,14 +63,14 @@ describe('TempoNow', () => {
 		await render(TempoNow, { data: tempoToday() });
 		await expect
 			.element(tile())
-			.toMatchTextContent(m.tempo_tomorrow_is({ words: `${m.tempo_announced_at()} · ${probable('WHITE', 0.4)}` }));
+			.toMatchTextContent(m.tempo_tomorrow_is({ words: facts(m.tempo_announced_at(), dayWords('WHITE', true, 0.4)) }));
 	});
 
 	it('after 10:40 and RTE late, the forecast alone, or « unknown »', async () => {
 		at('10:40');
 		const api = stubApi({ '/tempo/forecast': before(0.7) });
 		const view = await render(TempoNow, { data: tempoToday() });
-		await expect.element(tile()).toMatchTextContent(m.tempo_tomorrow_is({ words: probable('WHITE', 0.7) }));
+		await expect.element(tile()).toMatchTextContent(m.tempo_tomorrow_is({ words: dayWords('WHITE', true, 0.7) }));
 		await view.unmount();
 		api.routes['/tempo/forecast'] = tempoForecast({ days: [] });
 		await render(TempoNow, { data: tempoToday() });

@@ -2,6 +2,7 @@
 	// A Hue lamp's page: the shared lamp page, plus why it may not be connected and hiding it.
 	import { goto } from '$app/navigation';
 	import { m } from '#lib/paraglide/messages.js';
+	import Section from '#lib/components/Section.svelte';
 	import { hueLampsApi } from './api.ts';
 	import { live, refresh } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
@@ -38,28 +39,28 @@
 
 	{#snippet children(l: Lamp)}
 		<AdminOnly reason={false}>
-			<section aria-labelledby="hue-hide">
-				<h2 id="hue-hide" class="group-title" tabindex="-1">{m.hue_lamps_blacklist()}</h2>
+			<Section title={m.hue_lamps_blacklist()} tile={false}>
 				<p class="hint">{m.hue_lamps_blacklist_section_description()}</p>
-				<ConfirmDialog
-					danger
-					icon="ban"
-					label={m.hue_lamps_blacklist()}
-					title={m.hue_lamps_blacklist_title({ name: l.name })}
-					description={m.hue_lamps_blacklist_description()}
-					action={m.hue_lamps_blacklist()}
-					busy={hiding.is()}
-					onconfirm={() => hide(l)}
-				/>
-			</section>
+				<div class="start">
+					<ConfirmDialog
+						danger
+						icon="ban"
+						label={m.hue_lamps_blacklist()}
+						title={m.hue_lamps_blacklist_title({ name: l.name })}
+						description={m.hue_lamps_blacklist_description()}
+						action={m.hue_lamps_blacklist()}
+						busy={hiding.is()}
+						onconfirm={() => hide(l)}
+					/>
+				</div>
+			</Section>
 		</AdminOnly>
 	{/snippet}
 </LampPage>
 
 <style>
-	section {
-		display: grid;
-		gap: var(--s-3);
-		justify-items: start;
+	/* the button keeps its own width */
+	.start {
+		justify-self: start;
 	}
 </style>

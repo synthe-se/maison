@@ -45,32 +45,34 @@ describe('ZigbeePairing', () => {
 			throw new Error(url);
 		});
 		await render(ZigbeePairing);
-		await expect.element(page.getByText('Coordinator open')).toBeVisible();
+		// the server's own words are never shown
+		await expect.element(page.getByText(m.zigbee_lamps_pairing_active({ count: 30 }))).toBeVisible();
+		expect(page.getByText('Coordinator open').query()).toBeNull();
 		await page.getByRole('button', { name: m.zigbee_lamps_stop_pairing() }).click();
 		await expect.element(page.getByRole('button', { name: m.zigbee_lamps_start_pairing() })).toBeVisible();
 		expect(calls.filter((c) => c.url === '/api/zigbee/lamps/pairing/stop' && c.init?.method === 'POST')).toHaveLength(1);
 		expect(say).toHaveBeenCalledWith(m.zigbee_lamps_pairing_inactive());
 	});
 
-	it('reads the countdown every second while open, every 10 s when closed', async () => {
-		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	it('counts the window down itself, reading it only every 10 s, and once more when it ends', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
 		let active = true;
-		const calls = stubFetch(() => json(pairing(active, 60)));
+		const calls = stubFetch(() => json(pairing(active, active ? 12 : 0)));
 		await render(ZigbeePairing);
 		const reads = () => calls.length;
 		// each read is answered by the browser's own fetch machinery: wait for it between ticks
 		await expect.poll(reads).toBe(1);
-		for (const n of [2, 3, 4]) {
-			await vi.advanceTimersByTimeAsync(1000);
-			await expect.poll(reads).toBe(n);
-		}
+		await expect.element(page.getByText(m.zigbee_lamps_pairing_active({ count: 12 }))).toBeVisible();
+		await vi.advanceTimersByTimeAsync(3000);
+		await expect.element(page.getByText(m.zigbee_lamps_pairing_active({ count: 9 }))).toBeVisible();
+		expect(reads()).toBe(1);
+		await vi.advanceTimersByTimeAsync(7000);
+		await expect.poll(reads).toBe(2);
+		// the window ends: one read, which says it closed
 		active = false;
-		await vi.advanceTimersByTimeAsync(1000);
-		await expect.poll(reads).toBe(5);
-		await vi.advanceTimersByTimeAsync(9000);
-		expect(reads()).toBe(5);
-		await vi.advanceTimersByTimeAsync(1000);
-		await expect.poll(reads).toBe(6);
+		await vi.advanceTimersByTimeAsync(12000);
+		await expect.element(page.getByText(m.zigbee_lamps_pairing_inactive())).toBeVisible();
+		expect(reads()).toBeLessThanOrEqual(4);
 	});
 
 	it('Touchlink: one POST and a toast', async () => {

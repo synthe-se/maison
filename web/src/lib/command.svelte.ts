@@ -9,8 +9,10 @@
 import { m } from '#lib/paraglide/messages.js';
 import { ui } from '#lib/ui.svelte.ts';
 import { FAILURE, haptic } from '#lib/haptics.ts';
+import { COMMAND_SLOW_MS, DEVICE_LIMIT_MS, LAMP_LIMIT_MS, PLUG_LIMIT_MS, TV_LIMIT_MS } from '#lib/paces.ts';
 
-export const LIMIT = { lamp: 3_000, plug: 5_000, tv: 30_000, device: 10_000 } as const;
+/** Each family's limit (the shared times: paces.ts). */
+export const LIMIT = { lamp: LAMP_LIMIT_MS, plug: PLUG_LIMIT_MS, tv: TV_LIMIT_MS, device: DEVICE_LIMIT_MS } as const;
 
 export class Command {
 	/** The state asked for, while the command travels (undefined: nothing in flight). */
@@ -38,7 +40,7 @@ export class Command {
 		this.target = target;
 		this.slow = false;
 		this.late = false;
-		const slow = setTimeout(() => gen === this.#gen && (this.slow = true), 1_000);
+		const slow = setTimeout(() => gen === this.#gen && (this.slow = true), COMMAND_SLOW_MS);
 		let limitTimer: ReturnType<typeof setTimeout> | undefined;
 		const limit = new Promise<'late'>((r) => (limitTimer = setTimeout(() => r('late'), this.#limit)));
 		try {

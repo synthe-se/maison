@@ -5,7 +5,7 @@
 	// live region: a refresh is never announced.
 	import { m } from '#lib/paraglide/messages.js';
 	import type { Loadable } from '#lib/live.svelte.ts';
-	import { when } from '#lib/i18n.svelte.ts';
+	import { separator, when } from '#lib/i18n.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import Icon from './Icon.svelte';
 
@@ -15,7 +15,7 @@
 
 {#if value.stale}
 	<p class="hint stale">
-		<Icon name="clock" size={14} />{m.live_stale({ time: when(value.at) })} ·
+		<Icon name="clock" size={14} />{m.live_stale({ time: when(value.at) })}{separator()}
 		<button class="link-btn" {...pending(g.is())} onclick={() => g.run(() => value.refresh())}>{m.common_retry()}</button>
 	</p>
 {/if}

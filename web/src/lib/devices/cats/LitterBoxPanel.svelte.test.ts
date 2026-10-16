@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
-import { formatDuration } from '#lib/format.ts';
+import { formatDuration } from '#lib/i18n.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { deferred, stubApi } from '#lib/test/api.ts';
 import { fact, facts } from '#lib/test/facts.ts';
 import LitterBoxPanel from './LitterBoxPanel.svelte';
+import { STANDBY } from '#lib/devices/cats/tokens.ts';
 
 const STATUS = '/devices/l1/litter-box/status';
 const SETTINGS = '/devices/l1/litter-box/settings';
@@ -24,7 +25,7 @@ describe('LitterBoxPanel', () => {
 	it('says its state and levels in words, warning on what needs a hand', async () => {
 		box({
 			sensors: { litterLevel: 'half', faultAlarm: 4 },
-			system: { state: 'satnd_by', maintenanceRequired: true },
+			system: { state: STANDBY, maintenanceRequired: true },
 			cleanDelay: { seconds: 300 }
 		});
 		await render(LitterBoxPanel, { id: 'l1' });
@@ -40,10 +41,14 @@ describe('LitterBoxPanel', () => {
 			.toHaveAttribute('aria-valuetext', formatDuration(300));
 	});
 
-	it('shows a state it does not name as the device wrote it, and « Inconnu » without one', async () => {
+	it('a state it does not name is « Inconnu » (and logged), never the device’s word', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		box({ sensors: { litterLevel: 'full' }, system: { state: 'dumping' } });
 		await render(LitterBoxPanel, { id: 'l1' });
-		await expect.element(page.getByText('dumping')).toBeVisible();
+		await expect.poll(() => fact(m.common_status())?.value).toBe(m.common_unknown());
+		expect(page.getByText('dumping').query()).toBeNull();
+		expect(warn).toHaveBeenCalled();
+		warn.mockRestore();
 		expect(fact(m.litter_box_litter_level())).toEqual({ term: m.litter_box_litter_level(), value: m.litter_box_filled(), warn: false });
 	});
 
@@ -118,7 +123,7 @@ describe('LitterBoxPanel', () => {
 	});
 
 	it('offline: « Lancer le nettoyage » stays, unavailable, saying why; no delay nor « J’ai rempli »; « Reconnecter » connects', async () => {
-		const api = box({ system: { state: 'satnd_by' } }, { 'POST /devices/l1/connect': { success: true } });
+		const api = box({ system: { state: STANDBY } }, { 'POST /devices/l1/connect': { success: true } });
 		await render(LitterBoxPanel, { id: 'l1', device: { id: 'l1', name: 'Litière', connected: false } });
 		const clean = page.getByRole('button', { name: m.litter_box_start_cleaning() });
 		await expect.element(clean).toHaveAttribute('aria-disabled', 'true');

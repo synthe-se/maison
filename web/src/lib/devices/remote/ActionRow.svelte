@@ -7,6 +7,7 @@
 	import Icon from '#lib/components/Icon.svelte';
 	import Range from '#lib/components/Range.svelte';
 	import Select from '#lib/components/Select.svelte';
+	import { unavailable } from '#lib/gesture.svelte.ts';
 	import type { IrAction, IrCoverCommand, IrSwitchState } from './api.ts';
 	import ClimateFields from './ClimateFields.svelte';
 	import LampFields from './LampFields.svelte';
@@ -72,9 +73,9 @@
 				type="button"
 				class="icon-btn"
 				id="{id}-up"
-				disabled={index === 0}
+				{...unavailable(index === 0 && `${id}-first`)}
 				aria-label={m.remote_move_up({ n })}
-				onclick={() => onmove(-1)}
+				onclick={() => index > 0 && onmove(-1)}
 			>
 				<Icon name="chevron-up" />
 			</button>
@@ -82,15 +83,17 @@
 				type="button"
 				class="icon-btn"
 				id="{id}-down"
-				disabled={index === count - 1}
+				{...unavailable(index === count - 1 && `${id}-last`)}
 				aria-label={m.remote_move_down({ n })}
-				onclick={() => onmove(1)}
+				onclick={() => index < count - 1 && onmove(1)}
 			>
 				<Icon name="chevron-down" />
 			</button>
 			<button type="button" class="icon-btn danger" aria-label={m.remote_remove_action({ n })} onclick={onremove}>
 				<Icon name="trash" />
 			</button>
+			<span class="sr-only" id="{id}-first">{m.remote_move_first()}</span>
+			<span class="sr-only" id="{id}-last">{m.remote_move_last()}</span>
 		</div>
 	</div>
 

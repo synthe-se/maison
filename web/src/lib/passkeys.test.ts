@@ -7,8 +7,8 @@ import {
 	createInvite,
 	creationOptions,
 	inviteGreeting,
-	listInvites,
-	listPasskeys,
+	invitesData,
+	passkeysData,
 	register,
 	removePasskey,
 	renamePasskey,
@@ -153,11 +153,11 @@ describe('passkeys: the ceremonies', () => {
 
 describe('passkeys: the rest of the API', () => {
 	const cases: [string, () => Promise<unknown>, string, string, unknown?][] = [
-		['list', () => listPasskeys(), 'GET', '/passkeys'],
+		['list', () => passkeysData.fetch(), 'GET', '/passkeys'],
 		['rename', () => renamePasskey('k 1', 'Mac'), 'PATCH', '/passkeys/k%201', { name: 'Mac' }],
 		['remove', () => removePasskey('k1'), 'DELETE', '/passkeys/k1'],
 		['greeting', () => inviteGreeting('tok'), 'GET', '/invites/tok'],
-		['invitations', () => listInvites(), 'GET', '/invites'],
+		['invitations', () => invitesData.fetch(), 'GET', '/invites'],
 		['invite', () => createInvite('Alex', false), 'POST', '/invites', { name: 'Alex', admin: false }],
 		['access back', () => createInvite('Alex', false, 'alex'), 'POST', '/invites', { name: 'Alex', admin: false, person: 'alex' }],
 		['revoke', () => revokeInvite('i1'), 'DELETE', '/invites/i1']

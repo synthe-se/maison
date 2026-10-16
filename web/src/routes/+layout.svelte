@@ -8,10 +8,10 @@
 	import { ui } from '#lib/ui.svelte.ts';
 	import { cleanupLegacyServiceWorker, forgetLegacyScreenToken } from '#lib/legacy.ts';
 	import { refocus } from '#lib/focus.ts';
-	import { pageTitle } from '#lib/i18n.svelte.ts';
 	import Header from '#lib/components/Header.svelte';
 	import SignIn from '#lib/components/SignIn.svelte';
 	import AuthShell from '#lib/components/AuthShell.svelte';
+	import Door from '#lib/components/Door.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Toasts from '#lib/components/Toasts.svelte';
 	import ScreenPairing from '#lib/components/ScreenPairing.svelte';
@@ -78,12 +78,6 @@
 	});
 </script>
 
-<!-- the screens before a page keep a title of their own, not the asked page's -->
-<svelte:head>
-	{#if session.status === 'unreachable'}<title>{pageTitle(m.unreachable_title())}</title>{/if}
-	{#if session.status === 'revoked' && !repairing}<title>{pageTitle(m.screen_revoked_title())}</title>{/if}
-</svelte:head>
-
 <nav class="skip" aria-label={m.skip_to_content()}><a href="#main">{m.skip_to_content()}</a></nav>
 {#if session.status === 'signed_in'}<Header />{/if}
 {#if sunFrom}{#key sunFrom}<SunTheme house={sunFrom === 'house'} />{/key}{/if}
@@ -92,22 +86,20 @@
 		<p class="muted loading">{m.common_loading()}</p>
 	{:else if session.status === 'unreachable'}
 		<AuthShell>
-			<section class="notice" aria-labelledby="unreachable-title">
-				<h1 id="unreachable-title" tabindex="-1">{m.unreachable_title()}</h1>
+			<Door title={m.unreachable_title()}>
 				<p class="lead">{m.unreachable_body()}</p>
 				<button class="btn primary big" onclick={() => location.reload()}><Icon name="refresh-cw" />{m.reload()}</button>
-			</section>
+			</Door>
 		</AuthShell>
 	{:else if session.status === 'revoked'}
 		<AuthShell>
 			{#if repairing}
 				<ScreenPairing />
 			{:else}
-				<section class="notice" aria-labelledby="revoked-title">
-					<h1 id="revoked-title" tabindex="-1">{m.screen_revoked_title()}</h1>
+				<Door title={m.screen_revoked_title()}>
 					<p class="lead">{m.screen_revoked_body()}</p>
 					<div><button class="btn primary big" onclick={() => (repairing = true)}><Icon name="tv" />{m.screen_pair_retry()}</button></div>
-				</section>
+				</Door>
 			{/if}
 		</AuthShell>
 	{:else if session.status === 'signed_out' && !invitation}
@@ -128,10 +120,6 @@
 	}
 	.loading {
 		padding: var(--s-6) var(--page-margin);
-	}
-	.notice {
-		display: grid;
-		gap: var(--s-4);
 	}
 	/* the door fills the screen: no room kept for a bottom bar it does not have */
 	main:not(.page) {

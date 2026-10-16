@@ -4,11 +4,12 @@
 	// after asking (§ 6). A name already someone's (`person_exists`): their access back (a new
 	// passkey for them), or another name.
 	import { m } from '#lib/paraglide/messages.js';
-	import { MAX_NAME, ApiError } from '#lib/api.ts';
-	import { longDate } from '#lib/i18n.svelte.ts';
+	import { ApiError } from '#lib/api.ts';
+	import { MAX_NAME } from '#lib/limits.ts';
+	import { longDate, separator } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { Gesture, pending, removeRow } from '#lib/gesture.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { Draft } from '#lib/draft.svelte.ts';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
@@ -17,6 +18,8 @@
 	import ListRow from '#lib/components/ListRow.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
 	import Sheet from '#lib/components/Sheet.svelte';
+	import TextField from '#lib/components/TextField.svelte';
+	import { missingFields } from '#lib/form.ts';
 	import Toggle from '#lib/components/Toggle.svelte';
 	import { createInvite, invitesData, revokeInvite, type CreatedInvite, type Invite } from '#lib/passkeys.ts';
 
@@ -42,11 +45,9 @@
 
 	async function invite(person?: string) {
 		const name = form.name.trim();
-		missing = '';
-		if (!name) {
-			missing = m.invites_name_missing();
-			return nameField?.focus();
-		}
+		const { errors, first } = missingFields({ name }, { name: m.invites_name_missing });
+		missing = errors.name ?? '';
+		if (first) return nameField?.focus();
 		const r = await g.run(() => createInvite(name, form.admin, person), undefined, 'invite', {
 			field: () => nameField,
 			// the server says who has the name: offered their access back, not an error
@@ -79,15 +80,11 @@
 	}
 
 	const revoke = (i: Invite) =>
-		g.run(
-			() => revokeInvite(i.id),
-			async () => {
-				ui.toast(m.invites_revoked({ name: i.name }));
-				await invites.refresh();
-				await refocus(title);
-			},
-			`revoke:${i.id}`
-		);
+		removeRow(g, `revoke:${i.id}`, () => revokeInvite(i.id), {
+			said: m.invites_revoked({ name: i.name }),
+			list: invites,
+			title: () => title
+		});
 </script>
 
 <Group id="invites-title" title={m.invites_title()} bind:heading={title}>
@@ -95,20 +92,15 @@
 	<div><button class="btn primary" aria-haspopup="dialog" onclick={() => (inviting = true)}>{m.invites_title()}</button></div>
 	<Sheet open={inviting} title={m.invites_title()} onclose={close} {draft}>
 		<form class="invite" onsubmit={(e) => (e.preventDefault(), void invite())} novalidate>
-			<div class="field">
-				<label for="invite-name">{m.invites_name()}</label>
-				<input
-					id="invite-name"
-					bind:this={nameField}
-					bind:value={form.name}
-					oninput={() => (existing = null)}
-					maxlength={MAX_NAME}
-					autocomplete="off"
-					aria-invalid={missing || g.error || existing ? 'true' : undefined}
-					aria-describedby="invite-name-error"
-				/>
-				<p class="form-error" id="invite-name-error">{existing ? m.invites_person_exists({ name: existing.name }) : missing || g.error}</p>
-			</div>
+			<TextField
+				label={m.invites_name()}
+				bind:input={nameField}
+				bind:value={form.name}
+				error={existing ? m.invites_person_exists({ name: existing.name }) : missing || g.error}
+				oninput={() => (existing = null)}
+				maxlength={MAX_NAME}
+				autocomplete="off"
+			/>
 			{#if existing}
 				{@const who = existing}
 				<!-- the name is someone's: their access back (a new passkey for them), or another name -->
@@ -129,7 +121,7 @@
 	{#if created}
 		<div class="callout" role="group" aria-labelledby="created-title">
 			<p id="created-title">
-				<strong>{m.invites_link({ name: created.name })}</strong> · {m.invites_expires({ date: longDate(created.expiresMs) })}
+				<strong>{m.invites_link({ name: created.name })}</strong>{separator()}{m.invites_expires({ date: longDate(created.expiresMs) })}
 			</p>
 			<div class="inline">
 				<label class="sr-only" for="invite-url">{m.invites_link({ name: created.name })}</label>

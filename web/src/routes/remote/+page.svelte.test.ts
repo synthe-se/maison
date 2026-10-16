@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
@@ -58,7 +58,7 @@ describe('remote page', () => {
 		site();
 		await render(RemotePage);
 		await expect.element(bindings()).toHaveLength(2);
-		await expect.element(page.getByText(m.admin_only())).toBeVisible();
+		await expect.element(page.getByText(m.code_forbidden())).toBeVisible();
 		await expect.element(page.getByRole('button', { name: m.remote_add_binding() })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: m.remote_edit_binding({ key: keyName(115) }) })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: m.remote_key_mapped({ key: 'OK', label: 'Taichi' }) })).not.toBeInTheDocument();
@@ -120,7 +120,6 @@ describe('remote page', () => {
 
 	it('deletes a button once confirmed, says so, and reads the list again', async () => {
 		const api = site(keymap, { 'DELETE /ir/keymap/115': { success: true, message: '' } });
-		const say = vi.spyOn(ui, 'say');
 		await render(RemotePage);
 		await page.getByRole('button', { name: m.remote_delete_key({ key: keyName(115) }) }).click();
 		const dialog = page.getByRole('alertdialog', { name: m.remote_delete_title({ key: keyName(115) }) });
@@ -128,7 +127,7 @@ describe('remote page', () => {
 		api.routes['/ir/keymap'] = { success: true, keymap: { '353': keymap['353'] } };
 		await dialog.getByRole('button', { name: m.remote_delete_key({ key: keyName(115) }) }).click();
 		await expect.poll(() => api.sent('DELETE', '/ir/keymap/115')).toHaveLength(1);
-		await expect.poll(() => say).toHaveBeenCalledWith(m.remote_deleted({ key: keyName(115) }));
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.remote_deleted({ key: keyName(115) }));
 		await expect.element(bindings()).toHaveLength(1);
 		await expect.element(dialog).not.toBeInTheDocument();
 	});

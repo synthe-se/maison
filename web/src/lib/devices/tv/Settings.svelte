@@ -1,11 +1,12 @@
 <script lang="ts">
-	// A remote's settings, unfolded inside its tile (TileSettings): its addresses, saved
+	// A remote's settings, unfolded inside its tile (DeviceTile `settings`): its addresses, saved
 	// together; whatever else the device needs (pairing, an APK) comes as children. A refusal is said under the
 	// fields, the focus back on the first one (not only in a toast).
 	import type { Snippet } from 'svelte';
 	import { m } from '#lib/paraglide/messages.js';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
+	import { Draft } from '#lib/draft.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 
 	export type Field = { key: string; label: string; placeholder: string };
@@ -28,15 +29,16 @@
 
 	// a draft: a poll that lands while typing must not overwrite it
 	// svelte-ignore state_referenced_locally
-	let draft = $state(Object.fromEntries(fields.map((f) => [f.key, initial[f.key] ?? ''])));
+	const draft = new Draft(Object.fromEntries(fields.map((f) => [f.key, initial[f.key] ?? ''])));
 	const saving = new Gesture();
 	let inputs = $state<HTMLInputElement[]>([]);
 
 	function submit(e: SubmitEvent) {
 		e.preventDefault();
 		return saving.run(
-			() => save(Object.fromEntries(Object.entries(draft).map(([k, v]) => [k, v.trim() || null]))),
+			() => save(Object.fromEntries(Object.entries(draft.current).map(([k, v]) => [k, v.trim() || null]))),
 			() => {
+				draft.reset(draft.current);
 				ui.toast(saved);
 				onsaved?.();
 			},
@@ -55,7 +57,7 @@
 				<input
 					id="{id}-{f.key}"
 					bind:this={inputs[i]}
-					bind:value={draft[f.key]}
+					bind:value={draft.current[f.key]}
 					placeholder={f.placeholder}
 					autocomplete="off"
 					autocapitalize="off"

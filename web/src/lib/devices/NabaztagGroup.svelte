@@ -7,16 +7,15 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture } from '#lib/gesture.svelte.ts';
+	import { unreachableSince } from '#lib/i18n.svelte.ts';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
-	import { nabaztagApi } from './nabaztag/api.ts';
+	import { nabaztagApi, TAICHI } from './nabaztag/api.ts';
 	import { rabbit } from './nabaztag/data.ts';
 
-	/** The tai chi choreography, as stored on the rabbit (the remote key sends the same). */
-	const TAICHI = 'chor /vl/config/chor/taichi.chor';
 	const status = live(rabbit);
 	const s = $derived(status.data);
 	const pushing = new Gesture();
@@ -46,18 +45,18 @@
 						icon="rabbit"
 						on={s.reachable}
 						warn={!s.reachable}
-						state={!s.reachable ? m.state_unreachable() : s.config.tempoEnabled ? m.nabaztag_reachable_synced() : m.nabaztag_reachable()}
+						state={!s.reachable ? unreachableSince(null) : s.config.tempoEnabled ? m.nabaztag_reachable_synced() : m.nabaztag_reachable()}
 					>
 						{#snippet end(why)}
 							{@const off = !s.reachable && why}
-							<button class="btn" {...off ? unavailable(off) : pending(taichi.is())} onclick={() => s.reachable && dance()}>
+							<button class="btn" {...gate(off, taichi.is())} onclick={() => s.reachable && dance()}>
 								<Icon name="rabbit" busy={taichi.is()} />{m.nabaztag_taichi()}
 							</button>
 							<button
 								class="icon-btn"
 								aria-label={m.nabaztag_push_tempo()}
 								title={m.nabaztag_push_tempo()}
-								{...off ? unavailable(off) : pending(pushing.is())}
+								{...gate(off, pushing.is())}
 								onclick={() => s.reachable && push()}
 							>
 								<Icon name="refresh-cw" busy={pushing.is()} />

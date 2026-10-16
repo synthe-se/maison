@@ -13,9 +13,9 @@ import {
 	type ZigbeeLampsResponse,
 	type ZigbeeLampStatusResponse
 } from './api.ts';
-import { unreachableSince } from '#lib/format.ts';
+import { unreachableSince } from '#lib/i18n.svelte.ts';
 import { source, sources, type Source } from '#lib/live.svelte.ts';
-import { LAMP_DETAIL_MS, LAMP_LIST_MS } from '#lib/paces.ts';
+import { LAMP_DETAIL_MS, LAMP_LIST_MS, ZIGBEE_PAIRING_CLOSED_MS } from '#lib/paces.ts';
 
 export interface Lamp {
 	id: string;
@@ -47,7 +47,7 @@ export interface LampDriver {
 }
 
 /** A family's driver and its live values, all under `key` (so `refresh(key)` reaches every view). */
-export interface LampFamily<List, Detail> extends LampDriver {
+interface LampFamily<List, Detail> extends LampDriver {
 	list: Source<List>;
 	stats: Source<LampStats>;
 	detail: (id: string) => Source<Detail>;
@@ -77,10 +77,18 @@ const tone = (percent: number) => (percent < 34 ? m.lamps_tone_warm() : percent 
 export const HUE = 'hue-lamp';
 export const ZIGBEE = 'zigbee-lamp';
 
+// Whether the server said it runs without Bluetooth (the Pi): its Hue list is always empty, never
+// polled (every view of the list reads the stats too: once, they have no pace).
+let hueOff = false;
+
 export const hue: LampFamily<HueLampsResponse, HueLampStatusResponse> = {
 	key: HUE,
-	list: source(`${HUE}:list`, hueLampsApi.list, LAMP_LIST_MS),
-	stats: source(`${HUE}:stats`, hueLampsApi.stats),
+	list: source(`${HUE}:list`, hueLampsApi.list, () => (hueOff ? 0 : LAMP_LIST_MS)),
+	stats: source(`${HUE}:stats`, async () => {
+		const stats = await hueLampsApi.stats();
+		hueOff = stats.disabled === true;
+		return stats;
+	}),
 	detail: sources((id: string) => source(`${HUE}:detail:${id}`, () => hueLampsApi.status(id), LAMP_DETAIL_MS)),
 	href: (id) => `/hue-lamp/${id}`,
 	power: hueLampsApi.power,
@@ -113,6 +121,16 @@ export const zigbee: LampFamily<ZigbeeLampsResponse, ZigbeeLampStatusResponse> =
 	radio: m.lamps_radio_zigbee
 };
 
+/** Why a lamp's controls (its white, its color) cannot act now: out of reach (since when), or
+ * off; '' when they can. */
+export function lampWhy(l: Lamp): string {
+	if (!l.reachable) return lampState(l);
+	return l.isOn ? '' : m.lamps_off_reason();
+}
+
+/** A lamp lit now: on, and reachable (an unreachable lamp's last state is not trusted). */
+export const isLit = (l: Lamp) => l.reachable && l.isOn;
+
 /** Line 2 of a lamp's tile: « Allumée, 80 % », « Éteinte », « Injoignable depuis 12 min ». */
 export function lampState(l: Lamp): string {
 	if (l.connecting) return m.lamps_connecting();
@@ -120,11 +138,8 @@ export function lampState(l: Lamp): string {
 	return l.isOn ? m.lamps_on_percent({ percent: l.brightness }) : m.state_off();
 }
 
-/** While open: every second, for the countdown (as React did); closed: slower. */
-export const PAIRING_OPEN_EVERY = 1_000;
-export const PAIRING_CLOSED_EVERY = 10_000;
-/** The Zigbee network's pairing window. Outside the lamps' prefix: refreshing the lamps after a
- * pairing gesture must not read the window again before the coordinator has opened it. */
-export const zigbeePairing = source('zigbee-pairing', zigbeeLampsApi.pairingStatus, (d) =>
-	d?.pairing.active ? PAIRING_OPEN_EVERY : PAIRING_CLOSED_EVERY
-);
+/** The Zigbee network's pairing window, read at the closed pace whether open or not: its
+ * countdown runs in the page (ZigbeePairing), the reads only learn of joins. Outside the lamps'
+ * prefix: refreshing the lamps after a pairing gesture must not read the window again before
+ * the coordinator has opened it. */
+export const zigbeePairing = source('zigbee-pairing', zigbeeLampsApi.pairingStatus, ZIGBEE_PAIRING_CLOSED_MS);

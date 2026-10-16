@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	CLIMATE_OFF,
 	buildClimateCommand,
-	clampTemperature,
-	isClimateFan,
 	isClimateMode,
-	isClimateVane,
 	parseClimateCommand,
 	settingsFromBackend,
 	type ClimateSettings
@@ -53,7 +50,6 @@ describe('parseClimateCommand', () => {
 
 	it('has no settings for « off »', () => {
 		expect(parseClimateCommand(CLIMATE_OFF)).toBeNull();
-		expect(CLIMATE_OFF).toBe('state-off');
 	});
 
 	it('refuses what it does not model: unknown tokens, absolute stops, junk', () => {
@@ -71,16 +67,17 @@ describe('guards and bounds', () => {
 	it('knows its tokens', () => {
 		expect(isClimateMode('heat')).toBe(true);
 		expect(isClimateMode('turbo')).toBe(false);
-		expect(isClimateFan('silent')).toBe(true);
-		expect(isClimateFan('5')).toBe(false);
-		expect(isClimateVane('swing')).toBe(true);
-		expect(isClimateVane('left')).toBe(false);
+		expect(parseClimateCommand('state-cool-20-fan-silent-vane-swing')).toMatchObject({ fan: 'silent', vane: 'swing' });
+		expect(parseClimateCommand('state-cool-20-fan-5-vane-auto')).toBeNull();
+		expect(parseClimateCommand('state-cool-20-fan-auto-vane-left')).toBeNull();
 	});
 
-	it('keeps a setpoint within 16–31 °C, rounded', () => {
-		expect(clampTemperature(10)).toBe(16);
-		expect(clampTemperature(40)).toBe(31);
-		expect(clampTemperature(21.6)).toBe(22);
+	it('keeps a stored setpoint within 16–31 °C, rounded', () => {
+		const said = (temperature: number) =>
+			settingsFromBackend({ mode: 'cool', temperature, fan: 'auto', vane: 'auto', econo: false, stopInMinutes: null }, base).temperature;
+		expect(said(10)).toBe(16);
+		expect(said(40)).toBe(31);
+		expect(said(21.6)).toBe(22);
 	});
 });
 

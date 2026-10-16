@@ -10,10 +10,10 @@
 	import { session } from '#lib/session.svelte.ts';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
-	import Icon from '#lib/components/Icon.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
 	import PageHead from '#lib/components/PageHead.svelte';
-	import { androidTvApi, type AndroidKey } from './api.ts';
+	import { ADDRESS_EXAMPLE, androidTvApi, type AndroidKey } from './api.ts';
+	import PairedChip from './PairedChip.svelte';
 	import ApkInstall from './ApkInstall.svelte';
 	import Apps from './Apps.svelte';
 	import BoxPairing from './BoxPairing.svelte';
@@ -46,7 +46,7 @@
 
 {#snippet settings()}
 	<Settings
-		fields={[{ key: 'host', label: m.android_tv_host(), placeholder: '192.168.1.153' }]}
+		fields={[{ key: 'host', label: m.android_tv_host(), placeholder: ADDRESS_EXAMPLE }]}
 		initial={{ host: b.config?.host }}
 		hint={b.configured ? undefined : m.android_tv_configure_hint()}
 		save={async (v) => {
@@ -83,11 +83,11 @@
 				ontoggle={b.configured ? b.toggle : undefined}
 				fact={b.current?.label}
 				settings={session.admin ? settings : undefined}
-				bind:settingsOpen={() => settingsOpen || !b.configured, (v) => (settingsOpen = v)}
+				bind:settingsOpen
+				settingsKept={!b.configured}
 			>
 				{#snippet end()}
-					<!-- which channel the keys take: the difference between 8 ms and 150 ms a press -->
-					{#if status.paired}<span class="chip accent"><Icon name="zap" size={12} />{m.android_tv_paired()}</span>{/if}
+					<PairedChip paired={status.paired} />
 				{/snippet}
 				{#if !b.configured}<AdminOnly reason={m.android_tv_configure_admin()} />{/if}
 				{#if b.configured}<Apps box={b} />{/if}

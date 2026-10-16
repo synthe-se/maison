@@ -2,7 +2,7 @@
 	// The box's app shortcuts, as chips (its tile and its page): the app in front is marked
 	// current; offline, they stay in place, unavailable, the tile's line saying why.
 	import { m } from '#lib/paraglide/messages.js';
-	import { pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate } from '#lib/gesture.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import type { Box } from './box.svelte.ts';
 
@@ -17,7 +17,7 @@
 			class="pill-btn"
 			class:on={here}
 			aria-current={here ? 'true' : undefined}
-			{...box.reachable ? pending(box.apps.is()) : unavailable(`${id}-why`)}
+			{...gate(!box.reachable && `${id}-why`, box.apps.is())}
 			onclick={() => box.reachable && box.launch(app)}
 		>
 			{#if box.apps.is(app.package)}<Icon name="play" busy />{/if}{app.label}
@@ -34,9 +34,5 @@
 	}
 	.apps .pill-btn {
 		min-height: var(--control-h);
-	}
-	.apps .pill-btn[aria-disabled='true']:not([aria-busy='true']) {
-		opacity: var(--disabled-opacity);
-		cursor: not-allowed;
 	}
 </style>

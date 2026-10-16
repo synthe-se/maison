@@ -2,6 +2,7 @@
 	// Meross MSS310 plugs on the local network: one tile each, the count in the group head.
 	// Only a plug that answers is asked for its power (as the old card did).
 	import { m } from '#lib/paraglide/messages.js';
+	import { facts } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import Group from '#lib/components/Group.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
@@ -17,7 +18,7 @@
 	id="meross-title"
 	title={m.meross_title()}
 	fact={plugs.length
-		? `${m.meross_plug_count({ count: list.data?.total ?? plugs.length })} · ${m.meross_online_count({ count: online })}`
+		? facts(m.meross_plug_count({ count: list.data?.total ?? plugs.length }), m.meross_online_count({ count: online }))
 		: undefined}
 >
 	<Loaded value={list} empty={plugs.length === 0} emptyText={m.meross_none()} emptyHint={m.meross_none_hint()}>

@@ -4,10 +4,10 @@
 	// screen opens by itself. The pairing's secret stays in this component's memory, never in an
 	// address nor in storage. A code past its time offers a new one; leaving stops the asking.
 	import { m } from '#lib/paraglide/messages.js';
+	import Door from '#lib/components/Door.svelte';
 	import { ApiError } from '#lib/api.ts';
 	import { errorText } from '#lib/errors.ts';
 	import { refocus } from '#lib/focus.ts';
-	import { pageTitle } from '#lib/i18n.svelte.ts';
 	import { screensApi, type Pairing } from '#lib/screens.ts';
 	import { session } from '#lib/session.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
@@ -73,10 +73,7 @@
 	});
 </script>
 
-<svelte:head><title>{pageTitle(m.screen_pair_title())}</title></svelte:head>
-
-<section class="pairing" aria-labelledby="pair-title">
-	<h1 id="pair-title" tabindex="-1">{m.screen_pair_title()}</h1>
+<Door title={m.screen_pair_title()}>
 	{#if failure}
 		<p class="form-error" role="alert">{failure}</p>
 		<div><button class="btn primary big" onclick={() => void start()}><Icon name="refresh-cw" />{m.screen_pair_again()}</button></div>
@@ -98,16 +95,9 @@
 	{#if onback}
 		<div><button class="btn ghost" onclick={onback}><Icon name="arrow-left" />{m.screen_pair_back()}</button></div>
 	{/if}
-</section>
+</Door>
 
 <style>
-	.pairing {
-		display: grid;
-		gap: var(--s-4);
-	}
-	.pairing p {
-		margin: 0;
-	}
 	/* read across the room: large, its characters apart */
 	.code {
 		font: var(--t-code);

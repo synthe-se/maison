@@ -8,14 +8,13 @@
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
+	import { BOX_CODE_LENGTH } from '#lib/limits.ts';
 	import { androidTvApi } from './api.ts';
 
 	/** Paired: the box is read again (its settings close, the focus goes back to their gear). */
 	let { onpaired }: { onpaired: () => unknown } = $props();
 	const id = $props.id();
 
-	/** The code the TV shows: six characters. */
-	const CODE_LENGTH = 6;
 	const pairing = new Gesture();
 	let open = $state(false);
 	let code = $state('');
@@ -38,7 +37,7 @@
 	function finish(e: SubmitEvent) {
 		e.preventDefault();
 		const typed = code.trim();
-		problem = typed.length === CODE_LENGTH ? '' : m.android_tv_pair_code_length({ count: CODE_LENGTH });
+		problem = typed.length === BOX_CODE_LENGTH ? '' : m.android_tv_pair_code_length({ count: BOX_CODE_LENGTH });
 		if (problem) return void input?.focus();
 		return pairing.run(
 			() => androidTvApi.pairFinish(typed),
@@ -68,7 +67,7 @@
 						bind:this={input}
 						bind:value={code}
 						oninput={() => (problem = '')}
-						maxlength={CODE_LENGTH}
+						maxlength={BOX_CODE_LENGTH}
 						autocomplete="one-time-code"
 						autocapitalize="characters"
 						spellcheck="false"

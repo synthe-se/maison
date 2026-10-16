@@ -51,7 +51,7 @@
 		display: block;
 		height: 100%;
 		background: var(--accent);
-		transition: width 0.25s linear;
+		transition: width var(--dur-progress) linear;
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.fill {

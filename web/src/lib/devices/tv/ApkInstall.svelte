@@ -3,6 +3,7 @@
 	// so an APK just installs. Long steps named and timed (§ 6): the upload in percent, then
 	// « Installation… », then said installed; the focus goes back to the button after.
 	import { m } from '#lib/paraglide/messages.js';
+	import { percent } from '#lib/i18n.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
@@ -41,7 +42,7 @@
 		label={m.android_tv_uploading({ name: apk.name })}
 		value={apk.sent * 100}
 		max={100}
-		valueText={m.android_tv_upload_sent({ percent: Math.round(apk.sent * 100) })}
+		valueText={m.android_tv_upload_sent({ percent: percent(apk.sent) })}
 	/>
 {:else if apk}
 	<p class="hint installing"><Icon name="upload" busy />{m.android_tv_installing()}</p>

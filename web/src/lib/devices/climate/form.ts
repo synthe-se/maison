@@ -7,11 +7,11 @@ import { buildClimateCommand, settingsFromBackend, type ClimateSettings } from '
 
 export type ClimateForm = ClimateSettings & { econo: boolean; timer: boolean; stopAfter: number };
 
+/** Where a new order starts: the form's, and a new « climate toggle » action's. */
+export const DEFAULT_SETTINGS: ClimateSettings = { mode: 'cool', temperature: 20, fan: 'auto', vane: 'auto' };
+
 export const INITIAL: ClimateForm = {
-	mode: 'cool',
-	temperature: 20,
-	fan: 'auto',
-	vane: 'auto',
+	...DEFAULT_SETTINGS,
 	econo: false,
 	timer: false,
 	stopAfter: 180

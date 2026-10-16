@@ -5,6 +5,7 @@ import { m } from '#lib/paraglide/messages.js';
 import { ui } from '#lib/ui.svelte.ts';
 import { deferred, stubApi } from '#lib/test/api.ts';
 import NabaztagGroup from './NabaztagGroup.svelte';
+import { TAICHI } from './nabaztag/api.ts';
 
 const status = (reachable: boolean, tempoEnabled = true, host: string | null = '192.168.1.50') => ({
 	success: true,
@@ -30,9 +31,7 @@ describe('NabaztagGroup', () => {
 		const api = stubApi({ '/nabaztag': status(true), 'POST /nabaztag/ctl': { success: true, message: 'ok' } });
 		await render(NabaztagGroup);
 		await page.getByRole('button', { name: m.nabaztag_taichi() }).click();
-		await expect
-			.poll(() => api.sent('POST', '/nabaztag/ctl').map((c) => c.body))
-			.toEqual([{ command: 'chor /vl/config/chor/taichi.chor' }]);
+		await expect.poll(() => api.sent('POST', '/nabaztag/ctl').map((c) => c.body)).toEqual([{ command: TAICHI }]);
 		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.nabaztag_taichi_done());
 	});
 

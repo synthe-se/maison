@@ -8,7 +8,7 @@ import { ui } from '#lib/ui.svelte.ts';
 import { list } from '#lib/i18n.svelte.ts';
 import { FAILURE, haptic } from '#lib/haptics.ts';
 
-export interface Outcome {
+interface Outcome {
 	/** The names of the devices that did it. */
 	done: string[];
 	/** The names of those that refused or did not answer. */
@@ -25,9 +25,14 @@ export async function everyone<T>(items: T[], name: (t: T) => string, send: (t: 
 	};
 }
 
-/** Says the outcome: all done in `said(count)`; else a warning that stays, naming who failed. */
-export function sayOutcome(o: Outcome, said: (count: number) => string) {
+/** Says the outcome: all done in `said(count)`; else a warning that stays, `partial` (by
+ * default, naming who did not answer). */
+export function sayOutcome(
+	o: Outcome,
+	said: (count: number) => string,
+	partial: (o: Outcome) => string = (all) => m.group_partial({ done: said(all.done.length), names: list(all.failed, 'long') })
+) {
 	if (!o.failed.length) return ui.toast(said(o.done.length));
 	haptic(FAILURE);
-	ui.toast(m.group_partial({ done: said(o.done.length), names: list(o.failed, 'long') }), { warn: true });
+	ui.toast(partial(o), { warn: true });
 }

@@ -13,6 +13,7 @@ import { tick } from 'svelte';
 import { ui } from '#lib/ui.svelte.ts';
 import { errorText } from '#lib/errors.ts';
 import { FAILURE, haptic } from '#lib/haptics.ts';
+import { refocus } from '#lib/focus.ts';
 
 /** The attributes of a control whose gesture is in flight, to spread on it: busy, not
  * operable, still focusable. Nothing when idle (so another spread is never undone). */
@@ -28,7 +29,14 @@ export function unavailable(reason: string | false | null | undefined): { 'aria-
 	return reason ? { 'aria-disabled': 'true', 'aria-describedby': reason } : {};
 }
 
-export interface RunOptions {
+/** A control that sends, said once: unavailable while `reason` names what says why (the id of
+ * the tile's state line, an « offline » line), else busy while its gesture travels. Its handler
+ * still checks the reason: aria-disabled does not stop a click. */
+export function gate(reason: string | false | null | undefined, busy: boolean) {
+	return reason ? unavailable(reason) : pending(busy);
+}
+
+interface RunOptions {
 	/** The field the failure is about: the error is shown under it (`error`), not in a toast,
 	 * and the focus goes back to it so its description is read (WCAG 3.3.1). */
 	field?: () => HTMLElement | null | undefined;
@@ -79,4 +87,24 @@ export class Gesture {
 			if (this.busy === key) this.busy = null;
 		}
 	}
+}
+
+/** A row removed from a list (a passkey, a screen, an invitation, a person, a remote key): sent
+ * through `g` under `key`, its outcome said (`said`, a toast), the list read again, then the
+ * focus to the list's title: the row and its button are gone (WCAG 2.4.3). */
+export function removeRow(
+	g: Gesture,
+	key: string,
+	send: () => Promise<unknown>,
+	{ said, list, title }: { said: string; list: { refresh(): Promise<unknown> }; title: () => HTMLElement | null | undefined }
+) {
+	return g.run(
+		send,
+		async () => {
+			ui.toast(said);
+			await list.refresh();
+			await refocus(title);
+		},
+		key
+	);
 }

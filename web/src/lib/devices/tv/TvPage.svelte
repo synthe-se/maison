@@ -16,7 +16,8 @@
 	import Loaded from '#lib/components/Loaded.svelte';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import Progress from '#lib/components/Progress.svelte';
-	import { tvApi } from './api.ts';
+	import { ADDRESS_EXAMPLE, tvApi } from './api.ts';
+	import AssumedPower from './AssumedPower.svelte';
 	import Key from './Key.svelte';
 	import Pad from './Pad.svelte';
 	import Settings from './Settings.svelte';
@@ -53,9 +54,9 @@
 {#snippet settings()}
 	<Settings
 		fields={[
-			{ key: 'host', label: m.tv_host(), placeholder: '192.168.1.52' },
-			{ key: 'irBlasterHost', label: m.tv_ir_blaster_host(), placeholder: '192.168.1.73' },
-			{ key: 'boxHost', label: m.tv_box_host(), placeholder: '192.168.1.153' }
+			{ key: 'host', label: m.tv_host(), placeholder: ADDRESS_EXAMPLE },
+			{ key: 'irBlasterHost', label: m.tv_ir_blaster_host(), placeholder: ADDRESS_EXAMPLE },
+			{ key: 'boxHost', label: m.tv_box_host(), placeholder: ADDRESS_EXAMPLE }
 		]}
 		initial={{ ...tv.config }}
 		hint={tv.configured ? undefined : m.tv_configure_hint()}
@@ -84,19 +85,13 @@
 				warn={tv.assumed}
 				fact={tv.fact}
 				settings={session.admin ? settings : undefined}
-				bind:settingsOpen={() => settingsOpen || !tv.configured, (v) => (settingsOpen = v)}
+				bind:settingsOpen
+				settingsKept={!tv.configured}
 			>
 				{#if !tv.configured}<AdminOnly reason={m.tv_configure_admin()} />{/if}
 				{#if tv.configured}
 					{#if tv.assumed}
-						<div class="btn-row">
-							<button class="btn" {...pending(g.is('on'))} onclick={() => tv.assumedPower(true)}>
-								<Icon name="power" busy={g.is('on')} /><span class="btn-text">{m.action_turn_on()}</span>
-							</button>
-							<button class="btn" {...pending(g.is('off'))} onclick={() => tv.assumedPower(false)}>
-								<Icon name="power" busy={g.is('off')} /><span class="btn-text">{m.action_turn_off()}</span>
-							</button>
-						</div>
+						<AssumedPower {tv} />
 						{#if tv.lastOrder}
 							<p class="hint">{(tv.lastOrder.on ? m.tv_last_order_on : m.tv_last_order_off)({ time: clock(tv.lastOrder.at) })}</p>
 						{/if}

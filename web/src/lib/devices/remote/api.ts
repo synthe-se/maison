@@ -2,6 +2,7 @@
 // (backend/src/ir.rs).
 
 import { get, post, put, del, path } from '#lib/api.ts';
+import type { Code } from '#lib/codes.ts';
 /** Force a state, or flip the current one — the remote-control default. */
 export type IrSwitchState = 'on' | 'off' | 'toggle';
 
@@ -45,7 +46,7 @@ export interface IrBinding {
 	repeat?: boolean;
 }
 
-export interface IrKeymapResponse {
+interface IrKeymapResponse {
 	success: boolean;
 	/** Keycodes are numbers, serialized as JSON object keys (strings). */
 	keymap: Record<string, IrBinding>;
@@ -61,17 +62,27 @@ export interface IrEvent {
 	receivedAt: string;
 }
 
-export interface IrRecentResponse {
+interface IrRecentResponse {
 	success: boolean;
 	/** Newest first. */
 	events: IrEvent[];
 }
 
-export interface IrTestResponse {
+/** How one action went (maison-api `ActionResult`): the action, whether it went, and the
+ * refusal's code when it did not. */
+export interface ActionResult {
+	action: IrAction;
+	ok: boolean;
+	code?: Code;
+}
+
+/** What running actions answers (`/ir/test`, a scene's run; maison-api `KeyResponse`): one
+ * result per action, in order. */
+export interface KeyResponse {
 	success: boolean;
+	/** For logs (« 3/4 actions ok »): the app says its own words. */
 	message: string;
-	/** One entry per executed action ("ok: ..." / "failed: ..."). */
-	results: string[];
+	results: ActionResult[];
 }
 
 export const irApi = {
@@ -79,5 +90,5 @@ export const irApi = {
 	setBinding: (code: number, binding: IrBinding) => put(path`/ir/keymap/${code}`, binding),
 	removeBinding: (code: number) => del(path`/ir/keymap/${code}`),
 	recent: () => get<IrRecentResponse>('/ir/recent'),
-	test: (actions: IrAction[]) => post<IrTestResponse>('/ir/test', { actions })
+	test: (actions: IrAction[]) => post<KeyResponse>('/ir/test', { actions })
 };

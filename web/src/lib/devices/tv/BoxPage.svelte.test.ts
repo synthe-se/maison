@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
+import { percent } from '#lib/i18n.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import { session } from '#lib/session.svelte.ts';
 import { alex, leonard } from '#lib/test/passkeys.ts';
@@ -230,14 +231,14 @@ describe('BoxPage', () => {
 	});
 
 	it('a code the TV refuses: said under the field, which keeps the focus', async () => {
-		serve(boxStatus(), { 'POST /androidtv/pair/finish': () => json({ success: false, error: 'Wrong code' }, 400) });
+		serve(boxStatus(), { 'POST /androidtv/pair/finish': () => json({ success: false, error: 'Wrong code', code: 'invalid' }, 400) });
 		await render(BoxPage);
 		await page.getByRole('button', { name: m.common_settings_of({ name: TITLE() }) }).click();
 		await page.getByRole('button', { name: m.android_tv_pair() }).click();
 		const code = page.getByLabelText(m.android_tv_pair_code());
 		await userEvent.fill(code.element(), 'AB12CD');
 		await page.getByRole('button', { name: m.android_tv_pair_confirm() }).click();
-		await expect.element(code).toHaveAccessibleDescription('Wrong code');
+		await expect.element(code).toHaveAccessibleDescription(m.code_invalid());
 		await expect.element(code).toHaveFocus();
 		await expect.element(code).toHaveValue('AB12CD');
 	});
@@ -274,7 +275,7 @@ describe('BoxPage', () => {
 
 		xhr.upload.onprogress?.({ lengthComputable: true, loaded: 40, total: 100 });
 		const bar = page.getByRole('progressbar', { name: m.android_tv_uploading({ name: 'iris.apk' }) });
-		await expect.element(bar).toHaveAttribute('aria-valuetext', m.android_tv_upload_sent({ percent: 40 }));
+		await expect.element(bar).toHaveAttribute('aria-valuetext', m.android_tv_upload_sent({ percent: percent(0.4) }));
 		xhr.upload.onload?.();
 		await expect.element(page.getByText(m.android_tv_installing())).toBeVisible();
 		xhr.status = 200;
