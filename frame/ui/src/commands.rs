@@ -24,6 +24,8 @@ pub mod limit {
     pub const LAMP: Duration = Duration::from_millis(paces::LAMP_LIMIT_MS);
     pub const PLUG: Duration = Duration::from_millis(paces::PLUG_LIMIT_MS);
     pub const DEVICE: Duration = Duration::from_millis(paces::DEVICE_LIMIT_MS);
+    /// The TV, and the box (waking it wakes the TV over CEC).
+    pub const TV: Duration = Duration::from_millis(paces::TV_LIMIT_MS);
 }
 
 /// Without an answer this long, the gesture says it is slow.

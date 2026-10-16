@@ -3,7 +3,8 @@
 
 import type { AndroidApp, AndroidTvConfig } from '#lib/devices/tv/api.ts';
 
-/** Apps worth a shortcut, keyed by the packages actually on the box (config can override). */
+/** Apps worth a shortcut, keyed by the packages actually on the box (config can override);
+ * `maison_api::androidtv::SHORTCUTS`, copied by hand. */
 const SHORTCUTS: AndroidApp[] = [
 	{ package: 'org.smarttube.beta', label: 'SmartTube' },
 	{ package: 'studio.kahn.iris.tv', label: 'Iris' }

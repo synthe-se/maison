@@ -11,6 +11,7 @@ pub mod plugs;
 pub mod scenes;
 pub mod shutters;
 pub mod tempo;
+pub mod tv;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -61,6 +62,10 @@ pub struct Sources {
     pub climate: Source<serde_json::Value>,
     /// The rabbit (`/nabaztag`): its address set or not, reachable, showing Tempo.
     pub rabbit: Source<serde_json::Value>,
+    /// The TV and the box (`/tv`, `/androidtv`: `{config, status}`), read as slowly as the TV
+    /// allows (its JointSPACE server dies under bursts).
+    pub tv: Source<serde_json::Value>,
+    pub androidtv: Source<serde_json::Value>,
     pub place: Source<Where>,
     pub sun: Source<SunNow>,
 }
@@ -74,6 +79,9 @@ pub const TEMPO: &str = "tempo";
 /// The air conditioner's last order: the event the server says when it changes.
 pub const CLIMATE: &str = maison_api::events::CLIMATE;
 pub const NABAZTAG: &str = "nabaztag";
+pub const TV: &str = "tv";
+/// The box: the event the server says when its power changes.
+pub const BOX: &str = maison_api::events::ANDROID_TV;
 
 fn until_sun(sun: Option<&maison_api::sun::NextSun>) -> Duration {
     ms(paces::until_sun(sun, Utc::now().timestamp_millis()))
@@ -128,6 +136,12 @@ impl Sources {
                     })
                 },
                 get(paths::BROADLINK_DISCOVER),
+            ),
+            tv: Source::every("tv:status", ms(paces::TV_MS), get(paths::TV)),
+            androidtv: Source::every(
+                format!("{BOX}:status"),
+                ms(paces::TV_MS),
+                get(paths::ANDROIDTV),
             ),
             rabbit: Source::every(
                 "nabaztag:status",
@@ -184,7 +198,7 @@ impl Cx<'_> {
 }
 
 /// The dashboard's groups, in its order (web/src/routes/+page.svelte): scenes, Tempo, lamps,
-/// the air conditioning, shutters, plugs, the rabbit.
+/// the air conditioning, shutters, plugs, the rabbit, « Télé ».
 pub fn house(cx: &mut Cx) -> Vec<Group> {
     [
         scenes::group(cx),
@@ -194,6 +208,7 @@ pub fn house(cx: &mut Cx) -> Vec<Group> {
         shutters::group(cx),
         plugs::group(cx),
         nabaztag::group(cx),
+        tv::group(cx),
     ]
     .into_iter()
     .flatten()

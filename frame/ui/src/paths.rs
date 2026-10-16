@@ -29,6 +29,14 @@ pub const CLIMATE_SEND: &str = "/broadlink/mitsubishi/send";
 pub const NABAZTAG: &str = "/nabaztag";
 pub const NABAZTAG_CTL: &str = "/nabaztag/ctl";
 pub const NABAZTAG_TEMPO_PUSH: &str = "/nabaztag/tempo/push";
+/// The Philips TV: its status and settings, `/power` (over infrared).
+pub const TV: &str = "/tv";
+pub const TV_POWER: &str = "/tv/power";
+/// The Android box: its status, `/wake`, `/sleep`, `/launch` (an app, the TV turned on first).
+pub const ANDROIDTV: &str = "/androidtv";
+pub const BOX_WAKE: &str = "/androidtv/wake";
+pub const BOX_SLEEP: &str = "/androidtv/sleep";
+pub const BOX_LAUNCH: &str = "/androidtv/launch";
 /// Scenes: the list, `/{id}/run`.
 pub const SCENES: &str = "/scenes";
 /// Who the screen is (its cookie renewed).
