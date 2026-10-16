@@ -159,14 +159,14 @@
 		border-style: dashed;
 		border-color: var(--accent);
 	}
-	/* unreachable: the struck circle of § 4, in the down color */
+	/* unreachable: the struck circle of § 4, in the down color, not faded */
 	.glyph.gesture[aria-disabled='true'] {
-		cursor: not-allowed;
+		opacity: 1;
 		border-color: var(--status-down);
 		color: var(--status-down);
 	}
 	.glyph.gesture.slow {
-		animation: ring 1.2s ease-in-out infinite;
+		animation: ring var(--dur-pulse) ease-in-out infinite;
 	}
 	@keyframes ring {
 		50% {
@@ -216,6 +216,6 @@
 	/* « Réessayer » sits above the link's area */
 	.retry {
 		position: relative;
-		z-index: 1;
+		z-index: var(--z-raised);
 	}
 </style>

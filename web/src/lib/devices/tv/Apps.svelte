@@ -35,8 +35,4 @@
 	.apps .pill-btn {
 		min-height: var(--control-h);
 	}
-	.apps .pill-btn[aria-disabled='true']:not([aria-busy='true']) {
-		opacity: var(--disabled-opacity);
-		cursor: not-allowed;
-	}
 </style>

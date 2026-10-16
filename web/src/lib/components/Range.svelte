@@ -263,7 +263,8 @@
 	.range:has(:global([aria-disabled='true'])) .value {
 		color: var(--ink-muted);
 	}
-	.range :global(.range-band:has([aria-disabled='true'])) {
+	/* the thumb fades as every control that cannot act does (app.css), its track with it */
+	.range:has(:global([aria-disabled='true'])) .track {
 		opacity: var(--disabled-opacity);
 	}
 </style>

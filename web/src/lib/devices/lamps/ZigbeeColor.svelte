@@ -91,10 +91,6 @@
 		cursor: pointer;
 		padding: 0;
 	}
-	.swatch[aria-disabled='true'] {
-		opacity: var(--disabled-opacity);
-		cursor: not-allowed;
-	}
 	.wheel {
 		position: relative;
 		width: var(--wheel);
