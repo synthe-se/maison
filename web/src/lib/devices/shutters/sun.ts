@@ -6,10 +6,10 @@ import type { Shutter, SunSchedule } from './api.ts';
 import { clock, dayFromToday, dayLabel, formatMinutes, isoDay, lower } from '#lib/i18n.svelte.ts';
 
 /** Minutes before (negative) or after the sun: quarter hours near it, then half hours, ± 3 h. */
-export const OFFSETS = [-180, -120, -90, -60, -45, -30, -15, 0, 15, 30, 45, 60, 90, 120, 180] as const;
+const OFFSETS = [-180, -120, -90, -60, -45, -30, -15, 0, 15, 30, 45, 60, 90, 120, 180] as const;
 
 /** What a newly enabled event starts with: closing an hour after sunset (Leonard's choice). */
-export const DEFAULT_OFFSET = { sunrise: 0, sunset: 60 } as const;
+const DEFAULT_OFFSET = { sunrise: 0, sunset: 60 } as const;
 
 /** « À l’heure du soleil », « 1 h après », « 30 min avant ». */
 export function offsetLabel(minutes: number): string {
@@ -27,15 +27,29 @@ export function dayAndTime(iso: string): string {
 	return m.shutters_day_time({ day: lower(dayLabel(isoDay(at))), time: clock(at) });
 }
 
-export type SunEvent = 'open' | 'close';
+type SunEvent = 'open' | 'close';
+type Move = { event: SunEvent; at: string; skipped: boolean };
+
+/** Sooner first. */
+const sooner = (a: { at: string }, b: { at: string }) => new Date(a.at).getTime() - new Date(b.at).getTime();
 
 /** The next scheduled move, if any: which, when (ISO), and whether it will be skipped once. */
-export function nextEvent(c: Shutter): { event: SunEvent; at: string; skipped: boolean } | undefined {
+export function nextEvent(c: Shutter): Move | undefined {
 	const moves = [
 		c.nextOpen ? { event: 'open' as const, at: c.nextOpen, skipped: c.skipNextOpen } : null,
 		c.nextClose ? { event: 'close' as const, at: c.nextClose, skipped: c.skipNextClose } : null
 	].filter((x) => x !== null);
-	return moves.toSorted((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())[0];
+	return moves.toSorted(sooner)[0];
+}
+
+/** The shutter whose next scheduled move comes first, across `covers` (online, not skipped):
+ * what « Maintenant » says. */
+export function soonestMove(covers: Shutter[]): Shutter | undefined {
+	return covers
+		.filter((c) => c.online)
+		.map((c) => ({ c, next: nextEvent(c) }))
+		.filter((x): x is { c: Shutter; next: Move } => !!x.next && !x.next.skipped)
+		.toSorted((a, b) => sooner(a.next, b.next))[0]?.c;
 }
 
 /** The next move in words: « Fermeture 20:24 », or « Fermeture de 20:24 sautée ». */

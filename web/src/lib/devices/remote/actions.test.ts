@@ -12,7 +12,9 @@ import {
 	SCENE_TYPES,
 	summarize,
 	type ActionType,
-	type Sources
+	type Sources,
+	actionsProblem,
+	toRow
 } from './actions.ts';
 
 const sources = remoteSources();
@@ -25,7 +27,7 @@ describe('summarize', () => {
 		expect(summarize(<IrAction>{ action: 'zigbee_power', lamp: 'zb-1', state: 'off' }, sources)).toBe('Éteindre Suspension');
 		expect(summarize(<IrAction>{ action: 'zigbee_power', lamp: 'zb-1', state: 'toggle' }, sources)).toBe('Basculer Suspension');
 		expect(summarize(<IrAction>{ action: 'zigbee_brightness', lamp: 'zb-1', brightness: 127 }, sources)).toBe(
-			m.remote_summary_zigbee_brightness({ lamp: 'Suspension', brightness: m.remote_brightness_value({ value: 127 }) })
+			m.remote_summary_lamp_brightness({ lamp: 'Suspension', brightness: m.remote_brightness_value({ value: 127 }) })
 		);
 		expect(summarize(<IrAction>{ action: 'broadlink_code', host: '192.0.2.60', codeId: 'fan-on' }, sources)).toBe(
 			m.remote_summary_broadlink({ host: 'RM4 salon', code: 'Ventilateur' })
@@ -89,7 +91,7 @@ describe('defaultAction', () => {
 		expect(defaultAction('climate_toggle', sources)).toEqual({
 			action: 'climate_toggle',
 			host: '192.0.2.60',
-			onCommand: 'state-cool-16-fan-4-vane-swing'
+			onCommand: 'state-cool-20-fan-auto-vane-auto'
 		});
 	});
 
@@ -192,5 +194,17 @@ describe('isComplete', () => {
 
 	it('never blocks a save on an action it does not edit', () => {
 		expect(isComplete({ action: 'androidtv_key' })).toBe(true);
+	});
+});
+
+describe('actionsProblem', () => {
+	const row = (action: IrAction) => toRow(action);
+	it('none, too many, one to fill, or nothing to say', () => {
+		expect(actionsProblem([])).toBe(m.remote_missing_actions());
+		expect(actionsProblem([row({ action: 'tv_power', state: 'on' }), row({ action: 'tv_power', state: 'off' })], 1)).toBe(
+			m.scenes_too_many({ count: 1 })
+		);
+		expect(actionsProblem([row({ action: 'nabaztag', command: ' ' })])).toBe(m.remote_incomplete_actions());
+		expect(actionsProblem([row({ action: 'tv_power', state: 'on' })])).toBe('');
 	});
 });

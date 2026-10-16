@@ -4,14 +4,12 @@
 	// volume slider, Ambilight, the settings), and the volume − / + on the row (docs/ux.md § 1, § 7).
 	import { m } from '#lib/paraglide/messages.js';
 	import Loaded from '#lib/components/Loaded.svelte';
-	import Icon from '#lib/components/Icon.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
-	import { pending } from '#lib/gesture.svelte.ts';
+	import AssumedPower from './AssumedPower.svelte';
 	import Key from './Key.svelte';
 	import { TvRemote } from './tv.svelte.ts';
 
 	const tv = new TvRemote();
-	const { g } = tv;
 </script>
 
 <Loaded value={tv.tv} skeletons={1}>
@@ -37,14 +35,7 @@
 					{/if}
 				{/snippet}
 				{#if tv.configured && tv.assumed}
-					<div class="btn-row">
-						<button class="btn" {...pending(g.is('on'))} onclick={() => tv.assumedPower(true)}>
-							<Icon name="power" busy={g.is('on')} /><span class="btn-text">{m.action_turn_on()}</span>
-						</button>
-						<button class="btn" {...pending(g.is('off'))} onclick={() => tv.assumedPower(false)}>
-							<Icon name="power" busy={g.is('off')} /><span class="btn-text">{m.action_turn_off()}</span>
-						</button>
-					</div>
+					<AssumedPower {tv} />
 				{/if}
 			</DeviceTile>
 		{/if}

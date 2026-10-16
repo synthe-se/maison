@@ -15,10 +15,8 @@
 	import Select from '#lib/components/Select.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import ActionList from '#lib/devices/remote/ActionList.svelte';
-	import { isComplete, SCENE_TYPES, type Sources } from '#lib/devices/remote/actions.ts';
+	import { SCENE_TYPES, type Sources, actionsProblem } from '#lib/devices/remote/actions.ts';
 	import { SCENE_ICONS, slug, type SceneForm } from './scenes.ts';
-
-	/** The backend keeps 1 to 20 actions per scene. */
 
 	interface Props {
 		/** The scene to edit, or a template / a blank one to create (`isNew`). */
@@ -53,15 +51,8 @@
 
 	function check(): boolean {
 		const missingName = !form.name.trim();
-		problem = missingName
-			? m.scenes_missing_name()
-			: form.rows.length === 0
-				? m.remote_missing_actions()
-				: form.rows.length > MAX_ACTIONS
-					? m.scenes_too_many({ count: MAX_ACTIONS })
-					: !form.rows.every((r) => isComplete(r.action))
-						? m.remote_incomplete_actions()
-						: '';
+		// the backend keeps 1 to MAX_ACTIONS actions per scene
+		problem = missingName ? m.scenes_missing_name() : actionsProblem(form.rows, MAX_ACTIONS);
 		problemAt = !problem ? null : missingName ? 'name' : 'actions';
 		if (problemAt === 'name') void refocus(nameInput);
 		else if (problemAt === 'actions') void list?.focusProblem();

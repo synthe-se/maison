@@ -5,17 +5,14 @@
 	// not answer is not asked (its tile stays, saying since when).
 	import { m } from '#lib/paraglide/messages.js';
 	import type { MerossPlug } from './api.ts';
-	import { live } from '#lib/live.svelte.ts';
-	import { time } from '#lib/clock.svelte.ts';
-	import { today } from '#lib/devices/tempo/data.ts';
-	import { priceNow } from '#lib/devices/tempo/price.ts';
+	import { livePrice } from '#lib/devices/tempo/data.ts';
 	import PlugTile from './PlugTile.svelte';
 	import Power from './Power.svelte';
 	import { powerAndCost, redPeakCost } from './units.ts';
 
 	let { plug }: { plug: MerossPlug } = $props();
-	const tempo = live(today);
-	const price = $derived(tempo.data ? priceNow(time.now, tempo.data) : null);
+	const inForce = livePrice();
+	const price = $derived(inForce.current);
 </script>
 
 {#if plug.isOnline}

@@ -8,15 +8,14 @@
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { gate, Gesture } from '#lib/gesture.svelte.ts';
+	import { unreachableSince } from '#lib/i18n.svelte.ts';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
-	import { nabaztagApi } from './nabaztag/api.ts';
+	import { nabaztagApi, TAICHI } from './nabaztag/api.ts';
 	import { rabbit } from './nabaztag/data.ts';
 
-	/** The tai chi choreography, as stored on the rabbit (the remote key sends the same). */
-	const TAICHI = 'chor /vl/config/chor/taichi.chor';
 	const status = live(rabbit);
 	const s = $derived(status.data);
 	const pushing = new Gesture();
@@ -46,7 +45,7 @@
 						icon="rabbit"
 						on={s.reachable}
 						warn={!s.reachable}
-						state={!s.reachable ? m.state_unreachable() : s.config.tempoEnabled ? m.nabaztag_reachable_synced() : m.nabaztag_reachable()}
+						state={!s.reachable ? unreachableSince(null) : s.config.tempoEnabled ? m.nabaztag_reachable_synced() : m.nabaztag_reachable()}
 					>
 						{#snippet end(why)}
 							{@const off = !s.reachable && why}

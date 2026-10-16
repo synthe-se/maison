@@ -9,12 +9,12 @@
 	import { time } from '#lib/clock.svelte.ts';
 	import { TEMPO, TEMPO_COLORS } from './colors.ts';
 	import Swatch from './Swatch.svelte';
-	import { periodColor, priceNow } from './price.ts';
+	import { periodColor, priceNow, tariffOf } from './price.ts';
 
 	let { data }: { data: TempoToday } = $props();
 
 	const current = $derived(priceNow(time.now, data));
-	const tomorrowPrices = $derived(data.tomorrow.color && data.tariffs ? data.tariffs[TEMPO[data.tomorrow.color].key] : null);
+	const tomorrowPrices = $derived(data.tomorrow.color && data.tariffs ? tariffOf(data.tariffs, data.tomorrow.color) : null);
 
 	/** €/kWh → « 0,1654 €/kWh » */
 	const price = (eurPerKwh: number) => m.tempo_price({ price: num(eurPerKwh, 4) });
@@ -57,8 +57,8 @@
 				{#each TEMPO_COLORS as c (c)}
 					<tr>
 						<th scope="row"><span class="named"><Swatch color={c} />{TEMPO[c].name()}</span></th>
-						<td>{price(t[TEMPO[c].key].offPeak)}</td>
-						<td>{price(t[TEMPO[c].key].peak)}</td>
+						<td>{price(tariffOf(t, c).offPeak)}</td>
+						<td>{price(tariffOf(t, c).peak)}</td>
 					</tr>
 				{/each}
 			</tbody>

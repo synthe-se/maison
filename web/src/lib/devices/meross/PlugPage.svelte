@@ -13,9 +13,9 @@
 	import Loaded from '#lib/components/Loaded.svelte';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import StatusRow from '#lib/components/StatusRow.svelte';
-	import { calendar, today } from '#lib/devices/tempo/data.ts';
+	import { calendar, livePrice } from '#lib/devices/tempo/data.ts';
 	import { seasonOf } from '#lib/devices/tempo/dates.ts';
-	import { euros, monthEstimate, peakShare, priceNow } from '#lib/devices/tempo/price.ts';
+	import { colorOn, euros, monthEstimate, peakShare } from '#lib/devices/tempo/price.ts';
 	import { merossApi } from './api.ts';
 	import { consumption as consumptionOf, electricity, status as statusOf } from './data.ts';
 	import PlugTile from './PlugTile.svelte';
@@ -35,15 +35,14 @@
 	const days = $derived((consumption.data?.consumption ?? []).slice(-7).toReversed());
 
 	// what electricity costs: the price in force, and each day's color this season
-	const tempo = live(today);
+	const inForce = livePrice();
+	const tempo = inForce.tempo;
 	// svelte-ignore state_referenced_locally (a page is opened at one moment: its season)
 	const season = live(calendar(seasonOf(time.now.getFullYear(), time.now.getMonth())));
-	const price = $derived(tempo.data ? priceNow(time.now, tempo.data) : null);
+	const price = $derived(inForce.current);
 	/** « 2026-10 » */
 	const month = $derived(isoDay(time.now).slice(0, 7));
-	const colorOf = (iso: string) =>
-		season.data?.calendar.find((d) => d.date === iso && d.isActual)?.color ??
-		[tempo.data?.today, tempo.data?.yesterday].find((d) => d?.date === iso)?.color;
+	const colorOf = (iso: string) => colorOn(iso, season.data, tempo.data);
 	const estimate = $derived(
 		tempo.data?.tariffs && consumption.data
 			? monthEstimate(

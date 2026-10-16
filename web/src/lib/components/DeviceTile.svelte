@@ -42,6 +42,9 @@
 		 * closed while the focus is in them, the focus goes back to the gear). */
 		settings?: Snippet;
 		settingsOpen?: boolean;
+		/** The settings stay open whatever the gear says (a device not set up yet: they are what
+		 * its page is for). */
+		settingsKept?: boolean;
 		/** The state line's id, when controls outside the tile are described by it (a page's pad). */
 		stateId?: string;
 	}
@@ -62,6 +65,7 @@
 		children,
 		settings,
 		settingsOpen = $bindable(false),
+		settingsKept = false,
 		stateId
 	}: Props = $props();
 
@@ -75,7 +79,7 @@
 </script>
 
 {#if settings}
-	<Fold bind:open={settingsOpen}>
+	<Fold bind:open={() => settingsOpen || settingsKept, (v) => (settingsOpen = v)}>
 		{#snippet children(trigger, panel)}{@render tile(trigger, panel)}{/snippet}
 	</Fold>
 {:else}

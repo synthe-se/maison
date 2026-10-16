@@ -12,11 +12,11 @@
 	import type { Draft } from '#lib/draft.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Toggle from '#lib/components/Toggle.svelte';
-	import { irApi, type IrAction, type IrBinding, type KeyResponse } from './api.ts';
+	import { irApi, type IrBinding, type KeyResponse } from './api.ts';
 	import ActionList from './ActionList.svelte';
 	import KeyCapture from './KeyCapture.svelte';
 	import TestResult from './TestResult.svelte';
-	import { bindingForm, isComplete, type BindingForm, type Sources } from './actions.ts';
+	import { bindingForm, type BindingForm, type Sources, actionsProblem } from './actions.ts';
 	import { keyName } from './keys.ts';
 
 	interface Props {
@@ -80,13 +80,7 @@
 	/** Testing needs actions only; saving also needs the key. */
 	function check(needCode: boolean): boolean {
 		const missingCode = needCode && code === null;
-		problem = missingCode
-			? m.remote_missing_code()
-			: form.actions.length === 0
-				? m.remote_missing_actions()
-				: !form.actions.every((r) => isComplete(r.action))
-					? m.remote_incomplete_actions()
-					: '';
+		problem = missingCode ? m.remote_missing_code() : actionsProblem(form.actions);
 		problemAt = !problem ? null : missingCode ? 'code' : 'actions';
 		if (problem) {
 			// the field is described by the problem, and read when it takes the focus

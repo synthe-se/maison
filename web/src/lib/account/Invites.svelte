@@ -18,6 +18,8 @@
 	import ListRow from '#lib/components/ListRow.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
 	import Sheet from '#lib/components/Sheet.svelte';
+	import TextField from '#lib/components/TextField.svelte';
+	import { missingFields } from '#lib/form.ts';
 	import Toggle from '#lib/components/Toggle.svelte';
 	import { createInvite, invitesData, revokeInvite, type CreatedInvite, type Invite } from '#lib/passkeys.ts';
 
@@ -43,11 +45,9 @@
 
 	async function invite(person?: string) {
 		const name = form.name.trim();
-		missing = '';
-		if (!name) {
-			missing = m.invites_name_missing();
-			return nameField?.focus();
-		}
+		const { errors, first } = missingFields({ name }, { name: m.invites_name_missing });
+		missing = errors.name ?? '';
+		if (first) return nameField?.focus();
 		const r = await g.run(() => createInvite(name, form.admin, person), undefined, 'invite', {
 			field: () => nameField,
 			// the server says who has the name: offered their access back, not an error
@@ -92,20 +92,15 @@
 	<div><button class="btn primary" aria-haspopup="dialog" onclick={() => (inviting = true)}>{m.invites_title()}</button></div>
 	<Sheet open={inviting} title={m.invites_title()} onclose={close} {draft}>
 		<form class="invite" onsubmit={(e) => (e.preventDefault(), void invite())} novalidate>
-			<div class="field">
-				<label for="invite-name">{m.invites_name()}</label>
-				<input
-					id="invite-name"
-					bind:this={nameField}
-					bind:value={form.name}
-					oninput={() => (existing = null)}
-					maxlength={MAX_NAME}
-					autocomplete="off"
-					aria-invalid={missing || g.error || existing ? 'true' : undefined}
-					aria-describedby="invite-name-error"
-				/>
-				<p class="form-error" id="invite-name-error">{existing ? m.invites_person_exists({ name: existing.name }) : missing || g.error}</p>
-			</div>
+			<TextField
+				label={m.invites_name()}
+				bind:input={nameField}
+				bind:value={form.name}
+				error={existing ? m.invites_person_exists({ name: existing.name }) : missing || g.error}
+				oninput={() => (existing = null)}
+				maxlength={MAX_NAME}
+				autocomplete="off"
+			/>
 			{#if existing}
 				{@const who = existing}
 				<!-- the name is someone's: their access back (a new passkey for them), or another name -->

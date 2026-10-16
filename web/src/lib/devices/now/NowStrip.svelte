@@ -7,21 +7,20 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
 	import { hhmm, num } from '#lib/i18n.svelte.ts';
-	import { time } from '#lib/clock.svelte.ts';
 	import { TEMPO } from '#lib/devices/tempo/colors.ts';
-	import { today } from '#lib/devices/tempo/data.ts';
-	import { priceNow, redPeak } from '#lib/devices/tempo/price.ts';
+	import { livePrice } from '#lib/devices/tempo/data.ts';
+	import { redPeak } from '#lib/devices/tempo/price.ts';
 	import { fromHue, fromZigbee, hue, isLit, zigbee } from '#lib/devices/lamps/lamp.ts';
 	import { plugs as plugList } from '#lib/devices/meross/data.ts';
 	import { devices } from '#lib/devices/cats/data.ts';
 	import { covers as coverList } from '#lib/devices/shutters/data.ts';
-	import { moveSentence, nextEvent } from '#lib/devices/shutters/sun.ts';
+	import { moveSentence, soonestMove } from '#lib/devices/shutters/sun.ts';
 	import { refocus } from '#lib/focus.ts';
 	import Chip from './Chip.svelte';
 	import CatChip from './CatChip.svelte';
 	import PlugChip from './PlugChip.svelte';
 
-	const tempo = live(today);
+	const inForce = livePrice();
 	// the stats say whether the server has Bluetooth at all (else the Hue list is not polled)
 	live(hue.stats);
 	const hueList = live(hue.list);
@@ -30,18 +29,14 @@
 	const cats = live(devices);
 	const covers = live(coverList);
 
-	const price = $derived(tempo.data ? priceNow(time.now, tempo.data) : null);
+	const price = $derived(inForce.current);
 
 	const lit = $derived(
 		[...(hueList.data?.lamps ?? []).map(fromHue), ...(zigbeeList.data?.lamps ?? []).map(fromZigbee)].filter(isLit).length
 	);
 
 	/** The soonest scheduled move not skipped, across the shutters. */
-	const next = $derived(
-		(covers.data?.covers ?? [])
-			.filter((c) => c.online && nextEvent(c) && !nextEvent(c)!.skipped)
-			.toSorted((a, b) => new Date(nextEvent(a)!.at).getTime() - new Date(nextEvent(b)!.at).getTime())[0]
-	);
+	const next = $derived(soonestMove(covers.data?.covers ?? []));
 
 	// two lines at most on a phone: what does not fit waits behind « +2 » (the facts first, what
 	// needs a hand last), shown on demand; hidden chips are hidden for everyone (`hidden`)
