@@ -4,7 +4,7 @@
 # passkeys need a secure context and a domain (never an IP). Accounts come from invitations
 # made with `maison-backend invite`, as on the Pi (lib.ts `invitation`).
 # Needs: `cargo build --manifest-path backend/Cargo.toml` and `cd web && bun run build` first.
-set -e
+set -eu
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
 DIR=$(mktemp -d)
@@ -17,6 +17,20 @@ FRONTEND_DIST_DIR="$ROOT/web/build" PORT="$PORT" HOST=127.0.0.1 \
 	RUST_LOG=warn "$ROOT/backend/target/debug/maison-backend" > "$DIR/server.log" 2>&1 &
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null; rm -rf "$DIR"' EXIT
-for _ in $(seq 50); do curl -sf "http://localhost:$PORT/health" >/dev/null && break; sleep 0.2; done
+# up within 10 s, or the run stops here, saying why: never a scenario against nothing
+up=false
+for _ in $(seq 50); do
+	if curl -sf "http://localhost:$PORT/health" >/dev/null; then
+		up=true
+		break
+	fi
+	kill -0 $SERVER 2>/dev/null || break
+	sleep 0.2
+done
+if [ "$up" != true ]; then
+	echo "e2e: the backend did not answer /health on port $PORT; its log:" >&2
+	cat "$DIR/server.log" >&2
+	exit 1
+fi
 mkdir -p shots
 BASE="http://localhost:$PORT" SHOTS=shots bun "${1:-smoke.ts}"

@@ -7,11 +7,17 @@ import { chromium } from 'playwright';
 
 const SHORTCUTS = { 'shortcut-leave': 'log-out', 'shortcut-night': 'moon', 'shortcut-tempo': 'zap', 'shortcut-feed': 'utensils' } as const;
 const SIZE = 96;
-// the manifest's theme and background colors
-const PETROL = '#0e5e68';
-const CLOUD = '#f2f0ea';
 
 const root = new URL('../', import.meta.url).pathname;
+// the brand's colors, as tokens.css says them (the manifest's theme and background colors)
+const tokens = await Bun.file(`${root}src/styles/tokens.css`).text();
+const token = (name: string) => {
+	const found = tokens.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{3,8})\\b`, 'i'));
+	if (!found) throw new Error(`no --${name} in tokens.css`);
+	return found[1];
+};
+const PETROL = token('raw-petrol');
+const CLOUD = token('raw-cloud');
 const source = await Bun.file(`${root}src/lib/components/Icon.svelte`).text();
 const path = (name: string) => {
 	const found = source.match(new RegExp(`'${name}': '([^']+)'`));

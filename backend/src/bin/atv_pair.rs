@@ -6,12 +6,16 @@
 //!
 //!     cargo run --bin atv_pair -- 192.168.1.153 [path/to/atv-identity]
 //!
-//! The identity is generated on first run and reused afterwards; pairing only
-//! has to happen once per host.
+//! The identity (the backend's own, `ATV_IDENTITY_PATH`, unless a path is given) is
+//! generated on first run and reused afterwards; pairing only has to happen once per host.
+//! The session opened after pairing pins the TV's certificate.
 
 use std::{io::Write, path::PathBuf};
 
-use maison_backend::atvremote::{Identity, Pairing, Session};
+use maison_backend::{
+    atvremote::{Identity, Pairing, Session},
+    config::Config,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,12 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let identity_path = args
         .next()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("atv-identity"));
+        .unwrap_or_else(|| Config::from_env().atv_identity_path);
 
     println!("Loading identity from {}", identity_path.display());
     // Minting an RSA key is slow on small hardware, so keep it off the runtime.
     let path = identity_path.clone();
-    let identity = tokio::task::spawn_blocking(move || Identity::load_or_create(&path)).await??;
+    let mut identity =
+        tokio::task::spawn_blocking(move || Identity::load_or_create(&path)).await??;
 
     println!("Connecting to {host} for pairing…");
     let pairing = Pairing::start(&host, &identity).await?;
@@ -40,10 +45,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     pairing.finish(&code).await?;
     println!("Paired.");
+    // pairing forgot the TV's certificate on disk: read it back so, the next session pins it
+    let path = identity_path.clone();
+    identity = tokio::task::spawn_blocking(move || Identity::load_or_create(&path)).await??;
 
     // Prove the pairing is usable, not merely accepted.
     println!("Opening a remote session…");
-    let session = Session::connect(&host, &identity).await?;
+    let session = Session::connect(&host, &mut identity).await?;
     println!("Session open. Sending KEYCODE_DPAD_DOWN…");
     session.key(20).await?;
     println!("Done — the selection should have moved on screen.");

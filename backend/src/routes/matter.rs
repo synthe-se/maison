@@ -1,33 +1,30 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{rejection::JsonRejection, Path, Query, State},
     routing::{get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
+use maison_api::{
+    lamps::RenameRequest,
+    matter::{Covers, OneCover, PositionRequest, SkipRequest, SunEvent},
+    sun::Where,
+    Message,
+};
+
 use crate::{
-    auth::AdminUser,
-    error::AppError,
-    matter::{CoverCommand, CoverView, SunSchedule},
-    routes::{Answer, SimpleResponse},
+    auth::{AdminUser, SettingsClient},
+    error::{AppError, Refusal},
+    matter::{Cover, CoverCommand, SunSchedule},
+    routes::{Answer, Reply},
     sun::Place,
     AppState,
 };
 
-#[derive(Debug, Serialize)]
-struct Covers {
-    covers: Vec<CoverView>,
-}
+type CoverAnswer = Result<Json<Answer<OneCover>>, AppError>;
 
-#[derive(Debug, Serialize)]
-struct One {
-    cover: CoverView,
-}
-
-type CoverAnswer = Result<Json<Answer<One>>, AppError>;
-
-fn cover(cover: CoverView) -> CoverAnswer {
-    Ok(Answer::ok(One { cover }))
+fn cover(cover: Cover) -> CoverAnswer {
+    Ok(Answer::ok(OneCover { cover }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,23 +35,21 @@ struct CommissionRequest {
     name: String,
 }
 
-#[derive(Debug, Deserialize)]
+async fn where_now(state: &AppState) -> Where {
+    Where {
+        place: state.matter.place().await,
+        sun: state.matter.sun_now().await,
+    }
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RenameRequest {
-    name: String,
-}
-
-#[derive(Debug, Serialize)]
-struct Where {
-    place: Option<Place>,
-}
-
-#[derive(Debug, Serialize)]
 struct Places {
     places: Vec<Place>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SearchQuery {
     q: String,
     /// The reader's language, for the place names (« Londres » / « London »).
@@ -64,22 +59,6 @@ struct SearchQuery {
 
 fn default_language() -> String {
     "fr".into()
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SkipRequest {
-    /// `open` (the next sunrise opening) or `close` (the next sunset closing): read by hand
-    /// so a wrong one is a 400, not serde's 422.
-    event: String,
-    skip: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PositionRequest {
-    /// 0 = closed, 100 = fully open.
-    open_percent: u8,
 }
 
 pub fn router() -> Router<AppState> {
@@ -99,28 +78,34 @@ pub fn router() -> Router<AppState> {
 
 async fn schedule(
     State(state): State<AppState>,
+    _settings: SettingsClient,
     Path(id): Path<String>,
     Json(body): Json<SunSchedule>,
 ) -> CoverAnswer {
     cover(state.matter.set_schedule(&id, body).await?)
 }
 
-/// « Not tonight »: skips only the schedule's next opening or closing.
+/// « Not tonight »: skips only the schedule's next opening or closing. A body that is not
+/// one (an event other than `open` or `close`) is the coded `invalid`, a 400.
 async fn skip(
     State(state): State<AppState>,
+    _settings: SettingsClient,
     Path(id): Path<String>,
-    Json(body): Json<SkipRequest>,
+    body: Result<Json<SkipRequest>, JsonRejection>,
 ) -> CoverAnswer {
-    let event = match body.event.as_str() {
-        "open" => CoverCommand::Open,
-        "close" => CoverCommand::Close,
-        _ => return Err(AppError::bad_request("event must be open or close")),
+    let Json(body) = body.map_err(|rejection| {
+        tracing::debug!(%rejection, "not a skip");
+        AppError::from(Refusal::Invalid)
+    })?;
+    let event = match body.event {
+        SunEvent::Open => CoverCommand::Open,
+        SunEvent::Close => CoverCommand::Close,
     };
     cover(state.matter.set_skip(&id, event, body.skip).await?)
 }
 
 async fn place(State(state): State<AppState>) -> Json<Answer<Where>> {
-    Answer::ok(Where { place: state.matter.place().await })
+    Answer::ok(where_now(&state).await)
 }
 
 async fn set_place(
@@ -128,8 +113,8 @@ async fn set_place(
     _admin: AdminUser,
     Json(body): Json<Place>,
 ) -> Result<Json<Answer<Where>>, AppError> {
-    let place = state.matter.set_place(body).await?;
-    Ok(Answer::ok(Where { place: Some(place) }))
+    state.matter.set_place(body).await?;
+    Ok(Answer::ok(where_now(&state).await))
 }
 
 async fn search_places(
@@ -141,13 +126,12 @@ async fn search_places(
 }
 
 async fn list(State(state): State<AppState>) -> Json<Answer<Covers>> {
-    Answer::ok(Covers { covers: state.matter.list().await })
+    Answer::ok(Covers {
+        covers: state.matter.list().await,
+    })
 }
 
-async fn get_cover(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> CoverAnswer {
+async fn get_cover(State(state): State<AppState>, Path(id): Path<String>) -> CoverAnswer {
     cover(state.matter.get(&id).await?)
 }
 
@@ -161,6 +145,7 @@ async fn commission(
 
 async fn rename(
     State(state): State<AppState>,
+    _settings: SettingsClient,
     Path(id): Path<String>,
     Json(body): Json<RenameRequest>,
 ) -> CoverAnswer {
@@ -171,9 +156,9 @@ async fn remove(
     State(state): State<AppState>,
     _admin: AdminUser,
     Path(id): Path<String>,
-) -> Result<Json<SimpleResponse>, AppError> {
+) -> Result<Json<Answer<Message>>, AppError> {
     state.matter.remove(&id).await?;
-    Ok(SimpleResponse::ok("Shutter removed"))
+    Ok(Json(Answer::said("Shutter removed")))
 }
 
 async fn open(state: State<AppState>, id: Path<String>) -> CoverAnswer {
@@ -188,13 +173,14 @@ async fn stop(state: State<AppState>, id: Path<String>) -> CoverAnswer {
     run(state, id, CoverCommand::Stop).await
 }
 
+/// `openPercent` 0 to 100; past it, the coded `invalid`.
 async fn position(
     state: State<AppState>,
     id: Path<String>,
     Json(body): Json<PositionRequest>,
 ) -> CoverAnswer {
     if body.open_percent > 100 {
-        return Err(AppError::bad_request("openPercent must be between 0 and 100"));
+        return Err(Refusal::Invalid.into());
     }
     run(state, id, CoverCommand::OpenPercent(body.open_percent)).await
 }

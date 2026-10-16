@@ -1,18 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import {
-	EFFECTS,
-	PRESETS,
-	STOP_EFFECT,
-	css,
-	hsvToRgb,
-	paintWheel,
-	rgbToXy,
-	wheelColor,
-	wheelPosition,
-	xyToRgb,
-	type Rgb
-} from './color.ts';
+import { EFFECTS, PRESETS, css, hsvToRgb, paintWheel, rgbToXy, wheelColor, wheelPosition, xyToRgb, type Rgb } from './color.ts';
 
 const close = (a: number, b: number, d = 0.01) => Math.abs(a - b) <= d;
 
@@ -121,6 +109,5 @@ describe('named colors and effects', () => {
 			'okay'
 		]);
 		expect(EFFECTS.every((e) => e.name() !== '')).toBe(true);
-		expect(STOP_EFFECT).toBe('stop_hue_effect');
 	});
 });

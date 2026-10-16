@@ -6,7 +6,12 @@ import { readFileSync } from 'node:fs';
 /** Where the browser keeps what the app remembers (localStorage), each key once: the app reads
  * them through `$app/env/public` (`#lib/stored.ts`), vite.config.ts hands the locale's to
  * Paraglide. */
-export const STORAGE = { theme: 'maison-theme', locale: 'maison-locale', tvOrder: 'maison-tv-last-order' } as const;
+export const STORAGE = {
+	theme: 'maison-theme',
+	locale: 'maison-locale',
+	tvOrder: 'maison-tv-last-order',
+	sun: 'maison-sun'
+} as const;
 
 export const variables = defineEnvVars({
 	/** The page's lang before the locale is resolved: the base locale, never written in the code. */
@@ -20,5 +25,7 @@ export const variables = defineEnvVars({
 	/** The chosen language (Paraglide's localStorage strategy). */
 	PUBLIC_LOCALE_KEY: { public: true, static: true, schema: () => STORAGE.locale },
 	/** The TV's last power order, said while its state is assumed. */
-	PUBLIC_TV_ORDER_KEY: { public: true, static: true, schema: () => STORAGE.tvOrder }
+	PUBLIC_TV_ORDER_KEY: { public: true, static: true, schema: () => STORAGE.tvOrder },
+	/** The side the house's sun last said, and until when (SunTheme): read before first paint. */
+	PUBLIC_SUN_KEY: { public: true, static: true, schema: () => STORAGE.sun }
 });

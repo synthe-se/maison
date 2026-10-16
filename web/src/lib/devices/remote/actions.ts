@@ -7,6 +7,7 @@ import { m } from '#lib/paraglide/messages.js';
 import { live } from '#lib/live.svelte.ts';
 import { percent } from '#lib/i18n.svelte.ts';
 import type { AndroidApp } from '#lib/devices/tv/api.ts';
+import { TAICHI } from '#lib/devices/nabaztag/api.ts';
 import type { BroadlinkCode, BroadlinkDevice } from '#lib/devices/climate/api.ts';
 import type { HueLamp, ZigbeeLamp } from '#lib/devices/lamps/api.ts';
 import type { MerossPlug } from '#lib/devices/meross/api.ts';
@@ -20,8 +21,10 @@ import { box as boxData } from '#lib/devices/tv/data.ts';
 import { scenes as sceneList } from '#lib/devices/scenes/data.ts';
 import { buildClimateCommand, parseClimateCommand } from '#lib/devices/climate/command.ts';
 import { degrees, FAN_LABEL, MODE_LABEL, VANE_LABEL } from '#lib/devices/climate/labels.ts';
+import { DEFAULT_SETTINGS } from '#lib/devices/climate/form.ts';
 import { boxApps } from '#lib/devices/tv/apps.ts';
-import type { IrAction, IrBinding, IrCoverCommand, IrSwitchState } from './api.ts';
+import { codeText } from '#lib/errors.ts';
+import type { ActionResult, IrAction, IrBinding, IrCoverCommand, IrSwitchState } from './api.ts';
 
 export type ActionType = IrAction['action'];
 
@@ -60,7 +63,7 @@ export const COVER_COMMANDS: Record<IrCoverCommand, () => string> = {
 	position: m.remote_fields_cover_position
 };
 
-export const NABAZTAG_PRESETS = ['chor taichi', 'dance 1', 'ping', 'stop'];
+export const NABAZTAG_PRESETS = [TAICHI, 'dance 1', 'ping', 'stop'];
 
 /** Zigbee brightness, as the backend takes it (a u8 capped at the ZCL maximum). */
 export const BRIGHTNESS_MAX = 254;
@@ -95,6 +98,8 @@ export interface Sources {
  */
 export function liveSources(): { readonly current: Sources } {
 	const lamps = live(zigbee.list);
+	// the stats say whether the server has Bluetooth at all (else the Hue list is not polled)
+	live(hue.stats);
 	const hueLamps = live(hue.list);
 	const covers = live(coverList);
 	const plugs = live(plugList);
@@ -120,9 +125,9 @@ export function liveSources(): { readonly current: Sources } {
 
 /** A lamp of either family (Zigbee, Hue). */
 const SUMMARY_LAMP: Record<IrSwitchState, (p: { lamp: string }) => string> = {
-	on: m.remote_summary_zigbee_on,
-	off: m.remote_summary_zigbee_off,
-	toggle: m.remote_summary_zigbee_toggle
+	on: m.remote_summary_lamp_on,
+	off: m.remote_summary_lamp_off,
+	toggle: m.remote_summary_lamp_toggle
 };
 const SUMMARY_MEROSS: Record<IrSwitchState, (p: { device: string }) => string> = {
 	on: m.remote_summary_meross_on,
@@ -154,14 +159,14 @@ export function summarize(a: { action: string }, s: Sources): string {
 		case 'zigbee_power':
 			return SUMMARY_LAMP[a.state]({ lamp: nameOf(s.lamps, a.lamp) });
 		case 'zigbee_brightness':
-			return m.remote_summary_zigbee_brightness({
+			return m.remote_summary_lamp_brightness({
 				lamp: nameOf(s.lamps, a.lamp),
 				brightness: m.remote_brightness_value({ value: a.brightness })
 			});
 		case 'hue_power':
 			return SUMMARY_LAMP[a.state]({ lamp: nameOf(s.hueLamps, a.lamp) });
 		case 'hue_brightness':
-			return m.remote_summary_zigbee_brightness({ lamp: nameOf(s.hueLamps, a.lamp), brightness: percent(a.brightness / 100) });
+			return m.remote_summary_lamp_brightness({ lamp: nameOf(s.hueLamps, a.lamp), brightness: percent(a.brightness / 100) });
 		case 'cover': {
 			const cover = nameOf(s.covers, a.cover);
 			return a.command === 'position'
@@ -175,10 +180,10 @@ export function summarize(a: { action: string }, s: Sources): string {
 		case 'broadlink_code':
 			return m.remote_summary_broadlink({
 				host: hostOf(s, a.host),
-				code: s.codes.find((c) => c.id === a.codeId)?.name ?? a.codeId
+				code: nameOf(s.codes, a.codeId)
 			});
 		case 'meross_power':
-			return SUMMARY_MEROSS[a.state]({ device: s.plugs.find((p) => p.id === a.device)?.name ?? a.device });
+			return SUMMARY_MEROSS[a.state]({ device: nameOf(s.plugs, a.device) });
 		case 'climate_toggle': {
 			const c = parseClimateCommand(a.onCommand);
 			return m.remote_summary_climate({
@@ -198,7 +203,7 @@ export function summarize(a: { action: string }, s: Sources): string {
 		case 'androidtv_app':
 			return m.remote_summary_androidtv_app({ app: s.apps.find((x) => x.package === a.package)?.label ?? a.package });
 		case 'scene':
-			return m.remote_summary_scene({ scene: s.scenes.find((x) => x.id === a.scene)?.name ?? a.scene });
+			return m.remote_summary_scene({ scene: nameOf(s.scenes, a.scene) });
 	}
 }
 
@@ -229,7 +234,7 @@ export function defaultAction(type: ActionType, s: Sources): IrAction {
 			return {
 				action: 'climate_toggle',
 				host: s.hosts[0]?.host ?? '',
-				onCommand: buildClimateCommand({ mode: 'cool', temperature: 16, fan: '4', vane: 'swing' })
+				onCommand: buildClimateCommand(DEFAULT_SETTINGS)
 			};
 		case 'tv_power':
 			return { action: 'tv_power', state: 'on', switchToBox: true };
@@ -240,7 +245,7 @@ export function defaultAction(type: ActionType, s: Sources): IrAction {
 	}
 }
 
-export function isComplete(a: { action: string }): boolean {
+function isComplete(a: { action: string }): boolean {
 	if (!isEditable(a)) return true;
 	switch (a.action) {
 		case 'nabaztag':
@@ -270,10 +275,18 @@ export function isComplete(a: { action: string }): boolean {
 	}
 }
 
-/** One line of what running actions answered (`/ir/test`, a scene's run): « ok: … » or
- * « failed: … », and what it says after. */
-export function outcome(result: string): { ok: boolean; detail: string } {
-	return { ok: !result.startsWith('failed'), detail: result.replace(/^(ok|failed):\s*/, '') };
+/** How one action went, in words (`/ir/test`, a scene's run): what it was, with the devices'
+ * names, and when it failed, why (its refusal's words). */
+export function outcome(r: ActionResult, s: Sources): { ok: boolean; what: string; why: string } {
+	return { ok: r.ok, what: summarize(r.action, s), why: r.ok ? '' : (codeText(r.code) ?? m.error_server()) };
+}
+
+/** What is wrong with an editor's actions, in words ('' when nothing): none at all, more than
+ * `max` (a scene's limit), or one still to fill. */
+export function actionsProblem(rows: Row[], max = Infinity): string {
+	if (rows.length === 0) return m.remote_missing_actions();
+	if (rows.length > max) return m.scenes_too_many({ count: max });
+	return rows.every((r) => isComplete(r.action)) ? '' : m.remote_incomplete_actions();
 }
 
 /** One action of an editor's list, with a stable key for its row. */

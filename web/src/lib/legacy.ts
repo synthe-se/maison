@@ -1,5 +1,16 @@
-// Older Maison builds shipped a service worker at /sw.js and caches named home-monitor-v*.
-// The app has none today (live state only); a browser that still runs the old one is freed.
+// What older Maison builds left in a browser, freed: a service worker at /sw.js and caches named
+// home-monitor-v* (the app has none today: live state only); a wall screen's service token, kept
+// in storage before screens were paired (docs/passkeys.md « Wall screens »): no secret lingers.
+
+import { stored, text } from '#lib/stored.ts';
+
+/** Where a wall screen kept its token before pairing (no longer a key of `STORAGE`): read as
+ * nothing, only forgotten. */
+const oldScreenToken = stored<string>('maison-screen-token', '', text([]));
+
+export function forgetLegacyScreenToken() {
+	oldScreenToken.set(undefined);
+}
 
 export async function cleanupLegacyServiceWorker(): Promise<void> {
 	if ('serviceWorker' in navigator) {

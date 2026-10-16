@@ -5,8 +5,15 @@ import { haptic, FAILURE } from '#lib/haptics.ts';
 import { errorText } from '#lib/errors.ts';
 import { stored, text as words } from '#lib/stored.ts';
 import { PUBLIC_THEME_KEY } from '$app/env/public';
+// how long a toast stays once nothing holds it (WCAG 2.2.1); one with an action longer
+// (Material snackbar: 4 to 10 s), the time to reach it
+import { ACTION_TOAST_MS, TOAST_MS } from '#lib/paces.ts';
 
-export type Theme = 'system' | 'light' | 'dark';
+/** `sun`: light from sunrise to sunset at the house, dark the rest (SunTheme). */
+export type Theme = 'system' | 'light' | 'dark' | 'sun';
+/** Every theme, in the picker's order. */
+export const THEMES: readonly Theme[] = ['system', 'light', 'dark', 'sun'];
+export const isTheme = (t: string): t is Theme => (THEMES as readonly string[]).includes(t);
 
 /** A toast's one action (« Rétablir » a deleted meal): its words, what it does, and where the
  * focus goes when the toast leaves while holding it (the row it was about is gone). */
@@ -16,7 +23,7 @@ export interface ToastAction {
 	back?: () => HTMLElement | null | undefined;
 }
 
-export interface ToastOptions {
+interface ToastOptions {
 	/** A failure: assertive, and it stays until dismissed. */
 	warn?: boolean;
 	action?: ToastAction;
@@ -24,16 +31,14 @@ export interface ToastOptions {
 
 type Toast = { id: number; text: string; warn: boolean; action?: ToastAction };
 
-/** How long a toast stays once nothing holds it (WCAG 2.2.1); one with an action longer
- * (Material snackbar: 4 to 10 s), the time to reach it. */
-export const TOAST_MS = 5_000;
-export const ACTION_TOAST_MS = 10_000;
-
 // « system » is nothing kept: the page follows the system
-const keptTheme = stored<Theme>(PUBLIC_THEME_KEY, 'system', words<Theme>(['light', 'dark']));
+const keptTheme = stored<Theme>(PUBLIC_THEME_KEY, 'system', words(THEMES.filter((t) => t !== 'system')));
 
 class Ui {
 	theme = $state<Theme>(keptTheme.get());
+	/** What the house's sun says now, while something follows it (SunTheme): its side, null when
+	 * it says nothing (no place set), undefined until it has answered. */
+	sun = $state<'light' | 'dark' | null | undefined>(undefined);
 	toasts = $state<Toast[]>([]);
 	polite = $state('');
 	assertive = $state('');

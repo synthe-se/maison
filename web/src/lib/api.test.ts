@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { json as jsonBody, scriptFetch as script, sentBody, stubFetch } from '#lib/test/fetch.ts';
-import { ApiError, UNREACHABLE, api, onUnauthorized, path, toApiError } from './api.ts';
+import { ApiError, UNREACHABLE, api, get, isNotFound, onUnauthorized, path } from './api.ts';
 import { authApi, peopleApi } from './passkeys.ts';
 import { devicesApi, feederApi, fountainApi, litterBoxApi } from './devices/cats/api.ts';
 import { hueLampsApi, zigbeeLampsApi } from './devices/lamps/api.ts';
@@ -48,6 +48,13 @@ describe('api', () => {
 		script(json(401, { error: 'expired' }), json(401, {}));
 		await expect(api('/lamps')).rejects.toThrow('expired');
 		expect(over).toHaveBeenCalledOnce();
+	});
+
+	it('sends no Authorization header: a session and a wall screen are both cookies', async () => {
+		const calls = script(json(200, {}));
+		await api('/zigbee/lamps');
+		expect(new Headers(calls[0].init?.headers).has('Authorization')).toBe(false);
+		expect(calls[0].init?.credentials).toBe('same-origin');
 	});
 
 	it('does not sign out over a brief outage: a renewal answered 502 is « unreachable »', async () => {
@@ -159,7 +166,7 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['meross.consumption', () => merossApi.consumption('p1'), 'GET /meross/p1/consumption'],
 	['meross.dnd', () => merossApi.dnd('p1', true), 'POST /meross/p1/dnd', { enabled: true }],
 	['broadlink.discover', () => broadlinkApi.discover(), 'GET /broadlink/discover'],
-	['broadlink.discover (a new scan)', () => broadlinkApi.discover(true), 'GET /broadlink/discover?forceRefresh=true'],
+	['broadlink.rediscover (a new scan)', () => broadlinkApi.rediscover(), 'POST /broadlink/discover'],
 	['broadlink.listCodes', () => broadlinkApi.listCodes(), 'GET /broadlink/codes'],
 	['broadlink.getMitsubishiState', () => broadlinkApi.getMitsubishiState(), 'GET /broadlink/mitsubishi/state'],
 	[
@@ -177,7 +184,6 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['ir.recent', () => irApi.recent(), 'GET /ir/recent'],
 	['ir.test', () => irApi.test([]), 'POST /ir/test', { actions: [] }],
 	['nabaztag.status', () => nabaztagApi.status(), 'GET /nabaztag'],
-	['people.list', () => peopleApi.list(), 'GET /people'],
 	['people.remove', () => peopleApi.remove('alex'), 'DELETE /people/alex'],
 	['nabaztag.pushTempo (cached by default)', () => nabaztagApi.pushTempo(), 'POST /nabaztag/tempo/push', { forceRefresh: false }],
 	['tv.status', () => tvApi.status(), 'GET /tv'],
@@ -214,18 +220,29 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['androidTv.pairFinish', () => androidTvApi.pairFinish('A1B2C3'), 'POST /androidtv/pair/finish', { code: 'A1B2C3' }]
 ];
 
-describe('toApiError', () => {
-	it('keeps the server’s words, its refusal’s name and what goes with it', () => {
-		const e = toApiError(409, { success: false, error: 'Taken', code: 'person_exists', detail: { person: { id: 'leonard' } } });
+describe('a refusal as the server said it', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('keeps the server’s words, its refusal’s name and what goes with it', async () => {
+		stubFetch(() => jsonBody({ success: false, error: 'Taken', code: 'person_exists', detail: { person: { id: 'leonard' } } }, 409));
+		const e = await get('/x').catch((x: unknown) => x);
 		expect(e).toBeInstanceOf(ApiError);
-		expect([e.message, e.status, e.code, e.detail]).toEqual(['Taken', 409, 'person_exists', { person: { id: 'leonard' } }]);
+		const { message, status, code, detail } = e as ApiError;
+		expect([message, status, code, detail]).toEqual(['Taken', 409, 'person_exists', { person: { id: 'leonard' } }]);
 	});
 
-	it('nothing to read (a proxy’s page, an empty body): the status alone', () => {
-		for (const body of [undefined, null, 'oops', { error: 42, code: {} }]) {
-			const e = toApiError(502, body);
+	it('nothing to read (a proxy’s page, an empty body): the status alone', async () => {
+		for (const body of ['', 'null', '"oops"', '{"error":42,"code":{}}']) {
+			stubFetch(() => new Response(body, { status: 502 }));
+			const e = (await get('/x').catch((x: unknown) => x)) as ApiError;
 			expect([e.message, e.status, e.code, e.detail]).toEqual(['', 502, undefined, undefined]);
 		}
+	});
+
+	it('isNotFound: a 404 alone', () => {
+		expect(isNotFound(new ApiError('', 404))).toBe(true);
+		expect(isNotFound(new ApiError('', 500))).toBe(false);
+		expect(isNotFound(new TypeError('Failed to fetch'))).toBe(false);
 	});
 });
 
@@ -289,8 +306,12 @@ class FakeXhr {
 	ontimeout?: () => void;
 	onload?: () => void;
 	timeout = 0;
+	headers: Record<string, string> = {};
 	constructor() {
 		FakeXhr.last = this;
+	}
+	setRequestHeader(name: string, value: string) {
+		this.headers[name] = value;
 	}
 	open(method: string, url: string) {
 		this.method = method;
@@ -360,5 +381,17 @@ describe('androidTvApi.installApk', () => {
 		expect(calls.map((c) => c.url)).toEqual(['/api/auth/refresh']);
 		FakeXhr.last.answer(200, { success: true, message: 'installed' });
 		await expect(done).resolves.toEqual({ success: true, message: 'installed' });
+	});
+
+	it('an upload refused after the renewal ends the session, as any request does', async () => {
+		vi.stubGlobal('XMLHttpRequest', FakeXhr);
+		let ended = 0;
+		onUnauthorized(() => ended++);
+		stubFetch(() => jsonBody({}, 401));
+		const done = androidTvApi.installApk(apk());
+		FakeXhr.last.answer(401, { error: 'expired' });
+		await expect(done).rejects.toMatchObject({ status: 401 });
+		expect(ended).toBe(1);
+		onUnauthorized(() => {});
 	});
 });

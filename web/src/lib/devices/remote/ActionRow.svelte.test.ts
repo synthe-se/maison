@@ -3,7 +3,7 @@ import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
 import type { IrAction } from '#lib/devices/remote/api.ts';
-import { degrees, MODE_LABEL, FAN_LABEL, VANE_LABEL } from '#lib/devices/climate/labels.ts';
+import { MODE_LABEL, FAN_LABEL, VANE_LABEL } from '#lib/devices/climate/labels.ts';
 import { remoteSources } from '#lib/test/remote.ts';
 import ActionRow from './ActionRow.svelte';
 import { ACTION_TYPES, NABAZTAG_PRESETS, SCENE_TYPES, SWITCH_STATES, summarize } from './actions.ts';
@@ -35,10 +35,18 @@ describe('ActionRow', () => {
 		expect(onremove).toHaveBeenCalledOnce();
 	});
 
-	it('cannot move the first up nor the last down', async () => {
-		await row({ action: 'nabaztag', command: 'ping' }, 0, 1);
-		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 1 }) })).toBeDisabled();
-		await expect.element(page.getByRole('button', { name: m.remote_move_down({ n: 1 }) })).toBeDisabled();
+	it('cannot move the first up nor the last down, and says why (still focusable)', async () => {
+		const { onmove } = await row({ action: 'nabaztag', command: 'ping' }, 0, 1);
+		const up = page.getByRole('button', { name: m.remote_move_up({ n: 1 }) });
+		const down = page.getByRole('button', { name: m.remote_move_down({ n: 1 }) });
+		await expect.element(up).toHaveAttribute('aria-disabled', 'true');
+		await expect.element(up).toHaveAccessibleDescription(m.remote_move_first());
+		await expect.element(down).toHaveAccessibleDescription(m.remote_move_last());
+		await expect.element(up).not.toHaveAttribute('disabled');
+		// Playwright refuses to press what says it cannot act: the browser's own click
+		(up.element() as HTMLElement).click();
+		(down.element() as HTMLElement).click();
+		expect(onmove).not.toHaveBeenCalled();
 	});
 
 	it('changing the type starts a new action of that type on the first device', async () => {
@@ -150,7 +158,7 @@ describe('ActionRow', () => {
 		await pick(m.climate_vertical_vane(), VANE_LABEL.low());
 		expect(onchange).toHaveBeenLastCalledWith(expect.objectContaining({ onCommand: 'state-cool-16-fan-4-vane-low' }));
 		const temperature = page.getByRole('slider', { name: m.climate_temperature() });
-		await expect.element(temperature).toHaveAttribute('aria-valuetext', degrees(16));
+		await expect.element(temperature).toHaveAttribute('aria-valuetext', m.climate_degrees_words({ degrees: 16 }));
 		(temperature.element() as HTMLElement).focus();
 		await userEvent.keyboard('{ArrowRight}');
 		expect(onchange).toHaveBeenLastCalledWith(expect.objectContaining({ onCommand: 'state-cool-17-fan-4-vane-swing' }));

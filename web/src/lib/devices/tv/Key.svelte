@@ -133,10 +133,6 @@
 		border-color: var(--accent);
 		color: var(--on-accent);
 	}
-	.key[aria-disabled='true'] {
-		opacity: var(--disabled-opacity);
-		cursor: not-allowed;
-	}
 	@media (prefers-reduced-motion: reduce) {
 		.key.down,
 		.key:active {

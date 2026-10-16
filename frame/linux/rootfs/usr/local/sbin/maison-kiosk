@@ -1,0 +1,12 @@
+#!/bin/sh
+# cog on the panel's KMS output, rotated 180° (the panel is mounted upside down), at Maison's
+# address; drawn with GLES (Lima): cog's plain modeset renderer cannot rotate. Its cookies (the
+# wall screen's, set when an admin paired it) persist beside WebKit's storage. The address's
+# fragment names the page's language, from the service's LANG (WPE always says en-US), and its
+# theme, the sun's (nobody there to choose one): web/src/lib/screens.ts; anything else there is
+# dropped (an older target's token).
+set -eu
+target=$(cat "$CREDENTIALS_DIRECTORY/target")
+exec cog --platform=drm --platform-params=renderer=gles,rotation=2 \
+	--cookie-store=always --cookie-jar="sqlite:$XDG_DATA_HOME/cookies.sqlite" \
+	"${target%%#*}#lang=${LANG%%_*}&theme=sun"

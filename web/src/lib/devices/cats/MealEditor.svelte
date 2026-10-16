@@ -9,6 +9,7 @@
 	import Range from '#lib/components/Range.svelte';
 	import Toggle from '#lib/components/Toggle.svelte';
 	import ToggleGroup from '#lib/components/ToggleGroup.svelte';
+	import { MEAL_MAX_PORTIONS } from '#lib/limits.ts';
 	import type { MealPlanEntry } from './api.ts';
 	import { DAYS, WEEKDAYS, WEEKEND, dayName, type Day, type MealForm } from './meals.ts';
 
@@ -18,8 +19,6 @@
 		oncancel: () => void;
 	}
 	let { draft, onsave, oncancel }: Props = $props();
-	/** What the feeder accepts in one meal. */
-	const MAX_PORTIONS = 12;
 
 	const id = $props.id();
 	const form = $derived(draft.current);
@@ -62,7 +61,7 @@
 			label={m.feeder_portions()}
 			value={form.portion}
 			min={1}
-			max={MAX_PORTIONS}
+			max={MEAL_MAX_PORTIONS}
 			valueText={(count) => m.feeder_portion({ count })}
 			oncommit={(v) => (form.portion = v)}
 		/>

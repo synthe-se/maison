@@ -36,6 +36,9 @@ afterEach(() => {
 	ui.toasts = [];
 });
 
+/** One action as a run answers it: the TV off, done. */
+const ran = { action: { action: 'tv_power', state: 'off' }, ok: true };
+
 describe('ScenesGroup', () => {
 	it('one button per scene; running one keeps the focus, says it is busy, then how it went', async () => {
 		const answer = deferred();
@@ -45,18 +48,19 @@ describe('ScenesGroup', () => {
 		await run.click();
 		await expect.element(run).toHaveAttribute('aria-busy', 'true');
 		await expect.element(run).toHaveFocus();
-		answer.resolve({ success: true, message: '2/2 actions ok', results: ['ok: a', 'ok: b'] });
+		answer.resolve({ success: true, message: '2/2 actions ok', results: [ran, ran] });
 		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.scenes_done({ name: 'Je pars', count: 2 }));
 		expect(api.sent('POST', '/scenes/je-pars/run')).toHaveLength(1);
 	});
 
 	it('a failed action is named, in a warning that stays', async () => {
-		house(undefined, { 'POST /scenes/nuit/run': { success: false, results: ['failed: Suspension timed out'] } });
+		house(undefined, {
+			'POST /scenes/nuit/run': { success: false, message: '', results: [{ ...ran, ok: false, code: 'device_unreachable' }] }
+		});
 		await render(ScenesGroup);
 		await page.getByRole('button', { name: 'Nuit', exact: true }).click();
-		await expect
-			.poll(() => ui.toasts.find((t) => t.warn)?.text)
-			.toBe(m.scenes_failed({ name: 'Nuit', count: 1, total: 1, details: 'Suspension timed out' }));
+		const details = m.remote_action_failed({ action: m.remote_summary_tv_off(), reason: m.code_device_unreachable() });
+		await expect.poll(() => ui.toasts.find((t) => t.warn)?.text).toBe(m.scenes_failed({ name: 'Nuit', count: 1, total: 1, details }));
 	});
 
 	it('« Créer » opens « Nouvelle scène », which can start from a template of the house’s devices', async () => {
@@ -120,7 +124,7 @@ describe('ScenesGroup', () => {
 
 	it('/?scene=je-pars asks first, never runs silently; « Lancer » runs it and forgets the address', async () => {
 		route.url = new URL('http://localhost/?scene=je-pars');
-		const api = house(undefined, { 'POST /scenes/je-pars/run': { success: true, results: ['ok: a', 'ok: b'] } });
+		const api = house(undefined, { 'POST /scenes/je-pars/run': { success: true, message: '', results: [ran, ran] } });
 		await render(ScenesGroup);
 		const dialog = page.getByRole('alertdialog', { name: m.scenes_run_title({ name: 'Je pars' }) });
 		await expect.element(dialog).toBeVisible();

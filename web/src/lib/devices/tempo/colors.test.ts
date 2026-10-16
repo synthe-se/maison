@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TEMPO, TEMPO_COLORS, dayWords, probable } from './colors.ts';
+import { TEMPO, TEMPO_COLORS, dayWords } from './colors.ts';
 
 describe('Tempo colors', () => {
 	it('are listed cheapest first, each with a name and a shape (never the color alone)', () => {
@@ -9,8 +9,8 @@ describe('Tempo colors', () => {
 	});
 
 	it('says a forecast with its probability (« Rouge probable · 62 % »)', () => {
-		expect(probable('RED', 0.62)).toMatch(/^Rouge probable · 62\s%$/u);
-		expect(probable('BLUE', undefined)).toBe('Bleu');
+		expect(dayWords('RED', true, 0.62)).toMatch(/^Rouge probable · 62\s%$/u);
+		expect(dayWords('BLUE', true, undefined)).toBe('Bleu');
 	});
 
 	it('says a day as published, forecast or unknown', () => {

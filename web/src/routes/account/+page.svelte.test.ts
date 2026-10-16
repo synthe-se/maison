@@ -17,10 +17,41 @@ const people = [
 	{ id: 'francia', name: 'Francia', role: 'member', passkeys: 1 }
 ];
 
-/** The account's backend: my passkeys, the pending invitations, and what changes them. */
+const here = {
+	id: 's-here',
+	createdMs: Date.UTC(2026, 9, 1, 8),
+	lastSeenMs: Date.now(),
+	ip: '203.0.113.7',
+	userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.0 Safari/605.1.15',
+	device: 'Mac',
+	current: true
+};
+const there = {
+	id: 's-there',
+	createdMs: Date.UTC(2026, 8, 20, 8),
+	lastSeenMs: Date.UTC(2026, 8, 28, 19),
+	ip: '198.51.100.4',
+	userAgent: 'curl/8',
+	device: '',
+	current: false
+};
+const sessionsRegion = () => page.getByRole('region', { name: m.sessions_title() });
+
+const salon = { id: 's1', name: 'Salon', createdMs: Date.UTC(2026, 9, 16), lastUsedMs: null };
+
+/** The account's backend: my passkeys, the pending invitations, the screens, and what changes them. */
 function site(more: Record<string, unknown> = {}) {
-	return stubApi({ 'GET /passkeys': [iphone, mac], 'GET /invites': [pending], 'GET /people': people, ...passkeyRoutes(), ...more });
+	return stubApi({
+		'GET /passkeys': { success: true, passkeys: [iphone, mac] },
+		'GET /invites': { success: true, invites: [pending] },
+		'GET /people': { success: true, people },
+		'GET /auth/sessions': { success: true, sessions: [here, there] },
+		'GET /screens': { success: true, screens: [salon] },
+		...passkeyRoutes(),
+		...more
+	});
 }
+const screensRegion = () => page.getByRole('region', { name: m.screens_title() });
 const rows = () => page.getByRole('region', { name: m.keys_title() }).getByRole('listitem');
 
 describe('account page', () => {
@@ -93,7 +124,7 @@ describe('account page', () => {
 		await expect.element(page.getByRole('heading', { name: m.keys_title() })).toHaveFocus();
 		await page.getByRole('button', { name: m.keys_remove_label({ name: m.keys_unnamed() }) }).click();
 		await page.getByRole('alertdialog').getByRole('button', { name: m.keys_remove_action() }).click();
-		await expect.poll(() => ui.toasts.some((t) => t.warn && t.text.includes(m.pk_last()))).toBe(true);
+		await expect.poll(() => ui.toasts.some((t) => t.warn && t.text.includes(m.code_last_passkey()))).toBe(true);
 		expect(api.sent('DELETE', '/passkeys/k2')).toHaveLength(1);
 	});
 
@@ -120,7 +151,7 @@ describe('account page', () => {
 		await render(AccountPage);
 		await page.getByRole('button', { name: m.keys_add() }).click();
 		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.keys_added());
-		expect(say).toHaveBeenCalledWith(m.keys_reauth());
+		expect(say).toHaveBeenCalledWith(m.reauth_ask());
 		expect(api.sent('POST', '/passkeys/login/finish')).toHaveLength(1);
 	});
 
@@ -242,11 +273,154 @@ describe('account page', () => {
 		expect(api.sent('GET', '/invites')).toEqual([]);
 		expect(api.sent('GET', '/people')).toEqual([]);
 		await expect.element(page.getByRole('heading', { name: m.people_title() })).not.toBeInTheDocument();
+		await expect.element(page.getByRole('heading', { name: m.screens_title() })).not.toBeInTheDocument();
+		expect(api.sent('GET', '/screens')).toEqual([]);
+	});
+
+	it('lists the wall screens: name, when paired, when last seen', async () => {
+		site();
+		await render(AccountPage);
+		const row = screensRegion().getByRole('listitem');
+		await expect.element(row).toHaveLength(1);
+		await expect.element(row.getByText('Salon')).toBeVisible();
+		await expect.element(row.getByText(new RegExp(m.screens_never_used()))).toBeVisible();
+	});
+
+	it('pairs a screen from the code it shows; the list says it, the focus back on its title', async () => {
+		const api = site({ 'POST /screens': { success: true, screen: { name: 'Cuisine' } } });
+		await render(AccountPage);
+		await screensRegion().getByRole('button', { name: m.screens_pair() }).click();
+		const sheet = page.getByRole('dialog', { name: m.screens_pair() });
+		await sheet.getByLabelText(m.screens_code()).fill('abcd-efgh');
+		await sheet.getByLabelText(m.screens_name()).fill('Cuisine');
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.poll(() => api.sent('POST', '/screens')[0]?.body).toEqual({ code: 'abcd-efgh', name: 'Cuisine' });
+		await expect.element(sheet).not.toBeInTheDocument();
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.screens_paired({ name: 'Cuisine' }));
+		await expect.poll(() => api.sent('GET', '/screens').length).toBe(2);
+		await expect.element(page.getByRole('heading', { name: m.screens_title() })).toHaveFocus();
+	});
+
+	it('a code from another network is said under the code; a name taken under the name', async () => {
+		const refusal = (code: string, status: number) => new Response(JSON.stringify({ success: false, code }), { status });
+		const api = site({ 'POST /screens': refusal('pairing_elsewhere', 403) });
+		await render(AccountPage);
+		await screensRegion().getByRole('button', { name: m.screens_pair() }).click();
+		const sheet = page.getByRole('dialog', { name: m.screens_pair() });
+		const code = sheet.getByLabelText(m.screens_code());
+		const name = sheet.getByLabelText(m.screens_name());
+		await code.fill('ABCD-EFGH');
+		await name.fill('Salon');
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.element(code).toHaveAccessibleDescription(m.code_pairing_elsewhere());
+		await expect.element(code).toHaveAttribute('aria-invalid', 'true');
+		api.routes['POST /screens'] = refusal('screen_exists', 409);
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.element(name).toHaveAccessibleDescription(m.code_screen_exists());
+		await expect.element(sheet).toBeVisible();
+	});
+
+	it('asks for both fields before asking the server', async () => {
+		const api = site();
+		await render(AccountPage);
+		await screensRegion().getByRole('button', { name: m.screens_pair() }).click();
+		const sheet = page.getByRole('dialog', { name: m.screens_pair() });
+		await sheet.getByRole('button', { name: m.screens_pair() }).click();
+		await expect.element(sheet.getByLabelText(m.screens_code())).toHaveAccessibleDescription(m.screens_code_missing());
+		await expect.element(sheet.getByLabelText(m.screens_code())).toHaveFocus();
+		expect(api.sent('POST', '/screens')).toEqual([]);
+	});
+
+	it('removes a screen after asking: it is signed out at once', async () => {
+		const api = site({ 'DELETE /screens/s1': {} });
+		await render(AccountPage);
+		await screensRegion()
+			.getByRole('button', { name: m.common_remove_named({ name: 'Salon' }) })
+			.click();
+		const confirm = page.getByRole('alertdialog', { name: m.screens_remove_title({ name: 'Salon' }) });
+		await expect.element(confirm.getByText(m.screens_remove_description())).toBeVisible();
+		await confirm.getByRole('button', { name: m.screens_remove_action() }).click();
+		await expect.poll(() => api.sent('DELETE', '/screens/s1')).toHaveLength(1);
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.screens_removed({ name: 'Salon' }));
 	});
 
 	it('says when nobody is waiting for an invitation', async () => {
-		site({ 'GET /invites': [] });
+		site({ 'GET /invites': { success: true, invites: [] } });
 		await render(AccountPage);
 		await expect.element(page.getByText(m.invites_none())).toBeVisible();
+	});
+
+	it('lists my sessions: the device and browser in words, when opened and seen, from where; this one marked', async () => {
+		site();
+		await render(AccountPage);
+		const listed = sessionsRegion().getByRole('listitem');
+		await expect.element(listed).toHaveLength(2);
+		await expect.element(listed.nth(0).getByText('Mac · Safari')).toBeVisible();
+		await expect.element(listed.nth(0).getByText(m.sessions_this_device())).toBeVisible();
+		await expect.element(listed.nth(0).getByText(/203\.0\.113\.7/)).toBeVisible();
+		await expect.element(listed.nth(1).getByText(m.sessions_unknown_device())).toBeVisible();
+		await expect.element(listed.nth(1).getByText(m.sessions_this_device())).not.toBeInTheDocument();
+		await expect.element(listed.nth(1).getByText(new RegExp(m.sessions_since({ when: '.+' })))).toBeVisible();
+	});
+
+	it('ends another session at once; the list is read again, the focus on its title', async () => {
+		const api = site({ 'DELETE /auth/sessions/s-there': { success: true, message: 'Session ended' } });
+		await render(AccountPage);
+		await sessionsRegion()
+			.getByRole('button', { name: m.sessions_end_label({ device: m.sessions_unknown_device() }) })
+			.click();
+		await expect.poll(() => api.sent('DELETE', '/auth/sessions/s-there')).toHaveLength(1);
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.sessions_ended());
+		await expect.poll(() => api.sent('GET', '/auth/sessions').length).toBe(2);
+		await expect.element(page.getByRole('heading', { name: m.sessions_title() })).toHaveFocus();
+		expect(session.status).toBe('signed_in');
+	});
+
+	it('ending this device’s session asks first, then signs out here', async () => {
+		const api = site({ 'DELETE /auth/sessions/s-here': { success: true, message: 'Session ended' } });
+		await render(AccountPage);
+		await sessionsRegion()
+			.getByRole('button', { name: m.sessions_end_label({ device: 'Mac · Safari' }) })
+			.click();
+		const dialog = page.getByRole('alertdialog', { name: m.sessions_end_current_title() });
+		await expect.element(dialog.getByText(m.sessions_end_current_description())).toBeVisible();
+		expect(api.sent('DELETE', '/auth/sessions/s-here')).toEqual([]);
+		await dialog.getByRole('button', { name: m.sessions_end_current_action() }).click();
+		await expect.poll(() => session.status).toBe('signed_out');
+		expect(api.sent('DELETE', '/auth/sessions/s-here')).toHaveLength(1);
+	});
+
+	it('an admin signs someone out everywhere after asking; they stay listed', async () => {
+		const api = site({ 'POST /people/francia/sessions/end': { success: true, message: 'Sessions ended' } });
+		await render(AccountPage);
+		const region = page.getByRole('region', { name: m.people_title() });
+		await expect.element(region.getByRole('button', { name: m.people_end_sessions_label({ name: 'Léonard' }) })).not.toBeInTheDocument();
+		await region.getByRole('button', { name: m.people_end_sessions_label({ name: 'Francia' }) }).click();
+		const dialog = page.getByRole('alertdialog', { name: m.people_end_sessions_title({ name: 'Francia' }) });
+		await expect.element(dialog.getByText(m.people_end_sessions_description())).toBeVisible();
+		await dialog.getByRole('button', { name: m.people_end_sessions() }).click();
+		await expect.poll(() => api.sent('POST', '/people/francia/sessions/end')).toHaveLength(1);
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.people_sessions_ended({ name: 'Francia' }));
+		await expect.element(region.getByText('Francia')).toBeVisible();
+	});
+
+	it('removing someone after an old sign-in: the passkey asked, said why, then removed', async () => {
+		authenticator();
+		const say = vi.spyOn(ui, 'say');
+		const api = site({
+			'DELETE /people/francia': () =>
+				api.sent('POST', '/passkeys/login/finish').length
+					? new Response(null, { status: 204 })
+					: json({ error: 'again', code: 'reauth_needed' }, 403)
+		});
+		await render(AccountPage);
+		await page.getByRole('button', { name: m.common_remove_named({ name: 'Francia' }) }).click();
+		await page
+			.getByRole('alertdialog', { name: m.common_remove_from_maison({ name: 'Francia' }) })
+			.getByRole('button', { name: m.people_remove_action() })
+			.click();
+		await expect.poll(() => api.sent('DELETE', '/people/francia')).toHaveLength(2);
+		expect(say).toHaveBeenCalledWith(m.reauth_ask());
+		await expect.poll(() => ui.toasts.map((t) => t.text)).toContain(m.people_removed({ name: 'Francia' }));
 	});
 });

@@ -2,6 +2,7 @@
 // « Ouvert à 40 % », « Ouvert », and while its motor runs where it is and where it goes.
 
 import { m } from '#lib/paraglide/messages.js';
+import { facts, unreachableSince } from '#lib/i18n.svelte.ts';
 import type { Shutter } from './api.ts';
 import { moving } from './data.ts';
 
@@ -14,9 +15,10 @@ export function at(percent: number): string {
 
 /** Line 2 of a shutter's tile. */
 export function describe(c: Shutter): string {
-	if (!c.online) return m.state_unreachable();
+	// worded as every tile words it (docs/ux.md § 4); the backend says no last-seen time yet
+	if (!c.online) return unreachableSince(null);
 	const going = c.targetOpenPercent !== null && c.openPercent !== null && c.targetOpenPercent !== c.openPercent;
-	if (moving(c) && going) return `${at(c.openPercent!)} · ${m.shutters_going_to({ percent: c.targetOpenPercent! })}`;
+	if (moving(c) && going) return facts(at(c.openPercent!), m.shutters_going_to({ percent: c.targetOpenPercent! }));
 	if (c.motion === 'opening') return m.shutters_opening();
 	if (c.motion === 'closing') return m.shutters_closing();
 	if (c.openPercent === null) return m.shutters_uncalibrated();

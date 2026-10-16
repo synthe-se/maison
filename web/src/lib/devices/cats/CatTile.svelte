@@ -6,7 +6,7 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import type { Device } from './api.ts';
 	import { live } from '#lib/live.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { gate, Gesture } from '#lib/gesture.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import { ICON, feed, served } from './tuya.svelte.ts';
@@ -26,7 +26,7 @@
 			<button
 				class="btn give"
 				aria-label={m.feeder_distribute({ count: 1 })}
-				{...device.connected ? pending(g.is()) : unavailable(why)}
+				{...gate(!device.connected && why, g.is())}
 				onclick={() => device.connected && feed(g, device.id, 1)}
 			>
 				<Icon name="utensils" busy={g.is()} />{m.feeder_one_portion()}

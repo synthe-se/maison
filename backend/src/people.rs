@@ -1,6 +1,7 @@
-//! Who may come in, and with what: people, their passkeys, and pending invitations, in one
-//! file (`auth.json`, 0600). There are no passwords: a person exists once an invitation has
-//! registered their first passkey (`routes::passkeys`, after Ariane's passkey mode).
+//! Who may come in, and with what: people, their passkeys, pending invitations and service
+//! tokens (machines: `auth::DeviceClient`), in one file (`auth.json`, 0600). There are no
+//! passwords: a person exists once an invitation has registered their first passkey
+//! (`routes::passkeys`, after Ariane's passkey mode).
 //!
 //! The file is the truth, read on every use and replaced whole (`store::write_json`) under
 //! an OS lock (`store::locked`): the server and `maison-backend invite` (run as root on the
@@ -19,6 +20,61 @@ use crate::{
     util::constant_time_eq,
 };
 
+/// What a name may be, said once in `util` (people, passkeys, screens and devices alike).
+pub use crate::util::{clean_name, MAX_NAME};
+
+/// An enum kept as one word (in `auth.json`, on the CLI): its words said once, in `as_str`,
+/// which serde and `FromStr` read.
+macro_rules! words {
+    ($(#[$meta:meta])* pub enum $name:ident { $($(#[$vmeta:meta])* $variant:ident = $word:literal,)* }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum $name {
+            $($(#[$vmeta])* $variant,)*
+        }
+
+        impl $name {
+            pub const ALL: &[Self] = &[$(Self::$variant),*];
+
+            /// The word the file and the CLI say.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $word,)*
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|s| s.as_str() == value)
+                    .ok_or_else(|| {
+                        let known: Vec<&str> = Self::ALL.iter().map(|s| s.as_str()).collect();
+                        format!("unknown {} « {value} » (known: {})", stringify!($name), known.join(", "))
+                    })
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                String::deserialize(deserializer)?
+                    .parse()
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
 /// What someone may do: an admin invites and configures, a member uses the house.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -26,9 +82,6 @@ pub enum Role {
     Admin,
     Member,
 }
-
-/// Characters in a name (a person's, a passkey's), at most.
-pub const MAX_NAME: usize = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -106,7 +159,61 @@ pub struct Invite {
     pub expires_ms: i64,
 }
 
+words! {
+    /// What a service token may do. One scope for now: the devices, as a member drives them
+    /// (never people, passkeys, invitations, tokens nor admin settings).
+    pub enum Scope {
+        Devices = "devices",
+    }
+}
+
+words! {
+    /// What carries a service token, and so where it comes from. `auth::DeviceClient` holds each
+    /// kind to its carrier: an app's token only as a bearer header, a screen's only in its cookie.
+    #[derive(Default)]
+    pub enum TokenKind {
+        /// A companion app, its token made from the CLI and sent as `Authorization: Bearer`.
+        /// Tokens kept before kinds existed are apps.
+        #[default]
+        App = "app",
+        /// A wall screen, paired by an admin (`screens.rs`): its token lives in an HttpOnly
+        /// cookie of the browser that asked, never in a script's reach.
+        Screen = "screen",
+    }
+}
+
+/// A long-lived token for a machine (a companion app, made from the CLI with
+/// `maison-backend token create`; a wall screen, paired from the web app).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredToken {
+    pub id: String,
+    /// Unique among the tokens: « achi », « Salon ».
+    pub name: String,
+    pub scope: Scope,
+    #[serde(default)]
+    pub kind: TokenKind,
+    /// `hash_secret` of the token: the token itself is never kept.
+    pub token_hash: String,
+    pub created_ms: i64,
+    /// Recorded at most once per `auth::TOKEN_USE_STEP_MS`: the SD card counts its writes.
+    pub last_used_ms: Option<i64>,
+}
+
+/// What the token list shows (never the hash).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenInfo {
+    pub id: String,
+    pub name: String,
+    pub scope: Scope,
+    pub kind: TokenKind,
+    pub created_ms: i64,
+    pub last_used_ms: Option<i64>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Book {
     #[serde(default)]
     people: Vec<Person>,
@@ -114,6 +221,8 @@ struct Book {
     passkeys: Vec<StoredPasskey>,
     #[serde(default)]
     invites: Vec<StoredInvite>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tokens: Vec<StoredToken>,
 }
 
 /// Why a passkey could not be removed.
@@ -145,7 +254,10 @@ fn stamp(path: &Path) -> Stamp {
 
 impl People {
     pub fn new(path: &Path) -> Self {
-        Self { path: path.to_path_buf(), cache: Mutex::new(None) }
+        Self {
+            path: path.to_path_buf(),
+            cache: Mutex::new(None),
+        }
     }
 
     async fn read<T>(&self, f: impl FnOnce(&Book) -> T) -> Result<T, AppError> {
@@ -229,23 +341,43 @@ impl People {
     }
 
     pub async fn person(&self, id: &str) -> Result<Option<Person>, AppError> {
-        self.read(|b| b.people.iter().find(|p| p.id == id).cloned()).await
+        self.read(|b| b.people.iter().find(|p| p.id == id).cloned())
+            .await
     }
 
     /// The credential ids a person already has (not to register twice on one device).
     pub async fn credential_ids_of(&self, person: &str) -> Result<Vec<String>, AppError> {
-        self.read(|b| b.passkeys.iter().filter(|k| k.person == person).map(|k| k.credential_id.clone()).collect())
-            .await
+        self.read(|b| {
+            b.passkeys
+                .iter()
+                .filter(|k| k.person == person)
+                .map(|k| k.credential_id.clone())
+                .collect()
+        })
+        .await
     }
 
     pub async fn passkeys_of(&self, person: &str) -> Result<Vec<PasskeyInfo>, AppError> {
-        self.read(|b| b.passkeys.iter().filter(|k| k.person == person).map(info).collect()).await
+        self.read(|b| {
+            b.passkeys
+                .iter()
+                .filter(|k| k.person == person)
+                .map(info)
+                .collect()
+        })
+        .await
     }
 
     /// The passkey with this credential id, and whose it is.
-    pub async fn passkey_by_credential(&self, credential_id: &str) -> Result<Option<(StoredPasskey, Person)>, AppError> {
+    pub async fn passkey_by_credential(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<(StoredPasskey, Person)>, AppError> {
         self.read(|b| {
-            let key = b.passkeys.iter().find(|k| k.credential_id == credential_id)?;
+            let key = b
+                .passkeys
+                .iter()
+                .find(|k| k.credential_id == credential_id)?;
             let person = b.people.iter().find(|p| p.id == key.person)?;
             Some((key.clone(), person.clone()))
         })
@@ -253,10 +385,17 @@ impl People {
     }
 
     /// After a sign-in: when, and the credential's new counter and backup state if they moved.
-    pub async fn passkey_used(&self, id: &str, passkey: Option<(serde_json::Value, bool)>, now_ms: i64) -> Result<(), AppError> {
+    pub async fn passkey_used(
+        &self,
+        id: &str,
+        passkey: Option<(serde_json::Value, bool)>,
+        now_ms: i64,
+    ) -> Result<(), AppError> {
         let id = id.to_string();
         self.edit(move |b| {
-            let Some(key) = b.passkeys.iter_mut().find(|k| k.id == id) else { return ((), false) };
+            let Some(key) = b.passkeys.iter_mut().find(|k| k.id == id) else {
+                return ((), false);
+            };
             key.last_used_ms = Some(now_ms);
             if let Some((json, backed_up)) = passkey {
                 key.passkey = json;
@@ -268,9 +407,15 @@ impl People {
     }
 
     /// Another passkey for someone who has one already.
-    pub async fn add_passkey(&self, key: StoredPasskey) -> Result<Result<(), PasskeyTaken>, AppError> {
+    pub async fn add_passkey(
+        &self,
+        key: StoredPasskey,
+    ) -> Result<Result<(), PasskeyTaken>, AppError> {
         self.edit(move |b| {
-            if b.passkeys.iter().any(|k| k.credential_id == key.credential_id) {
+            if b.passkeys
+                .iter()
+                .any(|k| k.credential_id == key.credential_id)
+            {
                 return (Err(PasskeyTaken), false);
             }
             b.passkeys.push(key);
@@ -279,14 +424,25 @@ impl People {
         .await
     }
 
-    pub async fn rename_passkey(&self, person: &str, id: &str, name: &str) -> Result<Option<PasskeyInfo>, AppError> {
+    pub async fn rename_passkey(
+        &self,
+        person: &str,
+        id: &str,
+        name: &str,
+    ) -> Result<Option<PasskeyInfo>, AppError> {
         let (person, id, name) = (person.to_string(), id.to_string(), name.to_string());
-        self.edit(move |b| match b.passkeys.iter_mut().find(|k| k.person == person && k.id == id) {
-            Some(key) => {
-                key.name = name;
-                (Some(info(key)), true)
+        self.edit(move |b| {
+            match b
+                .passkeys
+                .iter_mut()
+                .find(|k| k.person == person && k.id == id)
+            {
+                Some(key) => {
+                    key.name = name;
+                    (Some(info(key)), true)
+                }
+                None => (None, false),
             }
-            None => (None, false),
         })
         .await
     }
@@ -295,7 +451,11 @@ impl People {
         let (person, id) = (person.to_string(), id.to_string());
         self.edit(move |b| {
             let mine = b.passkeys.iter().filter(|k| k.person == person).count();
-            match b.passkeys.iter().position(|k| k.person == person && k.id == id) {
+            match b
+                .passkeys
+                .iter()
+                .position(|k| k.person == person && k.id == id)
+            {
                 None => (Removed::NotFound, false),
                 Some(_) if mine <= 1 => (Removed::Last, false),
                 Some(i) => {
@@ -311,15 +471,21 @@ impl People {
 
     /// A person's user handle: theirs if they exist, else `fresh` (kept at redemption).
     pub async fn user_handle(&self, person: &str, fresh: &str) -> Result<String, AppError> {
-        self.read(|b| b.people.iter().find(|p| p.id == person).map_or_else(|| fresh.to_string(), |p| p.user_handle.clone()))
-            .await
+        self.read(|b| {
+            b.people
+                .iter()
+                .find(|p| p.id == person)
+                .map_or_else(|| fresh.to_string(), |p| p.user_handle.clone())
+        })
+        .await
     }
 
     pub async fn create_invite(&self, invite: StoredInvite) -> Result<(), AppError> {
         self.edit(move |b| {
             let now = invite.created_ms;
             // the spent and the expired go; a new link for someone replaces their pending one
-            b.invites.retain(|i| i.used_ms.is_none() && i.expires_ms > now && i.person != invite.person);
+            b.invites
+                .retain(|i| i.used_ms.is_none() && i.expires_ms > now && i.person != invite.person);
             b.invites.push(invite);
             ((), true)
         })
@@ -327,9 +493,18 @@ impl People {
     }
 
     /// The pending invitation whose token hashes to `token_hash`.
-    pub async fn invite_by_hash(&self, token_hash: &str, now_ms: i64) -> Result<Option<StoredInvite>, AppError> {
-        self.read(|b| b.invites.iter().find(|i| pending(i, now_ms) && same_hash(&i.token_hash, token_hash)).cloned())
-            .await
+    pub async fn invite_by_hash(
+        &self,
+        token_hash: &str,
+        now_ms: i64,
+    ) -> Result<Option<StoredInvite>, AppError> {
+        self.read(|b| {
+            b.invites
+                .iter()
+                .find(|i| pending(i, now_ms) && same_hash(&i.token_hash, token_hash))
+                .cloned()
+        })
+        .await
     }
 
     pub async fn invites(&self, now_ms: i64) -> Result<Vec<Invite>, AppError> {
@@ -372,10 +547,17 @@ impl People {
     ) -> Result<Option<Result<Person, PasskeyTaken>>, AppError> {
         let (invite_id, user_handle) = (invite_id.to_string(), user_handle.to_string());
         self.edit(move |b| {
-            let Some(invite) = b.invites.iter_mut().find(|i| i.id == invite_id && pending(i, now_ms)) else {
+            let Some(invite) = b
+                .invites
+                .iter_mut()
+                .find(|i| i.id == invite_id && pending(i, now_ms))
+            else {
                 return (None, false);
             };
-            if b.passkeys.iter().any(|k| k.credential_id == key.credential_id) {
+            if b.passkeys
+                .iter()
+                .any(|k| k.credential_id == key.credential_id)
+            {
                 return (Some(Err(PasskeyTaken)), false);
             }
             invite.used_ms = Some(now_ms);
@@ -401,6 +583,114 @@ impl People {
             };
             b.passkeys.push(key);
             (Some(Ok(person)), true)
+        })
+        .await
+    }
+
+    // ---------- service tokens ----------
+
+    /// A new token; false (nothing written) when another one has its name.
+    pub async fn create_token(&self, token: StoredToken) -> Result<bool, AppError> {
+        self.edit(move |b| {
+            if b.tokens.iter().any(|t| t.name == token.name) {
+                return (false, false);
+            }
+            b.tokens.push(token);
+            (true, true)
+        })
+        .await
+    }
+
+    pub async fn tokens(&self) -> Result<Vec<TokenInfo>, AppError> {
+        self.read(|b| {
+            b.tokens
+                .iter()
+                .map(|t| TokenInfo {
+                    id: t.id.clone(),
+                    name: t.name.clone(),
+                    scope: t.scope,
+                    kind: t.kind,
+                    created_ms: t.created_ms,
+                    last_used_ms: t.last_used_ms,
+                })
+                .collect()
+        })
+        .await
+    }
+
+    /// The token whose secret hashes to `token_hash`.
+    pub async fn token_by_hash(&self, token_hash: &str) -> Result<Option<StoredToken>, AppError> {
+        self.read(|b| {
+            b.tokens
+                .iter()
+                .find(|t| same_hash(&t.token_hash, token_hash))
+                .cloned()
+        })
+        .await
+    }
+
+    /// The token with id `id`, when it is of `kind`, goes at once (checked and removed in one
+    /// edit). False when there is no such token.
+    pub async fn revoke_token_of(&self, id: &str, kind: TokenKind) -> Result<bool, AppError> {
+        let id = id.to_string();
+        self.edit(move |b| {
+            let before = b.tokens.len();
+            b.tokens.retain(|t| !(t.id == id && t.kind == kind));
+            let gone = b.tokens.len() != before;
+            (gone, gone)
+        })
+        .await
+    }
+
+    /// Every screen not seen for `idle_ms` (never seen: since it was paired) goes: their names.
+    pub async fn revoke_idle_screens(
+        &self,
+        now_ms: i64,
+        idle_ms: i64,
+    ) -> Result<Vec<String>, AppError> {
+        let idle = move |t: &StoredToken| {
+            t.kind == TokenKind::Screen && now_ms - t.last_used_ms.unwrap_or(t.created_ms) > idle_ms
+        };
+        // read first: the sweep runs every minute, and nearly always finds nothing to write
+        if !self.read(|b| b.tokens.iter().any(idle)).await? {
+            return Ok(Vec::new());
+        }
+        self.edit(move |b| {
+            let names: Vec<String> = b
+                .tokens
+                .iter()
+                .filter(|t| idle(t))
+                .map(|t| t.name.clone())
+                .collect();
+            b.tokens.retain(|t| !idle(t));
+            let changed = !names.is_empty();
+            (names, changed)
+        })
+        .await
+    }
+
+    /// The token named `name_or_id` (by its name or its id) goes, at once. False when unknown.
+    /// The CLI's (`token revoke`), where a person types either.
+    pub async fn revoke_token(&self, name_or_id: &str) -> Result<bool, AppError> {
+        let key = name_or_id.to_string();
+        self.edit(move |b| {
+            let before = b.tokens.len();
+            b.tokens.retain(|t| t.id != key && t.name != key);
+            let gone = b.tokens.len() != before;
+            (gone, gone)
+        })
+        .await
+    }
+
+    /// The token was used at `now_ms`.
+    pub async fn token_used(&self, id: &str, now_ms: i64) -> Result<(), AppError> {
+        let id = id.to_string();
+        self.edit(move |b| match b.tokens.iter_mut().find(|t| t.id == id) {
+            Some(t) => {
+                t.last_used_ms = Some(now_ms);
+                ((), true)
+            }
+            None => ((), false),
         })
         .await
     }
@@ -450,13 +740,6 @@ pub fn slug(name: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
-/// A name as kept: trimmed, not empty, `MAX_NAME` characters at most, no control characters.
-pub fn clean_name(name: &str) -> Option<&str> {
-    let name = name.trim();
-    let ok = !name.is_empty() && name.chars().count() <= MAX_NAME && !name.chars().any(char::is_control);
-    ok.then_some(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,24 +781,70 @@ mod tests {
     #[tokio::test]
     async fn an_invitation_is_spent_once_and_creates_the_person() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "leonard", Role::Admin, "t")).await.unwrap();
-        assert!(p.invite_by_hash(&hash_secret("t"), 10).await.unwrap().is_some());
-        assert!(p.invite_by_hash(&hash_secret("t"), 1_000).await.unwrap().is_none(), "expired");
-        let person = p.redeem_invite("i1", "h", key("k1", "leonard", "c1"), 10).await.unwrap().unwrap().unwrap();
-        assert_eq!((person.id.as_str(), person.role, person.user_handle.as_str()), ("leonard", Role::Admin, "h"));
-        assert!(p.redeem_invite("i1", "h", key("k2", "leonard", "c2"), 11).await.unwrap().is_none(), "single use");
-        assert!(p.invite_by_hash(&hash_secret("t"), 10).await.unwrap().is_none());
+        p.create_invite(invite("i1", "leonard", Role::Admin, "t"))
+            .await
+            .unwrap();
+        assert!(p
+            .invite_by_hash(&hash_secret("t"), 10)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            p.invite_by_hash(&hash_secret("t"), 1_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "expired"
+        );
+        let person = p
+            .redeem_invite("i1", "h", key("k1", "leonard", "c1"), 10)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (person.id.as_str(), person.role, person.user_handle.as_str()),
+            ("leonard", Role::Admin, "h")
+        );
+        assert!(
+            p.redeem_invite("i1", "h", key("k2", "leonard", "c2"), 11)
+                .await
+                .unwrap()
+                .is_none(),
+            "single use"
+        );
+        assert!(p
+            .invite_by_hash(&hash_secret("t"), 10)
+            .await
+            .unwrap()
+            .is_none());
         assert_eq!(p.passkeys_of("leonard").await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn coming_back_keeps_the_person_and_an_admin_stays_one() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "leonard", Role::Admin, "a")).await.unwrap();
-        p.redeem_invite("i1", "h1", key("k1", "leonard", "c1"), 1).await.unwrap().unwrap().unwrap();
-        p.create_invite(invite("i2", "leonard", Role::Member, "b")).await.unwrap();
-        let again = p.redeem_invite("i2", "h2", key("k2", "leonard", "c2"), 2).await.unwrap().unwrap().unwrap();
-        assert_eq!((again.role, again.user_handle.as_str()), (Role::Admin, "h1"));
+        p.create_invite(invite("i1", "leonard", Role::Admin, "a"))
+            .await
+            .unwrap();
+        p.redeem_invite("i1", "h1", key("k1", "leonard", "c1"), 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        p.create_invite(invite("i2", "leonard", Role::Member, "b"))
+            .await
+            .unwrap();
+        let again = p
+            .redeem_invite("i2", "h2", key("k2", "leonard", "c2"), 2)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (again.role, again.user_handle.as_str()),
+            (Role::Admin, "h1")
+        );
         assert_eq!(p.user_handle("leonard", "fresh").await.unwrap(), "h1");
         assert_eq!(p.user_handle("alex", "fresh").await.unwrap(), "fresh");
     }
@@ -523,36 +852,193 @@ mod tests {
     #[tokio::test]
     async fn a_credential_registers_once_and_the_last_passkey_stays() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "leonard", Role::Admin, "a")).await.unwrap();
-        p.redeem_invite("i1", "h", key("k1", "leonard", "c1"), 1).await.unwrap().unwrap().unwrap();
-        assert_eq!(p.add_passkey(key("k2", "leonard", "c1")).await.unwrap(), Err(PasskeyTaken));
-        p.add_passkey(key("k2", "leonard", "c2")).await.unwrap().unwrap();
-        assert_eq!(p.delete_passkey("someone", "k1").await.unwrap(), Removed::NotFound);
-        assert_eq!(p.delete_passkey("leonard", "k1").await.unwrap(), Removed::Yes);
-        assert_eq!(p.delete_passkey("leonard", "k2").await.unwrap(), Removed::Last);
+        p.create_invite(invite("i1", "leonard", Role::Admin, "a"))
+            .await
+            .unwrap();
+        p.redeem_invite("i1", "h", key("k1", "leonard", "c1"), 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            p.add_passkey(key("k2", "leonard", "c1")).await.unwrap(),
+            Err(PasskeyTaken)
+        );
+        p.add_passkey(key("k2", "leonard", "c2"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            p.delete_passkey("someone", "k1").await.unwrap(),
+            Removed::NotFound
+        );
+        assert_eq!(
+            p.delete_passkey("leonard", "k1").await.unwrap(),
+            Removed::Yes
+        );
+        assert_eq!(
+            p.delete_passkey("leonard", "k2").await.unwrap(),
+            Removed::Last
+        );
         let (found, owner) = p.passkey_by_credential("c2").await.unwrap().unwrap();
         assert_eq!((found.id.as_str(), owner.id.as_str()), ("k2", "leonard"));
-        assert!(p.rename_passkey("leonard", "k2", "iPhone").await.unwrap().is_some());
+        assert!(p
+            .rename_passkey("leonard", "k2", "iPhone")
+            .await
+            .unwrap()
+            .is_some());
         assert_eq!(p.passkeys_of("leonard").await.unwrap()[0].name, "iPhone");
     }
 
     #[tokio::test]
     async fn a_new_link_replaces_the_pending_one_and_can_be_revoked() {
         let (_dir, p) = people();
-        p.create_invite(invite("i1", "alex", Role::Member, "a")).await.unwrap();
-        p.create_invite(invite("i2", "alex", Role::Member, "b")).await.unwrap();
+        p.create_invite(invite("i1", "alex", Role::Member, "a"))
+            .await
+            .unwrap();
+        p.create_invite(invite("i2", "alex", Role::Member, "b"))
+            .await
+            .unwrap();
         let pending = p.invites(10).await.unwrap();
-        assert_eq!(pending.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["i2"]);
+        assert_eq!(
+            pending.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["i2"]
+        );
         assert!(p.delete_invite("i2").await.unwrap());
         assert!(!p.delete_invite("i2").await.unwrap());
         assert!(p.invites(10).await.unwrap().is_empty());
+    }
+
+    fn token(id: &str, name: &str, secret: &str) -> StoredToken {
+        StoredToken {
+            id: id.into(),
+            name: name.into(),
+            scope: Scope::Devices,
+            kind: TokenKind::App,
+            token_hash: hash_secret(secret),
+            created_ms: 0,
+            last_used_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_token_is_found_by_its_hash_named_once_and_revoked() {
+        let (dir, p) = people();
+        assert!(p.create_token(token("t1", "achi", "secret")).await.unwrap());
+        assert!(
+            !p.create_token(token("t2", "achi", "other")).await.unwrap(),
+            "one name, one token"
+        );
+        let found = p
+            .token_by_hash(&hash_secret("secret"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.id.as_str(), found.scope), ("t1", Scope::Devices));
+        assert!(p
+            .token_by_hash(&hash_secret("other"))
+            .await
+            .unwrap()
+            .is_none());
+        p.token_used("t1", 42).await.unwrap();
+        assert_eq!(p.tokens().await.unwrap()[0].last_used_ms, Some(42));
+        let text = std::fs::read_to_string(dir.path().join("auth").join("auth.json")).unwrap();
+        assert!(!text.contains("\"secret\""), "only the hash on disk");
+        assert!(p.revoke_token("achi").await.unwrap(), "by name");
+        assert!(!p.revoke_token("t1").await.unwrap());
+        assert!(
+            p.token_by_hash(&hash_secret("secret"))
+                .await
+                .unwrap()
+                .is_none(),
+            "gone at once"
+        );
+        assert!(p.create_token(token("t3", "achi", "again")).await.unwrap());
+        assert!(p.revoke_token("t3").await.unwrap(), "by id");
+    }
+
+    #[test]
+    fn scopes_and_kinds_are_words() {
+        assert_eq!(serde_json::to_value(Scope::Devices).unwrap(), "devices");
+        assert_eq!("devices".parse::<Scope>(), Ok(Scope::Devices));
+        for scope in Scope::ALL {
+            assert_eq!(
+                serde_json::to_value(scope).unwrap(),
+                scope.as_str(),
+                "one word for the file and the CLI"
+            );
+        }
+        assert!("admin".parse::<Scope>().is_err());
+        assert_eq!(serde_json::to_value(TokenKind::Screen).unwrap(), "screen");
+        assert_eq!(
+            serde_json::from_value::<TokenKind>("app".into()).unwrap(),
+            TokenKind::App
+        );
+        assert!(serde_json::from_value::<TokenKind>("robot".into()).is_err());
+        assert_eq!(
+            TokenKind::default(),
+            TokenKind::App,
+            "tokens kept before kinds"
+        );
+        let old: StoredToken = serde_json::from_value(serde_json::json!({
+            "id": "t", "name": "achi", "scope": "devices", "tokenHash": "h", "createdMs": 0, "lastUsedMs": null
+        }))
+        .unwrap();
+        assert_eq!(old.kind, TokenKind::App);
+    }
+
+    #[tokio::test]
+    async fn a_screen_is_revoked_by_its_id_and_kind_and_after_long_idleness() {
+        let (_dir, p) = people();
+        let screen = |id: &str, name: &str, created: i64, used: Option<i64>| StoredToken {
+            kind: TokenKind::Screen,
+            created_ms: created,
+            last_used_ms: used,
+            ..token(id, name, id)
+        };
+        p.create_token(token("a1", "achi", "s")).await.unwrap();
+        p.create_token(screen("s1", "Salon", 0, Some(900)))
+            .await
+            .unwrap();
+        p.create_token(screen("s2", "Cuisine", 0, None))
+            .await
+            .unwrap();
+        p.create_token(screen("s3", "Entrée", 0, Some(1_900)))
+            .await
+            .unwrap();
+        assert!(
+            !p.revoke_token_of("a1", TokenKind::Screen).await.unwrap(),
+            "an app is no screen"
+        );
+        assert_eq!(
+            p.revoke_idle_screens(2_000, 1_000).await.unwrap(),
+            ["Salon", "Cuisine"],
+            "unseen for longer than allowed"
+        );
+        assert!(p
+            .revoke_idle_screens(2_000, 1_000)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(p.revoke_token_of("s3", TokenKind::Screen).await.unwrap());
+        let left: Vec<String> = p
+            .tokens()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(left, ["achi"]);
     }
 
     /// The file keeps the words it always had.
     #[test]
     fn roles_are_written_as_words() {
         assert_eq!(serde_json::to_value(Role::Admin).unwrap(), "admin");
-        assert_eq!(serde_json::from_value::<Role>("member".into()).unwrap(), Role::Member);
+        assert_eq!(
+            serde_json::from_value::<Role>("member".into()).unwrap(),
+            Role::Member
+        );
         assert!(serde_json::from_value::<Role>("owner".into()).is_err());
     }
 
@@ -560,9 +1046,7 @@ mod tests {
     fn names_and_ids() {
         assert_eq!(slug(" Léonard "), "leonard");
         assert_eq!(slug("Marie-Hélène D."), "marie-helene-d");
-        assert_eq!(clean_name("  iPhone "), Some("iPhone"));
         assert_eq!(clean_name("   "), None);
-        assert_eq!(clean_name(&"x".repeat(MAX_NAME + 1)), None);
         assert_eq!(hash_secret("a").len(), 64);
         assert_ne!(random_secret(), random_secret());
     }

@@ -20,7 +20,7 @@ export const merossElectricity = (id = 'p1'): MerossElectricityResponse => ({
 		voltage: '230.4V',
 		current: '0.183A',
 		power: '42.4W',
-		raw: { channel: 0, voltage: 2304, current: 183, power: 42400 }
+		raw: { channel: 0, voltage: 2304, current: 183, power: 42400, config: null }
 	},
 	message: ''
 });

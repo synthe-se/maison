@@ -6,32 +6,33 @@
 	// « Climate »). Without a blaster on the network the buttons stay, not operable, saying why.
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
+	import { Draft } from '#lib/draft.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
-	import { when } from '#lib/i18n.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { facts, when } from '#lib/i18n.svelte.ts';
+	import { gate, Gesture, pending } from '#lib/gesture.svelte.ts';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import { broadlinkApi } from './climate/api.ts';
 	import { CLIMATE_OFF } from './climate/command.ts';
-	import { blasters, climateState, searchOver, SEARCH_FOR_MS } from './climate/data.ts';
+	import { blasters, climateState, searchOver } from './climate/data.ts';
+	import { BROADLINK_SEARCH_FOR_MS } from '#lib/paces.ts';
+	import { CLIMATE_MODEL } from '#lib/limits.ts';
 	import { commandOf, formFrom, INITIAL } from './climate/form.ts';
 	import { degrees, modeLabel } from './climate/labels.ts';
 	import ClimateForm from './climate/ClimateForm.svelte';
-
-	/** The model the backend encodes for (the living-room unit). */
-	const MODEL = 'msz-hj5va';
 
 	const found = live(blasters);
 	const stored = live(climateState);
 	const remote = $derived(found.data?.devices[0]);
 	const last = $derived(stored.data?.state ?? null);
 
-	let form = $state({ ...INITIAL });
-	// once, from the first answer: re-applying the stored state later would clobber an edit
-	void stored.ready.then((r) => (form = formFrom(r.state?.settings)));
-	const command = $derived(commandOf(form));
+	const form = new Draft({ ...INITIAL });
+	// once, from the first answer, unless something was already changed: re-applying the stored
+	// state later would clobber an edit
+	void stored.ready.then((r) => !form.dirty && form.reset(formFrom(r.state?.settings)));
+	const command = $derived(commandOf(form.current));
 
 	/** Keyed by the command travelling to the unit. */
 	const sending = new Gesture();
@@ -43,7 +44,7 @@
 	let over = $state(false);
 	$effect(() => {
 		if (remote) return void (over = false);
-		const left = found.since + SEARCH_FOR_MS - Date.now();
+		const left = found.since + BROADLINK_SEARCH_FOR_MS - Date.now();
 		over = searchOver(found.data, found.since);
 		if (over) return;
 		const t = setTimeout(() => (over = true), left);
@@ -54,7 +55,7 @@
 		if (!remote) return;
 		const { host } = remote;
 		return sending.run(
-			() => broadlinkApi.sendMitsubishiCommand(host, cmd, MODEL),
+			() => broadlinkApi.sendMitsubishiCommand(host, cmd, CLIMATE_MODEL),
 			async () => {
 				ui.say(m.climate_command_sent());
 				await stored.refresh();
@@ -92,7 +93,7 @@
 	<div class="tiles">
 		<DeviceTile name={m.climate_brand_name()} icon="snowflake" state={lastLine} {fact} warn={!remote && over}>
 			{#snippet settings()}
-				<ClimateForm bind:form {command} host={remote?.host} busy={sending.is()} {why} {send} />
+				<ClimateForm bind:form={form.current} {command} host={remote?.host} busy={sending.is()} {why} {send} />
 			{/snippet}
 
 			{#if !remote}
@@ -103,16 +104,16 @@
 					</div>
 				{:else}
 					<p class="hint searching" id="{id}-why">
-						<Icon name="search" busy />{m.climate_searching_title()} — {m.climate_searching_description()}
+						<Icon name="search" busy />{facts(m.climate_searching_title(), m.climate_searching_description())}
 					</p>
 				{/if}
 			{/if}
 
 			<div class="btn-row">
-				<button class="btn" {...why ? unavailable(why) : pending(sending.is())} onclick={() => !why && !sending.is() && send(command)}>
+				<button class="btn" {...gate(why, sending.is())} onclick={() => !why && !sending.is() && send(command)}>
 					<Icon name="power" busy={sending.is(command)} /><span class="btn-text">{m.action_turn_on()}</span>
 				</button>
-				<button class="btn" {...why ? unavailable(why) : pending(sending.is())} onclick={() => !why && !sending.is() && send(CLIMATE_OFF)}>
+				<button class="btn" {...gate(why, sending.is())} onclick={() => !why && !sending.is() && send(CLIMATE_OFF)}>
 					<Icon name="square" busy={sending.is(CLIMATE_OFF)} /><span class="btn-text">{m.action_turn_off()}</span>
 				</button>
 			</div>

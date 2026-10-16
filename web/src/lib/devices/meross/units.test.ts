@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import { kwh, kwhFromWh, livePower, milliamps, reading, volts, watts } from './units.ts';
+import { kwh, kwhFromWh, milliamps, reading, volts, watts } from './units.ts';
 import { merossElectricity } from '#lib/test/meross.ts';
 
 // French numbers: decimal comma; Intl's no-break spaces are kept as they come
@@ -32,6 +32,6 @@ describe('electricity in words', () => {
 	});
 
 	it('reads the live power from the raw milliwatts, not the « 42.4W » string', () => {
-		expect(livePower(merossElectricity().electricity)).toBe(m.meross_watts({ power: '42' }));
+		expect(watts(reading(merossElectricity().electricity.raw).watts)).toBe(m.meross_watts({ power: '42' }));
 	});
 });

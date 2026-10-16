@@ -34,14 +34,14 @@ export interface BroadlinkDiscoverResponse {
 	message: string;
 }
 
-export interface BroadlinkCodesResponse {
+interface BroadlinkCodesResponse {
 	success: boolean;
 	codes: BroadlinkCode[];
 	total: number;
 	message: string;
 }
 
-export interface BroadlinkSendResponse {
+interface BroadlinkSendResponse {
 	success: boolean;
 	result: { host: string; codeId?: string; command?: string; packetLength: number };
 	message: string;
@@ -74,8 +74,10 @@ export interface BroadlinkClimateStateResponse {
 }
 
 export const broadlinkApi = {
-	/** The IR blasters on the network: the server's cache, or (`force`, an admin's) a new scan. */
-	discover: (force = false) => get<BroadlinkDiscoverResponse>(force ? '/broadlink/discover?forceRefresh=true' : '/broadlink/discover'),
+	/** The IR blasters on the network, as the server last found them. */
+	discover: () => get<BroadlinkDiscoverResponse>('/broadlink/discover'),
+	/** A new scan now (an admin's; a POST: a link cannot start one). */
+	rediscover: () => post<BroadlinkDiscoverResponse>('/broadlink/discover'),
 	listCodes: () => get<BroadlinkCodesResponse>('/broadlink/codes'),
 	getMitsubishiState: () => get<BroadlinkClimateStateResponse>('/broadlink/mitsubishi/state'),
 	sendMitsubishiCommand: (host: string, command: string, model?: string, localIp?: string) =>

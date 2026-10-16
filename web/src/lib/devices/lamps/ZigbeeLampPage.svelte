@@ -2,6 +2,7 @@
 	// A Zigbee lamp's page: the shared lamp page, plus white/color, network details and renaming.
 	import Tabs from '#lib/components/Tabs.svelte';
 	import { m } from '#lib/paraglide/messages.js';
+	import Section from '#lib/components/Section.svelte';
 	import { zigbeeLampsApi } from './api.ts';
 	import { live, refresh } from '#lib/live.svelte.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
@@ -52,8 +53,7 @@
 
 {#snippet color(l: Lamp)}
 	{#if raw}
-		<section class="tile" aria-labelledby="zigbee-color">
-			<h2 id="zigbee-color" class="group-title">{m.zigbee_lamps_color()}</h2>
+		<Section title={m.zigbee_lamps_color()}>
 			{#if l.temperature !== null}
 				<Tabs
 					tabs={[
@@ -74,7 +74,7 @@
 			{:else}
 				<ZigbeeColor lamp={raw} />
 			{/if}
-		</section>
+		</Section>
 	{/if}
 {/snippet}
 

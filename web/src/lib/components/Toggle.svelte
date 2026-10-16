@@ -65,10 +65,6 @@
 		cursor: progress;
 		opacity: var(--disabled-opacity);
 	}
-	:global(.switch[aria-disabled='true']:not([aria-busy='true'])) {
-		opacity: var(--disabled-opacity);
-		cursor: not-allowed;
-	}
 	/* the thumb moves and the track fills: on/off read by shape and place, not color alone */
 	:global(.switch-thumb) {
 		display: block;
@@ -76,7 +72,7 @@
 		height: var(--switch-thumb);
 		border-radius: 50%;
 		background: var(--ink-muted);
-		transition: transform 0.15s ease-out;
+		transition: transform var(--dur-quick) ease-out;
 	}
 	:global(.switch[data-state='checked'] .switch-thumb) {
 		transform: translateX(var(--switch-thumb));

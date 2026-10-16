@@ -1,3 +1,7 @@
+//! What a request that fails answers. A refusal is coded (`Refusal`, maison-api's table): the
+//! apps word it themselves and `401` means « not signed in » alone. Our own failures and the
+//! devices' or services' troubles are 5xx, said generically to the client, in full in the log.
+
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 use thiserror::Error;
@@ -5,6 +9,8 @@ use tracing::{error, warn};
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    /// A 5xx with words for the log and curl ([`AppError::http`]). A 4xx built here is the old,
+    /// uncoded way (see the deprecated helpers below): a refusal is `Coded`.
     #[error("{message}")]
     Http { status: StatusCode, message: String },
     /// A refusal the app explains in its own words: `code` names it (`passkey_rejected`,
@@ -31,7 +37,23 @@ pub enum AppError {
     Join(#[from] tokio::task::JoinError),
 }
 
+/// The app's refusals, by name, said once in maison-api (`maison_api::codes`).
+pub use maison_api::codes::Code as Refusal;
+
+impl From<Refusal> for AppError {
+    fn from(r: Refusal) -> Self {
+        let status = StatusCode::from_u16(r.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        AppError::coded(status, r.as_str(), r.message())
+    }
+}
+
+/// The code of the refusal a response carries, in its extensions: the request layer logs every
+/// 401 and 403 with it (`lib.rs`).
+#[derive(Debug, Clone, Copy)]
+pub struct Refused(pub &'static str);
+
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ErrorBody {
     success: bool,
     error: String,
@@ -42,6 +64,8 @@ struct ErrorBody {
 }
 
 impl AppError {
+    /// Our own failure, or a device's or a service's (a 5xx), with words for the log and curl.
+    /// Never a 4xx: a refusal is a code (`AppError::from(Refusal::…)`), which the apps word.
     pub fn http(status: StatusCode, message: impl Into<String>) -> Self {
         Self::Http {
             status,
@@ -50,33 +74,53 @@ impl AppError {
     }
 
     pub fn coded(status: StatusCode, code: &'static str, message: &'static str) -> Self {
-        Self::Coded { status, code, message, retry_after_s: None, detail: None }
+        Self::Coded {
+            status,
+            code,
+            message,
+            retry_after_s: None,
+            detail: None,
+        }
     }
 
     /// A coded refusal with what the app needs to act on it.
     pub fn with_detail(self, value: serde_json::Value) -> Self {
         match self {
-            Self::Coded { status, code, message, retry_after_s, .. } => {
-                Self::Coded { status, code, message, retry_after_s, detail: Some(Box::new(value)) }
-            }
+            Self::Coded {
+                status,
+                code,
+                message,
+                retry_after_s,
+                ..
+            } => Self::Coded {
+                status,
+                code,
+                message,
+                retry_after_s,
+                detail: Some(Box::new(value)),
+            },
             other => other,
         }
     }
 
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::BAD_REQUEST, message)
-    }
-
-    pub fn not_found(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::NOT_FOUND, message)
-    }
-
-    pub fn forbidden(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::FORBIDDEN, message)
-    }
-
-    pub fn unauthorized(message: impl Into<String>) -> Self {
-        Self::http(StatusCode::UNAUTHORIZED, message)
+    /// Too many tries: the app waits `retry_after_s` (sent as `Retry-After`).
+    pub fn too_many(retry_after_s: u64) -> Self {
+        match Self::from(Refusal::TooManyAttempts) {
+            Self::Coded {
+                status,
+                code,
+                message,
+                detail,
+                ..
+            } => Self::Coded {
+                status,
+                code,
+                message,
+                retry_after_s: Some(retry_after_s),
+                detail,
+            },
+            other => other,
+        }
     }
 
     pub fn service_unavailable(message: impl Into<String>) -> Self {
@@ -89,7 +133,9 @@ impl AppError {
             // a service we asked did not answer (503), or answered nonsense (502): not our bug
             Self::Reqwest(e) if e.is_connect() || e.is_timeout() => StatusCode::SERVICE_UNAVAILABLE,
             Self::Reqwest(_) => StatusCode::BAD_GATEWAY,
-            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Join(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Join(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
     }
 
@@ -110,14 +156,21 @@ impl IntoResponse for AppError {
         let status = self.status();
         match status {
             // a device or a service out there: their trouble, said as a warning
-            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT => {
+            StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT => {
                 warn!(error = %self, "upstream unavailable");
             }
             s if s.is_server_error() => error!(error = %self, "request failed"),
             _ => {}
         }
         let (code, retry_after_s, detail) = match &self {
-            Self::Coded { code, retry_after_s, detail, .. } => (Some(*code), *retry_after_s, detail.clone()),
+            Self::Coded {
+                code,
+                retry_after_s,
+                detail,
+                ..
+            } => (Some(*code), *retry_after_s, detail.clone()),
             _ => (None, None, None),
         };
         let body = ErrorBody {
@@ -127,8 +180,13 @@ impl IntoResponse for AppError {
             detail,
         };
         let mut response = (status, Json(body)).into_response();
+        if let Some(code) = code {
+            response.extensions_mut().insert(Refused(code));
+        }
         if let Some(seconds) = retry_after_s {
-            response.headers_mut().insert(axum::http::header::RETRY_AFTER, seconds.into());
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, seconds.into());
         }
         response
     }
@@ -140,7 +198,12 @@ mod tests {
 
     /// A reqwest error of each kind, from a real (local) request.
     async fn reqwest_error(url: &str) -> reqwest::Error {
-        reqwest::Client::new().get(url).send().await.and_then(|r| r.error_for_status()).expect_err("fails")
+        reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .expect_err("fails")
     }
 
     #[tokio::test]
@@ -155,7 +218,10 @@ mod tests {
         // an answer we cannot use (a 500 of theirs): a bad gateway
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let broken = format!("http://{}", listener.local_addr().unwrap());
-        let app = axum::Router::new().route("/", axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
         tokio::spawn(async move { axum::serve(listener, app).await });
         let bad = AppError::from(reqwest_error(&broken).await);
         assert_eq!(bad.status(), StatusCode::BAD_GATEWAY);

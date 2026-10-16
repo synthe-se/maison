@@ -8,17 +8,17 @@ mod common;
 use std::collections::BTreeMap;
 
 use axum::{
-    Router,
     http::{Method, StatusCode},
+    Router,
 };
 use maison_backend::config::Config;
 use passkey::authenticator::{Authenticator, UiHint, UserCheck, UserValidationMethod};
 use passkey::client::{Client, DefaultClientData};
 use passkey::crypto::rust_crypto::RustCryptoBackend;
-use passkey::types::Passkey;
 use passkey::types::ctap2::{Aaguid, Ctap2Error};
 use passkey::types::webauthn::{CredentialCreationOptions, CredentialRequestOptions};
-use serde_json::{Value, json};
+use passkey::types::Passkey;
+use serde_json::{json, Value};
 use webauthn_rs::prelude::Url;
 
 const ORIGIN: &str = "https://maison.example.com";
@@ -36,7 +36,10 @@ impl UserValidationMethod for Verified {
         presence: bool,
         verification: bool,
     ) -> Result<UserCheck, Ctap2Error> {
-        Ok(UserCheck { presence, verification })
+        Ok(UserCheck {
+            presence,
+            verification,
+        })
     }
 
     fn is_verification_enabled(&self) -> Option<bool> {
@@ -49,7 +52,10 @@ impl UserValidationMethod for Verified {
 }
 
 /// A device with its passkey provider: it keeps one passkey for the site.
-struct Device(Client<Option<Passkey>, Verified, RustCryptoBackend, public_suffix::PublicSuffixList, ()>, &'static str);
+struct Device(
+    Client<Option<Passkey>, Verified, RustCryptoBackend, public_suffix::PublicSuffixList, ()>,
+    &'static str,
+);
 
 impl Device {
     fn new() -> Self {
@@ -58,20 +64,36 @@ impl Device {
 
     /// A device used from another page (a look-alike subdomain, say).
     fn at(origin: &'static str) -> Self {
-        Device(Client::new(Authenticator::new(Aaguid::new_empty(), None, Verified, RustCryptoBackend)), origin)
+        Device(
+            Client::new(Authenticator::new(
+                Aaguid::new_empty(),
+                None,
+                Verified,
+                RustCryptoBackend,
+            )),
+            origin,
+        )
     }
 
     /// `navigator.credentials.create()`, then `toJSON()`.
     async fn create(&mut self, options: &Value) -> Value {
         let request: CredentialCreationOptions = serde_json::from_value(options.clone()).unwrap();
-        let created = self.0.register(Url::parse(self.1).unwrap(), request, DefaultClientData).await.unwrap();
+        let created = self
+            .0
+            .register(Url::parse(self.1).unwrap(), request, DefaultClientData)
+            .await
+            .unwrap();
         serde_json::to_value(created).unwrap()
     }
 
     /// `navigator.credentials.get()`, then `toJSON()`.
     async fn get(&mut self, options: &Value) -> Value {
         let request: CredentialRequestOptions = serde_json::from_value(options.clone()).unwrap();
-        let got = self.0.authenticate(Url::parse(self.1).unwrap(), request, DefaultClientData).await.unwrap();
+        let got = self
+            .0
+            .authenticate(Url::parse(self.1).unwrap(), request, DefaultClientData)
+            .await
+            .unwrap();
         serde_json::to_value(got).unwrap()
     }
 }
@@ -84,16 +106,34 @@ struct Browser {
 
 impl Browser {
     fn new(app: &Router) -> Self {
-        Browser { app: app.clone(), cookies: BTreeMap::new() }
+        Browser {
+            app: app.clone(),
+            cookies: BTreeMap::new(),
+        }
     }
 
-    async fn send(&mut self, method: Method, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+    async fn send(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut request = common::request(method, path, None, body);
-        let jar = self.cookies.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ");
+        let jar = self
+            .cookies
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; ");
         if !jar.is_empty() {
             request.headers_mut().insert("cookie", jar.parse().unwrap());
         }
-        request.headers_mut().insert("user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X)".parse().unwrap());
+        request.headers_mut().insert(
+            "user-agent",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X)"
+                .parse()
+                .unwrap(),
+        );
         let (status, headers, json) = common::respond(&self.app, request).await;
         for set in headers.get_all("set-cookie") {
             let (pair, _) = set.to_str().unwrap().split_once(';').unwrap();
@@ -117,10 +157,16 @@ impl Browser {
 
     /// Registration, start to finish.
     async fn register(&mut self, device: &mut Device, invite: Option<&str>) -> (StatusCode, Value) {
-        let (s, start) = self.post("/api/passkeys/register/start", json!({ "invite": invite })).await;
+        let (s, start) = self
+            .post("/api/passkeys/register/start", json!({ "invite": invite }))
+            .await;
         assert_eq!(s, StatusCode::OK, "{start}");
         let credential = device.create(&start["options"]).await;
-        self.post("/api/passkeys/register/finish", json!({ "ceremony": start["ceremony"], "credential": credential })).await
+        self.post(
+            "/api/passkeys/register/finish",
+            json!({ "ceremony": start["ceremony"], "credential": credential }),
+        )
+        .await
     }
 
     /// Sign-in with whichever passkey the device holds.
@@ -128,7 +174,11 @@ impl Browser {
         let (s, start) = self.post("/api/passkeys/login/start", json!({})).await;
         assert_eq!(s, StatusCode::OK, "{start}");
         let credential = device.get(&start["options"]).await;
-        self.post("/api/passkeys/login/finish", json!({ "ceremony": start["ceremony"], "credential": credential })).await
+        self.post(
+            "/api/passkeys/login/finish",
+            json!({ "ceremony": start["ceremony"], "credential": credential }),
+        )
+        .await
     }
 
     async fn whoami(&mut self) -> Option<String> {
@@ -146,7 +196,10 @@ fn nobody(name: &str) -> Config {
 
 /// The app on a fresh root, reached at `ORIGIN`, and the first invitation (as the CLI makes it).
 async fn house() -> (Router, Config, String) {
-    let config = Config { public_url: Some(ORIGIN.into()), ..nobody("maison-passkeys") };
+    let config = Config {
+        public_url: Some(ORIGIN.into()),
+        ..nobody("maison-passkeys")
+    };
     let app = common::app(config.clone());
     let link = invite(&config, "leonard", "Léonard", true).await;
     (app, config, link)
@@ -154,8 +207,18 @@ async fn house() -> (Router, Config, String) {
 
 async fn invite(config: &Config, person: &str, name: &str, admin: bool) -> String {
     let people = maison_backend::people::People::new(&config.auth_path);
-    let created = maison_backend::routes::passkeys::new_invite(&people, ORIGIN, person, name, admin, None).await.unwrap();
-    created.url.rsplit('/').next().unwrap().to_string()
+    let created =
+        maison_backend::routes::passkeys::new_invite(&people, ORIGIN, person, name, admin, None)
+            .await
+            .unwrap();
+    token_of(&created.url)
+}
+
+/// The token an invitation link carries, in its fragment (`/invite#<token>`).
+fn token_of(link: &str) -> String {
+    let (page, token) = link.split_once('#').expect("a fragment");
+    assert!(page.ends_with("/invite"), "{link}");
+    token.to_string()
 }
 
 #[tokio::test]
@@ -164,18 +227,38 @@ async fn an_invitation_registers_a_passkey_that_signs_in_without_a_name() {
     let mut phone = Device::new();
     let mut b = Browser::new(&app);
 
-    let (s, greeting) = b.get(&format!("/api/invites/{token}")).await;
-    assert_eq!((s, greeting["name"].as_str()), (StatusCode::OK, Some("Léonard")));
+    let (s, greeting) = b
+        .post("/api/invites/greet", json!({ "token": token }))
+        .await;
+    assert_eq!(
+        (s, greeting["name"].as_str()),
+        (StatusCode::OK, Some("Léonard"))
+    );
 
     let (s, registered) = b.register(&mut phone, Some(&token)).await;
     assert_eq!(s, StatusCode::OK, "{registered}");
-    assert_eq!(registered["user"], json!({ "id": "leonard", "name": "Léonard", "role": "admin" }));
-    assert_eq!(registered["passkey"]["name"], "iPhone", "named after the device");
-    assert_eq!(b.whoami().await.as_deref(), Some("leonard"), "signed in by the registration");
+    assert_eq!(
+        registered["user"],
+        json!({ "id": "leonard", "name": "Léonard", "role": "admin" })
+    );
+    assert_eq!(
+        registered["passkey"]["name"], "iPhone",
+        "named after the device"
+    );
+    assert_eq!(
+        b.whoami().await.as_deref(),
+        Some("leonard"),
+        "signed in by the registration"
+    );
 
     // the link is spent
-    let (s, v) = b.get(&format!("/api/invites/{token}")).await;
-    assert_eq!((s, v["code"].as_str()), (StatusCode::NOT_FOUND, Some("invite_invalid")));
+    let (s, v) = b
+        .post("/api/invites/greet", json!({ "token": token }))
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("invite_invalid"))
+    );
 
     // out, then in again: no name, no password
     b.post("/api/auth/logout", json!({})).await;
@@ -187,7 +270,31 @@ async fn an_invitation_registers_a_passkey_that_signs_in_without_a_name() {
 
     // the refresh token rotates and still knows who
     let (s, v) = b.post("/api/auth/refresh", json!({})).await;
-    assert_eq!((s, v["user"]["name"].as_str()), (StatusCode::OK, Some("Léonard")));
+    assert_eq!(
+        (s, v["user"]["name"].as_str()),
+        (StatusCode::OK, Some("Léonard"))
+    );
+
+    // signing in again from this browser ends the sign-in it held: its refresh token is spent
+    let held = b.cookies["maison_refresh"].clone();
+    assert_eq!(b.login(&mut phone).await.0, StatusCode::OK);
+    let mut copy = Browser::new(&app);
+    copy.cookies.insert("maison_refresh".into(), held);
+    assert_eq!(
+        copy.post("/api/auth/refresh", json!({})).await.0,
+        StatusCode::UNAUTHORIZED,
+        "the previous sign-in's token died with the new sign-in"
+    );
+    let (_, sessions) = b.get("/api/auth/sessions").await;
+    let sessions = sessions["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "one sign-in open: {sessions:?}");
+    assert_eq!(
+        (
+            sessions[0]["current"].as_bool(),
+            sessions[0]["device"].as_str()
+        ),
+        (Some(true), Some("iPhone"))
+    );
 }
 
 #[tokio::test]
@@ -200,16 +307,30 @@ async fn a_ceremony_answers_once_and_a_lookalike_page_gets_nothing() {
     let (_, start) = b.post("/api/passkeys/login/start", json!({})).await;
     let credential = phone.get(&start["options"]).await;
     let finish = json!({ "ceremony": start["ceremony"], "credential": credential });
-    assert_eq!(b.post("/api/passkeys/login/finish", finish.clone()).await.0, StatusCode::OK);
+    assert_eq!(
+        b.post("/api/passkeys/login/finish", finish.clone()).await.0,
+        StatusCode::OK
+    );
     let (s, v) = b.post("/api/passkeys/login/finish", finish).await;
-    assert_eq!((s, v["code"].as_str()), (StatusCode::BAD_REQUEST, Some("ceremony_expired")), "single use");
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("ceremony_expired")),
+        "single use"
+    );
 
     // a page on a look-alike origin: its passkey is not for this site
     let mut elsewhere = Device::at("https://maison.example.com.evil.example");
     let (_, start) = b.post("/api/passkeys/register/start", json!({})).await;
-    let request: CredentialCreationOptions = serde_json::from_value(start["options"].clone()).unwrap();
-    let refused = elsewhere.0.register(Url::parse(elsewhere.1).unwrap(), request, DefaultClientData).await;
-    assert!(refused.is_err(), "the client refuses an RP ID that is not its origin's");
+    let request: CredentialCreationOptions =
+        serde_json::from_value(start["options"].clone()).unwrap();
+    let refused = elsewhere
+        .0
+        .register(Url::parse(elsewhere.1).unwrap(), request, DefaultClientData)
+        .await;
+    assert!(
+        refused.is_err(),
+        "the client refuses an RP ID that is not its origin's"
+    );
 }
 
 #[tokio::test]
@@ -224,29 +345,70 @@ async fn more_passkeys_the_last_one_stays_and_registered_ones_are_excluded() {
     let (s, v) = b.register(&mut laptop, None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let (_, keys) = b.get("/api/passkeys").await;
-    let ids: Vec<String> = keys.as_array().unwrap().iter().map(|k| k["id"].as_str().unwrap().to_string()).collect();
+    let ids: Vec<String> = keys["passkeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap().to_string())
+        .collect();
     assert_eq!(ids.len(), 2);
 
     // the same device again: the options exclude both, which the browser enforces (e2e)
     let (_, start) = b.post("/api/passkeys/register/start", json!({})).await;
-    assert_eq!(start["options"]["publicKey"]["excludeCredentials"].as_array().map(Vec::len), Some(2));
-    assert_eq!(start["options"]["publicKey"]["authenticatorSelection"]["residentKey"], "required");
+    assert_eq!(
+        start["options"]["publicKey"]["excludeCredentials"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        start["options"]["publicKey"]["authenticatorSelection"]["residentKey"],
+        "required"
+    );
 
     // renamed, then removed; the last one cannot go
-    let (s, v) = b.send(Method::PATCH, &format!("/api/passkeys/{}", ids[1]), Some(json!({ "name": "Mac" }))).await;
+    let (s, v) = b
+        .send(
+            Method::PATCH,
+            &format!("/api/passkeys/{}", ids[1]),
+            Some(json!({ "name": "Mac" })),
+        )
+        .await;
     assert_eq!((s, v["name"].as_str()), (StatusCode::OK, Some("Mac")));
-    assert_eq!(b.send(Method::DELETE, &format!("/api/passkeys/{}", ids[0]), None).await.0, StatusCode::NO_CONTENT);
-    let (s, v) = b.send(Method::DELETE, &format!("/api/passkeys/{}", ids[1]), None).await;
-    assert_eq!((s, v["code"].as_str()), (StatusCode::CONFLICT, Some("last_passkey")));
-    assert_eq!(b.whoami().await.as_deref(), Some("leonard"), "this browser stays signed in");
+    assert_eq!(
+        b.send(Method::DELETE, &format!("/api/passkeys/{}", ids[0]), None)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let (s, v) = b
+        .send(Method::DELETE, &format!("/api/passkeys/{}", ids[1]), None)
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("last_passkey"))
+    );
+    assert_eq!(
+        b.whoami().await.as_deref(),
+        Some("leonard"),
+        "this browser stays signed in"
+    );
 
     // the removed passkey no longer signs in: the app tells the device to forget it
     let (s, v) = Browser::new(&app).login(&mut phone).await;
-    assert_eq!((s, v["code"].as_str()), (StatusCode::NOT_FOUND, Some("unknown_passkey")));
-    assert_eq!(Browser::new(&app).login(&mut laptop).await.0, StatusCode::OK);
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("unknown_passkey"))
+    );
+    assert_eq!(
+        Browser::new(&app).login(&mut laptop).await.0,
+        StatusCode::OK
+    );
 
     // not signed in: no passkey to add
-    let (s, _) = Browser::new(&app).post("/api/passkeys/register/start", json!({})).await;
+    let (s, _) = Browser::new(&app)
+        .post("/api/passkeys/register/start", json!({}))
+        .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
@@ -259,51 +421,166 @@ async fn admins_invite_and_a_member_cannot() {
     let (s, created) = b.post("/api/invites", json!({ "name": "Alex" })).await;
     assert_eq!(s, StatusCode::OK, "{created}");
     let link = created["url"].as_str().unwrap();
-    assert!(link.starts_with(&format!("{ORIGIN}/invite/")));
+    assert!(
+        link.starts_with(&format!("{ORIGIN}/invite#")),
+        "the token in the fragment, never in an address: {link}"
+    );
     let (_, pending) = b.get("/api/invites").await;
-    assert_eq!(pending[0]["person"], "alex");
+    assert_eq!(pending["invites"][0]["person"], "alex");
 
     let mut alex = Browser::new(&app);
-    let (s, v) = alex.register(&mut Device::new(), link.rsplit('/').next()).await;
-    assert_eq!((s, v["user"]["role"].as_str()), (StatusCode::OK, Some("member")));
+    let (s, v) = alex
+        .register(&mut Device::new(), Some(&token_of(link)))
+        .await;
+    assert_eq!(
+        (s, v["user"]["role"].as_str()),
+        (StatusCode::OK, Some("member"))
+    );
     assert_eq!(alex.get("/api/invites").await.0, StatusCode::FORBIDDEN);
-    assert_eq!(alex.post("/api/invites", json!({ "name": "Eve" })).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        alex.post("/api/invites", json!({ "name": "Eve" })).await.0,
+        StatusCode::FORBIDDEN
+    );
 
     // lost every passkey: a new invitation for the same person gives the way back
     let again = invite(&config, "alex", "Alex", false).await;
     let mut new_phone = Device::new();
-    let (s, v) = Browser::new(&app).register(&mut new_phone, Some(&again)).await;
-    assert_eq!((s, v["user"]["id"].as_str()), (StatusCode::OK, Some("alex")));
-    let (_, keys) = alex.get("/api/passkeys").await;
-    assert_eq!(keys.as_array().unwrap().len(), 2, "the same person, one more passkey");
+    let mut recovered = Browser::new(&app);
+    let (s, v) = recovered.register(&mut new_phone, Some(&again)).await;
+    assert_eq!(
+        (s, v["user"]["id"].as_str()),
+        (StatusCode::OK, Some("alex"))
+    );
+    let (_, keys) = recovered.get("/api/passkeys").await;
+    assert_eq!(
+        keys["passkeys"].as_array().unwrap().len(),
+        2,
+        "the same person, one more passkey"
+    );
+    assert_eq!(
+        alex.whoami().await,
+        None,
+        "the lost phone's session (a thief's) ended with the way back in"
+    );
+    assert_eq!(
+        alex.post("/api/auth/refresh", json!({})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
 async fn passkeys_are_off_without_a_public_address() {
-    let app = common::app(Config { public_url: None, ..nobody("maison-passkeys-off") });
-    let (s, v) = Browser::new(&app).post("/api/passkeys/login/start", json!({})).await;
-    assert_eq!((s, v["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("passkey_off")));
+    let app = common::app(Config {
+        public_url: None,
+        ..nobody("maison-passkeys-off")
+    });
+    let (s, v) = Browser::new(&app)
+        .post("/api/passkeys/login/start", json!({}))
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("passkey_off"))
+    );
 }
 
 #[tokio::test]
 async fn secure_cookies_are_host_bound_and_a_replayed_refresh_token_ends_its_sign_in() {
-    let config = Config { public_url: Some(ORIGIN.into()), auth_cookie_secure: true, ..nobody("maison-passkeys-secure") };
+    let config = Config {
+        public_url: Some(ORIGIN.into()),
+        auth_cookie_secure: true,
+        ..nobody("maison-passkeys-secure")
+    };
     let app = common::app(config.clone());
     let token = invite(&config, "leonard", "Léonard", true).await;
     let mut b = Browser::new(&app);
     b.register(&mut Device::new(), Some(&token)).await;
     let names: Vec<&str> = b.cookies.keys().map(String::as_str).collect();
-    assert_eq!(names, ["__Host-maison_refresh", "__Host-maison_session"], "bound to this host, path /");
+    assert_eq!(
+        names,
+        ["__Host-maison_refresh", "__Host-maison_session"],
+        "bound to this host, path /"
+    );
 
     let first = b.cookies["__Host-maison_refresh"].clone();
-    assert_eq!(b.post("/api/auth/refresh", json!({})).await.0, StatusCode::OK);
+    assert_eq!(
+        b.post("/api/auth/refresh", json!({})).await.0,
+        StatusCode::OK
+    );
     let second = b.cookies["__Host-maison_refresh"].clone();
     assert_ne!(first, second, "rotated");
 
     // someone replays the first one: refused, and the sign-in it came from ends
     let mut thief = Browser::new(&app);
     thief.cookies.insert("__Host-maison_refresh".into(), first);
-    assert_eq!(thief.post("/api/auth/refresh", json!({})).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        thief.post("/api/auth/refresh", json!({})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let access = b.cookies["__Host-maison_session"].clone();
     b.cookies.remove("__Host-maison_session");
-    assert_eq!(b.post("/api/auth/refresh", json!({})).await.0, StatusCode::UNAUTHORIZED, "the rightful one too: sign in again");
+    assert_eq!(
+        b.post("/api/auth/refresh", json!({})).await.0,
+        StatusCode::UNAUTHORIZED,
+        "the rightful one too: sign in again"
+    );
+    let mut copied = Browser::new(&app);
+    copied
+        .cookies
+        .insert("__Host-maison_session".into(), access);
+    assert_eq!(
+        copied.whoami().await,
+        None,
+        "the replay ended that sign-in's access token too"
+    );
+}
+
+#[tokio::test]
+async fn signing_out_ends_this_sign_ins_access_token_and_clears_the_browser() {
+    let (app, _, token) = house().await;
+    let mut b = Browser::new(&app);
+    b.register(&mut Device::new(), Some(&token)).await;
+    let copy = b.cookies.clone();
+    let request = |path: &str| {
+        let mut r = common::request(Method::POST, path, None, Some(json!({})));
+        let jar = copy
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        r.headers_mut().insert("cookie", jar.parse().unwrap());
+        r
+    };
+    let (s, headers, _) = common::respond(&app, request("/api/auth/logout")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        headers.get("clear-site-data").and_then(|v| v.to_str().ok()),
+        Some("\"storage\"")
+    );
+    // someone kept a copy of the cookies: the access token died with the sign-in
+    let (s, _, _) = common::respond(&app, request("/api/auth/verify")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_old_session_signs_in_again_after_its_thirty_days() {
+    let (app, config, token) = house().await;
+    let mut b = Browser::new(&app);
+    b.register(&mut Device::new(), Some(&token)).await;
+    // the refresh family's passkey sign-in, a month and a day ago
+    let path = &config.refresh_tokens_path;
+    let mut tokens: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let day = 86_400_000i64;
+    for entry in tokens["live"].as_object_mut().unwrap().values_mut() {
+        entry["authMs"] = json!(chrono::Utc::now().timestamp_millis() - 31 * day);
+    }
+    std::fs::write(path, tokens.to_string()).unwrap();
+    // a fresh process reads it (a restart)
+    let app = common::app(config);
+    let mut b2 = Browser::new(&app);
+    b2.cookies = b.cookies.clone();
+    assert_eq!(
+        b2.post("/api/auth/refresh", json!({})).await.0,
+        StatusCode::UNAUTHORIZED,
+        "past SESSION_MAX_DAYS: a passkey again"
+    );
 }

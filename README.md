@@ -20,7 +20,18 @@ A self-hosted home dashboard: one Rust binary on a 2012 Raspberry Pi 1.
 | Sign-in | passkeys only, by invitation, no password | username and password (optional MFA) |
 | Radios | Zigbee (native EZSP), Matter commissioning, infrared: built in, nothing to install | Matter needs the Matter Server add-on; Zigbee via ZHA or the Zigbee2MQTT add-on |
 
-Controls Hue and Zigbee lamps (and the Hue dimmer), Matter roller shutters that follow the sun, Meross plugs, Tuya cat devices (feeder, fountain, litter box), a Mitsubishi air conditioner over IR, a Philips TV and an Android TV box, a set-top-box remote turned into a house remote, a Nabaztag, and EDF Tempo with a 7-day forecast.
+Controls Hue and Zigbee lamps (and the Hue dimmer), Matter roller shutters that follow the sun, Meross plugs, Tuya cat devices (feeder, fountain, litter box), a Mitsubishi air conditioner over IR, a Philips TV and an Android TV box, a set-top-box remote turned into a house remote, a Nabaztag, and EDF Tempo with a 7-day forecast. Changes are pushed to every open page and screen as they happen (server-sent events); polls are only a safety net.
+
+## On the wall
+
+A Frameo photo frame (RK3126, four Cortex-A7, 1 GB, an 800×1280 touch panel) turned into the house's wall screen: no Android, no browser.
+
+- **Mainline Linux 7.2 and Debian trixie**, built here (`frame/linux`): our device tree, the panel, the touch, the Wi-Fi; the system a read-only squashfs on the eMMC. It boots by itself on its own power, a power cut included; the vendor's Android stays whole in the recovery slot.
+- **A native app in Rust**, SDL3 under cage on the GPU (`frame/ui`): the web dashboard's layout, words, colours, fonts and icons, generated from the same sources, drawn only when something changes. Every group of the dashboard, « Maintenant », and a Tempo page.
+- **A wall screen of the house**: paired once from an admin's phone, then in by its own cookie; it dims after two minutes without a finger, nearly dark at night, and the first touch only wakes it.
+- **Kept from the Mac**: updates over the Wi-Fi with their SHA-256 checked, `ssh root@maison-frame.local` by key only, a journal that survives power cuts, its boot steps on screen.
+
+How it was done and how to keep it: [docs/frame.md](docs/frame.md); the app inside: [frame/ui/ARCHITECTURE.md](frame/ui/ARCHITECTURE.md).
 
 ## Develop
 
@@ -30,8 +41,9 @@ Needs Rust and Bun.
 cp .env.example .env                      # set JWT_SECRET: openssl rand -hex 32
 PUBLIC_URL=http://localhost:5173 make backend   # API on :3033
 make web                                  # http://localhost:5173
-make test                                 # cargo test, web checks, Vitest
-cd e2e && bun install && bun run all      # Playwright + axe, after cargo build and web build
+make test                                 # fmt, clippy, tests (api, backend, frame/ui), web checks, Vitest
+cd e2e && bun install && bun run all      # Playwright + axe (the frame's app too), after cargo build and web build
+frame/ui/build.sh && frame/linux/rootfs.sh && frame/linux/try.sh --install   # the wall screen: build, then update it over the Wi-Fi
 ```
 
 Sign in with an invitation: `PUBLIC_URL=http://localhost:5173 cargo run --manifest-path backend/Cargo.toml -- invite me --name Me --admin`.

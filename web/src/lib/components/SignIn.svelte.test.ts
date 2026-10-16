@@ -25,6 +25,16 @@ describe('SignIn', () => {
 		await expect.element(page.getByRole('textbox')).not.toBeInTheDocument();
 	});
 
+	it('offers the way for a wall screen: its pairing code, and back', async () => {
+		stubApi({ 'POST /screens/pairing': { success: true, code: 'ABCD-EFGH', secret: 's', expiresInMs: 600_000, pollMs: 60_000 } });
+		await render(SignIn);
+		await page.getByRole('button', { name: m.screen_pair_button() }).click();
+		await expect.element(page.getByRole('heading', { level: 1, name: m.screen_pair_title() })).toBeVisible();
+		await expect.element(page.getByText('ABCD-EFGH')).toBeVisible();
+		await page.getByRole('button', { name: m.screen_pair_back() }).click();
+		await expect.element(button()).toBeVisible();
+	});
+
 	it('stands in the door: Maison’s name and promise beside it', async () => {
 		await render(SignIn);
 		await expect.element(page.getByRole('region', { name: m.pk_signin_title() })).toBeVisible();
@@ -55,7 +65,7 @@ describe('SignIn', () => {
 		stubApi({ ...passkeyRoutes(), 'POST /passkeys/login/finish': json({ error: 'x', code: 'passkey_rejected' }, 400) });
 		await render(SignIn);
 		await button().click();
-		await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_rejected());
+		await expect.element(page.getByRole('alert')).toHaveTextContent(m.code_passkey_rejected());
 	});
 
 	it('cannot be pressed twice while the device waits', async () => {
@@ -71,5 +81,19 @@ describe('SignIn', () => {
 		await render(SignIn);
 		await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_insecure());
 		await expect.element(button()).not.toBeInTheDocument();
+	});
+
+	it('in a browser without passkeys (a wall screen’s WPE), says so, and still offers the way for a screen', async () => {
+		const kept = Object.getOwnPropertyDescriptor(window, 'PublicKeyCredential');
+		// @ts-expect-error a browser that has none
+		delete window.PublicKeyCredential;
+		try {
+			await render(SignIn);
+			await expect.element(page.getByRole('alert')).toHaveTextContent(m.pk_unsupported());
+			await expect.element(button()).not.toBeInTheDocument();
+			await expect.element(page.getByRole('button', { name: m.screen_pair_button() })).toBeVisible();
+		} finally {
+			if (kept) Object.defineProperty(window, 'PublicKeyCredential', kept);
+		}
 	});
 });

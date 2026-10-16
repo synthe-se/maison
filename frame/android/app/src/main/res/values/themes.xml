@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<!-- The brand's petrol (web/static/brand.svg) while Gecko starts or Maison cannot be reached. -->
+	<color name="brand">#0E5E68</color>
+
+	<style name="Theme.Frame" parent="android:Theme.Material.NoActionBar.Fullscreen">
+		<item name="android:windowBackground">@color/brand</item>
+		<item name="android:colorPrimaryDark">@color/brand</item>
+		<item name="android:windowAnimationStyle">@null</item>
+	</style>
+</resources>

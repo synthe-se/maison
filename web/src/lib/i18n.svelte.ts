@@ -1,6 +1,9 @@
-// Locale switching without reload, and the reader's formats.
+// Locale switching without reload, and the reader's formats: numbers, dates and times, lists,
+// durations. Whatever depends on today reads the shared clock (`time.now`): it rolls over at
+// midnight, and a test sets the moment it needs.
 
 import { m } from '#lib/paraglide/messages.js';
+import { time } from '#lib/clock.svelte.ts';
 import {
 	getLocale as resolveLocale,
 	isLocale,
@@ -76,16 +79,25 @@ export function inSentence(text: string): string {
 	return text.charAt(0).toLocaleLowerCase(current.locale) + text.slice(1);
 }
 
+/** What stands between two facts on one line (« 42 W · 0,7 c€/h »), for markup that puts an
+ * element on either side. */
+export const separator = (): string => m.facts_separator();
+
+/** Facts side by side on one line (« 42 W · 0,7 c€/h »), the empty ones left out. */
+export function facts(...parts: (string | false | null | undefined)[]): string {
+	return parts.filter((p): p is string => !!p).join(separator());
+}
+
 /** The window's title: the page's, then Maison's (« Salon · Maison »); Maison's alone at home. */
 export function pageTitle(title?: string): string {
 	const brand = m.branding_name();
-	return !title || title === brand ? brand : `${title} · ${brand}`;
+	return !title || title === brand ? brand : facts(title, brand);
 }
 
 /** When something happened: the time if today, else the day and the time (« 3 oct. 21:04 »). */
 export function when(d: Date | number | string): string {
 	const at = new Date(d);
-	return new Date().toDateString() === at.toDateString()
+	return time.now.toDateString() === at.toDateString()
 		? clock(at)
 		: date(at, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 }
@@ -93,7 +105,7 @@ export function when(d: Date | number | string): string {
 // ── calendar days, as devices and RTE write them (« 2026-11-12 »): local days, never UTC ──
 
 /** « 2026-11-12 » → that day at local midnight (`new Date(iso)` would be UTC midnight). */
-export function localDay(iso: string): Date {
+function localDay(iso: string): Date {
 	const [y, mo, d] = iso.slice(0, 10).split('-').map(Number);
 	return new Date(y, mo - 1, d);
 }
@@ -105,7 +117,7 @@ export function isoDay(d: Date): string {
 
 /** The local day `offset` days from today, written « 2026-11-12 ». */
 export function dayFromToday(offset: number): string {
-	const d = new Date();
+	const d = new Date(time.now);
 	d.setDate(d.getDate() + offset);
 	return isoDay(d);
 }
@@ -131,4 +143,50 @@ export function longDay(iso: string): string {
 export function weekday(index: number, form: 'long' | 'short'): string {
 	// 3 January 2000 was a Monday
 	return date(new Date(2000, 0, 3 + index), { weekday: form });
+}
+
+// ── durations: « 45 s », « 3 min 20 s », « 1 h 30 », « 2 j 4 h »; two units at most, the units
+// from the messages ──
+
+const MINUTE = 60;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** A duration given in seconds. */
+export function formatDuration(seconds: number): string {
+	const t = Math.max(0, Math.round(seconds));
+	if (t < MINUTE) return m.duration_seconds({ s: t });
+	if (t < HOUR) {
+		const min = Math.floor(t / MINUTE);
+		const s = t % MINUTE;
+		return s === 0 ? m.duration_minutes({ m: min }) : m.duration_minutes_seconds({ m: min, s });
+	}
+	if (t < DAY) {
+		const h = Math.floor(t / HOUR);
+		const min = Math.floor((t % HOUR) / MINUTE);
+		return min === 0 ? m.duration_hours({ h }) : m.duration_hours_minutes({ h, m: min, mm: String(min).padStart(2, '0') });
+	}
+	const d = Math.floor(t / DAY);
+	const h = Math.floor((t % DAY) / HOUR);
+	return h === 0 ? m.duration_days({ d }) : m.duration_days_hours({ d, h });
+}
+
+/** A duration given in minutes (device counters). */
+export function formatMinutes(minutes: number): string {
+	return formatDuration(minutes * MINUTE);
+}
+
+/**
+ * Since when a device is out of reach, for every tile alike (docs/ux.md § 4):
+ * « Injoignable depuis 12 min » within the hour, then the time it was last heard
+ * (« Injoignable depuis 14:20 », with the day when not today), or just « Injoignable »
+ * when it never answered. `at`: ISO text or ms since the epoch; 0 or null is never.
+ */
+export function unreachableSince(at: string | number | null | undefined): string {
+	if (!at) return m.state_unreachable();
+	const ms = typeof at === 'number' ? at : new Date(at).getTime();
+	const minutes = Math.max(1, Math.round((time.now.getTime() - ms) / 60_000));
+	return minutes < HOUR / MINUTE
+		? m.state_unreachable_for({ duration: formatMinutes(minutes) })
+		: m.state_unreachable_since({ when: when(ms) });
 }

@@ -47,16 +47,16 @@
 		display: grid;
 		place-items: center;
 		padding: var(--s-6) var(--s-4) var(--s-5);
-		background: var(--raw-petrol);
-		color: var(--raw-cloud);
+		background: var(--brand);
+		color: var(--on-brand);
 	}
 	.trail {
 		position: absolute;
 		inset: 0;
 		width: 100%;
 		height: 100%;
-		opacity: 0.16;
-		color: var(--raw-cloud);
+		opacity: var(--faint-opacity);
+		color: var(--on-brand);
 	}
 	.id {
 		position: relative;
@@ -69,7 +69,7 @@
 	.mark {
 		display: block;
 		border-radius: var(--radius-2xl);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--raw-cloud) 35%, transparent);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--on-brand) 35%, transparent);
 	}
 	.name {
 		margin: 0;
@@ -78,7 +78,7 @@
 	.promise {
 		margin: 0;
 		font: var(--t-body);
-		opacity: 0.9;
+		opacity: var(--quiet-opacity);
 		max-width: 26rem;
 		text-wrap: balance;
 	}

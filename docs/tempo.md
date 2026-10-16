@@ -6,7 +6,10 @@ days left, the prices, and a forecast to J+7 that is labelled as one.
 
 Code: `backend/src/tempo/` (`rules.rs` the rules, `forecast.rs` the model, `inputs.rs`
 weather and consumption, `source.rs` the colours, `tariffs.rs` the prices, `mod.rs` the
-service), `backend/src/bin/fit_tempo.rs` (the fitter, on the Mac only).
+service), `backend/src/bin/fit_tempo.rs` (the fitter, on the Mac only). What `/api/tempo`
+answers is `api/src/tempo.rs`'s types; the price in force at a moment (the Tempo day from
+06:00, peak 06:00–22:00) is `Today::price_at` there, which the wall frame reads; the web app
+says the same rule in `web/src/lib/devices/tempo/price.ts`.
 
 ## Sources
 

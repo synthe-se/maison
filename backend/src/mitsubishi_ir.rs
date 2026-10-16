@@ -16,9 +16,8 @@ pub const MITSUBISHI_FRAME_DURATIONS: usize = 2 + (MITSUBISHI_STATE_LEN * 8 * 2)
 /// The Mitsubishi clock counts in 10-minute ticks; one day is 144 ticks.
 const TICKS_PER_DAY: u16 = 144;
 
-/// Temperature setpoint bounds supported by the protocol (°C).
-pub const MIN_TEMPERATURE_C: u8 = 16;
-pub const MAX_TEMPERATURE_C: u8 = 31;
+/// Temperature setpoint bounds supported by the protocol (°C), said in maison-api.
+pub use maison_api::climate::{MAX_TEMPERATURE_C, MIN_TEMPERATURE_C};
 
 /// A setting's values, said once: its command token and its code in the frame. The parser,
 /// the encoder, the serde form (the API, `climate-state.json`) and the decoder all read the
@@ -30,19 +29,31 @@ pub trait Setting: Copy + Eq + 'static {
     const TABLE: &'static [(Self, &'static str, u8)];
 
     fn token(self) -> &'static str {
-        Self::TABLE.iter().find(|(value, ..)| *value == self).map_or("", |(_, token, _)| token)
+        Self::TABLE
+            .iter()
+            .find(|(value, ..)| *value == self)
+            .map_or("", |(_, token, _)| token)
     }
 
     fn code(self) -> u8 {
-        Self::TABLE.iter().find(|(value, ..)| *value == self).map_or(0, |(.., code)| *code)
+        Self::TABLE
+            .iter()
+            .find(|(value, ..)| *value == self)
+            .map_or(0, |(.., code)| *code)
     }
 
     fn from_token(token: &str) -> Option<Self> {
-        Self::TABLE.iter().find(|(_, t, _)| *t == token).map(|(value, ..)| *value)
+        Self::TABLE
+            .iter()
+            .find(|(_, t, _)| *t == token)
+            .map(|(value, ..)| *value)
     }
 
     fn from_code(code: u8) -> Option<Self> {
-        Self::TABLE.iter().find(|(.., c)| *c == code).map(|(value, ..)| *value)
+        Self::TABLE
+            .iter()
+            .find(|(.., c)| *c == code)
+            .map(|(value, ..)| *value)
     }
 
     /// The value of a command token, or why not.
@@ -261,7 +272,22 @@ pub fn encode_mitsubishi_command(
 pub fn current_clock_ticks() -> u8 {
     use chrono::Timelike;
     let now = chrono::Utc::now().with_timezone(&crate::util::HOUSE_TZ);
-    (now.hour() * 6 + now.minute() / 10) as u8
+    clock_ticks(now.hour() * 60 + now.minute())
+}
+
+/// Minutes since midnight as the unit's clock: 10-minute ticks (the minutes below ten
+/// dropped).
+fn clock_ticks(minutes_of_day: u32) -> u8 {
+    // below 24 × 60: 143 at most
+    (minutes_of_day % (24 * 60) / 10) as u8
+}
+
+/// A clock byte read back as `(hours, minutes)`; 0 is « unset ».
+pub fn clock_of(ticks: u8) -> Option<(u8, u8)> {
+    (ticks != 0).then(|| {
+        let minutes = u16::from(ticks) * 10;
+        ((minutes / 60) as u8, (minutes % 60) as u8)
+    })
 }
 
 /// The settings encoded in a structured `state-*` command, in API-friendly form. This is
@@ -315,7 +341,7 @@ impl ClimateSettings {
 }
 
 /// The command that switches the unit off (it carries no settings).
-pub const OFF_COMMAND: &str = "state-off";
+pub use maison_api::climate::OFF_COMMAND;
 
 /// Parses a structured command back into its settings. Returns `None` for
 /// `state-off`, non-structured commands, and anything unparseable.
@@ -389,7 +415,13 @@ fn parse_state_command(command: &str) -> Result<MitsubishiState, String> {
                     && tokens.get(index + 1).copied() == Some("max");
                 state.wide_vane = if max {
                     index += 1;
-                    WideVane::parse(side.map(|side| if side == "left" { "left-max" } else { "right-max" }))?
+                    WideVane::parse(side.map(|side| {
+                        if side == "left" {
+                            "left-max"
+                        } else {
+                            "right-max"
+                        }
+                    }))?
                 } else {
                     WideVane::parse(side)?
                 };
@@ -473,28 +505,17 @@ fn parse_toggle(token: Option<&str>, label: &str) -> Result<bool, String> {
     }
 }
 
+/// `HH-MM` (`start-06-00`), a time the unit's 10-minute clock can hold.
 fn parse_clock(tokens: &[&str], index: &mut usize) -> Result<u8, String> {
-    let hours = tokens
-        .get(*index)
-        .ok_or_else(|| "missing clock hour".to_string())?
-        .parse::<u8>()
-        .map_err(|_| "invalid clock hour".to_string())?;
-    *index += 1;
-    let minutes = tokens
-        .get(*index)
-        .ok_or_else(|| "missing clock minute".to_string())?
-        .parse::<u8>()
-        .map_err(|_| "invalid clock minute".to_string())?;
-    *index += 1;
-
-    if hours > 23 || minutes > 59 || minutes % 10 != 0 {
-        return Err(format!(
-            "unsupported clock value {:02}:{:02}",
-            hours, minutes
-        ));
-    }
-
-    Ok(hours * 6 + minutes / 10)
+    let (hours, minutes) = match tokens.get(*index..*index + 2) {
+        Some([hours, minutes]) => (*hours, *minutes),
+        _ => return Err("a clock time is HH-MM".to_string()),
+    };
+    *index += 2;
+    let minutes = crate::util::minutes_of_day(&format!("{hours}:{minutes}"))
+        .filter(|minutes| minutes % 10 == 0)
+        .ok_or_else(|| format!("unsupported clock value {hours}:{minutes}"))?;
+    Ok(clock_ticks(u32::from(minutes)))
 }
 
 fn parse_stop_in_minutes(token: Option<&str>) -> Result<u8, String> {
@@ -523,7 +544,7 @@ fn build_state_bytes(state: MitsubishiState) -> [u8; MITSUBISHI_STATE_LEN] {
     bytes[..5].copy_from_slice(&[0x23, 0xCB, 0x26, 0x01, 0x00]);
     bytes[5] = if state.power { 0x20 } else { 0x00 };
     bytes[6] = (state.mode.code() << 3) | if state.i_see { 0x40 } else { 0x00 };
-    bytes[7] = state.temperature_c.saturating_sub(16);
+    bytes[7] = state.temperature_c.saturating_sub(MIN_TEMPERATURE_C);
     bytes[8] = (state.wide_vane.code() << 4) | mode_nibble(state.mode);
     // bit 6: the vane is set
     bytes[9] = state.fan.code() | 0x40 | (state.vane.code() << 3);
@@ -619,12 +640,28 @@ pub struct ReadState {
     pub fan: Option<Fan>,
     pub vane: Option<Vane>,
     pub wide_vane: Option<WideVane>,
-    /// The clock bytes, in 10-minute ticks (0: unset).
+    /// The clock bytes, in 10-minute ticks (0: unset; `clock_of` reads them).
     pub clock: u8,
     pub stop_clock: u8,
     pub start_clock: u8,
     pub timer: Option<TimerMode>,
     pub econo: bool,
+    /// What only captures have shown so far: read, never sent by the backend.
+    pub weekly_timer: bool,
+    /// 0b01 indirect, 0b11 direct, 0b00 off.
+    pub direct_indirect: u8,
+    pub absence_detect: bool,
+    pub i_save_10c: bool,
+    pub natural_flow: bool,
+    pub left_vane: Option<Vane>,
+}
+
+impl ReadState {
+    /// The setpoint in °C (half degrees as the remote sends them; the encoder sends whole
+    /// ones: 16 + byte 7).
+    pub fn temperature_c(&self) -> f32 {
+        f32::from(MIN_TEMPERATURE_C) + f32::from(self.temperature_half_degrees) / 2.0
+    }
 }
 
 pub fn read_state(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> ReadState {
@@ -633,7 +670,11 @@ pub fn read_state(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> ReadState {
         mode: Mode::from_code((bytes[6] >> 3) & 0x07),
         i_see: bytes[6] & 0x40 != 0,
         temperature_half_degrees: ((bytes[7] & 0x0F) * 2) + u8::from(bytes[7] & 0x10 != 0),
-        fan: Fan::from_code(if bytes[9] & 0x80 != 0 { 0x80 } else { bytes[9] & 0x07 }),
+        fan: Fan::from_code(if bytes[9] & 0x80 != 0 {
+            0x80
+        } else {
+            bytes[9] & 0x07
+        }),
         vane: Vane::from_code((bytes[9] >> 3) & 0x07),
         wide_vane: WideVane::from_code(bytes[8] >> 4),
         clock: bytes[10],
@@ -641,6 +682,12 @@ pub fn read_state(bytes: &[u8; MITSUBISHI_STATE_LEN]) -> ReadState {
         start_clock: bytes[12],
         timer: TimerMode::from_code(bytes[13] & 0x07),
         econo: bytes[14] & 0x20 != 0,
+        weekly_timer: bytes[13] & 0x08 != 0,
+        direct_indirect: bytes[15] & 0x03,
+        absence_detect: bytes[15] & 0x04 != 0,
+        i_save_10c: bytes[15] & 0x20 != 0,
+        natural_flow: bytes[16] & 0x02 != 0,
+        left_vane: Vane::from_code((bytes[16] >> 3) & 0x07),
     }
 }
 
@@ -687,8 +734,9 @@ mod tests {
     #[test]
     fn clock_ticks_are_injected_into_the_frame() {
         // 14:30 -> 14 * 6 + 3 = 87 ticks.
-        let mut state = parse_state_command("state-cool-20-fan-auto-vane-auto-wide-center-stop-23-50")
-            .expect("state command should parse");
+        let mut state =
+            parse_state_command("state-cool-20-fan-auto-vane-auto-wide-center-stop-23-50")
+                .expect("state command should parse");
         state.clock = 87;
         let bytes = build_state_bytes(state);
 
@@ -721,8 +769,9 @@ mod tests {
         .expect("state command should generate");
         assert!(!packet.is_empty());
 
-        let mut state = parse_state_command("state-cool-20-fan-auto-vane-auto-wide-center-stopin-180")
-            .expect("state command should parse");
+        let mut state =
+            parse_state_command("state-cool-20-fan-auto-vane-auto-wide-center-stopin-180")
+                .expect("state command should parse");
         assert_eq!(state.stop_in_ticks, Some(18));
         state.clock = 138;
         state.stop_clock = Some(((state.clock as u16 + 18) % TICKS_PER_DAY) as u8);
@@ -740,7 +789,10 @@ mod tests {
             "state-cool-20-fan-auto-vane-auto-wide-center-stopin-15",
             "state-cool-20-fan-auto-vane-auto-wide-center-stopin-1440",
         ] {
-            assert!(parse_state_command(command).is_err(), "{command} should be rejected");
+            assert!(
+                parse_state_command(command).is_err(),
+                "{command} should be rejected"
+            );
         }
     }
 
@@ -809,7 +861,10 @@ mod tests {
             assert_eq!(gaps.len(), 1);
             let bytes = frames[0].bytes;
             assert_eq!(bytes[8] >> 4, code, "{token}");
-            assert_eq!(bytes[14], 0x20, "econo after the wide vane still parsed ({token})");
+            assert_eq!(
+                bytes[14], 0x20,
+                "econo after the wide vane still parsed ({token})"
+            );
             assert!(checksum_valid(&bytes));
         }
         assert!(parse_state_command("state-cool-20-fan-auto-vane-auto-wide-max").is_err());
@@ -820,7 +875,9 @@ mod tests {
     #[test]
     fn every_setting_round_trips_command_packet_and_back() {
         fn read(command: &str) -> ReadState {
-            let packet = encode_mitsubishi_command(command, 0).expect(command).expect("a state command");
+            let packet = encode_mitsubishi_command(command, 0)
+                .expect(command)
+                .expect("a state command");
             let durations = broadlink_ir::decode(&packet).expect("decodes");
             let (frames, _) = decode_frames(&durations).expect("frames");
             assert!(checksum_valid(&frames[0].bytes));
@@ -833,10 +890,18 @@ mod tests {
             assert_eq!(state.temperature_half_degrees, 8, "20 °C");
         }
         for (fan, token, _) in Fan::TABLE {
-            assert_eq!(read(&format!("state-cool-20-fan-{token}-vane-auto")).fan, Some(*fan), "{token}");
+            assert_eq!(
+                read(&format!("state-cool-20-fan-{token}-vane-auto")).fan,
+                Some(*fan),
+                "{token}"
+            );
         }
         for (vane, token, _) in Vane::TABLE {
-            assert_eq!(read(&format!("state-cool-20-fan-auto-vane-{token}")).vane, Some(*vane), "{token}");
+            assert_eq!(
+                read(&format!("state-cool-20-fan-auto-vane-{token}")).vane,
+                Some(*vane),
+                "{token}"
+            );
         }
         for (wide, token, _) in WideVane::TABLE {
             let state = read(&format!("state-cool-20-fan-auto-vane-auto-wide-{token}"));
@@ -873,14 +938,24 @@ mod tests {
             "mode": "cool", "temperature": 21, "fan": "auto", "vane": "swing",
             "econo": false, "stopInMinutes": 180
         });
-        let settings: ClimateSettings = serde_json::from_value(old.clone()).expect("old JSON reads");
-        assert_eq!((settings.mode, settings.fan, settings.vane, settings.wide), (Mode::Cool, Fan::Auto, Vane::Swing, None));
+        let settings: ClimateSettings =
+            serde_json::from_value(old.clone()).expect("old JSON reads");
+        assert_eq!(
+            (settings.mode, settings.fan, settings.vane, settings.wide),
+            (Mode::Cool, Fan::Auto, Vane::Swing, None)
+        );
         assert_eq!(serde_json::to_value(&settings).unwrap(), old);
         let level: ClimateSettings =
             serde_json::from_value(serde_json::json!({"mode": "heat", "temperature": 22, "fan": "3", "vane": "low", "wide": "left-max"}))
                 .expect("reads");
-        assert_eq!((level.fan, level.wide, level.econo, level.stop_in_minutes), (Fan::Level3, Some(WideVane::LeftMax), false, None));
-        assert!(serde_json::from_value::<ClimateSettings>(serde_json::json!({"mode": "turbo", "temperature": 20, "fan": "1", "vane": "low"})).is_err());
+        assert_eq!(
+            (level.fan, level.wide, level.econo, level.stop_in_minutes),
+            (Fan::Level3, Some(WideVane::LeftMax), false, None)
+        );
+        assert!(serde_json::from_value::<ClimateSettings>(
+            serde_json::json!({"mode": "turbo", "temperature": 20, "fan": "1", "vane": "low"})
+        )
+        .is_err());
     }
 
     #[test]
@@ -899,6 +974,34 @@ mod tests {
         bad.temperature = 21;
         bad.stop_in_minutes = Some(15);
         assert!(bad.command().is_err());
+    }
+
+    /// The clock and the setpoint read back as they were written, and the timers' times
+    /// are what the unit's 10-minute clock can hold.
+    #[test]
+    fn clocks_and_setpoints_read_back_as_written() {
+        let state = read_state(&build_state_bytes(
+            parse_state_command("state-heat-23-fan-auto-vane-auto-start-06-30-stop-23-50").unwrap(),
+        ));
+        assert_eq!(clock_of(state.start_clock), Some((6, 30)));
+        assert_eq!(clock_of(state.stop_clock), Some((23, 50)));
+        assert_eq!(state.temperature_c(), 23.0);
+        assert_eq!(clock_of(0), None, "unset");
+        assert_eq!(
+            clock_ticks(7 * 60 + 39),
+            45,
+            "the minutes below ten dropped"
+        );
+        for bad in ["06-35", "24-00", "6-30", "06"] {
+            let command = format!("state-heat-23-fan-auto-vane-auto-start-{bad}");
+            assert!(parse_state_command(&command).is_err(), "{bad}");
+        }
+        let half = ReadState {
+            temperature_half_degrees: 9,
+            ..state
+        };
+        assert_eq!(half.temperature_c(), 20.5);
+        assert!(!state.weekly_timer && state.left_vane == Some(Vane::Auto));
     }
 
     #[test]

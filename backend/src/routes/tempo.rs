@@ -3,16 +3,18 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use maison_api::tempo::{Forecast, Today};
 use serde::Deserialize;
 
 use crate::{
     error::AppError,
-    routes::Answer,
-    tempo::{Calendar, Forecast, Today},
+    routes::{Answer, Reply},
+    tempo::Calendar,
     AppState,
 };
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SeasonQuery {
     season: Option<String>,
 }
@@ -25,32 +27,29 @@ pub fn router() -> Router<AppState> {
         .route("/calendar", get(get_calendar))
 }
 
-/// The sources down and nothing on file: the cause goes to the log, the client gets a
-/// plain 503.
-fn unavailable(error: AppError) -> AppError {
-    tracing::warn!(%error, "tempo request failed");
-    AppError::service_unavailable("Tempo service temporarily unavailable")
-}
-
 async fn get_today(State(state): State<AppState>) -> Result<Json<Answer<Today>>, AppError> {
-    Ok(Answer::ok(state.tempo.today(false).await.map_err(unavailable)?))
+    Ok(Answer::ok(state.tempo.today(false).await?))
 }
 
-/// Asks every source again (harmless: members may).
+/// Asks every source again (harmless: members may), once a minute at most (the coded
+/// `too_many_attempts` else: the sources are not ours).
 async fn refresh(State(state): State<AppState>) -> Result<Json<Answer<Today>>, AppError> {
-    let today = state.tempo.today(true).await.map_err(unavailable)?;
-    state.tempo.forecast(true).await.map_err(unavailable)?;
+    state.tempo.may_force()?;
+    let today = state.tempo.today(true).await?;
+    state.tempo.forecast(true).await?;
     Ok(Answer::ok(today))
 }
 
 async fn get_forecast(State(state): State<AppState>) -> Result<Json<Answer<Forecast>>, AppError> {
-    Ok(Answer::ok(state.tempo.forecast(false).await.map_err(unavailable)?))
+    Ok(Answer::ok(state.tempo.forecast(false).await?))
 }
 
+/// A season's days; a season that is not one is the coded `invalid`.
 async fn get_calendar(
     State(state): State<AppState>,
     Query(query): Query<SeasonQuery>,
 ) -> Result<Json<Answer<Calendar>>, AppError> {
-    // a bad season is the asker's error, not the sources'
-    Ok(Answer::ok(state.tempo.calendar(query.season.as_deref()).await?))
+    Ok(Answer::ok(
+        state.tempo.calendar(query.season.as_deref()).await?,
+    ))
 }

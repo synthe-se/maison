@@ -5,17 +5,18 @@
 
 import { m } from '#lib/paraglide/messages.js';
 import { refresh } from '#lib/live.svelte.ts';
-import { ui } from '#lib/ui.svelte.ts';
 import type { Gesture } from '#lib/gesture.svelte.ts';
-import { CONFIRM, FAILURE, haptic } from '#lib/haptics.ts';
+import { CONFIRM, haptic } from '#lib/haptics.ts';
+import { facts } from '#lib/i18n.svelte.ts';
 import type { IconName } from '#lib/components/Icon.svelte';
 import { outcome, toRows, type Row, type Sources } from '#lib/devices/remote/actions.ts';
-import type { IrAction } from '#lib/devices/remote/api.ts';
+import type { IrAction, KeyResponse } from '#lib/devices/remote/api.ts';
+import { sayOutcome } from '#lib/devices/everyone.ts';
 import { HUE, ZIGBEE } from '#lib/devices/lamps/lamp.ts';
 import { MEROSS } from '#lib/devices/meross/data.ts';
 import { SHUTTERS } from '#lib/devices/shutters/data.ts';
 import { BOX, TV } from '#lib/devices/tv/data.ts';
-import { scenesApi, type Scene, type SceneRunResponse } from './api.ts';
+import { scenesApi, type Scene } from './api.ts';
 
 /** The icons a scene may take, each with what it suggests (the picker's words). */
 export const SCENE_ICONS: { icon: IconName; label: () => string }[] = [
@@ -96,25 +97,28 @@ export function slug(name: string, taken: string[]): string {
 	return id;
 }
 
-/** How a run went, said once: every action done, or which ones failed and what they said. */
-export function sayRun(scene: Pick<Scene, 'name'>, r: SceneRunResponse) {
-	const failed = r.results.map(outcome).filter((o) => !o.ok);
-	if (!failed.length) return ui.toast(m.scenes_done({ name: scene.name, count: r.results.length }));
-	haptic(FAILURE);
-	ui.toast(
-		m.scenes_failed({ name: scene.name, count: failed.length, total: r.results.length, details: failed.map((f) => f.detail).join(' · ') }),
-		{ warn: true }
+/** How a run went, said once: every action done, or which ones failed, each named with the
+ * devices' names (`s`) and why. */
+function sayRun(scene: Pick<Scene, 'name'>, r: KeyResponse, s: Sources) {
+	const told = r.results.map((x) => outcome(x, s));
+	sayOutcome(
+		{
+			done: told.filter((o) => o.ok).map((o) => o.what),
+			failed: told.filter((o) => !o.ok).map((o) => m.remote_action_failed({ action: o.what, reason: o.why }))
+		},
+		(count) => m.scenes_done({ name: scene.name, count }),
+		(o) => m.scenes_failed({ name: scene.name, count: o.failed.length, total: r.results.length, details: facts(...o.failed) })
 	);
 }
 
-/** Runs `scene` through the caller's gesture (keyed by its id), says how it went, then reads
- * again what it may have changed. */
-export function runScene(g: Gesture, scene: Scene) {
+/** Runs `scene` through the caller's gesture (keyed by its id), says how it went (naming the
+ * devices of `sources`), then reads again what it may have changed. */
+export function runScene(g: Gesture, scene: Scene, sources: Sources) {
 	haptic(CONFIRM);
 	return g.run(
 		() => scenesApi.run(scene.id),
 		async (r) => {
-			sayRun(scene, r);
+			sayRun(scene, r, sources);
 			await Promise.all([HUE, ZIGBEE, MEROSS, SHUTTERS, TV, BOX].map((k) => refresh(k)));
 		},
 		scene.id

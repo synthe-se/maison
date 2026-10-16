@@ -2,7 +2,8 @@
 // e2e house, plus every family the dashboard shows), signed in like any scenario: nothing of
 // the real flat, no login to keep alive, the same image every time. scripts/screenshot.sh
 // runs it and passes OUT (the JPEG to write).
-import { BASE, done, launch, open, settled, signIn } from './lib.ts';
+import { STORAGE } from '../web/src/env.ts';
+import { done, launch, open, signIn, visit } from './lib.ts';
 import { house } from './house.ts';
 import { showcase } from './showcase.ts';
 
@@ -27,11 +28,9 @@ await home.serve(p);
 await showcase(p);
 await signIn(p);
 // signed in in French like every scenario, then the picture in English (the locale the app remembers)
-await p.evaluate(() => localStorage.setItem('maison-locale', 'en'));
-await p.goto(BASE + '/');
-await p.locator('main h1').first().waitFor();
+await p.evaluate((key) => localStorage.setItem(key, 'en'), STORAGE.locale);
 // every group has answered (no skeleton left), then the fonts and the last paint
-await settled(p);
+await visit(p, '/');
 await p.screenshot({ path: OUT, fullPage: true, type: 'jpeg', quality: 90 });
 console.log(`Saved -> ${OUT}`);
 await done(browser);

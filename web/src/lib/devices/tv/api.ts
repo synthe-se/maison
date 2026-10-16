@@ -2,6 +2,10 @@
 // (Remote v2 and ADB: backend/src/androidtv.rs).
 
 import { get, post, put, upload, type SimpleResponse } from '#lib/api.ts';
+
+/** A device's address, as a field's example: TEST-NET (RFC 5737), never one of the house's. */
+export const ADDRESS_EXAMPLE = '192.0.2.10';
+
 export type TvPower = 'on' | 'standby' | 'deep_standby';
 
 export type TvKey =
@@ -33,11 +37,9 @@ export type TvKey =
 	| 'teletext'
 	| 'ambilight_on_off';
 
-export interface TvConfig {
+interface TvConfig {
 	host?: string | null;
 	irBlasterHost?: string | null;
-	boxHost?: string | null;
-	boxWakeApp?: string | null;
 }
 
 export interface TvVolume {
@@ -47,7 +49,7 @@ export interface TvVolume {
 	muted: boolean;
 }
 
-export interface TvAmbilight {
+interface TvAmbilight {
 	power: boolean;
 	mode?: string;
 	style?: string;
@@ -114,6 +116,8 @@ export interface AndroidApp {
 export interface AndroidTvConfig {
 	host?: string | null;
 	port?: number | null;
+	/** The app DIAL starts to wake the box (`YouTube` when unset). */
+	wakeApp?: string | null;
 	favoriteApps?: AndroidApp[];
 }
 

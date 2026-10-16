@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
-import { formatMinutes } from '#lib/format.ts';
-import { clock } from '#lib/i18n.svelte.ts';
+import { clock, formatMinutes } from '#lib/i18n.svelte.ts';
 import { shutter } from '#lib/test/shutters.ts';
-import { DEFAULT_OFFSET, moveSentence, nextEvent, nextMove, OFFSET_VALUES, OFFSETS, offsetLabel, skipLabel, toggled } from './sun.ts';
+import { moveSentence, nextEvent, nextMove, OFFSET_VALUES, offsetLabel, skipLabel, soonestMove, toggled } from './sun.ts';
 
 const none = { openAtSunrise: false, closeAtSunset: false, sunriseOffsetMin: 0, sunsetOffsetMin: 0 };
 
@@ -15,15 +14,15 @@ describe('the sun schedule in words', () => {
 	});
 
 	it('offers every offset within three hours, in order, the sun’s time included', () => {
-		expect(OFFSETS[0]).toBe(-180);
-		expect(OFFSETS.at(-1)).toBe(180);
-		expect([...OFFSETS].toSorted((a, b) => a - b)).toEqual([...OFFSETS]);
+		const offsets = OFFSET_VALUES.map(Number);
+		expect(offsets[0]).toBe(-180);
+		expect(offsets.at(-1)).toBe(180);
+		expect(offsets.toSorted((a, b) => a - b)).toEqual(offsets);
 		expect(OFFSET_VALUES).toContain('0');
 		expect(offsetLabel(Number('0'))).toBe(m.shutters_offset_on_time());
 	});
 
 	it('closes an hour after sunset when the evening event is first turned on', () => {
-		expect(DEFAULT_OFFSET.sunset).toBe(60);
 		expect(toggled(none, 'sunset', true)).toEqual({ ...none, closeAtSunset: true, sunsetOffsetMin: 60 });
 		expect(toggled(none, 'sunrise', true)).toEqual({ ...none, openAtSunrise: true, sunriseOffsetMin: 0 });
 	});
@@ -66,5 +65,16 @@ describe('the sun schedule in words', () => {
 		expect(skipLabel('open', at(1, 7))).toBe(m.shutters_skip_open_tomorrow());
 		expect(skipLabel('open', at(0, 7))).toBe(m.shutters_skip_open_today());
 		expect(skipLabel('open', at(4, 7))).toBe(m.shutters_skip_open());
+	});
+});
+
+describe('soonestMove', () => {
+	it('the shutter moving first, leaving out the offline ones and a skipped move', () => {
+		const a = shutter({ id: 'a', nextClose: '2026-10-02T18:28:00Z', nextOpen: null });
+		const b = shutter({ id: 'b', nextClose: '2026-10-02T18:10:00Z', nextOpen: null, skipNextClose: true });
+		const c = shutter({ id: 'c', nextClose: '2026-10-02T18:00:00Z', nextOpen: null, online: false });
+		const d = shutter({ id: 'd', nextClose: null, nextOpen: '2026-10-03T05:53:00Z' });
+		expect(soonestMove([d, b, c, a])?.id).toBe('a');
+		expect(soonestMove([b, c])).toBeUndefined();
 	});
 });

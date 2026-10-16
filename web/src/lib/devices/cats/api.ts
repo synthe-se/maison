@@ -24,7 +24,7 @@ export interface DevicesResponse {
 
 export interface DeviceStatusResponse<T = unknown> {
 	success: boolean;
-	device: DeviceRef & { type: string; connected: boolean };
+	device: DeviceRef;
 	parsedStatus: T;
 	rawDps?: unknown;
 	message: string;
@@ -40,7 +40,7 @@ export interface FeederStatus {
 	 * until the feeder sent one. */
 	history?: {
 		raw: string;
-		parsed: { remaining: string; count: string | null; timestamp: string | null; timestampReadable: string };
+		parsed: { remaining: string; count: string | null; timestamp: string | null };
 	} | null;
 }
 
@@ -68,7 +68,7 @@ export interface LitterBoxSettings {
 		promptSound?: boolean;
 		automaticHoming?: boolean;
 	};
-	actions?: { resetSandLevel?: boolean; resetFactorySettings?: boolean };
+	actions?: { resetSandLevel?: boolean };
 }
 
 export type LitterBoxPreference = keyof NonNullable<LitterBoxSettings['preferences']>;
@@ -96,6 +96,15 @@ export interface MealPlanResponse {
 	message: string;
 }
 
+/** A meal plan sent: what the feeder was given. */
+export interface MealPlanUpdate {
+	success: boolean;
+	device: DeviceRef;
+	encodedBase64: string;
+	formattedMealPlan: string;
+	message: string;
+}
+
 export const devicesApi = {
 	list: () => get<DevicesResponse>('/devices'),
 	connect: (id: string) => post(path`/devices/${id}/connect`),
@@ -108,7 +117,7 @@ export const feederApi = {
 	status: (id: string) => get<DeviceStatusResponse<FeederStatus>>(path`/devices/${id}/feeder/status`),
 	feed: (id: string, portion = 1) => post(path`/devices/${id}/feeder/feed`, { portion }),
 	getMealPlan: (id: string) => get<MealPlanResponse>(path`/devices/${id}/feeder/meal-plan`),
-	setMealPlan: (id: string, mealPlan: MealPlanEntry[]) => post(path`/devices/${id}/feeder/meal-plan`, { mealPlan })
+	setMealPlan: (id: string, mealPlan: MealPlanEntry[]) => post<MealPlanUpdate>(path`/devices/${id}/feeder/meal-plan`, { mealPlan })
 };
 
 export const fountainApi = {
@@ -125,5 +134,7 @@ export const fountainApi = {
 export const litterBoxApi = {
 	status: (id: string) => get<DeviceStatusResponse<LitterBoxStatus>>(path`/devices/${id}/litter-box/status`),
 	clean: (id: string) => post(path`/devices/${id}/litter-box/clean`),
-	settings: (id: string, settings: LitterBoxSettings) => post(path`/devices/${id}/litter-box/settings`, settings)
+	settings: (id: string, settings: LitterBoxSettings) => post(path`/devices/${id}/litter-box/settings`, settings),
+	/** Back to the factory's settings (an admin's). */
+	factoryReset: (id: string) => post(path`/devices/${id}/litter-box/factory-reset`)
 };

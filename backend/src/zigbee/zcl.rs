@@ -3,10 +3,13 @@
 
 use std::str::FromStr;
 
-use tracing::debug;
+use tracing::{debug, info};
 
-use super::device::{DiscoveredDevice, ZigbeeDeviceType};
-use crate::error::AppError;
+use super::device::{DiscoveredDevice, Hex, Reporting, ZigbeeDeviceType};
+use crate::{
+    error::{AppError, Refusal},
+    lamps::{brightness_of, level_of},
+};
 
 pub const ZDO_PROFILE_ID: u16 = 0x0000;
 pub const HOME_AUTOMATION_PROFILE_ID: u16 = 0x0104;
@@ -41,7 +44,15 @@ const ZCL_MANU_CLUSTER_COMMAND_FRAME_CONTROL: u8 = 0x05;
 const ZCL_MANUFACTURER_SPECIFIC_FLAG: u8 = 0x04;
 pub const ZCL_READ_ATTRIBUTES_COMMAND_ID: u8 = 0x00;
 const ZCL_READ_ATTRIBUTES_RESPONSE_COMMAND_ID: u8 = 0x01;
+const ZCL_CONFIGURE_REPORTING_COMMAND_ID: u8 = 0x06;
+const ZCL_CONFIGURE_REPORTING_RESPONSE_COMMAND_ID: u8 = 0x07;
 const ZCL_REPORT_ATTRIBUTES_COMMAND_ID: u8 = 0x0a;
+
+/// The longest a lamp waits between two reports of an attribute it reports (seconds): its
+/// heartbeat. A lamp switched off at the wall is noticed past it.
+pub const REPORT_MAX_INTERVAL_S: u16 = 300;
+/// The shortest, so a dimmer turned fast is not a flood.
+const REPORT_MIN_INTERVAL_S: u16 = 1;
 
 pub const ZCL_ON_OFF_COMMAND_OFF: u8 = 0x00;
 pub const ZCL_ON_OFF_COMMAND_ON: u8 = 0x01;
@@ -71,48 +82,192 @@ pub const MIRED_COOL: u16 = 153;
 // ------------------------------------------------------------------ frames sent --
 
 pub fn build_on_off_command_payload(enabled: bool, sequence: u8) -> Vec<u8> {
-    let command = if enabled { ZCL_ON_OFF_COMMAND_ON } else { ZCL_ON_OFF_COMMAND_OFF };
+    let command = if enabled {
+        ZCL_ON_OFF_COMMAND_ON
+    } else {
+        ZCL_ON_OFF_COMMAND_OFF
+    };
     vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, sequence, command]
 }
 
-pub fn brightness_percent_to_level(brightness: u8) -> u8 {
-    ((u16::from(brightness.min(100)) * 254) / 100).max(1) as u8
-}
-
-/// A ZCL level (0–254) as the API's 0–100.
-pub fn level_to_brightness_percent(level: u8) -> u8 {
-    ((u16::from(level) * 100) / 254).min(100) as u8
-}
-
+/// Move to Level (with On/Off) at `brightness` (as `lamps::brightness` takes it), at once.
 pub fn build_brightness_command_payload(brightness: u8, sequence: u8) -> Vec<u8> {
-    let level = brightness_percent_to_level(brightness);
-    vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, sequence, ZCL_LEVEL_CONTROL_COMMAND_MOVE_TO_LEVEL, level, 0x00, 0x00]
+    vec![
+        ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+        sequence,
+        ZCL_LEVEL_CONTROL_COMMAND_MOVE_TO_LEVEL,
+        level_of(brightness),
+        0x00,
+        0x00,
+    ]
 }
 
+/// A temperature (as `lamps::temperature` gives it, 0–100) in mireds.
 pub fn temperature_percent_to_mireds(temperature: u8) -> u16 {
-    MIRED_WARM.saturating_sub((u16::from(temperature.min(100)) * (MIRED_WARM - MIRED_COOL)) / 100)
+    MIRED_WARM.saturating_sub((u16::from(temperature) * (MIRED_WARM - MIRED_COOL)) / 100)
 }
 
 pub fn mireds_to_temperature_percent(mireds: u16) -> u8 {
-    let percent = (MIRED_WARM.saturating_sub(mireds.min(MIRED_WARM)) * 100) / (MIRED_WARM - MIRED_COOL);
+    let percent =
+        (MIRED_WARM.saturating_sub(mireds.min(MIRED_WARM)) * 100) / (MIRED_WARM - MIRED_COOL);
     percent.min(100) as u8
 }
 
 pub fn build_color_temperature_command_payload(temperature: u8, sequence: u8) -> Vec<u8> {
     let [low, high] = temperature_percent_to_mireds(temperature).to_le_bytes();
-    vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, sequence, ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR_TEMPERATURE, low, high, 0x00, 0x00]
+    vec![
+        ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+        sequence,
+        ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR_TEMPERATURE,
+        low,
+        high,
+        0x00,
+        0x00,
+    ]
 }
 
-/// `Move to Color` (Color Control): CIE 1931 `x`, `y` (0.0–1.0) scaled to 0–65535, at once.
+/// `Move to Color` (Color Control): CIE 1931 `x`, `y` (0.0–1.0, see [`cie`]) scaled to
+/// 0–65535, at once.
 pub fn build_color_xy_command_payload(x: f32, y: f32, sequence: u8) -> Vec<u8> {
-    let [x_low, x_high] = ((x.clamp(0.0, 1.0) * 65535.0) as u16).to_le_bytes();
-    let [y_low, y_high] = ((y.clamp(0.0, 1.0) * 65535.0) as u16).to_le_bytes();
-    vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, sequence, ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR, x_low, x_high, y_low, y_high, 0x00, 0x00]
+    let [x_low, x_high] = ((x * 65535.0) as u16).to_le_bytes();
+    let [y_low, y_high] = ((y * 65535.0) as u16).to_le_bytes();
+    vec![
+        ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+        sequence,
+        ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR,
+        x_low,
+        x_high,
+        y_low,
+        y_high,
+        0x00,
+        0x00,
+    ]
+}
+
+/// A CIE 1931 coordinate as a lamp takes it: 0.0 to 1.0.
+pub fn cie(value: f32) -> f32 {
+    value.clamp(0.0, 1.0)
 }
 
 pub fn build_read_attributes_payload(attributes: &[u16], sequence: u8) -> Vec<u8> {
-    let mut payload = vec![ZCL_GLOBAL_FRAME_CONTROL, sequence, ZCL_READ_ATTRIBUTES_COMMAND_ID];
-    payload.extend(attributes.iter().flat_map(|attribute| attribute.to_le_bytes()));
+    let mut payload = vec![
+        ZCL_GLOBAL_FRAME_CONTROL,
+        sequence,
+        ZCL_READ_ATTRIBUTES_COMMAND_ID,
+    ];
+    payload.extend(
+        attributes
+            .iter()
+            .flat_map(|attribute| attribute.to_le_bytes()),
+    );
+    payload
+}
+
+/// An attribute a lamp is asked to report: its id, its ZCL type, and the smallest change
+/// worth a report (`None` for a discrete one: every change is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reported {
+    pub attribute: u16,
+    pub data_type: u8,
+    pub change: Option<u16>,
+}
+
+const ZCL_BOOLEAN: u8 = 0x10;
+const ZCL_UINT8: u8 = 0x20;
+const ZCL_UINT16: u8 = 0x21;
+
+/// What a lamp's cluster reports (On/Off's on/off, Level's level, Color's XY and
+/// temperature); nothing for the others.
+pub fn reported_attributes(cluster_id: u16) -> &'static [Reported] {
+    const ON_OFF: &[Reported] = &[Reported {
+        attribute: 0x0000,
+        data_type: ZCL_BOOLEAN,
+        change: None,
+    }];
+    const LEVEL: &[Reported] = &[Reported {
+        attribute: 0x0000,
+        data_type: ZCL_UINT8,
+        change: Some(1),
+    }];
+    const COLOR: &[Reported] = &[
+        Reported {
+            attribute: 0x0003,
+            data_type: ZCL_UINT16,
+            change: Some(16),
+        },
+        Reported {
+            attribute: 0x0004,
+            data_type: ZCL_UINT16,
+            change: Some(16),
+        },
+        Reported {
+            attribute: 0x0007,
+            data_type: ZCL_UINT16,
+            change: Some(1),
+        },
+    ];
+    match cluster_id {
+        ON_OFF_CLUSTER_ID => ON_OFF,
+        LEVEL_CONTROL_CLUSTER_ID => LEVEL,
+        COLOR_CONTROL_CLUSTER_ID => COLOR,
+        _ => &[],
+    }
+}
+
+/// Configure Reporting (global 0x06): each attribute reported between
+/// [`REPORT_MIN_INTERVAL_S`] (none for a discrete one) and [`REPORT_MAX_INTERVAL_S`], its
+/// change in its type's width.
+pub fn build_configure_reporting_payload(attributes: &[Reported], sequence: u8) -> Vec<u8> {
+    let mut payload = vec![
+        ZCL_GLOBAL_FRAME_CONTROL,
+        sequence,
+        ZCL_CONFIGURE_REPORTING_COMMAND_ID,
+    ];
+    for reported in attributes {
+        // direction 0: the lamp reports, we receive
+        payload.push(0x00);
+        payload.extend(reported.attribute.to_le_bytes());
+        payload.push(reported.data_type);
+        let min = reported.change.map_or(0, |_| REPORT_MIN_INTERVAL_S);
+        payload.extend(min.to_le_bytes());
+        payload.extend(REPORT_MAX_INTERVAL_S.to_le_bytes());
+        if let Some(change) = reported.change {
+            let width = if reported.data_type == ZCL_UINT8 {
+                1
+            } else {
+                2
+            };
+            payload.extend(&change.to_le_bytes()[..width]);
+        }
+    }
+    payload
+}
+
+/// A Configure Reporting Response's word: all accepted (one status 0x00), or not (one
+/// `[status, direction, attribute ×2]` record per refusal).
+fn configure_reporting_accepted(body: &[u8]) -> bool {
+    !body.is_empty() && body.chunks(4).all(|record| record[0] == 0x00)
+}
+
+/// A ZDO Bind_req: `source`'s `cluster_id` on `source_endpoint` sent to `destination`'s
+/// endpoint, by 64-bit addresses (given most significant byte first, as they are said):
+/// `[seq] [src EUI64 ×8 LE] [src ep] [cluster ×2 LE] [mode 0x03] [dst EUI64 ×8 LE] [dst ep]`.
+pub fn build_bind_request_payload(
+    sequence: u8,
+    source: [u8; 8],
+    source_endpoint: u8,
+    cluster_id: u16,
+    destination: [u8; 8],
+    destination_endpoint: u8,
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(22);
+    payload.push(sequence);
+    payload.extend(source.iter().rev());
+    payload.push(source_endpoint);
+    payload.extend(cluster_id.to_le_bytes());
+    payload.push(0x03);
+    payload.extend(destination.iter().rev());
+    payload.push(destination_endpoint);
     payload
 }
 
@@ -182,13 +337,25 @@ impl ZigbeeEffect {
     pub fn frame(self, sequence: u8) -> (u16, Vec<u8>) {
         let identify = |effect_id: u8| {
             // effect variant 0: the default
-            let frame = vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, sequence, ZCL_IDENTIFY_TRIGGER_EFFECT_COMMAND_ID, effect_id, 0x00];
+            let frame = vec![
+                ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+                sequence,
+                ZCL_IDENTIFY_TRIGGER_EFFECT_COMMAND_ID,
+                effect_id,
+                0x00,
+            ];
             (IDENTIFY_CLUSTER_ID, frame)
         };
         // Philips multiColor: start `[0x21, 0x00, 0x01, effect]`, stop `[0x20, 0x00, 0x00]`
         let hue = |body: &[u8]| {
             let [code_low, code_high] = PHILIPS_MANUFACTURER_CODE.to_le_bytes();
-            let mut frame = vec![ZCL_MANU_CLUSTER_COMMAND_FRAME_CONTROL, code_low, code_high, sequence, PHILIPS_MULTI_COLOR_COMMAND_ID];
+            let mut frame = vec![
+                ZCL_MANU_CLUSTER_COMMAND_FRAME_CONTROL,
+                code_low,
+                code_high,
+                sequence,
+                PHILIPS_MULTI_COLOR_COMMAND_ID,
+            ];
             frame.extend_from_slice(body);
             (PHILIPS_EFFECTS_CLUSTER_ID, frame)
         };
@@ -215,10 +382,13 @@ impl FromStr for ZigbeeEffect {
     type Err = AppError;
 
     fn from_str(name: &str) -> Result<Self, AppError> {
-        Self::ALL.into_iter().find(|effect| effect.as_str().eq_ignore_ascii_case(name)).ok_or_else(|| {
-            let known = Self::ALL.map(Self::as_str).join(", ");
-            AppError::bad_request(format!("Unknown effect. Supported: {known}"))
-        })
+        Self::ALL
+            .into_iter()
+            .find(|effect| effect.as_str().eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                AppError::from(Refusal::Invalid)
+                    .with_detail(serde_json::json!({ "effects": Self::ALL.map(Self::as_str) }))
+            })
     }
 }
 
@@ -243,11 +413,19 @@ pub fn parse_zcl_header(payload: &[u8]) -> Option<ZclHeader> {
         _ => return None,
     };
     let (manufacturer, command_at) = if frame_control & ZCL_MANUFACTURER_SPECIFIC_FLAG != 0 {
-        (Some(u16::from_le_bytes([*payload.get(1)?, *payload.get(2)?])), 4)
+        (
+            Some(u16::from_le_bytes([*payload.get(1)?, *payload.get(2)?])),
+            4,
+        )
     } else {
         (None, 2)
     };
-    Some(ZclHeader { cluster_specific, manufacturer, command_id: *payload.get(command_at)?, body: command_at + 1 })
+    Some(ZclHeader {
+        cluster_specific,
+        manufacturer,
+        command_id: *payload.get(command_at)?,
+        body: command_at + 1,
+    })
 }
 
 /// What a lamp's ZCL frame says about it: attribute reads and reports, and the On/Off and
@@ -265,6 +443,19 @@ pub fn apply_lamp_frame(device: &mut DiscoveredDevice, cluster_id: u16, payload:
     let body = &payload[header.body..];
 
     if !header.cluster_specific {
+        if header.command_id == ZCL_CONFIGURE_REPORTING_RESPONSE_COMMAND_ID {
+            let accepted = configure_reporting_accepted(body);
+            info!(node_id = %Hex(device.node_id), cluster_id = %Hex(cluster_id), accepted, "configure reporting answered");
+            // the heartbeat is On/Off's: the other clusters' answers are for the log
+            if cluster_id == ON_OFF_CLUSTER_ID {
+                device.reporting = if accepted {
+                    Reporting::Configured
+                } else {
+                    Reporting::Refused
+                };
+            }
+            return true;
+        }
         let records = match header.command_id {
             ZCL_READ_ATTRIBUTES_RESPONSE_COMMAND_ID => parse_attribute_records(body, true),
             ZCL_REPORT_ATTRIBUTES_COMMAND_ID => parse_attribute_records(body, false),
@@ -284,7 +475,7 @@ pub fn apply_lamp_frame(device: &mut DiscoveredDevice, cluster_id: u16, payload:
         (ON_OFF_CLUSTER_ID, ZCL_ON_OFF_COMMAND_TOGGLE) => light.is_on = !light.is_on,
         (LEVEL_CONTROL_CLUSTER_ID, ZCL_LEVEL_CONTROL_COMMAND_MOVE_TO_LEVEL) => {
             if let Some(&level) = body.first() {
-                light.brightness = level_to_brightness_percent(level);
+                light.brightness = brightness_of(level);
                 light.is_on = level > 0;
             }
         }
@@ -303,21 +494,32 @@ pub fn parse_attribute_records(body: &[u8], with_status: bool) -> Vec<(u16, &[u8
         let attribute_id = u16::from_le_bytes([*low, *high]);
         rest = after;
         if with_status {
-            let Some((&status, after)) = rest.split_first() else { break };
+            let Some((&status, after)) = rest.split_first() else {
+                break;
+            };
             rest = after;
             if status != 0 {
                 continue;
             }
         }
-        let Some((&data_type, after)) = rest.split_first() else { break };
-        let Some((length, value)) = parse_zcl_attribute_value(data_type, after) else { break };
+        let Some((&data_type, after)) = rest.split_first() else {
+            break;
+        };
+        let Some((length, value)) = parse_zcl_attribute_value(data_type, after) else {
+            break;
+        };
         records.push((attribute_id, value));
         rest = &after[length..];
     }
     records
 }
 
-fn apply_attribute(device: &mut DiscoveredDevice, cluster_id: u16, attribute_id: u16, value: &[u8]) {
+fn apply_attribute(
+    device: &mut DiscoveredDevice,
+    cluster_id: u16,
+    attribute_id: u16,
+    value: &[u8],
+) {
     let word = || match value {
         [low, high, ..] => Some(u16::from_le_bytes([*low, *high])),
         _ => None,
@@ -332,31 +534,43 @@ fn apply_attribute(device: &mut DiscoveredDevice, cluster_id: u16, attribute_id:
         }
         (LEVEL_CONTROL_CLUSTER_ID, 0x0000) => {
             if let Some(&level) = value.first() {
-                light.brightness = level_to_brightness_percent(level);
+                light.brightness = brightness_of(level);
             }
         }
-        (COLOR_CONTROL_CLUSTER_ID, 0x0003) => light.colour.color_x = word().map(|raw| f32::from(raw) / 65535.0).or(light.colour.color_x),
-        (COLOR_CONTROL_CLUSTER_ID, 0x0004) => light.colour.color_y = word().map(|raw| f32::from(raw) / 65535.0).or(light.colour.color_y),
+        (COLOR_CONTROL_CLUSTER_ID, 0x0003) => {
+            light.color.color_x = word()
+                .map(|raw| f32::from(raw) / 65535.0)
+                .or(light.color.color_x)
+        }
+        (COLOR_CONTROL_CLUSTER_ID, 0x0004) => {
+            light.color.color_y = word()
+                .map(|raw| f32::from(raw) / 65535.0)
+                .or(light.color.color_y)
+        }
         (COLOR_CONTROL_CLUSTER_ID, 0x0007) => {
             if let Some(raw) = word() {
                 device.info.supports_temperature = true;
                 light.temperature = Some(mireds_to_temperature_percent(raw));
             }
         }
-        (COLOR_CONTROL_CLUSTER_ID, 0x0008) => light.colour.color_mode = value.first().copied().or(light.colour.color_mode),
+        (COLOR_CONTROL_CLUSTER_ID, 0x0008) => {
+            light.color.color_mode = value.first().copied().or(light.color.color_mode)
+        }
         // colorCapabilities: bit 0 hue/saturation, bit 3 XY, bit 4 colour temperature
         (COLOR_CONTROL_CLUSTER_ID, 0x400A) => {
             if let Some(caps) = word() {
                 device.info.supports_color = (caps & 0x08) != 0;
                 debug!(
-                    node_id = format_args!("0x{:04x}", device.node_id),
-                    caps = format_args!("0x{caps:04x}"),
+                    node_id = %Hex(device.node_id),
+                    caps = %Hex(caps),
                     supports_xy = device.info.supports_color,
                     "parsed colorCapabilities"
                 );
             }
         }
-        (BASIC_CLUSTER_ID, 0x0004) => device.info.manufacturer = text().or(device.info.manufacturer.take()),
+        (BASIC_CLUSTER_ID, 0x0004) => {
+            device.info.manufacturer = text().or(device.info.manufacturer.take())
+        }
         (BASIC_CLUSTER_ID, 0x0005) => device.info.model = text().or(device.info.model.take()),
         _ => {}
     }
@@ -401,21 +615,24 @@ pub fn parse_device_announce(payload: &[u8]) -> Option<DeviceAnnouncement> {
     let mut eui64 = [0_u8; 8];
     eui64.copy_from_slice(&payload[3..11]);
     eui64.reverse();
-    Some(DeviceAnnouncement { node_id, eui64: format_eui64(eui64) })
+    Some(DeviceAnnouncement {
+        node_id,
+        eui64: eui64_text(eui64),
+    })
 }
 
-pub fn format_eui64(eui64: [u8; 8]) -> String {
+/// An EUI64 as it is said and kept: `00:17:88:01:08:0c:00:0b`, most significant byte first.
+pub fn eui64_text(eui64: [u8; 8]) -> String {
     crate::util::hex(&eui64, ":")
 }
 
-/// A colon-separated EUI64 (`00:17:88:01:08:0c:00:0b`), most significant byte first.
+/// An EUI64 as [`eui64_text`] says it, back to its bytes.
 pub fn parse_eui64(eui64: &str) -> Option<[u8; 8]> {
-    let mut bytes = [0_u8; 8];
-    let mut parts = eui64.split(':');
-    for byte in &mut bytes {
-        *byte = u8::from_str_radix(parts.next()?, 16).ok()?;
+    let parts = eui64.split(':').collect::<Vec<_>>();
+    if parts.len() != 8 || parts.iter().any(|part| part.len() != 2) {
+        return None;
     }
-    parts.next().is_none().then_some(bytes)
+    crate::util::unhex(&parts.concat())?.try_into().ok()
 }
 
 pub struct SimpleDescriptor {
@@ -438,7 +655,13 @@ pub fn parse_simple_desc_response(payload: &[u8]) -> Option<SimpleDescriptor> {
     let word = |at: usize| u16::from_le_bytes([descriptor[at], descriptor[at + 1]]);
     let (input_clusters, after) = parse_cluster_list(descriptor, 6)?;
     let (output_clusters, _) = parse_cluster_list(descriptor, after)?;
-    Some(SimpleDescriptor { endpoint: descriptor[0], profile_id: word(1), device_id: word(3), input_clusters, output_clusters })
+    Some(SimpleDescriptor {
+        endpoint: descriptor[0],
+        profile_id: word(1),
+        device_id: word(3),
+        input_clusters,
+        output_clusters,
+    })
 }
 
 /// A count then that many clusters, from `offset`; and where the list ends.
@@ -446,15 +669,24 @@ fn parse_cluster_list(descriptor: &[u8], offset: usize) -> Option<(Vec<u16>, usi
     let count = *descriptor.get(offset)? as usize;
     let start = offset + 1;
     let bytes = descriptor.get(start..start + count * 2)?;
-    let clusters = bytes.as_chunks::<2>().0.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    let clusters = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect();
     Some((clusters, start + count * 2))
 }
 
 pub fn is_preferred_light_endpoint(description: &SimpleDescriptor) -> bool {
     description.profile_id == HOME_AUTOMATION_PROFILE_ID
-        && [ON_OFF_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID]
-            .iter()
-            .any(|cluster| description.input_clusters.contains(cluster))
+        && [
+            ON_OFF_CLUSTER_ID,
+            LEVEL_CONTROL_CLUSTER_ID,
+            COLOR_CONTROL_CLUSTER_ID,
+        ]
+        .iter()
+        .any(|cluster| description.input_clusters.contains(cluster))
 }
 
 /// A remote or dimmer switch: home-automation profile, and a controller device id (0x0820
@@ -467,8 +699,12 @@ pub fn classify_device_type(description: &SimpleDescriptor) -> ZigbeeDeviceType 
     }
     let is_controller_device = matches!(description.device_id, 0x0820 | 0x0830 | 0x0840 | 0x0006);
     let light_clusters = [ON_OFF_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID];
-    let sends_light_commands = light_clusters.iter().any(|cluster| description.output_clusters.contains(cluster));
-    let receives_light_commands = light_clusters.iter().any(|cluster| description.input_clusters.contains(cluster));
+    let sends_light_commands = light_clusters
+        .iter()
+        .any(|cluster| description.output_clusters.contains(cluster));
+    let receives_light_commands = light_clusters
+        .iter()
+        .any(|cluster| description.input_clusters.contains(cluster));
 
     if is_controller_device || (sends_light_commands && !receives_light_commands) {
         ZigbeeDeviceType::Remote
@@ -477,10 +713,6 @@ pub fn classify_device_type(description: &SimpleDescriptor) -> ZigbeeDeviceType 
     } else {
         ZigbeeDeviceType::Unknown
     }
-}
-
-pub fn hex_bytes(bytes: &[u8]) -> String {
-    crate::util::hex(bytes, " ")
 }
 
 #[cfg(test)]
@@ -493,18 +725,42 @@ mod tests {
 
     #[test]
     fn on_off_payload_uses_cluster_command_frame() {
-        assert_eq!(build_on_off_command_payload(false, 0x34), vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, 0x34, ZCL_ON_OFF_COMMAND_OFF]);
-        assert_eq!(build_on_off_command_payload(true, 0x35), vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, 0x35, ZCL_ON_OFF_COMMAND_ON]);
+        assert_eq!(
+            build_on_off_command_payload(false, 0x34),
+            vec![
+                ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+                0x34,
+                ZCL_ON_OFF_COMMAND_OFF
+            ]
+        );
+        assert_eq!(
+            build_on_off_command_payload(true, 0x35),
+            vec![
+                ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+                0x35,
+                ZCL_ON_OFF_COMMAND_ON
+            ]
+        );
     }
 
     #[test]
     fn brightness_payload_maps_percent_to_move_to_level() {
-        assert_eq!(brightness_percent_to_level(0), 1);
-        assert_eq!(brightness_percent_to_level(50), 127);
-        assert_eq!(brightness_percent_to_level(100), 254);
+        assert_eq!(
+            build_brightness_command_payload(0, 1)[3],
+            3,
+            "0 is the dimmest"
+        );
+        assert_eq!(build_brightness_command_payload(100, 1)[3], 254);
         assert_eq!(
             build_brightness_command_payload(50, 0x22),
-            vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, 0x22, ZCL_LEVEL_CONTROL_COMMAND_MOVE_TO_LEVEL, 127, 0x00, 0x00]
+            vec![
+                ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+                0x22,
+                ZCL_LEVEL_CONTROL_COMMAND_MOVE_TO_LEVEL,
+                127,
+                0x00,
+                0x00
+            ]
         );
     }
 
@@ -515,7 +771,15 @@ mod tests {
         assert_eq!(temperature_percent_to_mireds(50), 327);
         assert_eq!(
             build_color_temperature_command_payload(50, 0x44),
-            vec![ZCL_CLUSTER_COMMAND_FRAME_CONTROL, 0x44, ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR_TEMPERATURE, 0x47, 0x01, 0x00, 0x00]
+            vec![
+                ZCL_CLUSTER_COMMAND_FRAME_CONTROL,
+                0x44,
+                ZCL_COLOR_CONTROL_COMMAND_MOVE_TO_COLOR_TEMPERATURE,
+                0x47,
+                0x01,
+                0x00,
+                0x00
+            ]
         );
     }
 
@@ -523,50 +787,111 @@ mod tests {
     fn mireds_and_percent_agree_at_the_ends() {
         assert_eq!(mireds_to_temperature_percent(MIRED_WARM), 0);
         assert_eq!(mireds_to_temperature_percent(MIRED_COOL), 100);
-        assert_eq!(mireds_to_temperature_percent(600), 0, "warmer than the range");
-        assert_eq!(mireds_to_temperature_percent(100), 100, "cooler than the range");
+        assert_eq!(
+            mireds_to_temperature_percent(600),
+            0,
+            "warmer than the range"
+        );
+        assert_eq!(
+            mireds_to_temperature_percent(100),
+            100,
+            "cooler than the range"
+        );
         assert_eq!(temperature_percent_to_mireds(0), MIRED_WARM);
         assert_eq!(temperature_percent_to_mireds(100), MIRED_COOL);
     }
 
     #[test]
     fn colour_and_read_payloads() {
-        assert_eq!(build_color_xy_command_payload(1.0, 0.0, 7), vec![0x11, 7, 0x07, 0xff, 0xff, 0, 0, 0, 0]);
-        assert_eq!(build_read_attributes_payload(&[0x0004, 0x0005], 9), vec![0x00, 9, 0x00, 0x04, 0x00, 0x05, 0x00]);
+        assert_eq!(
+            build_color_xy_command_payload(1.0, 0.0, 7),
+            vec![0x11, 7, 0x07, 0xff, 0xff, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            build_read_attributes_payload(&[0x0004, 0x0005], 9),
+            vec![0x00, 9, 0x00, 0x04, 0x00, 0x05, 0x00]
+        );
     }
 
     #[test]
     fn every_effect_round_trips_by_name_and_keeps_its_frame() {
         for effect in ZigbeeEffect::ALL {
             assert_eq!(effect.as_str().parse::<ZigbeeEffect>().unwrap(), effect);
-            assert_eq!(effect.as_str().to_uppercase().parse::<ZigbeeEffect>().unwrap(), effect, "any case");
+            assert_eq!(
+                effect
+                    .as_str()
+                    .to_uppercase()
+                    .parse::<ZigbeeEffect>()
+                    .unwrap(),
+                effect,
+                "any case"
+            );
         }
-        assert!("disco".parse::<ZigbeeEffect>().is_err());
-        assert_eq!(ZigbeeEffect::Breathe.frame(3), (IDENTIFY_CLUSTER_ID, vec![0x11, 3, 0x40, 0x01, 0x00]));
+        assert!(matches!(
+            "disco".parse::<ZigbeeEffect>(),
+            Err(AppError::Coded {
+                code: "invalid",
+                detail: Some(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            ZigbeeEffect::Breathe.frame(3),
+            (IDENTIFY_CLUSTER_ID, vec![0x11, 3, 0x40, 0x01, 0x00])
+        );
         assert_eq!(
             ZigbeeEffect::Candle.frame(4),
-            (PHILIPS_EFFECTS_CLUSTER_ID, vec![0x05, 0x0b, 0x10, 4, 0x00, 0x21, 0x00, 0x01, 0x01])
+            (
+                PHILIPS_EFFECTS_CLUSTER_ID,
+                vec![0x05, 0x0b, 0x10, 4, 0x00, 0x21, 0x00, 0x01, 0x01]
+            )
         );
-        assert_eq!(ZigbeeEffect::StopHueEffect.frame(5).1[5..], [0x20, 0x00, 0x00]);
+        assert_eq!(
+            ZigbeeEffect::StopHueEffect.frame(5).1[5..],
+            [0x20, 0x00, 0x00]
+        );
     }
 
     #[test]
     fn zcl_headers_tell_global_from_cluster_specific_and_skip_the_manufacturer_code() {
         assert_eq!(
             parse_zcl_header(&[0x18, 0x10, 0x01, 0x00]),
-            Some(ZclHeader { cluster_specific: false, manufacturer: None, command_id: 0x01, body: 3 })
+            Some(ZclHeader {
+                cluster_specific: false,
+                manufacturer: None,
+                command_id: 0x01,
+                body: 3
+            })
         );
         assert_eq!(
             parse_zcl_header(&[0x01, 0x10, 0x04, 0x7f]),
-            Some(ZclHeader { cluster_specific: true, manufacturer: None, command_id: 0x04, body: 3 })
+            Some(ZclHeader {
+                cluster_specific: true,
+                manufacturer: None,
+                command_id: 0x04,
+                body: 3
+            })
         );
         assert_eq!(
             parse_zcl_header(&[0x1d, 0x0b, 0x10, 0x22, 0x00, 0x01]),
-            Some(ZclHeader { cluster_specific: true, manufacturer: Some(0x100b), command_id: 0x00, body: 5 })
+            Some(ZclHeader {
+                cluster_specific: true,
+                manufacturer: Some(0x100b),
+                command_id: 0x00,
+                body: 5
+            })
         );
         assert_eq!(parse_zcl_header(&[0x18, 0x10]), None, "too short");
-        assert_eq!(parse_zcl_header(&[0x1d, 0x0b]), None, "manufacturer code cut");
-        assert_eq!(parse_zcl_header(&[0x03, 0x00, 0x00]), None, "reserved frame type");
+        assert_eq!(
+            parse_zcl_header(&[0x1d, 0x0b]),
+            None,
+            "manufacturer code cut"
+        );
+        assert_eq!(
+            parse_zcl_header(&[0x03, 0x00, 0x00]),
+            None,
+            "reserved frame type"
+        );
     }
 
     #[test]
@@ -574,13 +899,25 @@ mod tests {
         let mut device = lamp();
         device.light.is_on = false;
         // Read Attributes Response, OnOff (0x0000), status 0x86 (unsupported attribute)
-        assert!(apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x18, 0x10, 0x01, 0x00, 0x00, 0x86]));
+        assert!(apply_lamp_frame(
+            &mut device,
+            ON_OFF_CLUSTER_ID,
+            &[0x18, 0x10, 0x01, 0x00, 0x00, 0x86]
+        ));
         assert!(!device.light.is_on, "status 0x86 read as « on »");
         // the same read, answered: on
-        assert!(apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x18, 0x11, 0x01, 0x00, 0x00, 0x00, 0x10, 0x01]));
+        assert!(apply_lamp_frame(
+            &mut device,
+            ON_OFF_CLUSTER_ID,
+            &[0x18, 0x11, 0x01, 0x00, 0x00, 0x00, 0x10, 0x01]
+        ));
         assert!(device.light.is_on);
         // an attribute report (no status byte): off
-        assert!(apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x18, 0x12, 0x0a, 0x00, 0x00, 0x10, 0x00]));
+        assert!(apply_lamp_frame(
+            &mut device,
+            ON_OFF_CLUSTER_ID,
+            &[0x18, 0x12, 0x0a, 0x00, 0x00, 0x10, 0x00]
+        ));
         assert!(!device.light.is_on);
         // cluster-specific On, then Toggle
         apply_lamp_frame(&mut device, ON_OFF_CLUSTER_ID, &[0x01, 0x13, 0x01]);
@@ -594,33 +931,64 @@ mod tests {
         let mut device = lamp();
         let light = |device: &DiscoveredDevice| (device.light.brightness, device.light.is_on);
         // Write Attributes Response (global 0x04), status success
-        assert!(apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x18, 0x20, 0x04, 0x00]));
-        assert_eq!(light(&device), (100, true), "a write ack turned the lamp off");
+        assert!(apply_lamp_frame(
+            &mut device,
+            LEVEL_CONTROL_CLUSTER_ID,
+            &[0x18, 0x20, 0x04, 0x00]
+        ));
+        assert_eq!(
+            light(&device),
+            (100, true),
+            "a write ack turned the lamp off"
+        );
         // a Default Response neither
-        apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x18, 0x21, 0x0b, 0x04, 0x00]);
+        apply_lamp_frame(
+            &mut device,
+            LEVEL_CONTROL_CLUSTER_ID,
+            &[0x18, 0x21, 0x0b, 0x04, 0x00],
+        );
         assert_eq!(light(&device), (100, true));
         // the real Move to Level (with On/Off), level 127 → 50 %
-        assert!(apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x01, 0x22, 0x04, 127, 0x00, 0x00]));
+        assert!(apply_lamp_frame(
+            &mut device,
+            LEVEL_CONTROL_CLUSTER_ID,
+            &[0x01, 0x22, 0x04, 127, 0x00, 0x00]
+        ));
         assert_eq!(light(&device), (50, true));
         // a manufacturer-specific frame is not read
-        assert!(!apply_lamp_frame(&mut device, LEVEL_CONTROL_CLUSTER_ID, &[0x05, 0x0b, 0x10, 0x23, 0x04, 0x00]));
+        assert!(!apply_lamp_frame(
+            &mut device,
+            LEVEL_CONTROL_CLUSTER_ID,
+            &[0x05, 0x0b, 0x10, 0x23, 0x04, 0x00]
+        ));
         assert_eq!(device.light.brightness, 50);
     }
 
     #[test]
     fn read_responses_skip_error_records_and_read_the_rest() {
         // manufacturer (0x0004): unsupported; model (0x0005): "LTG"
-        let body = [0x04, 0x00, 0x86, 0x05, 0x00, 0x00, 0x42, 0x03, b'L', b'T', b'G'];
-        assert_eq!(parse_attribute_records(&body, true), vec![(0x0005, &b"LTG"[..])]);
+        let body = [
+            0x04, 0x00, 0x86, 0x05, 0x00, 0x00, 0x42, 0x03, b'L', b'T', b'G',
+        ];
+        assert_eq!(
+            parse_attribute_records(&body, true),
+            vec![(0x0005, &b"LTG"[..])]
+        );
         let mut device = lamp();
         let mut frame = vec![0x18, 0x30, 0x01];
         frame.extend_from_slice(&body);
         apply_lamp_frame(&mut device, BASIC_CLUSTER_ID, &frame);
         assert_eq!(device.info.model.as_deref(), Some("LTG"));
-        assert_eq!(device.info.manufacturer.as_deref(), Some("Signify Netherlands B.V."), "kept");
+        assert_eq!(
+            device.info.manufacturer.as_deref(),
+            Some("Signify Netherlands B.V."),
+            "kept"
+        );
 
         // colour temperature 153 mireds (coolest) and capabilities with XY
-        let colour = [0x18, 0x31, 0x01, 0x07, 0x00, 0x00, 0x21, 153, 0x00, 0x0a, 0x40, 0x00, 0x19, 0x18, 0x00];
+        let colour = [
+            0x18, 0x31, 0x01, 0x07, 0x00, 0x00, 0x21, 153, 0x00, 0x0a, 0x40, 0x00, 0x19, 0x18, 0x00,
+        ];
         apply_lamp_frame(&mut device, COLOR_CONTROL_CLUSTER_ID, &colour);
         assert_eq!(device.light.temperature, Some(100));
         assert!(device.info.supports_temperature && device.info.supports_color);
@@ -629,7 +997,10 @@ mod tests {
         assert!(parse_attribute_records(&[0x00, 0x00, 0x00, 0xff, 0x01], true).is_empty());
         assert!(parse_attribute_records(&[0x00, 0x00, 0x00, 0x21, 0x01], true).is_empty());
         assert!(parse_attribute_records(&[0x00], true).is_empty());
-        assert!(parse_attribute_records(&[0x05, 0x00, 0x00, 0x42, 0x05, b'L'], true).is_empty(), "a cut string");
+        assert!(
+            parse_attribute_records(&[0x05, 0x00, 0x00, 0x42, 0x05, b'L'], true).is_empty(),
+            "a cut string"
+        );
     }
 
     #[test]
@@ -637,24 +1008,36 @@ mod tests {
         // seq, status, nwk addr, length 18, then: endpoint 11, profile 0x0104, device 0x010c,
         // version, 4 inputs (Basic, On/Off, Level, Colour), 1 output (OTA)
         let payload = [
-            0x05, 0x00, 0x34, 0x2e, 18, 11, 0x04, 0x01, 0x0c, 0x01, 0x01, 4, 0x00, 0x00, 0x06, 0x00, 0x08, 0x00,
-            0x00, 0x03, 1, 0x19, 0x00,
+            0x05, 0x00, 0x34, 0x2e, 18, 11, 0x04, 0x01, 0x0c, 0x01, 0x01, 4, 0x00, 0x00, 0x06,
+            0x00, 0x08, 0x00, 0x00, 0x03, 1, 0x19, 0x00,
         ];
         let descriptor = parse_simple_desc_response(&payload).expect("a valid descriptor");
         assert_eq!(descriptor.endpoint, 11);
         assert_eq!(descriptor.profile_id, 0x0104);
         assert_eq!(descriptor.device_id, 0x010c);
-        assert_eq!(descriptor.input_clusters, vec![0x0000, 0x0006, 0x0008, 0x0300]);
+        assert_eq!(
+            descriptor.input_clusters,
+            vec![0x0000, 0x0006, 0x0008, 0x0300]
+        );
         assert_eq!(descriptor.output_clusters, vec![0x0019]);
         assert_eq!(classify_device_type(&descriptor), ZigbeeDeviceType::Lamp);
 
         let mut failed = payload;
         failed[1] = 0x81;
-        assert!(parse_simple_desc_response(&failed).is_none(), "a failed status");
-        assert!(parse_simple_desc_response(&payload[..payload.len() - 1]).is_none(), "cut short");
+        assert!(
+            parse_simple_desc_response(&failed).is_none(),
+            "a failed status"
+        );
+        assert!(
+            parse_simple_desc_response(&payload[..payload.len() - 1]).is_none(),
+            "cut short"
+        );
         let mut overlong = payload;
         overlong[11] = 9;
-        assert!(parse_simple_desc_response(&overlong).is_none(), "more clusters than bytes");
+        assert!(
+            parse_simple_desc_response(&overlong).is_none(),
+            "more clusters than bytes"
+        );
     }
 
     #[test]
@@ -667,19 +1050,100 @@ mod tests {
             output_clusters: vec![0x0006, 0x0008],
         };
         assert_eq!(classify_device_type(&dimmer), ZigbeeDeviceType::Remote);
-        let zll = SimpleDescriptor { profile_id: 0xc05e, ..dimmer };
+        let zll = SimpleDescriptor {
+            profile_id: 0xc05e,
+            ..dimmer
+        };
         assert_eq!(classify_device_type(&zll), ZigbeeDeviceType::Unknown);
     }
 
     #[test]
+    fn reporting_is_configured_and_its_answer_read() {
+        let on_off = build_configure_reporting_payload(reported_attributes(ON_OFF_CLUSTER_ID), 9);
+        // global, seq, 0x06; direction, attribute 0x0000, boolean, min 0, max 300
+        assert_eq!(on_off, [0x00, 9, 0x06, 0x00, 0, 0, 0x10, 0, 0, 0x2c, 0x01]);
+        let level =
+            build_configure_reporting_payload(reported_attributes(LEVEL_CONTROL_CLUSTER_ID), 1);
+        // uint8: min 1, max 300, a change of 1 on one byte
+        assert_eq!(&level[3..], [0x00, 0, 0, 0x20, 1, 0, 0x2c, 0x01, 1]);
+        let color =
+            build_configure_reporting_payload(reported_attributes(COLOR_CONTROL_CLUSTER_ID), 2);
+        assert_eq!(
+            color.len(),
+            3 + 3 * 10,
+            "three uint16 records, changes on two bytes"
+        );
+        assert!(reported_attributes(BASIC_CLUSTER_ID).is_empty());
+
+        let mut device = lamp();
+        assert_eq!(device.reporting, Reporting::Unknown);
+        // Configure Reporting Response: one 0x00, all accepted
+        assert!(apply_lamp_frame(
+            &mut device,
+            ON_OFF_CLUSTER_ID,
+            &[0x18, 9, 0x07, 0x00]
+        ));
+        assert_eq!(device.reporting, Reporting::Configured);
+        // a refusal record: unsupported attribute
+        assert!(apply_lamp_frame(
+            &mut device,
+            ON_OFF_CLUSTER_ID,
+            &[0x18, 10, 0x07, 0x86, 0x00, 0x00, 0x00]
+        ));
+        assert_eq!(device.reporting, Reporting::Refused);
+        // another cluster's answer says nothing of the heartbeat
+        apply_lamp_frame(
+            &mut device,
+            LEVEL_CONTROL_CLUSTER_ID,
+            &[0x18, 11, 0x07, 0x00],
+        );
+        assert_eq!(device.reporting, Reporting::Refused);
+    }
+
+    #[test]
+    fn a_bind_request_names_both_ends_least_significant_first() {
+        let lamp = parse_eui64("00:17:88:01:08:0c:00:0b").unwrap();
+        let coordinator = [0xaa, 0, 0, 0, 0, 0, 0, 0x01];
+        let payload = build_bind_request_payload(7, lamp, 11, ON_OFF_CLUSTER_ID, coordinator, 1);
+        assert_eq!(payload.len(), 22);
+        assert_eq!(payload[0], 7);
+        assert_eq!(
+            &payload[1..9],
+            [0x0b, 0x00, 0x0c, 0x08, 0x01, 0x88, 0x17, 0x00]
+        );
+        assert_eq!(&payload[9..13], [11, 0x06, 0x00, 0x03]);
+        assert_eq!(&payload[13..], [0x01, 0, 0, 0, 0, 0, 0, 0xaa, 1]);
+    }
+
+    #[test]
     fn addresses_and_endpoint_lists() {
-        assert_eq!(parse_eui64("00:17:88:01:08:0c:00:0b"), Some([0x00, 0x17, 0x88, 0x01, 0x08, 0x0c, 0x00, 0x0b]));
+        assert_eq!(
+            parse_eui64("00:17:88:01:08:0c:00:0b"),
+            Some([0x00, 0x17, 0x88, 0x01, 0x08, 0x0c, 0x00, 0x0b])
+        );
+        assert_eq!(
+            eui64_text(parse_eui64("4b:8e:c6:08:01:88:17:00").unwrap()),
+            "4b:8e:c6:08:01:88:17:00"
+        );
         assert_eq!(parse_eui64("00:17:88"), None);
         assert_eq!(parse_eui64("00:17:88:01:08:0c:00:0b:00"), None);
-        assert_eq!(parse_active_ep_response(&[1, 0, 0x34, 0x2e, 2, 11, 242]), Some(vec![11, 242]));
-        assert_eq!(parse_active_ep_response(&[1, 0, 0x34, 0x2e, 3, 11, 242]), None, "cut");
-        let announce = [0, 0x34, 0x2e, 0x0b, 0x00, 0x0c, 0x08, 0x01, 0x88, 0x17, 0x00, 0x8e];
+        assert_eq!(parse_eui64("0:17:88:01:08:0c:00:0bb"), None);
+        assert_eq!(
+            parse_active_ep_response(&[1, 0, 0x34, 0x2e, 2, 11, 242]),
+            Some(vec![11, 242])
+        );
+        assert_eq!(
+            parse_active_ep_response(&[1, 0, 0x34, 0x2e, 3, 11, 242]),
+            None,
+            "cut"
+        );
+        let announce = [
+            0, 0x34, 0x2e, 0x0b, 0x00, 0x0c, 0x08, 0x01, 0x88, 0x17, 0x00, 0x8e,
+        ];
         let announce = parse_device_announce(&announce).unwrap();
-        assert_eq!((announce.node_id, announce.eui64.as_str()), (0x2e34, "00:17:88:01:08:0c:00:0b"));
+        assert_eq!(
+            (announce.node_id, announce.eui64.as_str()),
+            (0x2e34, "00:17:88:01:08:0c:00:0b")
+        );
     }
 }

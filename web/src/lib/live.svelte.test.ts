@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { time } from './clock.svelte.ts';
-import { live, refresh, source, sources, STALE_CADENCES, type Every, type Source } from './live.svelte.ts';
+import { STALE_CADENCES } from '#lib/paces.ts';
+import { listen, live, refresh, source, sources, type Every, type Source } from './live.svelte.ts';
+import { CHANGE, PUSHED_SAFETY_MS } from '#lib/events.ts';
 
 /** Runs `live()` the way a component would, and returns the value plus the unmount. */
 function mountSource<T, A = never>(src: Source<T, A>) {
@@ -218,5 +220,107 @@ describe('live', () => {
 		const { entry, destroy } = mount('r', async () => 'first');
 		await expect(entry.ready).resolves.toBe('first');
 		destroy();
+	});
+});
+
+/** An event stream the test speaks for. */
+class FakeStream extends EventTarget {
+	readyState: number = EventSource.CONNECTING;
+	closed = false;
+	constructor(readonly url: string) {
+		super();
+	}
+	opened() {
+		this.readyState = EventSource.OPEN;
+		this.dispatchEvent(new Event('open'));
+	}
+	says(name: string) {
+		this.dispatchEvent(new MessageEvent(CHANGE, { data: name }));
+	}
+	fails(closed: boolean) {
+		this.readyState = closed ? EventSource.CLOSED : EventSource.CONNECTING;
+		this.dispatchEvent(new Event('error'));
+	}
+	close() {
+		this.closed = true;
+		this.readyState = EventSource.CLOSED;
+	}
+}
+
+describe('listen', () => {
+	let streams: FakeStream[];
+	const open = (url: string) => {
+		const s = new FakeStream(url);
+		streams.push(s);
+		return s as unknown as EventSource;
+	};
+	beforeEach(() => {
+		vi.useFakeTimers();
+		streams = [];
+	});
+	afterEach(() => vi.useRealTimers());
+
+	it('reads again, at once, what the server says changed, and nothing else', async () => {
+		const lamps = vi.fn(async () => 1);
+		const tv = vi.fn(async () => 2);
+		const a = mount('zigbee-lamp:list', lamps);
+		const b = mount('tv:status', tv);
+		await settle();
+		const stop = listen(open);
+		expect(streams[0]?.url).toBe('/api/events');
+		streams[0]?.opened();
+		await settle();
+		// opened: everything on screen asked once (what changed while it was closed)
+		expect(lamps).toHaveBeenCalledTimes(2);
+		expect(tv).toHaveBeenCalledTimes(2);
+		streams[0]?.says('zigbee-lamp');
+		await settle();
+		expect(lamps).toHaveBeenCalledTimes(3);
+		expect(tv).toHaveBeenCalledTimes(2);
+		stop();
+		expect(streams[0]?.closed).toBe(true);
+		a.destroy();
+		b.destroy();
+	});
+
+	it('slows the pushed sources while open, and gives them their pace back when it closes', async () => {
+		const plugs = vi.fn(async () => 1);
+		const tv = vi.fn(async () => 2);
+		const a = mount('meross:list', plugs, 5000);
+		const b = mount('tv:status:slow', tv, 5000);
+		await settle();
+		const stop = listen(open);
+		streams[0]?.opened();
+		await settle();
+		plugs.mockClear();
+		tv.mockClear();
+		await vi.advanceTimersByTimeAsync(PUSHED_SAFETY_MS - 1000);
+		expect(plugs).not.toHaveBeenCalled();
+		expect(tv.mock.calls.length).toBeGreaterThan(5);
+		// it drops (the browser tries again by itself): the plugs poll at their own pace
+		streams[0]?.fails(false);
+		plugs.mockClear();
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(plugs).toHaveBeenCalledOnce();
+		stop();
+		a.destroy();
+		b.destroy();
+	});
+
+	it('opens a refused stream again later, waiting longer each time', async () => {
+		const stop = listen(open);
+		streams[0]?.fails(true);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(streams).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(streams).toHaveLength(2);
+		streams[1]?.fails(true);
+		await vi.advanceTimersByTimeAsync(1999);
+		expect(streams).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(streams).toHaveLength(3);
+		stop();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(streams).toHaveLength(3);
 	});
 });

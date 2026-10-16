@@ -3,6 +3,7 @@
 	// after them (a pressed toggle when the set says it is muted), and on the TV a slider that
 	// follows the finger. The keys are the pad's own senders: a hold paces them alike.
 	import { m } from '#lib/paraglide/messages.js';
+	import Section from '#lib/components/Section.svelte';
 	import { haptic, TAP } from '#lib/haptics.ts';
 	import Range from '#lib/components/Range.svelte';
 	import type { TvVolume } from './api.ts';
@@ -21,11 +22,9 @@
 		reason?: string;
 	}
 	let { keys, volume, level, set, reason }: Props = $props();
-	const id = $props.id();
 </script>
 
-<section class="tile" aria-labelledby="{id}-title">
-	<h2 id="{id}-title" class="group-title">{m.tv_volume()}</h2>
+<Section title={m.tv_volume()}>
 	<div class="keys">
 		<Key k="volume_down" fire={keys.volume_down} {reason} />
 		{#if volume}<span class="level" aria-hidden="true">{level ?? volume.current}</span>{/if}
@@ -48,7 +47,7 @@
 			}}
 		/>
 	{/if}
-</section>
+</Section>
 
 <style>
 	/* − 18 + : two 56 px keys either side of the value (§ 7), mute after them */

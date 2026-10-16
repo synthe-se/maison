@@ -1,0 +1,23 @@
+The SDIO driver built with clang: two functions declared without a prototype (-Wstrict-prototypes
+is an error in the kernel's flags; Radxa builds with GCC).
+
+--- a/src/SDIO/driver_fw/driver/aic8800/aic8800_fdrv/aicwf_rx_prealloc.c
++++ b/src/SDIO/driver_fw/driver/aic8800/aic8800_fdrv/aicwf_rx_prealloc.c
+@@ -49,7 +49,7 @@
+     spin_unlock_irqrestore(lock, flags);
+ }
+ 
+-int aicwf_prealloc_init()
++int aicwf_prealloc_init(void)
+ {
+     struct rx_buff *rxbuff;
+     int i = 0;
+@@ -79,7 +79,7 @@
+     return 0;
+ }
+ 
+-void aicwf_prealloc_exit()
++void aicwf_prealloc_exit(void)
+ {
+     struct rx_buff *rxbuff;
+     struct rx_buff *pos;

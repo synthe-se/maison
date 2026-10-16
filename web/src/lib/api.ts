@@ -1,7 +1,8 @@
-// The backend's API: JSON in and out with the session cookie, an expired access token renewed
-// once and transparently, a refusal thrown with its name (`code`) for the app to word it.
+// The backend's API: JSON in and out with the session's cookies, an expired access token renewed
+// once and transparently, a refusal thrown with its name (`code`) for the app to word it. A wall
+// screen is in by a cookie too (screens.ts): the page never holds a token.
 
-const API_BASE = '/api';
+export const API_BASE = '/api';
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -30,9 +31,6 @@ export class ApiError extends Error {
  * while the Pi restarts): the session may be fine, the server is just not there to say so. */
 export const UNREACHABLE = 'unreachable';
 
-/** A name as the backend keeps it: at most this many characters (backend people::MAX_NAME). */
-export const MAX_NAME = 60;
-
 // Told when a request stays refused after the renewal: the session is over.
 let unauthorized: () => void = () => {};
 export function onUnauthorized(handler: () => void) {
@@ -47,7 +45,7 @@ let renewing: Promise<boolean> | null = null;
  * refused, 401 or 403). No answer, or a 5xx: throws `UNREACHABLE` rather than sign anyone out
  * over a brief outage.
  */
-export function renewSession(): Promise<boolean> {
+function renewSession(): Promise<boolean> {
 	renewing ??= (async () => {
 		let r: Response;
 		try {
@@ -62,23 +60,29 @@ export function renewSession(): Promise<boolean> {
 	return renewing;
 }
 
+/**
+ * Sends `send`'s request; an expired access token is renewed once, then the request sent again
+ * (a screen's cookie has none: refused, it was removed). Still refused: the session is over,
+ * except for the auth routes, which answer for themselves (a session check, a sign-out).
+ */
+async function withRenewal<R extends { status: number }>(endpoint: string, send: () => Promise<R>): Promise<R> {
+	let r = await send();
+	if (r.status === 401) {
+		if (await renewSession()) r = await send();
+		if (r.status === 401 && !endpoint.startsWith('/auth/')) unauthorized();
+	}
+	return r;
+}
+
 export async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
-	const send = () =>
+	const response = await withRenewal(endpoint, () =>
 		fetch(`${API_BASE}${endpoint}`, {
 			method: options.method ?? 'GET',
 			headers: options.body === undefined ? {} : { 'Content-Type': 'application/json' },
 			body: options.body === undefined ? undefined : JSON.stringify(options.body),
 			credentials: 'same-origin'
-		});
-
-	let response = await send();
-
-	// an expired access token: renewed once, then the request again
-	if (response.status === 401) {
-		if (await renewSession()) response = await send();
-		// the auth routes answer for themselves (a session check, a sign-out)
-		if (response.status === 401 && !endpoint.startsWith('/auth/')) unauthorized();
-	}
+		})
+	);
 
 	if (!response.ok) {
 		let data: unknown;
@@ -97,7 +101,7 @@ export async function api<T>(endpoint: string, options: ApiOptions = {}): Promis
 
 /** A refusal as the server said it (`{success:false, error, code?, detail?}`, or nothing to
  * read: a proxy's page, an empty body): the one place an answer becomes an ApiError. */
-export function toApiError(status: number, data: unknown): ApiError {
+function toApiError(status: number, data: unknown): ApiError {
 	const d = (data && typeof data === 'object' ? data : {}) as { error?: unknown; code?: unknown; detail?: unknown };
 	return new ApiError(
 		typeof d.error === 'string' ? d.error : '',
@@ -140,14 +144,13 @@ export async function upload<T>(
 	timeoutMs: number,
 	onProgress?: (sent: number) => void
 ): Promise<T> {
-	let r = await sendFile(endpoint, field, file, timeoutMs, onProgress);
-	if (r.status === 401) {
-		if (await renewSession()) r = await sendFile(endpoint, field, file, timeoutMs, onProgress);
-		if (r.status === 401) unauthorized();
-	}
+	const r = await withRenewal(endpoint, () => sendFile(endpoint, field, file, timeoutMs, onProgress));
 	if (r.status < 200 || r.status >= 300) throw toApiError(r.status, r.data);
 	return (r.data ?? {}) as T;
 }
+
+/** The server says it does not exist (404): « introuvable », not a failure to retry. */
+export const isNotFound = (e: unknown): boolean => e instanceof ApiError && e.status === 404;
 
 /** A path with each interpolated value encoded (an id never breaks out of its segment):
  * path`/meross/${id}/status`. */

@@ -1,0 +1,7 @@
+[Match]
+Name=wlan0
+
+[Network]
+DHCP=yes
+# maison-frame.local (resolved.conf.d/maison.conf)
+MulticastDNS=yes

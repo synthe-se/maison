@@ -137,13 +137,17 @@ describe('BindingEditor', () => {
 		await expect.element(commands().nth(1)).toHaveValue('a');
 		await expect.element(page.getByRole('button', { name: m.remote_move_down({ n: 2 }) })).toHaveFocus();
 		expect(say).toHaveBeenCalledWith(m.remote_moved({ n: 2 }));
-		// to the end: the focus goes to the arrow still usable
+		// to the end: the focus stays on its arrow, which now says it cannot, and does nothing
 		await page.getByRole('button', { name: m.remote_move_down({ n: 2 }) }).click();
 		await expect.element(commands().nth(2)).toHaveValue('a');
-		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 3 }) })).toHaveFocus();
+		const last = page.getByRole('button', { name: m.remote_move_down({ n: 3 }) });
+		await expect.element(last).toHaveFocus();
+		await expect.element(last).toHaveAccessibleDescription(m.remote_move_last());
+		(last.element() as HTMLElement).click();
+		await expect.element(commands().nth(2)).toHaveValue('a');
 		await page.getByRole('button', { name: m.remote_move_up({ n: 2 }) }).click();
 		await expect.element(commands().nth(0)).toHaveValue('c');
-		await expect.element(page.getByRole('button', { name: m.remote_move_down({ n: 1 }) })).toHaveFocus();
+		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 1 }) })).toHaveFocus();
 		await page.getByRole('button', { name: m.remote_move_up({ n: 3 }) }).click();
 		await expect.element(page.getByRole('button', { name: m.remote_move_up({ n: 2 }) })).toHaveFocus();
 		await expect.element(commands().nth(1)).toHaveValue('a');
@@ -192,12 +196,19 @@ describe('BindingEditor', () => {
 		await test().click();
 		await expect.element(page.getByText(m.remote_testing())).toBeVisible();
 		await expect.element(test()).toBeDisabled();
-		answer.resolve({ success: false, message: '', results: ['ok: sent', 'failed: plug offline'] });
+		answer.resolve({
+			success: false,
+			message: '',
+			results: [
+				{ action: actions[0], ok: true },
+				{ action: actions[1], ok: false, code: 'device_unreachable' }
+			]
+		});
 		const results = page.getByRole('listitem').filter({ hasText: m.remote_test_item_ok() });
 		await expect.element(results).toMatchTextContent(summarize(actions[0], remoteSources()));
 		const failed = page.getByRole('listitem').filter({ hasText: m.remote_test_item_failed() });
 		await expect.element(failed).toMatchTextContent(summarize(actions[1], remoteSources()));
-		await expect.element(failed).toMatchTextContent('plug offline');
+		await expect.element(failed).toMatchTextContent(m.code_device_unreachable());
 		await expect.element(page.getByText(m.remote_test_failed())).toBeVisible();
 		expect(say).toHaveBeenCalledWith(m.remote_test_failed());
 		expect((api.sent('POST', '/ir/test')[0] as ApiCall).body).toEqual({ actions });
@@ -207,7 +218,7 @@ describe('BindingEditor', () => {
 	});
 
 	it('says a passed test', async () => {
-		stubApi({ 'POST /ir/test': { success: true, message: '', results: ['ok: done'] } });
+		stubApi({ 'POST /ir/test': { success: true, message: '', results: [{ action: nab('ping'), ok: true }] } });
 		await editor(116, { '116': { actions: [nab('ping')] } });
 		await test().click();
 		await expect.element(page.getByText(m.remote_test_passed())).toBeVisible();

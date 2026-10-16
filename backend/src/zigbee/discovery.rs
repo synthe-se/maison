@@ -5,19 +5,20 @@
 use std::time::Duration;
 
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::{
     callbacks::DriverEvent,
     context::EzspContext,
-    device::{DiscoveredDevice, ZigbeeDeviceType},
+    device::{DiscoveredDevice, Hex, Reporting, ZigbeeDeviceType},
     error::DriverError,
     remotes::bind_remote_clusters,
     zcl::{
-        ACTIVE_EP_REQ_CLUSTER_ID, BASIC_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID,
-        PHILIPS_SPECIFIC_CLUSTER_ID, SIMPLE_DESC_REQ_CLUSTER_ID, SimpleDescriptor, ZDO_PROFILE_ID, classify_device_type,
-        hex_bytes, is_preferred_light_endpoint, parse_active_ep_response, parse_device_announce, parse_simple_desc_response,
-        parse_zcl_header,
+        build_configure_reporting_payload, classify_device_type, is_preferred_light_endpoint,
+        parse_active_ep_response, parse_device_announce, parse_simple_desc_response,
+        parse_zcl_header, reported_attributes, SimpleDescriptor, ACTIVE_EP_REQ_CLUSTER_ID,
+        BASIC_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID,
+        PHILIPS_SPECIFIC_CLUSTER_ID, SIMPLE_DESC_REQ_CLUSTER_ID, ZDO_PROFILE_ID,
     },
 };
 
@@ -34,38 +35,68 @@ pub fn should_probe_active_endpoints(target: &DiscoveredDevice) -> bool {
     target.info.endpoint.is_none() || target.info.input_clusters.is_empty()
 }
 
-pub async fn request_active_endpoints(context: &mut EzspContext, node_id: u16) -> Result<(), DriverError> {
+pub async fn request_active_endpoints(
+    context: &mut EzspContext,
+    node_id: u16,
+) -> Result<(), DriverError> {
     context
-        .send_zdo(node_id, ACTIVE_EP_REQ_CLUSTER_ID, "send Active_EP_req", |sequence| {
-            let [low, high] = node_id.to_le_bytes();
-            vec![sequence, low, high]
-        })
+        .send_zdo(
+            node_id,
+            ACTIVE_EP_REQ_CLUSTER_ID,
+            "send Active_EP_req",
+            |sequence| {
+                let [low, high] = node_id.to_le_bytes();
+                vec![sequence, low, high]
+            },
+        )
         .await
 }
 
-async fn request_simple_descriptor(context: &mut EzspContext, node_id: u16, endpoint: u8) -> Result<(), DriverError> {
+async fn request_simple_descriptor(
+    context: &mut EzspContext,
+    node_id: u16,
+    endpoint: u8,
+) -> Result<(), DriverError> {
     context
-        .send_zdo(node_id, SIMPLE_DESC_REQ_CLUSTER_ID, "send Simple_Desc_req", |sequence| {
-            let [low, high] = node_id.to_le_bytes();
-            vec![sequence, low, high, endpoint]
-        })
+        .send_zdo(
+            node_id,
+            SIMPLE_DESC_REQ_CLUSTER_ID,
+            "send Simple_Desc_req",
+            |sequence| {
+                let [low, high] = node_id.to_le_bytes();
+                vec![sequence, low, high, endpoint]
+            },
+        )
         .await
 }
 
 /// Asks a lamp its names (Basic) and its light (On/Off, Level, colour).
-pub async fn refresh_device_state(context: &mut EzspContext, target: &DiscoveredDevice) -> Result<(), DriverError> {
+pub async fn refresh_device_state(
+    context: &mut EzspContext,
+    target: &DiscoveredDevice,
+) -> Result<(), DriverError> {
     let (node_id, info) = (target.node_id, &target.info);
-    let endpoint = info.endpoint.ok_or_else(|| DriverError::Unsupported("This Zigbee device has no endpoint yet".into()))?;
-    context.send_read_attributes(node_id, endpoint, BASIC_CLUSTER_ID, &[0x0004, 0x0005]).await?;
+    let endpoint = info
+        .endpoint
+        .ok_or_else(|| DriverError::Unsupported("This Zigbee device has no endpoint yet".into()))?;
+    context
+        .send_read_attributes(node_id, endpoint, BASIC_CLUSTER_ID, &[0x0004, 0x0005])
+        .await?;
     if info.has_input(ON_OFF_CLUSTER_ID) {
-        context.send_read_attributes(node_id, endpoint, ON_OFF_CLUSTER_ID, &[0x0000]).await?;
+        context
+            .send_read_attributes(node_id, endpoint, ON_OFF_CLUSTER_ID, &[0x0000])
+            .await?;
     }
     if info.has_input(LEVEL_CONTROL_CLUSTER_ID) {
-        context.send_read_attributes(node_id, endpoint, LEVEL_CONTROL_CLUSTER_ID, &[0x0000]).await?;
+        context
+            .send_read_attributes(node_id, endpoint, LEVEL_CONTROL_CLUSTER_ID, &[0x0000])
+            .await?;
     }
     if info.has_color_control_cluster() {
         let attributes = [0x0003, 0x0004, 0x0007, 0x0008, 0x400A];
-        context.send_read_attributes(node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, &attributes).await?;
+        context
+            .send_read_attributes(node_id, endpoint, COLOR_CONTROL_CLUSTER_ID, &attributes)
+            .await?;
     }
     Ok(())
 }
@@ -83,12 +114,70 @@ pub async fn request_known_device_discovery(context: &mut EzspContext, node_id: 
         device.last_discovery_at = Some(Instant::now());
     }
     if should_probe_active_endpoints(&target) {
-        let _ = request_active_endpoints(context, node_id).await;
-        for endpoint in COMMON_ENDPOINTS {
-            let _ = request_simple_descriptor(context, node_id, endpoint).await;
-        }
+        probe_endpoints(context, node_id).await;
     } else {
-        let _ = refresh_device_state(context, &target).await;
+        let refreshed = refresh_device_state(context, &target).await;
+        context.note(node_id, "state refresh", refreshed);
+    }
+}
+
+/// Asks a device its endpoints, and the common ones' descriptors directly. Failures are
+/// noted (they count toward a rebuild); the answers come as callbacks.
+async fn probe_endpoints(context: &mut EzspContext, node_id: u16) {
+    let asked = request_active_endpoints(context, node_id).await;
+    context.note(node_id, "Active_EP_req", asked);
+    for endpoint in COMMON_ENDPOINTS {
+        let asked = request_simple_descriptor(context, node_id, endpoint).await;
+        context.note(node_id, "Simple_Desc_req", asked);
+    }
+}
+
+/// Asks a lamp to report its light by itself: each light cluster bound to the coordinator,
+/// then its attributes' reporting configured ([`reported_attributes`]). The lamp's answer
+/// comes back as a Configure Reporting Response (`zcl::apply_lamp_frame`); until it says yes
+/// for On/Off, or when it says no, it is pinged (`availability.rs`).
+pub async fn configure_reporting(context: &mut EzspContext, target: &DiscoveredDevice) {
+    let (node_id, info) = (target.node_id, &target.info);
+    let Some(endpoint) = info
+        .endpoint
+        .filter(|_| info.device_type == ZigbeeDeviceType::Lamp)
+    else {
+        return;
+    };
+    let mut asked = false;
+    for cluster_id in [
+        ON_OFF_CLUSTER_ID,
+        LEVEL_CONTROL_CLUSTER_ID,
+        COLOR_CONTROL_CLUSTER_ID,
+    ] {
+        let attributes = reported_attributes(cluster_id);
+        if !info.has_input(cluster_id) {
+            continue;
+        }
+        let bound = context
+            .bind_to_coordinator(node_id, &info.eui64, endpoint, cluster_id)
+            .await;
+        if !context.note(node_id, "Bind_req", bound) {
+            continue;
+        }
+        let sent = context
+            .send_zcl(
+                node_id,
+                endpoint,
+                cluster_id,
+                "configure reporting",
+                |sequence| build_configure_reporting_payload(attributes, sequence),
+            )
+            .await;
+        asked |=
+            context.note(node_id, "configure reporting", sent) && cluster_id == ON_OFF_CLUSTER_ID;
+    }
+    if let Some(device) = context.device_mut(node_id) {
+        device.reporting = if asked {
+            Reporting::Asked
+        } else {
+            Reporting::Refused
+        };
     }
 }
 
@@ -97,22 +186,22 @@ pub async fn retry_pending_interviews(context: &mut EzspContext) {
         .joined_devices
         .iter()
         .filter(|device| {
-            device.connected && device.info.endpoint.is_none() && device.interview_attempts < MAX_PROACTIVE_INTERVIEW_ATTEMPTS
+            device.connected
+                && device.info.endpoint.is_none()
+                && device.interview_attempts < MAX_PROACTIVE_INTERVIEW_ATTEMPTS
         })
         .map(|device| (device.node_id, device.interview_attempts))
         .collect::<Vec<_>>();
 
     for (node_id, attempts) in retry_targets {
-        debug!(node_id = format_args!("0x{node_id:04x}"), attempts, "retrying native zigbee endpoint discovery");
+        debug!(
+            node_id = %Hex(node_id),
+            attempts, "retrying native zigbee endpoint discovery"
+        );
         if let Some(device) = context.device_mut(node_id) {
             device.interview_attempts = device.interview_attempts.saturating_add(1);
         }
-        if let Err(error) = request_active_endpoints(context, node_id).await {
-            warn!(node_id = format_args!("0x{node_id:04x}"), %error, "native zigbee endpoint discovery retry failed");
-        }
-        for endpoint in COMMON_ENDPOINTS {
-            let _ = request_simple_descriptor(context, node_id, endpoint).await;
-        }
+        probe_endpoints(context, node_id).await;
     }
 }
 
@@ -120,13 +209,26 @@ pub async fn retry_pending_interviews(context: &mut EzspContext) {
 /// commands make it a remote (which will *never* answer ZDO requests: classified at once,
 /// and bound so its next presses reach us); anything else but our own ZDO answers starts
 /// its discovery (rate-limited).
-pub async fn intercept_uninterviewed(context: &mut EzspContext, node_id: u16, cluster_id: u16, profile_id: u16, payload: &[u8]) {
-    let remote_cluster = [ON_OFF_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, PHILIPS_SPECIFIC_CLUSTER_ID].contains(&cluster_id);
+pub async fn intercept_uninterviewed(
+    context: &mut EzspContext,
+    node_id: u16,
+    cluster_id: u16,
+    profile_id: u16,
+    payload: &[u8],
+) {
+    let remote_cluster = [
+        ON_OFF_CLUSTER_ID,
+        LEVEL_CONTROL_CLUSTER_ID,
+        PHILIPS_SPECIFIC_CLUSTER_ID,
+    ]
+    .contains(&cluster_id);
     let is_command = parse_zcl_header(payload).is_some_and(|header| header.cluster_specific);
     if remote_cluster && is_command {
-        info!(node_id = format_args!("0x{node_id:04x}"), cluster_id = format_args!("0x{cluster_id:04x}"), payload = %hex_bytes(payload),
+        info!(node_id = %Hex(node_id), cluster_id = %Hex(cluster_id), payload = %crate::util::hex(payload, " "),
             "uninterviewed device sent ZCL remote command — auto-classifying as remote");
-        let Some(device) = context.device_mut(node_id) else { return };
+        let Some(device) = context.device_mut(node_id) else {
+            return;
+        };
         device.info.device_type = ZigbeeDeviceType::Remote;
         device.info.endpoint = Some(1);
         device.info.output_clusters = vec![ON_OFF_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID];
@@ -144,15 +246,23 @@ pub async fn intercept_uninterviewed(context: &mut EzspContext, node_id: u16, cl
     if profile_id == ZDO_PROFILE_ID {
         return;
     }
-    let due = context
-        .device(node_id)
-        .is_some_and(|device| device.last_discovery_at.is_none_or(|at| at.elapsed() >= DISCOVERY_COOLDOWN));
+    let due = context.device(node_id).is_some_and(|device| {
+        device
+            .last_discovery_at
+            .is_none_or(|at| at.elapsed() >= DISCOVERY_COOLDOWN)
+    });
     if !due {
-        debug!(node_id = format_args!("0x{node_id:04x}"), "device is awake but discovery cooldown active — skipping");
+        debug!(
+            node_id = %Hex(node_id),
+            "device is awake but discovery cooldown active — skipping"
+        );
         return;
     }
-    info!(node_id = format_args!("0x{node_id:04x}"), cluster_id = format_args!("0x{cluster_id:04x}"),
-        "device is awake but uninterviewed — triggering discovery now");
+    info!(
+        node_id = %Hex(node_id),
+        cluster_id = %Hex(cluster_id),
+        "device is awake but uninterviewed — triggering discovery now"
+    );
     request_known_device_discovery(context, node_id).await;
 }
 
@@ -162,10 +272,13 @@ pub async fn intercept_uninterviewed(context: &mut EzspContext, node_id: u16, cl
 pub async fn on_device_announce(context: &mut EzspContext, payload: &[u8]) -> Option<DriverEvent> {
     let announcement = parse_device_announce(payload)?;
     let node_id = announcement.node_id;
-    info!(node_id = format_args!("0x{node_id:04x}"), eui64 = %announcement.eui64, "device announce received — starting discovery");
+    info!(node_id = %Hex(node_id), eui64 = %announcement.eui64, "device announce received — starting discovery");
     super::callbacks::ensure_joined_device(context, node_id, announcement.eui64.clone());
-    if let Some(device) = context.device_mut(node_id).filter(|device| device.interview_completed) {
-        info!(node_id = format_args!("0x{node_id:04x}"), old_type = ?device.info.device_type, old_endpoint = ?device.info.endpoint,
+    if let Some(device) = context
+        .device_mut(node_id)
+        .filter(|device| device.interview_completed)
+    {
+        info!(node_id = %Hex(node_id), old_type = ?device.info.device_type, old_endpoint = ?device.info.endpoint,
             "device re-announced — resetting classification for fresh interview");
         device.info.device_type = ZigbeeDeviceType::Unknown;
         device.info.endpoint = None;
@@ -175,33 +288,43 @@ pub async fn on_device_announce(context: &mut EzspContext, payload: &[u8]) -> Op
         device.interview_attempts = 0;
     }
     request_known_device_discovery(context, node_id).await;
-    Some(DriverEvent::DeviceAnnounced { node_id, eui64: announcement.eui64 })
+    Some(DriverEvent::DeviceAnnounced {
+        node_id,
+        eui64: announcement.eui64,
+    })
 }
 
 /// Asks each endpoint's descriptor, the ZLL one (242) last.
 pub async fn on_active_endpoints(context: &mut EzspContext, node_id: u16, payload: &[u8]) {
-    let Some(mut endpoints) = parse_active_ep_response(payload) else { return };
+    let Some(mut endpoints) = parse_active_ep_response(payload) else {
+        return;
+    };
     endpoints.sort_by_key(|endpoint| *endpoint == 242);
     for endpoint in endpoints {
-        let _ = request_simple_descriptor(context, node_id, endpoint).await;
+        let asked = request_simple_descriptor(context, node_id, endpoint).await;
+        context.note(node_id, "Simple_Desc_req", asked);
     }
 }
 
 /// An endpoint's descriptor: the device is classified, and a lamp's state read.
 pub async fn on_simple_descriptor(context: &mut EzspContext, node_id: u16, payload: &[u8]) {
-    let Some(description) = parse_simple_desc_response(payload) else { return };
+    let Some(description) = parse_simple_desc_response(payload) else {
+        return;
+    };
     let classified = classify_device_type(&description);
     info!(
-        node_id = format_args!("0x{node_id:04x}"),
+        node_id = %Hex(node_id),
         endpoint = description.endpoint,
-        profile_id = format_args!("0x{:04x}", description.profile_id),
-        device_id = format_args!("0x{:04x}", description.device_id),
+        profile_id = %Hex(description.profile_id),
+        device_id = %Hex(description.device_id),
         input_clusters = ?description.input_clusters,
         output_clusters = ?description.output_clusters,
         device_type = ?classified,
         "simple descriptor received — device classified"
     );
-    let Some(device) = context.device_mut(node_id) else { return };
+    let Some(device) = context.device_mut(node_id) else {
+        return;
+    };
     device.heard();
     if !takes_endpoint(device, &description, classified) {
         return;
@@ -214,12 +337,17 @@ pub async fn on_simple_descriptor(context: &mut EzspContext, node_id: u16, paylo
         info.supports_brightness = false;
         info.supports_temperature = false;
         info.supports_color = false;
-        info!(node_id = format_args!("0x{node_id:04x}"), eui64 = %info.eui64, endpoint = description.endpoint, "detected Zigbee remote / dimmer switch");
+        info!(node_id = %Hex(node_id), eui64 = %info.eui64, endpoint = description.endpoint, "detected Zigbee remote / dimmer switch");
     } else {
-        info.supports_brightness = description.input_clusters.contains(&LEVEL_CONTROL_CLUSTER_ID);
+        info.supports_brightness = description
+            .input_clusters
+            .contains(&LEVEL_CONTROL_CLUSTER_ID);
         // a temperature is only known from its attribute; XY only from colorCapabilities,
         // read with the state below
-        info.supports_temperature = info.supports_temperature && description.input_clusters.contains(&COLOR_CONTROL_CLUSTER_ID);
+        info.supports_temperature = info.supports_temperature
+            && description
+                .input_clusters
+                .contains(&COLOR_CONTROL_CLUSTER_ID);
     }
     info.input_clusters = description.input_clusters;
     info.output_clusters = description.output_clusters;
@@ -227,7 +355,9 @@ pub async fn on_simple_descriptor(context: &mut EzspContext, node_id: u16, paylo
     device.interview_attempts = 0;
     if !is_remote {
         let target = device.clone();
-        let _ = refresh_device_state(context, &target).await;
+        let refreshed = refresh_device_state(context, &target).await;
+        context.note(node_id, "state refresh", refreshed);
+        configure_reporting(context, &target).await;
     }
 }
 
@@ -235,15 +365,23 @@ pub async fn on_simple_descriptor(context: &mut EzspContext, node_id: u16, paylo
 /// multi-endpoint devices like the Hue Lightstrip Plus (LCL001) have a utility endpoint
 /// (1, On/Off in its output clusters only: « remote ») and the real light one (11). The
 /// light endpoint corrects a remote classification; a remote one never overwrites a lamp.
-fn takes_endpoint(device: &DiscoveredDevice, description: &SimpleDescriptor, classified: ZigbeeDeviceType) -> bool {
+fn takes_endpoint(
+    device: &DiscoveredDevice,
+    description: &SimpleDescriptor,
+    classified: ZigbeeDeviceType,
+) -> bool {
     let info = &device.info;
     if classified == ZigbeeDeviceType::Remote {
         return info.device_type != ZigbeeDeviceType::Lamp;
     }
     let light = is_preferred_light_endpoint(description);
-    let has_no_light_cluster = [ON_OFF_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID]
-        .iter()
-        .all(|cluster| !info.has_input(*cluster));
+    let has_no_light_cluster = [
+        ON_OFF_CLUSTER_ID,
+        LEVEL_CONTROL_CLUSTER_ID,
+        COLOR_CONTROL_CLUSTER_ID,
+    ]
+    .iter()
+    .all(|cluster| !info.has_input(*cluster));
     (info.endpoint.is_none() && light)
         || info.endpoint == Some(description.endpoint)
         || (light && has_no_light_cluster)
@@ -293,7 +431,13 @@ mod tests {
         // a lamp already: the utility endpoint never overwrites it
         let lamp = DiscoveredDevice::test_lamp();
         assert!(!takes_endpoint(&lamp, &utility, ZigbeeDeviceType::Remote));
-        assert!(takes_endpoint(&lamp, &endpoint(11, &[6, 8], &[]), ZigbeeDeviceType::Lamp), "its own endpoint again");
-        assert!(!takes_endpoint(&lamp, &endpoint(12, &[6, 8], &[]), ZigbeeDeviceType::Lamp), "a second light endpoint");
+        assert!(
+            takes_endpoint(&lamp, &endpoint(11, &[6, 8], &[]), ZigbeeDeviceType::Lamp),
+            "its own endpoint again"
+        );
+        assert!(
+            !takes_endpoint(&lamp, &endpoint(12, &[6, 8], &[]), ZigbeeDeviceType::Lamp),
+            "a second light endpoint"
+        );
     }
 }

@@ -3,10 +3,12 @@
 	// night hours and preferences as switches (§ 2, case 2). Offline, « Lancer le nettoyage »
 	// stays in place but unavailable, said why with a « Reconnecter » (§ 2); the delay and
 	// « J'ai rempli » wait for the connection (nothing that looks operable and is not).
+	import { untrack } from 'svelte';
 	import { m } from '#lib/paraglide/messages.js';
-	import { formatDuration } from '#lib/format.ts';
+	import { formatDuration } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
-	import { Gesture, pending, unavailable } from '#lib/gesture.svelte.ts';
+	import { Draft } from '#lib/draft.svelte.ts';
+	import { gate, Gesture, pending } from '#lib/gesture.svelte.ts';
 	import Icon, { type IconName } from '#lib/components/Icon.svelte';
 	import Range from '#lib/components/Range.svelte';
 	import Section from '#lib/components/Section.svelte';
@@ -19,14 +21,7 @@
 	import { reread } from './tuya.svelte.ts';
 	import DeviceTabs from './DeviceTabs.svelte';
 	import Offline from './Offline.svelte';
-
-	const STATE: Record<string, () => string> = {
-		cleaning: m.litter_box_status_cleaning,
-		cat_inside: m.litter_box_status_cat_inside,
-		clumping: m.litter_box_status_clumping,
-		satnd_by: m.state_standby // sic: the device's spelling
-	};
-	const LEVEL: Record<string, () => string> = { full: m.litter_box_filled, half: m.litter_box_half_filled };
+	import { LITTER_LEVEL, LITTER_STATE, litterHalf, wordOf } from './tokens.ts';
 	const PREFERENCES: { key: Preference; icon: IconName; label: () => string }[] = [
 		{ key: 'childLock', icon: 'lock', label: m.litter_box_child_lock },
 		{ key: 'kittenMode', icon: 'baby', label: m.litter_box_kitten_mode },
@@ -57,15 +52,18 @@
 			key
 		);
 
-	// the night hours typed but not yet applied; the device's value otherwise
-	let startDraft = $state<string | null>(null);
-	let endDraft = $state<string | null>(null);
-	const start = $derived(startDraft ?? s?.sleepMode?.startTimeFormatted ?? NIGHT.start);
-	const end = $derived(endDraft ?? s?.sleepMode?.endTimeFormatted ?? NIGHT.end);
+	// the night hours: the device's, until something is typed (a poll never overwrites it)
+	const night = new Draft({ ...NIGHT });
+	$effect(() => {
+		const said = { start: s?.sleepMode?.startTimeFormatted ?? NIGHT.start, end: s?.sleepMode?.endTimeFormatted ?? NIGHT.end };
+		if (!night.dirty) untrack(() => night.reset(said));
+	});
 
 	async function applyNight(e: SubmitEvent) {
 		e.preventDefault();
-		await save('night', { sleepMode: { startTime: start, endTime: end } }, () => (startDraft = endDraft = null));
+		const { start, end } = night.current;
+		// applied: the device's hours are shown again once it says them
+		await save('night', { sleepMode: { startTime: start, endTime: end } }, () => night.reset(night.current));
 	}
 	async function clean() {
 		await g.run(() => litterBoxApi.clean(id), reread(prefix, m.litter_box_cleaning_started()), 'clean');
@@ -76,11 +74,7 @@
 	<DeviceTabs other={{ label: m.common_settings(), icon: 'settings' }}>
 		{#snippet controls()}
 			<Section title={m.litter_box_litter_status()} icon="trash">
-				<button
-					class="btn primary wide"
-					{...offline ? unavailable(`${uid}-offline`) : pending(g.is('clean'))}
-					onclick={() => !offline && clean()}
-				>
+				<button class="btn primary wide" {...gate(offline && `${uid}-offline`, g.is('clean'))} onclick={() => !offline && clean()}>
 					<Icon name="trash" busy={g.is('clean')} />{g.is('clean') ? m.litter_box_cleaning() : m.litter_box_start_cleaning()}
 				</button>
 				{#if offline && device}
@@ -101,15 +95,11 @@
 						<StatusRow
 							icon="gauge"
 							label={m.litter_box_litter_level()}
-							value={LEVEL[s.sensors.litterLevel]?.() ?? s.sensors.litterLevel}
-							warn={s.sensors.litterLevel === 'half'}
+							value={wordOf(LITTER_LEVEL, s.sensors.litterLevel)}
+							warn={litterHalf(s)}
 						/>
 					{/if}
-					<StatusRow
-						icon="clock"
-						label={m.common_status()}
-						value={(s?.system?.state && STATE[s.system.state]?.()) || s?.system?.state || m.common_unknown()}
-					/>
+					<StatusRow icon="clock" label={m.common_status()} value={wordOf(LITTER_STATE, s?.system?.state)} />
 					{#if s?.system?.maintenanceRequired}
 						<StatusRow icon="settings" label={m.common_status()} value={m.litter_box_maintenance_required()} warn />
 					{/if}
@@ -122,7 +112,7 @@
 						/>
 					{/if}
 				</dl>
-				{#if s?.sensors?.litterLevel === 'half'}<p class="hint">{m.litter_box_fill_soon()}</p>{/if}
+				{#if litterHalf(s)}<p class="hint">{m.litter_box_fill_soon()}</p>{/if}
 				{#if !offline}
 					<ConfirmDialog
 						label={m.litter_box_reset_litter_level()}
@@ -153,11 +143,11 @@
 						<legend>{m.litter_box_night_hours()}</legend>
 						<div class="field">
 							<label for="night-start-{id}">{m.litter_box_start()}</label>
-							<input id="night-start-{id}" type="time" value={start} oninput={(e) => (startDraft = e.currentTarget.value)} required />
+							<input id="night-start-{id}" type="time" bind:value={night.current.start} required />
 						</div>
 						<div class="field">
 							<label for="night-end-{id}">{m.litter_box_end()}</label>
-							<input id="night-end-{id}" type="time" value={end} oninput={(e) => (endDraft = e.currentTarget.value)} required />
+							<input id="night-end-{id}" type="time" bind:value={night.current.end} required />
 						</div>
 					</fieldset>
 					<button class="btn wide" {...pending(g.is('night'))}>

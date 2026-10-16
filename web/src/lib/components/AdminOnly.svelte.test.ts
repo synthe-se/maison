@@ -25,7 +25,7 @@ describe('AdminOnly', () => {
 		session.adopt(alex);
 		await render(AdminOnly, { children: settings });
 		await expect.element(page.getByRole('button', { name: 'Réglages' })).not.toBeInTheDocument();
-		await expect.element(page.getByText(m.admin_only())).toBeVisible();
+		await expect.element(page.getByText(m.code_forbidden())).toBeVisible();
 	});
 
 	it('or nothing at all when there is nothing to explain', async () => {

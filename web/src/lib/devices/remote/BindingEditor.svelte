@@ -12,11 +12,11 @@
 	import type { Draft } from '#lib/draft.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Toggle from '#lib/components/Toggle.svelte';
-	import { irApi, type IrAction, type IrBinding, type IrTestResponse } from './api.ts';
+	import { irApi, type IrBinding, type KeyResponse } from './api.ts';
 	import ActionList from './ActionList.svelte';
 	import KeyCapture from './KeyCapture.svelte';
 	import TestResult from './TestResult.svelte';
-	import { bindingForm, isComplete, type BindingForm, type Sources } from './actions.ts';
+	import { bindingForm, type BindingForm, type Sources, actionsProblem } from './actions.ts';
 	import { keyName } from './keys.ts';
 
 	interface Props {
@@ -41,7 +41,7 @@
 	// two gestures: a test may still be running its actions when « Enregistrer » is pressed
 	const testing = new Gesture();
 	const saving = new Gesture();
-	let test = $state<{ response: IrTestResponse; actions: IrAction[] } | null>(null);
+	let test = $state<KeyResponse | null>(null);
 	let problem = $state('');
 	/** What the problem is about: the field it is said under, and that takes the focus. */
 	let problemAt = $state<'code' | 'actions' | null>(null);
@@ -80,13 +80,7 @@
 	/** Testing needs actions only; saving also needs the key. */
 	function check(needCode: boolean): boolean {
 		const missingCode = needCode && code === null;
-		problem = missingCode
-			? m.remote_missing_code()
-			: form.actions.length === 0
-				? m.remote_missing_actions()
-				: !form.actions.every((r) => isComplete(r.action))
-					? m.remote_incomplete_actions()
-					: '';
+		problem = missingCode ? m.remote_missing_code() : actionsProblem(form.actions);
 		problemAt = !problem ? null : missingCode ? 'code' : 'actions';
 		if (problem) {
 			// the field is described by the problem, and read when it takes the focus
@@ -103,7 +97,7 @@
 		await testing.run(
 			() => irApi.test(sent),
 			(response) => {
-				test = { response, actions: sent };
+				test = response;
 				ui.say(response.success ? m.remote_test_passed() : m.remote_test_failed());
 			}
 		);
@@ -198,7 +192,7 @@
 		onedit={edited}
 	/>
 
-	{#if test}<TestResult response={test.response} actions={test.actions} {sources} />{/if}
+	{#if test}<TestResult response={test} {sources} />{/if}
 
 	<p class="form-error" id="{id}-problem">{problem}</p>
 

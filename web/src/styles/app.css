@@ -129,7 +129,7 @@ a {
 	position: absolute;
 	left: var(--s-3);
 	top: var(--s-2);
-	z-index: 100;
+	z-index: var(--z-skip);
 	transform: translateY(-200%);
 }
 .skip:focus-within {
@@ -179,9 +179,10 @@ a {
 .btn.danger {
 	color: var(--status-down-text);
 }
-/* what cannot act now: out of reach (its reason said beside it); busy keeps its look */
-.btn[disabled],
-.btn[aria-disabled='true']:not([aria-busy='true']) {
+/* what cannot act now, any control (`unavailable`: its reason said beside it), the one look;
+   busy keeps its own. :where() leaves it the weakest rule: a control with a look of its own
+   for it (a tile's struck gesture) says so in its own rule */
+:where([aria-disabled='true']):not([aria-busy='true']) {
 	opacity: var(--disabled-opacity);
 	cursor: not-allowed;
 }
@@ -208,10 +209,6 @@ a {
 .icon-btn:hover {
 	background: var(--ground-raised);
 	color: var(--ink);
-}
-.icon-btn[aria-disabled='true']:not([aria-busy='true']) {
-	opacity: var(--disabled-opacity);
-	cursor: not-allowed;
 }
 /* a button that reads as a link: in the accent, underlined; `plain` in ink, underlined on
    hover; `quiet` muted */
@@ -379,7 +376,7 @@ kbd {
 	/* above the toasts: a menu just opened comes first */
 	padding: var(--s-1);
 	box-shadow: var(--shadow-pop);
-	z-index: 60;
+	z-index: var(--z-menu);
 }
 .menu {
 	min-width: var(--menu-min);
@@ -429,12 +426,12 @@ kbd {
 	position: fixed;
 	inset: 0;
 	background: var(--overlay);
-	z-index: 30;
+	z-index: var(--z-overlay);
 }
 .sheet,
 .modal {
 	position: fixed;
-	z-index: 31;
+	z-index: var(--z-dialog);
 	background: var(--surface);
 	color: var(--ink);
 	box-shadow: var(--shadow-dialog);
@@ -451,7 +448,7 @@ kbd {
 	border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
 	padding-bottom: env(safe-area-inset-bottom);
 	transform: translateY(var(--pulled, 0px));
-	animation: sheet-up 0.22s ease-out;
+	animation: sheet-up var(--dur-sheet) ease-out;
 }
 .sheet .handle {
 	flex: none;
@@ -467,7 +464,7 @@ kbd {
 	height: var(--handle-h);
 	border-radius: var(--radius-pill);
 	background: var(--ink-muted);
-	opacity: 0.4;
+	opacity: var(--soft-opacity);
 }
 .sheet .dlg-head {
 	padding-top: 0;
@@ -534,7 +531,7 @@ kbd {
 	position: sticky;
 	top: 0;
 	background: var(--surface);
-	z-index: 1;
+	z-index: var(--z-raised);
 }
 .dlg-head .grow {
 	flex: 1;
@@ -580,7 +577,7 @@ kbd {
 	display: flex;
 	flex-direction: column;
 	gap: var(--s-2);
-	z-index: 50;
+	z-index: var(--z-toast);
 	width: min(var(--toast-w), calc(100vw - var(--s-6)));
 	pointer-events: none;
 }
@@ -874,7 +871,7 @@ kbd {
 	font-weight: 600;
 }
 .spin {
-	animation: spin 1s linear infinite;
+	animation: spin var(--dur-spin) linear infinite;
 }
 @keyframes spin {
 	to {

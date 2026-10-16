@@ -31,12 +31,12 @@ describe('Loaded', () => {
 	it('nothing known and a failure: said as such, with the reason and a retry; the retry brings the content', async () => {
 		let fail = true;
 		const v = value('b', async () => {
-			if (fail) throw new Error('Maison est loin');
+			if (fail) throw new ApiError('Busy', 409, 'busy');
 			return 1;
 		});
 		await render(Loaded, { value: v, children: content });
 		await expect.element(page.getByText(m.load_failed())).toBeVisible();
-		await expect.element(page.getByText('Maison est loin')).toBeVisible();
+		await expect.element(page.getByText(m.code_busy())).toBeVisible();
 		fail = false;
 		await page.getByRole('button', { name: m.common_retry() }).click();
 		await expect.element(page.getByText('Contenu')).toBeVisible();

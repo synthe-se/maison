@@ -105,6 +105,35 @@
 	--mark-ring: 2px solid var(--accent);
 	/* what cannot act now (busy, or out of reach: the reason is said beside it) */
 	--disabled-opacity: 0.55;
+	/* what is drawn faintly, below the text it sits under: the door's sun path */
+	--faint-opacity: 0.16;
+	/* what stays in the background of a control: a sheet's handle */
+	--soft-opacity: 0.4;
+	/* a line a shade quieter than the text around it: the door's promise */
+	--quiet-opacity: 0.9;
+
+	/* the brand, the same in both themes: the door's identity, the app's icon */
+	--brand: var(--raw-petrol);
+	--on-brand: var(--raw-cloud);
+
+	/* layers, lowest first: a tile's link and a sheet's sticky head above their content, the
+	   sticky header and the bottom bar, a dialog's overlay then the dialog, the toasts, the
+	   floating menus (one opened over a toast comes first), the skip link above everything */
+	--z-raised: 1;
+	--z-bar: 20;
+	--z-overlay: 30;
+	--z-dialog: 31;
+	--z-toast: 50;
+	--z-menu: 60;
+	--z-skip: 100;
+
+	/* durations: a switch's thumb, a sheet coming up, a progress bar moving, a busy icon's turn,
+	   a slow command's ring (prefers-reduced-motion stops them all: app.css) */
+	--dur-quick: 0.15s;
+	--dur-sheet: 0.22s;
+	--dur-progress: 0.25s;
+	--dur-spin: 1s;
+	--dur-pulse: 1.2s;
 
 	/* type: locked pairing, Fraunces display + Cal Sans 2 text, self-hosted; Borel for the name only */
 	--font-display: 'Fraunces Variable', 'Fraunces Fallback', Georgia, serif;
@@ -127,6 +156,8 @@
 	--t-brand: 400 1.35rem/1 var(--font-brand);
 	--t-brand-door: 400 2.6rem/1.3 var(--font-brand);
 	--t-brand-door-wide: 400 3.6rem/1.3 var(--font-brand);
+	/* a code read across the room (a wall screen's pairing code) */
+	--t-code: 600 3rem/1.2 var(--font-display);
 
 	/*
    * Layout (docs/ux.md « Layout », after Ariane): one page container for every page
@@ -197,6 +228,10 @@
 	--wheel: 192px; /* the color wheel, and the marker on it */
 	--marker: 16px;
 }
+/* Breakpoints (docs/ux.md « Layout »): compact < 600, medium < 840, expanded < 1200, large
+   < 1600, xl. A media query cannot read a custom property: every @media width is one of these
+   (min-width 600/840/1200/1600 px, max-width 599/839/1199/1599 px), css.check.ts refuses any
+   other. */
 @media (min-width: 600px) {
 	:root {
 		--page-margin: 24px;

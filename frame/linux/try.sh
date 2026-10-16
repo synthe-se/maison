@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# The frame's mainline system, updated: Linux boots by default (the `boot` slot; the vendor's
+# Android sits in `recovery`, for the record). With --install the system (rootfs.squashfs) goes to
+# userdata from Linux itself over the Wi-Fi (install.sh: its SHA-256 checked over the USB
+# console); with --flash the kernel image (frame/build/boot-linux.img: image.py --slot boot) is
+# written to `boot`: from Linux itself when it is up (sent over the Wi-Fi, the eMMC's addressing
+# proved first by reading U-Boot's head where layout.txt says and finding boot's header, then
+# written, read back and compared), else from the loader (rkwrite.py; the reset pinhole, as
+# docs/frame.md says). Then the frame is rebooted and its app waited for. Every wait has a deadline and fails the script, loudly; each step is timed.
+# Usage: frame/linux/try.sh [--install] [--flash]
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+IMG="$REPO/frame/build/boot-linux.img"
+export PATH="$HOME/maison-frame/bin:$PATH"
+# rkdeveloptool writes a log/ into its working directory: a temporary one, never the repo
+RKDIR=$(mktemp -d)
+rk() { (cd "$RKDIR" && rkdeveloptool "$@"); }
+
+step() { echo "[$(date +%H:%M:%S)] $*"; }
+# Linux up: its USB console, else its SSH (console.sh takes either)
+console() { "$REPO/frame/linux/console.sh" true 8 >/dev/null 2>&1; }
+no_console() { ! console; }
+loader() { rk ld 2>/dev/null | grep -q Loader; }
+# wait_for <what> <seconds> <test…>
+wait_for() {
+	local what=$1 secs=$2 i
+	shift 2
+	for ((i = 0; i < secs; i += 2)); do "$@" && return 0; sleep 2; done
+	echo "timeout: $what, after ${secs}s" >&2
+	exit 1
+}
+c() { "$REPO/frame/linux/console.sh" "$@"; }
+ui_active() { [ "$(c 'systemctl is-active maison-ui' 20 2>/dev/null)" = active ]; }
+
+install=false flash=false
+for a in "$@"; do
+	case "$a" in --install) install=true ;; --flash) flash=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
+done
+
+if $install; then
+	wait_for "the frame's console (the USB-C on the Mac, Linux up)" 120 console
+	step "installing the system on userdata over the Wi-Fi (about 1 min when it changed)"
+	"$REPO/frame/linux/install.sh"
+fi
+
+BACKUP="$HOME/maison-frame/backup"
+start_of() { awk -v p="$1" -F'[ =]' '$1==p {print $3}' "$BACKUP/layout.txt"; }
+size_of() { awk -v p="$1" -F'[ =]' '$1==p {print $5}' "$BACKUP/layout.txt"; }
+
+if $flash && console; then
+	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
+	boot=$(start_of mmcblk0p5) uboot=$(start_of mmcblk0p1)
+	sectors=$(($(wc -c <"$IMG") / 512))
+	[ "$sectors" -le "$(size_of mmcblk0p5)" ] || { echo "$IMG: $sectors sectors, boot holds $(size_of mmcblk0p5)" >&2; exit 1; }
+	# the eMMC as Linux sees it is the layout's: U-Boot's head where it says, boot's header where it says
+	head_sum=$(head -c 4096 "$BACKUP/mmcblk0p1.img" | shasum -a 256 | cut -c1-64)
+	[ "$(c "dd if=/dev/mmcblk0 bs=512 skip=$uboot count=8 2>/dev/null | sha256sum | cut -c1-64" 90)" = "$head_sum" ] ||
+		{ echo "the eMMC's addressing is not the layout's (U-Boot's head differs): nothing written" >&2; exit 1; }
+	[ "$(c "dd if=/dev/mmcblk0 bs=512 skip=$boot count=1 2>/dev/null | head -c 8; echo" 90)" = "ANDROID!" ] ||
+		{ echo "no boot image header at sector $boot: nothing written" >&2; exit 1; }
+	step "addressing proved: sending $(basename "$IMG")"
+	"$REPO/frame/linux/send.sh" "$IMG" /tmp/boot-linux.img
+	step "writing it to boot (sector $boot, $sectors sectors)"
+	c "dd if=/tmp/boot-linux.img of=/dev/mmcblk0 bs=512 seek=$boot conv=notrunc,fsync 2>&1 | tail -1; sync; echo 3 > /proc/sys/vm/drop_caches" 120
+	want=$(shasum -a 256 "$IMG" | cut -c1-64)
+	got=$(c "dd if=/dev/mmcblk0 bs=512 skip=$boot count=$sectors 2>/dev/null | sha256sum | cut -c1-64" 120)
+	[ "$got" = "$want" ] || { echo "boot reads back $got, not $want: write it again (try.sh --flash), or from the loader" >&2; exit 1; }
+	step "boot written and read back"
+	c 'rm -f /tmp/boot-linux.img; systemctl reboot' 10 || true
+	wait_for "the console to go" 60 no_console
+elif $flash; then
+	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
+	step "the loader: power off, hold the reset pinhole, power on with the USB-C on the Mac"
+	wait_for "the loader" 300 loader
+	step "writing $(basename "$IMG") to boot (about 1 min)"
+	python3 "$REPO/frame/rkwrite.py" "$IMG" mmcblk0p5
+	rk rd
+elif console; then
+	step "rebooting Linux"
+	c 'systemctl reboot' 10 || true
+	wait_for "the console to go" 60 no_console
+fi
+
+wait_for "Linux's console after the boot" 240 console
+step "Linux up: waiting for the native app"
+wait_for "maison-ui active" 180 ui_active
+step "maison-ui up"

@@ -2,7 +2,7 @@
 // coordinator (backend/src/zigbee/).
 
 import { get, post, path } from '#lib/api.ts';
-export interface HueLampState {
+interface HueLampState {
 	isOn: boolean;
 	brightness: number;
 	temperature: number | null;
@@ -68,7 +68,7 @@ export const hueLampsApi = {
 	blacklist: (id: string) => post(path`/hue-lamps/${id}/blacklist`)
 };
 
-export interface ZigbeeLampState {
+interface ZigbeeLampState {
 	isOn: boolean;
 	brightness: number;
 	temperature: number | null;
@@ -112,20 +112,20 @@ export interface ZigbeeLampStatusResponse {
 	error?: string;
 }
 
-export interface ZigbeePairingStatus {
+interface ZigbeePairingStatus {
 	active: boolean;
 	remainingSeconds: number;
 	permitJoinSeconds: number;
 	message?: string;
 }
 
-export interface ZigbeePairingResponse {
+interface ZigbeePairingResponse {
 	success: boolean;
 	pairing: ZigbeePairingStatus;
 	message: string;
 }
 
-export interface ZigbeeLampActionResponse {
+interface ZigbeeLampActionResponse {
 	success: boolean;
 	state?: ZigbeeLampState;
 	message?: string;

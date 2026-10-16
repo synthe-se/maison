@@ -60,14 +60,17 @@ async fn remote_v2_beats_adb_on_latency() {
     let root = common::workspace_root();
     let host = "192.168.1.153";
 
-    let identity = Identity::load_or_create(&root.join("atv-identity")).expect("identity");
-    let session = Session::connect(host, &identity)
+    let mut identity = Identity::load_or_create(&root.join("atv-identity")).expect("identity");
+    let session = Session::connect(host, &mut identity)
         .await
         .expect("a paired session");
 
     // Warm both paths so neither pays a first-call penalty.
     session.key(20).await.expect("warm remote");
-    manager().send_key(maison_backend::androidtv::AndroidKey::Down).await.ok();
+    manager()
+        .send_key(maison_backend::androidtv::AndroidKey::Down)
+        .await
+        .ok();
 
     let mut remote_total = std::time::Duration::ZERO;
     for _ in 0..5 {
@@ -76,11 +79,18 @@ async fn remote_v2_beats_adb_on_latency() {
         remote_total += start.elapsed();
     }
 
+    // ADB on its own connection, with the backend's key (the box allows it already)
+    let key = maison_backend::adb::AdbKey::new(
+        maison_backend::adb::decode_key(&std::fs::read(root.join("adb-key")).expect("adb-key"))
+            .expect("the ADB key"),
+    );
+    let mut adb = maison_backend::adb::AdbDevice::connect(&format!("{host}:5555"), &key)
+        .await
+        .expect("ADB");
     let mut adb_total = std::time::Duration::ZERO;
     for _ in 0..5 {
         let start = Instant::now();
-        manager()
-            .adb_key_for_benchmark(maison_backend::androidtv::AndroidKey::Down)
+        adb.shell("input keyevent KEYCODE_DPAD_DOWN")
             .await
             .expect("adb key");
         adb_total += start.elapsed();
@@ -93,7 +103,9 @@ async fn remote_v2_beats_adb_on_latency() {
     let mut network_total = std::time::Duration::ZERO;
     for _ in 0..5 {
         let start = Instant::now();
-        let _ = tokio::net::TcpStream::connect((host, 6466u16)).await;
+        tokio::net::TcpStream::connect((host, 6466u16))
+            .await
+            .expect("the remote port");
         network_total += start.elapsed();
     }
 

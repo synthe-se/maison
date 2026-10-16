@@ -1,0 +1,249 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * AMABOO GBZK-Y1000, a 10.1" Frameo photo frame: Rockchip RK3126, 1 GB DDR3, 32 GB eMMC, an
+ * 800x1280 MIPI DSI panel (Jadard JD9365DA, 4 lanes), a Silead GSL touch controller, an AIC8800
+ * Wi-Fi + BT chip on SDIO, one power button, no RTC (the vendor's tree has an HYM8563 at i2c2
+ * 0x51: nothing answers there). Pins come from the vendor's device
+ * tree (Android 6, kernel 3.10; docs/frame.md).
+ *
+ * The CPU supply (PWM1, the vendor's own voltage table) is left as U-Boot set it: no cpu-supply,
+ * and the kernel is built without CPU_FREQ, so the clock never rises above what that voltage
+ * was set for. GPIO0_A0 holds the power on (the vendor's gpio-poweroff): never claimed here.
+ */
+
+/dts-v1/;
+#include <dt-bindings/input/input.h>
+#include "rk3128.dtsi"
+
+/ {
+	model = "AMABOO GBZK-Y1000 (Frameo photo frame)";
+	compatible = "amaboo,gbzk-y1000", "rockchip,rk3128";
+
+	aliases {
+		mmc0 = &emmc;
+		mmc1 = &sdio;
+	};
+
+	memory@60000000 {
+		device_type = "memory";
+		reg = <0x60000000 0x40000000>;
+	};
+
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm0 0 25000 0>;
+		brightness-levels = <0 255>;
+		num-interpolated-steps = <255>;
+		default-brightness-level = <128>;
+	};
+
+	/*
+	 * The AIC8800DC's power enable (the vendor's WIFI,poweren_gpio, active high), with the
+	 * vendor's delays (its boot log): 100 ms off, a wait while the chip boots.
+	 */
+	sdio_pwrseq: sdio-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&gpio2 RK_PB2 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <200>;
+		power-off-delay-us = <100000>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		key-power {
+			gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_POWER>;
+			label = "power";
+			wakeup-source;
+		};
+	};
+
+
+	vcc_sys: regulator-vcc-sys {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_sys";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	vcc_io: regulator-vcc-io {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_io";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vcc_sys>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/* the vendor's fixed vdd_logic */
+	vdd_log: regulator-vdd-log {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_log";
+		regulator-min-microvolt = <1250000>;
+		regulator-max-microvolt = <1250000>;
+		vin-supply = <&vcc_sys>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * The panel's power (the vendor's mipi_lcd_en, active low), on as U-Boot left it: without
+	 * boot-on the regulator is switched off as it registers, and the panel goes black with it
+	 * (seen on the frame). Always on for now (bring-up).
+	 */
+	vcc_lcd: regulator-vcc-lcd {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_lcd";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio2 RK_PA2 GPIO_ACTIVE_LOW>;
+		vin-supply = <&vcc_io>;
+		startup-delay-us = <20000>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+};
+
+&display_subsystem {
+	status = "okay";
+};
+
+/*
+ * PD_VIO (the VOP, the DSI and its PHY) stays as U-Boot left it, on: switching it off as idle,
+ * mainline's power-domain driver reads a PMU register this RK3126 faults on (an external abort
+ * at offset 0x88, seen on the frame) and the kernel dies with its interrupts off.
+ */
+&dphy {
+	/delete-property/ power-domains;
+	status = "okay";
+};
+
+&dsi {
+	/delete-property/ power-domains;
+	status = "okay";
+
+	panel@0 {
+		compatible = "amaboo,gbzk-y1000-panel";
+		reg = <0>;
+		backlight = <&backlight>;
+		vdd-supply = <&vcc_lcd>;
+		vccio-supply = <&vcc_io>;
+		/* the vendor's mipi_lcd_rst */
+		reset-gpios = <&gpio2 RK_PC3 GPIO_ACTIVE_LOW>;
+		/* the panel is mounted upside down for a frame standing in portrait */
+		rotation = <180>;
+
+		port {
+			panel_in_dsi: endpoint {
+				remote-endpoint = <&dsi_out_panel>;
+			};
+		};
+	};
+};
+
+&dsi_out {
+	dsi_out_panel: endpoint {
+		remote-endpoint = <&panel_in_dsi>;
+	};
+};
+
+&emmc {
+	bus-width = <8>;
+	vmmc-supply = <&vcc_io>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_clk &emmc_cmd &emmc_bus8>;
+	cap-mmc-highspeed;
+	non-removable;
+	no-sd;
+	no-sdio;
+	status = "okay";
+};
+
+&gpu {
+	mali-supply = <&vdd_log>;
+	status = "okay";
+};
+
+&i2c2 {
+	status = "okay";
+
+	touchscreen@40 {
+		compatible = "silead,gsl1680";
+		reg = <0x40>;
+		interrupt-parent = <&gpio0>;
+		interrupts = <RK_PA2 IRQ_TYPE_LEVEL_HIGH>;
+		/* extracted from the vendor kernel (docs/frame.md) */
+		firmware-name = "gsl-amaboo-gbzk-y1000.fw";	/* the driver looks in silead/ */
+		/*
+		 * The firmware's own axes, measured on the frame (taps on targets, raw events against the
+		 * page's): its x runs down the panel standing in portrait (0..1024), its y across
+		 * (0..640). The sizes are the chip's axes, before the swap.
+		 */
+		touchscreen-swapped-x-y;
+		touchscreen-size-x = <1024>;
+		touchscreen-size-y = <640>;
+		silead,max-fingers = <10>;
+	};
+};
+
+&pwm0 {
+	status = "okay";
+};
+
+&sdio {
+	bus-width = <4>;
+	pinctrl-names = "default";
+	/* the controller's own PWREN pin powers the card, as the vendor's tree muxes it */
+	pinctrl-0 = <&sdio_clk &sdio_cmd &sdio_bus4 &sdio_pwren>;
+	cap-sd-highspeed;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	mmc-pwrseq = <&sdio_pwrseq>;
+	vmmc-supply = <&vcc_io>;
+	non-removable;
+	no-mmc;
+	no-sd;
+	status = "okay";
+};
+
+/* the USB-C port as a device: a console over USB (CDC ACM) while there is no UART */
+/*
+ * The SDIO lines have the board's own pull-ups: the SoC's default pulls (down) are off, as the
+ * vendor sets them; with them the AIC8800DC never answers CMD5 (seen on the frame).
+ */
+&sdio_cmd {
+	rockchip,pins = <0 RK_PA3 2 &pcfg_pull_none>;
+};
+
+&sdio_bus4 {
+	rockchip,pins = <1 RK_PA1 2 &pcfg_pull_none>,
+			<1 RK_PA2 2 &pcfg_pull_none>,
+			<1 RK_PA4 2 &pcfg_pull_none>,
+			<1 RK_PA5 2 &pcfg_pull_none>;
+};
+
+&sdio_pwren {
+	rockchip,pins = <0 RK_PD6 1 &pcfg_pull_none>;
+};
+
+&usb_otg {
+	dr_mode = "peripheral";
+	status = "okay";
+};
+
+&usb2phy {
+	status = "okay";
+};
+
+&usb2phy_otg {
+	status = "okay";
+};
+
+&vop {
+	/delete-property/ power-domains;	/* PD_VIO: see &dphy */
+	status = "okay";
+};

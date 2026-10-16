@@ -1,0 +1,18 @@
+# What the system keeps across power cuts, on userdata (the system itself lives in RAM): where
+# timesyncd keeps its clock (systemd-timesyncd.service.d/maison.conf), and the journal
+# (/var/log/journal, a link there: a boot that went wrong can be read at the next one,
+# `journalctl -b -1`). Early, as timesyncd itself (before sysinit.target): no default
+# dependencies, which would order it after sysinit.target and make a cycle systemd breaks by
+# dropping timesyncd. tmpfiles refuses these paths (through Android's /android-data, its uid's).
+[Unit]
+Description=What the system keeps on userdata: the clock, the journal
+DefaultDependencies=no
+RequiresMountsFor=/android-data
+Before=systemd-timesyncd.service systemd-journal-flush.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -d -o systemd-timesync -g systemd-timesync -m 0755 /android-data/maison/timesync
+ExecStart=/usr/bin/install -d -o root -g systemd-journal -m 2755 /android-data/maison/journal

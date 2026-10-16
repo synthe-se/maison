@@ -3,12 +3,12 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"all": "./run.sh smoke.ts && ./run.sh passkeys.ts && ./run.sh dashboard.ts && ./run.sh layout.ts && ./run.sh a11y.ts",
+		"all": "./run.sh smoke.ts && ./run.sh passkeys.ts && ./run.sh dashboard.ts && ./run.sh layout.ts && ./run.sh a11y.ts && ./run.sh screen.ts && ./run.sh frame.ts",
 		"look": "./run.sh look.ts"
 	},
 	"devDependencies": {
-		"@types/node": "26.6.4",
-		"axe-core": "4.13.0",
-		"playwright": "1.63.0"
+		"@types/node": "26.6.5",
+		"axe-core": "4.14.0",
+		"playwright": "1.64.1"
 	}
 }

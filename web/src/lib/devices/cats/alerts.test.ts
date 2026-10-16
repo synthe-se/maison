@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { clock, when } from '#lib/i18n.svelte.ts';
 import { lastMeal, statusLine, tileLine } from './alerts.ts';
+import { STANDBY } from '#lib/devices/cats/tokens.ts';
 
 describe('statusLine', () => {
 	it('nothing to say without a status, or when all is well', () => {
@@ -13,7 +14,7 @@ describe('statusLine', () => {
 
 	it('what needs a hand, in the warning style', () => {
 		expect(statusLine('fountain', { waterLevel: 'low' })).toEqual({ text: m.cats_water_low(), warn: true });
-		expect(statusLine('litter-box', { sensors: { litterLevel: 'half' }, system: { state: 'satnd_by' } })).toEqual({
+		expect(statusLine('litter-box', { sensors: { litterLevel: 'half' }, system: { state: STANDBY } })).toEqual({
 			text: m.cats_litter_half(),
 			warn: true
 		});
@@ -25,7 +26,7 @@ describe('statusLine', () => {
 	});
 
 	it('what the litter box is doing, plainly', () => {
-		expect(statusLine('litter-box', { sensors: { litterLevel: 'full' }, system: { state: 'satnd_by' } })).toEqual({
+		expect(statusLine('litter-box', { sensors: { litterLevel: 'full' }, system: { state: STANDBY } })).toEqual({
 			text: m.cats_clean(),
 			warn: false
 		});
@@ -50,7 +51,7 @@ describe('tileLine', () => {
 describe('lastMeal', () => {
 	it('says the portions and when, from the feeder’s report', () => {
 		const s = {
-			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006', timestampReadable: '' } }
+			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006' } }
 		};
 		expect(lastMeal(s)).toBe(m.feeder_last_meal_value({ portions: m.feeder_portion({ count: 2 }), when: when(1773270006000) }));
 	});
@@ -58,6 +59,6 @@ describe('lastMeal', () => {
 	it('nothing without a report, or with one it cannot read', () => {
 		expect(lastMeal(undefined)).toBeNull();
 		expect(lastMeal({ history: null })).toBeNull();
-		expect(lastMeal({ history: { raw: 'C:1', parsed: { remaining: '', count: '1', timestamp: null, timestampReadable: '' } } })).toBeNull();
+		expect(lastMeal({ history: { raw: 'C:1', parsed: { remaining: '', count: '1', timestamp: null } } })).toBeNull();
 	});
 });

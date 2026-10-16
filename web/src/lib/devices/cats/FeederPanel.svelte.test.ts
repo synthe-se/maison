@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { vi, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { m } from '#lib/paraglide/messages.js';
@@ -17,7 +17,7 @@ describe('FeederPanel', () => {
 		withStatus({
 			feeding: { manualFeedEnabled: true, lastFeedSize: '2 portions', lastFeedReport: 0, quickFeedAvailable: false },
 			system: { poweredBy: 'Battery', ipAddress: '10.0.0.2' },
-			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006', timestampReadable: '' } }
+			history: { raw: 'R:0 C:2 T:1773270006', parsed: { remaining: '0', count: '2', timestamp: '1773270006' } }
 		});
 		await render(FeederPanel, { id: 'f1' });
 		await expect.element(page.getByText(m.feeder_power_battery())).toBeVisible();
@@ -31,12 +31,16 @@ describe('FeederPanel', () => {
 		]);
 	});
 
-	it('says only what it knows, and the backend’s own word for a power it does not name', async () => {
+	it('says only what it knows: a power it does not name is « Inconnu », never the device’s word', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		withStatus({ system: { poweredBy: 'Mode 7' }, history: null });
 		await render(FeederPanel, { id: 'f1' });
-		await expect.element(page.getByText('Mode 7')).toBeVisible();
+		await expect.poll(() => facts().length).toBe(2);
+		expect(page.getByText('Mode 7').query()).toBeNull();
+		expect(warn).toHaveBeenCalled();
+		warn.mockRestore();
 		expect(facts()).toEqual([
-			{ term: m.feeder_power_source(), value: 'Mode 7', warn: false },
+			{ term: m.feeder_power_source(), value: m.common_unknown(), warn: false },
 			{ term: m.feeder_last_meal(), value: m.common_unknown(), warn: false }
 		]);
 		expect(fact(m.common_status())).toBeUndefined();

@@ -1,13 +1,13 @@
 <script lang="ts">
 	// Who may come in (an admin's): each person, an admin marked, their passkeys counted;
-	// removing one asks first (§ 6: their passkeys and sessions go), never oneself. The focus
-	// then goes to the list's title.
+	// signing them out everywhere (a lost phone) or removing them asks first (§ 6: their
+	// sessions go, and with a removal their passkeys), never oneself. After a removal the focus
+	// goes to the list's title.
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
-	import { ui } from '#lib/ui.svelte.ts';
-	import { Gesture } from '#lib/gesture.svelte.ts';
-	import { refocus } from '#lib/focus.ts';
+	import { Gesture, removeRow } from '#lib/gesture.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
+	import { ui } from '#lib/ui.svelte.ts';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import Group from '#lib/components/Group.svelte';
 	import ListRow from '#lib/components/ListRow.svelte';
@@ -19,14 +19,14 @@
 	let title = $state<HTMLElement>();
 
 	const remove = (p: Person) =>
+		removeRow(g, p.id, () => peopleApi.remove(p.id), { said: m.people_removed({ name: p.name }), list: people, title: () => title });
+
+	// a lost phone they cannot reach themselves: their sessions end, their row stays
+	const signOut = (p: Person) =>
 		g.run(
-			() => peopleApi.remove(p.id),
-			async () => {
-				ui.toast(m.people_removed({ name: p.name }));
-				await people.refresh();
-				await refocus(title);
-			},
-			p.id
+			() => peopleApi.endSessions(p.id),
+			() => ui.toast(m.people_sessions_ended({ name: p.name })),
+			`out:${p.id}`
 		);
 </script>
 
@@ -41,6 +41,16 @@
 						{#if p.id === session.user?.id}
 							<span class="hint">{m.people_you()}</span>
 						{:else}
+							<ConfirmDialog
+								ghost
+								label={m.people_end_sessions()}
+								ariaLabel={m.people_end_sessions_label({ name: p.name })}
+								title={m.people_end_sessions_title({ name: p.name })}
+								description={m.people_end_sessions_description()}
+								action={m.people_end_sessions()}
+								busy={g.is(`out:${p.id}`)}
+								onconfirm={() => signOut(p)}
+							/>
 							<ConfirmDialog
 								ghost
 								danger

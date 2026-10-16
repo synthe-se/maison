@@ -7,7 +7,7 @@ use btleplug::{
     api::{Characteristic, Peripheral as _, PeripheralProperties},
     platform::Peripheral,
 };
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use crate::{error::AppError, net};
@@ -61,7 +61,7 @@ impl HueCharacteristics {
 }
 
 /// One Bluetooth operation, bounded by `limit`: a timeout or a Bluetooth error is the
-/// lamp being unavailable (the stack's own error stays in the log).
+/// lamp being unreachable (`net::unreachable`: the stack's own error stays in the log).
 pub(super) async fn ble<T>(
     op: impl Future<Output = btleplug::Result<T>>,
     what: &str,
@@ -69,7 +69,7 @@ pub(super) async fn ble<T>(
 ) -> Result<T, AppError> {
     timeout(limit, op)
         .await
-        .map_err(|_| AppError::service_unavailable(format!("Hue lamp {what} timed out")))?
+        .map_err(|_| net::unreachable("Hue lamp", format!("{what} timed out")))?
         .map_err(|error| net::unreachable("Hue lamp", format!("{what}: {error}")))
 }
 
@@ -97,42 +97,41 @@ pub(super) fn is_hue_lamp(properties: &PeripheralProperties) -> bool {
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    ["hue", "philips", "signify", "lwa", "lwv", "ltg", "lct", "lwb", "lca"]
-        .iter()
-        .any(|needle| name.contains(needle))
+    [
+        "hue", "philips", "signify", "lwa", "lwv", "ltg", "lct", "lwb", "lca",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
 }
 
-pub(super) fn parse_brightness(raw_value: u8) -> u8 {
-    let clamped = raw_value.clamp(1, 254);
-    ((u16::from(clamped) * 100) / 254).max(1) as u8
-}
-
-pub(super) fn to_brightness(percentage: u8) -> u8 {
-    let clamped = percentage.clamp(1, 100);
-    (((u16::from(clamped) * 254) + 50) / 100) as u8
-}
-
+/// The lamp's temperature byte (1 cool – 244 warm, as it says it) as 0 (warm) – 100 (cool).
 pub(super) fn parse_temperature(raw_value: u8) -> u8 {
     let clamped = raw_value.clamp(1, 244);
     (((244_u16.saturating_sub(u16::from(clamped))) * 100) / 243) as u8
 }
 
+/// A temperature (as `lamps::temperature` gives it, 0–100) as the lamp's byte (244 warm – 1
+/// cool).
 pub(super) fn to_temperature(percentage: u8) -> u8 {
-    let clamped = percentage.clamp(0, 100);
-    (244_u16.saturating_sub((u16::from(clamped) * 243) / 100)) as u8
+    (244_u16.saturating_sub((u16::from(percentage) * 243) / 100)) as u8
 }
 
-/// The combined control characteristic's command: one segment per field set.
-pub(super) fn build_control_command(power: Option<bool>, brightness: Option<u8>, temperature: Option<u8>) -> Vec<u8> {
+/// The combined control characteristic's command: one segment per field set, the bytes as
+/// the lamp takes them (a level from `lamps::level_of`, a byte from [`to_temperature`]).
+pub(super) fn build_control_command(
+    power: Option<bool>,
+    level: Option<u8>,
+    temperature: Option<u8>,
+) -> Vec<u8> {
     let mut commands = Vec::new();
     if let Some(power) = power {
         commands.extend_from_slice(&[0x01, 0x01, u8::from(power)]);
     }
-    if let Some(brightness) = brightness {
-        commands.extend_from_slice(&[0x02, 0x01, brightness.clamp(1, 254)]);
+    if let Some(level) = level {
+        commands.extend_from_slice(&[0x02, 0x01, level]);
     }
     if let Some(temperature) = temperature {
-        commands.extend_from_slice(&[0x03, 0x02, temperature.clamp(1, 244), 0x01]);
+        commands.extend_from_slice(&[0x03, 0x02, temperature, 0x01]);
     }
     commands
 }
@@ -148,13 +147,6 @@ pub(super) fn uuid_str_key(uuid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn brightness_conversion_round_trips_reasonably() {
-        assert_eq!(parse_brightness(to_brightness(1)), 1);
-        assert!(parse_brightness(to_brightness(50)) >= 49);
-        assert_eq!(parse_brightness(to_brightness(100)), 100);
-    }
 
     #[test]
     fn temperature_conversion_round_trips_reasonably() {
@@ -174,7 +166,10 @@ mod tests {
     #[test]
     fn uuids_compare_whatever_their_spelling() {
         let uuid = Uuid::parse_str(POWER_UUID).unwrap();
-        assert_eq!(uuid_key(uuid), uuid_str_key(&POWER_UUID.to_ascii_uppercase()));
+        assert_eq!(
+            uuid_key(uuid),
+            uuid_str_key(&POWER_UUID.to_ascii_uppercase())
+        );
     }
 
     #[test]
@@ -184,24 +179,45 @@ mod tests {
         properties.local_name = Some("Hue ambiance lamp".into());
         assert!(is_hue_lamp(&properties));
         let mut by_maker = PeripheralProperties::default();
-        by_maker.manufacturer_data.insert(SIGNIFY_MANUFACTURER_ID, vec![]);
+        by_maker
+            .manufacturer_data
+            .insert(SIGNIFY_MANUFACTURER_ID, vec![]);
         assert!(is_hue_lamp(&by_maker));
         let mut by_service = PeripheralProperties::default();
-        by_service.services.push(Uuid::parse_str(LIGHT_CONTROL_SERVICE).unwrap());
+        by_service
+            .services
+            .push(Uuid::parse_str(LIGHT_CONTROL_SERVICE).unwrap());
         assert!(is_hue_lamp(&by_service));
     }
 
-    /// The client hears that the lamp is unavailable, never the stack's message.
-    #[tokio::test]
+    /// The client hears that the lamp is unreachable, coded, never the stack's message.
+    #[tokio::test(start_paused = true)]
     async fn a_bluetooth_error_says_nothing_of_the_stack() {
-        let failing = async { Err::<(), _>(btleplug::Error::Other("org.bluez.Error.Failed: hci0 busy".into())) };
-        let error = ble(failing, "write", Duration::from_secs(1)).await.unwrap_err();
-        assert_eq!(error.to_string(), "Hue lamp unreachable");
+        let unreachable = |error: AppError| {
+            matches!(
+                error,
+                AppError::Coded {
+                    code: "device_unreachable",
+                    ..
+                }
+            ) && !error.to_string().contains("hci0")
+        };
+        let failing = async {
+            Err::<(), _>(btleplug::Error::Other(
+                "org.bluez.Error.Failed: hci0 busy".into(),
+            ))
+        };
+        let error = ble(failing, "write", Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(unreachable(error));
         let slow = async {
             tokio::time::sleep(Duration::from_secs(5)).await;
             Ok(())
         };
-        let error = ble(slow, "write", Duration::from_millis(10)).await.unwrap_err();
-        assert_eq!(error.to_string(), "Hue lamp write timed out");
+        let error = ble(slow, "write", Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(unreachable(error), "a timeout too");
     }
 }

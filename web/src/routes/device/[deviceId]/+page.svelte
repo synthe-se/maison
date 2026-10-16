@@ -6,6 +6,7 @@
 	// « not found ».
 	import { page } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
+	import { facts, separator } from '#lib/i18n.svelte.ts';
 	import { live } from '#lib/live.svelte.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
 	import PageHead from '#lib/components/PageHead.svelte';
@@ -21,11 +22,9 @@
 	const list = live(devices);
 	const id = $derived(page.params.deviceId ?? '');
 	const device = $derived(list.data?.devices.find((d) => d.id === id) ?? list.data?.devices.find((d) => d.type === id));
-	const facts = $derived(
+	const about = $derived(
 		device
-			? [device.productName || TYPE_LABEL[device.type](), device.ip, device.version && m.device_version({ version: device.version })]
-					.filter(Boolean)
-					.join(' · ')
+			? facts(device.productName || TYPE_LABEL[device.type](), device.ip, device.version && m.device_version({ version: device.version }))
 			: ''
 	);
 	const title = $derived(device?.name ?? (list.data ? m.device_not_found() : list.failed ? m.device_title() : m.common_loading()));
@@ -36,7 +35,7 @@
 	{#if device}
 		<PageHead back title={device.name}>
 			{#snippet sub()}
-				<span class:warn-text={!device.connected}>{device.connected ? m.device_online() : m.device_offline()}</span> · {facts}
+				<span class:warn-text={!device.connected}>{device.connected ? m.device_online() : m.device_offline()}</span>{separator()}{about}
 			{/snippet}
 		</PageHead>
 	{:else}

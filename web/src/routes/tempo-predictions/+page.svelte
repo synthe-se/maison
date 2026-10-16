@@ -4,7 +4,7 @@
 	// official) and how often that forecast was right on past seasons.
 	import { m } from '#lib/paraglide/messages.js';
 	import { live } from '#lib/live.svelte.ts';
-	import { longDate, percent } from '#lib/i18n.svelte.ts';
+	import { list, longDate, percent } from '#lib/i18n.svelte.ts';
 	import Group from '#lib/components/Group.svelte';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
@@ -77,7 +77,7 @@
 					</tbody>
 				</table>
 				<p class="hint measure">
-					{m.tempo_reliability_hint({ seasons: backtest.seasons.join(', '), blue: percent(backtest.horizons[0].alwaysBlue) })}
+					{m.tempo_reliability_hint({ seasons: list(backtest.seasons), blue: percent(backtest.horizons[0].alwaysBlue) })}
 				</p>
 			{/if}
 		</Group>

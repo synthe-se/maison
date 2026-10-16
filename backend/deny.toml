@@ -1,0 +1,61 @@
+# cargo deny check: what the backend may depend on. No GPL of any version (the owner's rule),
+# crates from crates.io plus the uplg forks pinned by `rev` in Cargo.toml (ashv2, ezsp,
+# rust-async-tuyapi), advisories from RustSec. `cargo deny --manifest-path backend/Cargo.toml
+# check`; offline (`--offline`: the advisory database cargo-deny last fetched), one target at a
+# time (`-t arm-unknown-linux-musleabihf`): `cargo metadata` would otherwise want crates only
+# other platforms build, never downloaded here.
+
+[graph]
+# the Pi (ARMv6 musl, `--no-default-features`) and the Mac (Bluetooth included)
+targets = ["arm-unknown-linux-musleabihf", "aarch64-apple-darwin"]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # rsa: the Marvin timing side channel, no fixed release yet. Used only to sign the ADB and
+    # Android TV Remote v2 handshakes with our own keys, on the LAN: nobody times our
+    # decryptions (we never decrypt with it).
+    { id = "RUSTSEC-2023-0071", reason = "rsa signs the box's ADB and TLS handshakes only; no decryption oracle" },
+    # json 0.12, unmaintained: rust-async-tuyapi (the uplg fork) parses the plugs' local frames
+    # with it; to be replaced in the fork.
+    { id = "RUSTSEC-2022-0081", reason = "unmaintained, through the uplg rust-async-tuyapi fork: LAN frames only" },
+]
+# (gcc 0.3, RUSTSEC-2025-0121, in Cargo.lock through get_if_addrs-sys, is built for neither
+# target above: cargo deny does not meet it.)
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CC0-1.0",
+    "BSL-1.0",
+]
+# the repository's own crates (publish = false): no license chosen yet, the owner's to choose
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    "https://github.com/uplg/ashv2",
+    "https://github.com/uplg/ezsp",
+    "https://github.com/uplg/rust-async-tuyapi",
+]

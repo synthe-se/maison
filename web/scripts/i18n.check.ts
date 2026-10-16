@@ -1,6 +1,7 @@
 // `bun run check`: the message files say each thing once, in every locale, and every key is
 // said somewhere. Paraglide falls back to the base locale silently and keeps unused keys.
-// Used means `m.key` / `m['key']` in web/src, tests left out. Duplicates: two keys with the same text in every
+// Used means `m.key` / `m['key']` in web/src, tests left out, or the frame's: `k::KEY` in
+// frame/ui/src (its generated consts), a key named in frame/linux's Python (the boot picture). Duplicates: two keys with the same text in every
 // locale; a legitimate one (same words, another meaning) goes in i18n.allow.json, with its reason.
 
 import { Glob } from 'bun';
@@ -27,6 +28,15 @@ for await (const f of new Glob('web/src/**/*.{ts,svelte}').scan(root)) {
 	if (f.includes('/lib/paraglide/') || f.includes('/lib/test/') || f.endsWith('.test.ts')) continue;
 	const s = await Bun.file(root + f).text();
 	for (const x of s.matchAll(/\bm(?:\.([a-z][a-z0-9_]*)|\[['"]([a-z][a-z0-9_]*)['"]\])/g)) used.add(x[1] ?? x[2]);
+}
+// the wall frame's: its native app's consts, its boot picture's keys
+for await (const f of new Glob('frame/ui/src/**/*.rs').scan(root)) {
+	const s = await Bun.file(root + f).text();
+	for (const x of s.matchAll(/\bk::([A-Z][A-Z0-9_]*)\b/g)) used.add(x[1].toLowerCase());
+}
+for await (const f of new Glob('frame/linux/*.py').scan(root)) {
+	const s = await Bun.file(root + f).text();
+	for (const x of s.matchAll(/["']([a-z][a-z0-9_]*)["']/g)) if (keys.has(x[1])) used.add(x[1]);
 }
 for (const k of keys) if (!used.has(k)) problems.push(`${k}: unused`);
 

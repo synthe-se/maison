@@ -6,16 +6,16 @@
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
-	import { isoDay, num, percent, shortDay } from '#lib/i18n.svelte.ts';
+	import { facts, isoDay, num, percent, shortDay } from '#lib/i18n.svelte.ts';
 	import { time } from '#lib/clock.svelte.ts';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import StatusRow from '#lib/components/StatusRow.svelte';
-	import { calendar, today } from '#lib/devices/tempo/data.ts';
+	import { calendar, livePrice } from '#lib/devices/tempo/data.ts';
 	import { seasonOf } from '#lib/devices/tempo/dates.ts';
-	import { euros, monthEstimate, peakShare, priceNow } from '#lib/devices/tempo/price.ts';
+	import { colorOn, euros, monthEstimate, peakShare } from '#lib/devices/tempo/price.ts';
 	import { merossApi } from './api.ts';
 	import { consumption as consumptionOf, electricity, status as statusOf } from './data.ts';
 	import PlugTile from './PlugTile.svelte';
@@ -35,15 +35,14 @@
 	const days = $derived((consumption.data?.consumption ?? []).slice(-7).toReversed());
 
 	// what electricity costs: the price in force, and each day's color this season
-	const tempo = live(today);
+	const inForce = livePrice();
+	const tempo = inForce.tempo;
 	// svelte-ignore state_referenced_locally (a page is opened at one moment: its season)
 	const season = live(calendar(seasonOf(time.now.getFullYear(), time.now.getMonth())));
-	const price = $derived(tempo.data ? priceNow(time.now, tempo.data) : null);
+	const price = $derived(inForce.current);
 	/** « 2026-10 » */
 	const month = $derived(isoDay(time.now).slice(0, 7));
-	const colorOf = (iso: string) =>
-		season.data?.calendar.find((d) => d.date === iso && d.isActual)?.color ??
-		[tempo.data?.today, tempo.data?.yesterday].find((d) => d?.date === iso)?.color;
+	const colorOf = (iso: string) => colorOn(iso, season.data, tempo.data);
 	const estimate = $derived(
 		tempo.data?.tariffs && consumption.data
 			? monthEstimate(
@@ -108,15 +107,15 @@
 					<dl class="readings">
 						<div>
 							<dt>{m.meross_voltage()}</dt>
-							<dd>{e ? volts(e.volts) : '—'}</dd>
+							<dd>{e ? volts(e.volts) : m.common_no_value()}</dd>
 						</div>
 						<div>
 							<dt>{m.meross_current()}</dt>
-							<dd>{e ? milliamps(e.amps) : '—'}</dd>
+							<dd>{e ? milliamps(e.amps) : m.common_no_value()}</dd>
 						</div>
 						<div>
 							<dt>{m.meross_power()}</dt>
-							<dd>{e ? watts(e.watts, 1) : '—'}</dd>
+							<dd>{e ? watts(e.watts, 1) : m.common_no_value()}</dd>
 						</div>
 					</dl>
 				</Group>
@@ -125,7 +124,7 @@
 					<Group
 						id="conso-title"
 						title={m.meross_consumption()}
-						fact={`${m.meross_consumption_days({ count: consumption.data.summary.days })} · ${kwh(consumption.data.summary.totalKwh)}`}
+						fact={facts(m.meross_consumption_days({ count: consumption.data.summary.days }), kwh(consumption.data.summary.totalKwh))}
 					>
 						{#if estimate && estimate.days > 0 && tempo.data}
 							<div class="estimate">

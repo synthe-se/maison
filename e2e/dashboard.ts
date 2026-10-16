@@ -12,7 +12,15 @@ await h.serve(p);
 // the page's clock: real time by default (resumed), paused where a timing is checked
 await p.clock.install();
 await p.clock.resume();
+// signed in, the page follows the server's changes (GET /api/events)
+const stream = p.waitForResponse((r) => new URL(r.url()).pathname === '/api/events');
 await signIn(p);
+const opened = await stream;
+check(
+	'signed in, the page follows the event stream',
+	opened.status() === 200 && opened.headers()['content-type'] === 'text/event-stream',
+	`${opened.status()} ${opened.headers()['content-type']}`
+);
 /** Stops the page's clock (a moment ahead of its own now): from here, time moves by `runFor`. */
 const pause = async () => p.clock.pauseAt((await p.evaluate(() => Date.now())) + 100);
 

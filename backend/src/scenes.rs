@@ -8,36 +8,26 @@
 //!    "actions": [{ "action": "tv_power", "state": "on" }] }]
 //! ```
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use std::{path::Path, sync::Arc};
 
 use crate::{
-    error::AppError,
+    error::{AppError, Refusal},
     ir::{self, IrAction},
-    store::{self, Access, Corrupt},
+    json_config::{Checked, JsonConfig},
+    util::refused,
 };
 
 /// A scene is something one taps: past twenty actions it is a script.
 pub const MAX_ACTIONS: usize = 20;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Scene {
-    pub id: String,
-    pub name: String,
-    /// One of the web's icon names.
-    pub icon: String,
-    pub actions: Vec<IrAction>,
-}
+pub use maison_api::scenes::Scene;
 
 /// An id as kept: 1 to 32 of `a-z`, `0-9` and `-` (it goes in URLs and in the keymap).
 pub fn valid_id(id: &str) -> bool {
-    (1..=32).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    (1..=32).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// An icon name as the web spells them: 1 to 32 of `a-z` and `-`.
@@ -45,75 +35,113 @@ fn valid_icon(icon: &str) -> bool {
     (1..=32).contains(&icon.len()) && icon.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
 }
 
+/// The scenes, in the dashboard's order.
+type Scenes = Vec<Scene>;
+
+/// Each scene is checked when it comes in (`checked`); a hand-edited file is read as
+/// written, each action failing at its run if it must.
+impl Checked for Scenes {}
+
 #[derive(Clone)]
 pub struct ScenesManager {
-    path: Arc<PathBuf>,
-    scenes: Arc<RwLock<Vec<Scene>>>,
+    scenes: Arc<JsonConfig<Scenes>>,
 }
 
 impl ScenesManager {
     /// Missing file = no scenes (the web offers templates); an unreadable one is a startup
     /// error, like the keymap.
     pub fn new(path: &Path) -> Result<Self, AppError> {
-        let scenes: Vec<Scene> = store::read_json(path, Corrupt::Fail)?;
-        Ok(Self { path: Arc::new(path.to_path_buf()), scenes: Arc::new(RwLock::new(scenes)) })
+        Ok(Self {
+            scenes: Arc::new(JsonConfig::load(path)?),
+        })
     }
 
     /// In the order they were made.
     pub async fn list(&self) -> Vec<Scene> {
-        self.scenes.read().await.clone()
+        self.scenes.get().await
     }
 
     pub async fn get(&self, id: &str) -> Option<Scene> {
-        self.scenes.read().await.iter().find(|scene| scene.id == id).cloned()
+        self.scenes
+            .read(|scenes| scenes.iter().find(|scene| scene.id == id).cloned())
+            .await
     }
 
     /// Creates the scene `id` (at the end) or replaces it (in its place). Saved first, then
     /// kept: a failed save leaves memory as it is on disk.
-    pub async fn put(&self, id: &str, name: &str, icon: &str, actions: Vec<IrAction>) -> Result<Scene, AppError> {
+    pub async fn put(
+        &self,
+        id: &str,
+        name: &str,
+        icon: &str,
+        actions: Vec<IrAction>,
+    ) -> Result<Scene, AppError> {
         let scene = checked(id, name, icon, actions)?;
-        let mut scenes = self.scenes.write().await;
-        let mut next = scenes.clone();
-        match next.iter_mut().find(|kept| kept.id == scene.id) {
-            Some(kept) => *kept = scene.clone(),
-            None => next.push(scene.clone()),
-        }
-        store::write_json_async(&self.path, &next, Access::Shared).await?;
-        *scenes = next;
+        self.scenes
+            .update(|scenes| {
+                match scenes.iter_mut().find(|kept| kept.id == scene.id) {
+                    Some(kept) => *kept = scene.clone(),
+                    None => scenes.push(scene.clone()),
+                }
+                Ok(())
+            })
+            .await?;
         Ok(scene)
     }
 
     /// Returns `true` when the scene existed. Keys bound to it then fail at their press,
     /// saying so (`ir::run_actions`).
     pub async fn remove(&self, id: &str) -> Result<bool, AppError> {
-        let mut scenes = self.scenes.write().await;
-        if !scenes.iter().any(|scene| scene.id == id) {
+        if self.get(id).await.is_none() {
             return Ok(false);
         }
-        let next: Vec<Scene> = scenes.iter().filter(|scene| scene.id != id).cloned().collect();
-        store::write_json_async(&self.path, &next, Access::Shared).await?;
-        *scenes = next;
-        Ok(true)
+        self.scenes
+            .update(|scenes| {
+                let before = scenes.len();
+                scenes.retain(|scene| scene.id != id);
+                Ok(scenes.len() != before)
+            })
+            .await
     }
 }
 
 /// The scene as kept, or why not.
 fn checked(id: &str, name: &str, icon: &str, actions: Vec<IrAction>) -> Result<Scene, AppError> {
     if !valid_id(id) {
-        return Err(AppError::bad_request("A scene id is 1 to 32 of a-z, 0-9 and -"));
+        return Err(refused(
+            Refusal::Invalid,
+            "a scene id is 1 to 32 of a-z, 0-9 and -",
+        ));
     }
     let name = crate::util::name(name)?.to_string();
     if !valid_icon(icon) {
-        return Err(AppError::bad_request("An icon name is 1 to 32 of a-z and -"));
+        return Err(refused(
+            Refusal::Invalid,
+            "an icon name is 1 to 32 of a-z and -",
+        ));
     }
-    if actions.is_empty() || actions.len() > MAX_ACTIONS {
-        return Err(AppError::bad_request(format!("A scene holds 1 to {MAX_ACTIONS} actions")));
+    if actions.is_empty() {
+        return Err(refused(
+            Refusal::Invalid,
+            "a scene holds an action at least",
+        ));
     }
-    if actions.iter().any(|action| matches!(action, IrAction::Scene { .. })) {
-        return Err(AppError::coded(StatusCode::BAD_REQUEST, "nested_scene", "A scene cannot run another scene"));
+    if actions.len() > MAX_ACTIONS {
+        return Err(Refusal::TooManyActions.into());
     }
-    ir::validate_actions(&actions).map_err(AppError::bad_request)?;
-    Ok(Scene { id: id.to_string(), name, icon: icon.to_string(), actions })
+    if actions
+        .iter()
+        .any(|action| matches!(action, IrAction::Scene { .. }))
+    {
+        return Err(Refusal::NestedScene.into());
+    }
+    ir::validate_actions(&actions)?;
+    Ok(Scene {
+        id: id.to_string(),
+        name,
+        icon: icon.to_string(),
+        actions,
+    })
 }
 
 #[cfg(test)]
@@ -121,7 +149,12 @@ mod tests {
     use super::*;
 
     fn pings(n: usize) -> Vec<IrAction> {
-        vec![IrAction::Nabaztag { command: "ping".into() }; n]
+        vec![
+            IrAction::Nabaztag {
+                command: "ping".into()
+            };
+            n
+        ]
     }
 
     fn ping() -> Vec<IrAction> {
@@ -137,9 +170,16 @@ mod tests {
     #[test]
     fn ids_and_icons_follow_their_alphabet() {
         assert!(valid_id("cinema") && valid_id("soir-2") && valid_id(&"a".repeat(32)));
-        assert!(!valid_id("") && !valid_id("Cinéma") && !valid_id("a_b") && !valid_id(&"a".repeat(33)));
+        assert!(
+            !valid_id("") && !valid_id("Cinéma") && !valid_id("a_b") && !valid_id(&"a".repeat(33))
+        );
         assert!(valid_icon("film") && valid_icon("moon-star"));
-        assert!(!valid_icon("film2") && !valid_icon("") && !valid_icon("Film") && !valid_icon(&"a".repeat(33)));
+        assert!(
+            !valid_icon("film2")
+                && !valid_icon("")
+                && !valid_icon("Film")
+                && !valid_icon(&"a".repeat(33))
+        );
     }
 
     #[test]
@@ -148,15 +188,32 @@ mod tests {
         assert!(checked("Soir", "Soirée", "moon", ping()).is_err(), "id");
         assert!(checked("soir", "  ", "moon", ping()).is_err(), "name");
         assert!(checked("soir", "Soirée", "Moon!", ping()).is_err(), "icon");
-        assert!(checked("soir", "Soirée", "moon", Vec::new()).is_err(), "no action");
+        assert!(
+            checked("soir", "Soirée", "moon", Vec::new()).is_err(),
+            "no action"
+        );
         assert!(checked("soir", "Soirée", "moon", pings(MAX_ACTIONS)).is_ok());
-        assert!(checked("soir", "Soirée", "moon", pings(MAX_ACTIONS + 1)).is_err(), "too many");
-        let typo = vec![IrAction::AndroidTvApp { package: "not a package".into(), ensure_tv_on: true }];
-        assert!(checked("soir", "Soirée", "moon", typo).is_err(), "validated as a key's actions");
-        let nested = vec![IrAction::Scene { scene: "other".into() }];
+        assert!(
+            checked("soir", "Soirée", "moon", pings(MAX_ACTIONS + 1)).is_err(),
+            "too many"
+        );
+        let typo = vec![IrAction::AndroidTvApp {
+            package: "not a package".into(),
+            ensure_tv_on: true,
+        }];
+        assert!(
+            checked("soir", "Soirée", "moon", typo).is_err(),
+            "validated as a key's actions"
+        );
+        let nested = vec![IrAction::Scene {
+            scene: "other".into(),
+        }];
         assert!(matches!(
             checked("soir", "Soirée", "moon", nested),
-            Err(AppError::Coded { code: "nested_scene", .. })
+            Err(AppError::Coded {
+                code: "nested_scene",
+                ..
+            })
         ));
     }
 
@@ -179,7 +236,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_save_changes_nothing() {
         let (dir, manager) = manager();
-        std::fs::create_dir(dir.path().join("scenes.json")).expect("a directory where the file goes");
+        std::fs::create_dir(dir.path().join("scenes.json"))
+            .expect("a directory where the file goes");
         assert!(manager.put("a", "A", "sun", ping()).await.is_err());
         assert!(manager.get("a").await.is_none());
     }

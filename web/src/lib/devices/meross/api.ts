@@ -18,7 +18,7 @@ export interface MerossPlugsResponse {
 	message: string;
 }
 
-export interface MerossPlugStatus {
+interface MerossPlugStatus {
 	online: boolean;
 	on: boolean;
 	electricity: { voltage: number; current: number; power: number } | null;
@@ -47,7 +47,7 @@ export interface MerossElectricityResponse {
 			current: number;
 			voltage: number;
 			power: number;
-			config?: { voltageRatio: number; electricityRatio: number };
+			config: { voltageRatio: number; electricityRatio: number } | null;
 		};
 	};
 	message: string;

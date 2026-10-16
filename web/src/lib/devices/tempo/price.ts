@@ -6,10 +6,10 @@
 
 import { m } from '#lib/paraglide/messages.js';
 import { lower, num } from '#lib/i18n.svelte.ts';
-import type { TempoColor, TempoHours, TempoTariffs, TempoToday } from '#lib/devices/tempo/api.ts';
+import type { TempoCalendar, TempoColor, TempoHours, TempoTariffs, TempoToday } from '#lib/devices/tempo/api.ts';
 import { TEMPO } from './colors.ts';
 
-export type Period = 'peak' | 'offPeak';
+type Period = 'peak' | 'offPeak';
 
 export interface PriceNow {
 	color: TempoColor;
@@ -26,6 +26,17 @@ export interface PriceNow {
 	next: TempoColor | null;
 }
 
+/** A color's two prices, €/kWh (`tariffs` holds them under the color's key). */
+export const tariffOf = (tariffs: TempoTariffs, color: TempoColor) => tariffs[TEMPO[color].key];
+
+/** The color a day had (`iso`): from the season's calendar once it is actual, else from what
+ * /tempo says of yesterday and today; undefined when nothing knows it. */
+export function colorOn(iso: string, season: TempoCalendar | undefined, data: TempoToday | undefined): TempoColor | null | undefined {
+	return (
+		season?.calendar.find((d) => d.date === iso && d.isActual)?.color ?? [data?.today, data?.yesterday].find((d) => d?.date === iso)?.color
+	);
+}
+
 const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
 
 /** The period at `now`; the Tempo day starts when the peak hours do. */
@@ -40,7 +51,7 @@ export function priceNow(now: Date, data: TempoToday): PriceNow | null {
 	const { period, dayStarted } = periodAt(now, data.hours);
 	const color = dayStarted ? data.today.color : data.yesterday.color;
 	if (!color || !data.tariffs) return null;
-	const prices = data.tariffs[TEMPO[color].key];
+	const prices = tariffOf(data.tariffs, color);
 	const other: Period = period === 'peak' ? 'offPeak' : 'peak';
 	return {
 		color,
@@ -81,7 +92,7 @@ export const periodColor = (period: Period, color: TempoColor) =>
 /** Peak hours in force on a red day: the costliest kWh of the year. */
 export const redPeak = (p: PriceNow | null) => p?.color === 'RED' && p.period === 'peak';
 
-export interface MonthEstimate {
+interface MonthEstimate {
 	/** € for the days counted. */
 	euros: number;
 	/** Days of the month counted (a reading and a color). */
@@ -108,7 +119,7 @@ export function monthEstimate(
 		if (!d.date.startsWith(month)) continue;
 		const color = colorOf(d.date);
 		if (!color) continue;
-		const p = tariffs[TEMPO[color].key];
+		const p = tariffOf(tariffs, color);
 		total += (d.wh / 1000) * (share * p.peak + (1 - share) * p.offPeak);
 		counted++;
 	}

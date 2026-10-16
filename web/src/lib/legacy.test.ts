@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanupLegacyServiceWorker } from './legacy.ts';
+import { cleanupLegacyServiceWorker, forgetLegacyScreenToken } from './legacy.ts';
 
 /** A service worker registration whose worker runs `script`. */
 function registration(script: string, slot: 'active' | 'waiting' | 'installing' = 'active') {
@@ -40,5 +40,32 @@ describe('cleanupLegacyServiceWorker', () => {
 		vi.stubGlobal('navigator', {});
 		vi.stubGlobal('window', {});
 		await expect(cleanupLegacyServiceWorker()).resolves.toBeUndefined();
+	});
+});
+
+describe('forgetLegacyScreenToken', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('wipes the token an older wall screen kept, and leaves the rest', () => {
+		const kept = new Map<string, string>();
+		vi.stubGlobal('localStorage', {
+			getItem: (k: string) => kept.get(k) ?? null,
+			setItem: (k: string, v: string) => void kept.set(k, v),
+			removeItem: (k: string) => void kept.delete(k)
+		});
+		localStorage.setItem('maison-screen-token', `maison_${'a'.repeat(43)}`);
+		localStorage.setItem('maison-theme', 'dark');
+		forgetLegacyScreenToken();
+		expect(localStorage.getItem('maison-screen-token')).toBeNull();
+		expect(localStorage.getItem('maison-theme')).toBe('dark');
+	});
+
+	it('is no failure where storage is refused', () => {
+		vi.stubGlobal('localStorage', {
+			removeItem: () => {
+				throw new DOMException('denied', 'SecurityError');
+			}
+		});
+		expect(() => forgetLegacyScreenToken()).not.toThrow();
 	});
 });

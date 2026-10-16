@@ -1,6 +1,7 @@
 // The TV's and the box's tiles in words, once (their dashboard rows and their pages).
 
 import { m } from '#lib/paraglide/messages.js';
+import { unreachableSince } from '#lib/i18n.svelte.ts';
 import type { AndroidTvStatus, TvPower, TvStatus, TvVolume } from './api.ts';
 
 const POWER: Record<TvPower, () => string> = {
@@ -28,6 +29,7 @@ export function tvFact(v: TvVolume | undefined): string | undefined {
 /** Line 2 of the box's tile. */
 export function boxState(s: AndroidTvStatus | undefined): string {
 	if (!s?.configured) return m.android_tv_not_configured();
-	if (!s.reachable) return m.state_unreachable();
+	// worded as every tile words it (docs/ux.md § 4); the backend says no last-seen time yet
+	if (!s.reachable) return unreachableSince(null);
 	return s.awake ? m.android_tv_awake() : m.android_tv_asleep();
 }

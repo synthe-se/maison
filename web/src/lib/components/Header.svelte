@@ -6,7 +6,7 @@
 	import { page } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
 	import { session } from '#lib/session.svelte.ts';
-	import { ui, type Theme } from '#lib/ui.svelte.ts';
+	import { ui, type Theme, THEMES } from '#lib/ui.svelte.ts';
 	import { locale, localeName, locales, switchLocale, type Locale } from '#lib/i18n.svelte.ts';
 	import { options } from '#lib/options.ts';
 	import Brand from './Brand.svelte';
@@ -18,8 +18,7 @@
 		{ href: '/tempo-predictions', label: m.nav_tempo, icon: 'zap', match: (p) => p.startsWith('/tempo') },
 		{ href: '/remote', label: m.nav_remote, icon: 'radio', match: (p) => p.startsWith('/remote') }
 	];
-	const THEMES = ['system', 'light', 'dark'] as const;
-	const THEME_LABEL: Record<Theme, () => string> = { system: m.theme_system, light: m.theme_light, dark: m.theme_dark };
+	const THEME_LABEL: Record<Theme, () => string> = { system: m.theme_system, light: m.theme_light, dark: m.theme_dark, sun: m.theme_sun };
 	const name = $derived(session.user?.name ?? '');
 	let open = $state(false);
 </script>
@@ -40,37 +39,41 @@
 		<Brand />
 		{@render nav('views')}
 		<div class="grow"></div>
-		<Popover.Root bind:open>
-			<Popover.Trigger class="btn ghost who" aria-label={m.session_menu({ name })}>
-				<span class="initial" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
-				<span class="who-name">{name}</span>
-			</Popover.Trigger>
-			<Popover.Portal>
-				<Popover.Content class="panel" sideOffset={6} align="end" role="dialog" aria-labelledby="session-title">
-					<h2 id="session-title" class="who-title">{name}</h2>
-					<ToggleGroup
-						type="single"
-						label={m.language_label()}
-						options={locales.map((l) => ({ value: l, label: localeName(l), lang: l }))}
-						value={locale()}
-						onchange={(l: Locale) => switchLocale(l)}
-					/>
-					<ToggleGroup
-						type="single"
-						label={m.theme_label()}
-						options={options(THEMES, THEME_LABEL)}
-						value={ui.theme}
-						onchange={(t) => ui.setTheme(t)}
-					/>
-					<div class="row">
-						<a class="btn" href="/account" onclick={() => (open = false)}><Icon name="key" />{m.account_title()}</a>
-						<button class="btn" onclick={() => session.signOut()}>
-							<Icon name="log-out" />{m.auth_logout()}
-						</button>
-					</div>
-				</Popover.Content>
-			</Popover.Portal>
-		</Popover.Root>
+		<!-- a wall screen has nobody to name, no account, no session to end -->
+		{#if session.user}
+			<Popover.Root bind:open>
+				<Popover.Trigger class="btn ghost who" aria-label={m.session_menu({ name })}>
+					<!-- drawn by CSS: the button's text is the name alone, which its label holds (WCAG 2.5.3) -->
+					<span class="initial" data-initial={name.slice(0, 1).toUpperCase()} aria-hidden="true"></span>
+					<span class="who-name">{name}</span>
+				</Popover.Trigger>
+				<Popover.Portal>
+					<Popover.Content class="panel" sideOffset={6} align="end" role="dialog" aria-labelledby="session-title">
+						<h2 id="session-title" class="who-title">{name}</h2>
+						<ToggleGroup
+							type="single"
+							label={m.language_label()}
+							options={locales.map((l) => ({ value: l, label: localeName(l), lang: l }))}
+							value={locale()}
+							onchange={(l: Locale) => switchLocale(l)}
+						/>
+						<ToggleGroup
+							type="single"
+							label={m.theme_label()}
+							options={options(THEMES, THEME_LABEL)}
+							value={ui.theme}
+							onchange={(t) => ui.setTheme(t)}
+						/>
+						<div class="row">
+							<a class="btn" href="/account" onclick={() => (open = false)}><Icon name="key" />{m.account_title()}</a>
+							<button class="btn" onclick={() => session.signOut()}>
+								<Icon name="log-out" />{m.auth_logout()}
+							</button>
+						</div>
+					</Popover.Content>
+				</Popover.Portal>
+			</Popover.Root>
+		{/if}
 	</div>
 </header>
 {@render nav('bottom')}
@@ -79,7 +82,7 @@
 	.top {
 		position: sticky;
 		top: 0;
-		z-index: 20;
+		z-index: var(--z-bar);
 		border-bottom: 1px solid var(--line);
 		background: var(--ground);
 	}
@@ -121,6 +124,9 @@
 	:global(.who) {
 		gap: var(--s-2);
 	}
+	.initial::before {
+		content: attr(data-initial);
+	}
 	.initial {
 		display: inline-grid;
 		place-items: center;
@@ -148,7 +154,7 @@
 		.bottom {
 			position: fixed;
 			inset: auto 0 0 0;
-			z-index: 20;
+			z-index: var(--z-bar);
 			display: grid;
 			grid-auto-flow: column;
 			grid-auto-columns: 1fr;

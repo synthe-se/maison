@@ -4,9 +4,12 @@ Production is a Raspberry Pi 1 Model B (ARMv6, 512 MB) on Alpine Linux in sys mo
 OpenRC. No Docker, nothing built on the Pi: the Mac cross-builds a static musl binary and
 the web bundle, and `deploy.sh` pushes them.
 
-The Pi runs three services: `mosquitto` (TLS on :8883, only because the Meross plugs'
-firmware needs a broker to boot; the backend itself talks to them over HTTP), `maison` (the
-backend, which also serves the web app) and `cloudflared-maison` (the tunnel).
+The Pi runs four services: `mosquitto` (TLS on :8883, only because the Meross plugs'
+firmware needs a broker to boot; the backend itself talks to them over HTTP),
+`maison-mqtt-firewall` (iptables: 8883 open only to the plugs' addresses and the Pi itself,
+IPv6 dropped; mosquitto needs it, so the broker never listens unguarded), `maison` (the
+backend, which also serves the web app) and `cloudflared-maison` (the tunnel, under its own
+user: a compromised cloudflared reads neither `.env` nor `auth/` nor `matter/`).
 
 ## On the Mac, once
 
@@ -18,9 +21,11 @@ git clone https://github.com/cloudflare/cloudflared.git ../cloudflared   # needs
 ```
 
 `make build-pi` (run by `make deploy`) is `scripts/build-rpi1-backend.sh`: `cargo zigbuild
---release --no-default-features` (no Bluetooth on the Pi) for `arm-unknown-linux-musleabihf`
-with `-C target-cpu=arm1176jzf-s`. OpenSSL (linked by webauthn-rs) is vendored and compiled
-by zig too.
+--release --locked --no-default-features` (no Bluetooth on the Pi; exactly `Cargo.lock`'s
+versions) for `arm-unknown-linux-musleabihf` with `-C target-cpu=arm1176jzf-s`. OpenSSL
+(linked by webauthn-rs) is vendored and compiled by zig too. `make deny` checks what the
+backend depends on (`backend/deny.toml`: no GPL, crates.io and the pinned uplg forks only,
+RustSec advisories), for the Pi's target and the Mac's.
 
 ## A fresh Pi
 
@@ -53,10 +58,13 @@ dev-only goes in it (pass `PUBLIC_URL=http://localhost:5173` in the shell when d
 | `PI_HOST` | SSH target for `deploy.sh` and every `make deploy-*` (e.g. `root@<pi>`) |
 | `JWT_SECRET` | at least 32 random bytes (`openssl rand -hex 32`); the backend refuses a shorter one or a placeholder |
 | `CLOUDFLARE_PUBLIC_HOSTNAME` | the public host; `PUBLIC_URL` defaults to `https://` + it. Its host is the passkeys' RP ID: changing it loses every passkey |
-| `CLOUDFLARE_TUNNEL_TOKEN` | the tunnel's token; without it `cloudflared-maison` is not started. Never on a command line |
+| `CLOUDFLARE_TUNNEL_TOKEN` | the tunnel's token. `deploy.sh push` writes it over ssh's stdin into `/etc/cloudflared-maison/token` (0600, cloudflared's) and pushes `.env` without it; without a token file `cloudflared-maison` is not started. Never on a command line |
 | `AUTH_COOKIE_SECURE` | `true` (the tunnel is HTTPS) |
 | `DISABLE_BLUETOOTH` | `true` on the Pi |
-| `IR_API_TOKEN` | the set-top box's token for `POST /api/ir/key` (same value in its `kird.conf`); empty disables the route |
+| `IR_API_TOKEN` | the set-top box's token for `POST /api/ir/key` (same value in its `kird.conf`), 32 characters at least or the backend refuses to start; empty disables the route |
+| `ALLOW_LAN_TOKENS` | optional, off: lets an app's service token reach the device routes over the LAN's plain HTTP (Tailscale is always allowed) |
+| `SCREEN_IDLE_DAYS` | optional, default 90: a wall screen unseen this long is revoked (0: never) |
+| `MAISON_LOG_FILE` | optional, default `/var/log/maison.log`: where the CLI (`invite`, `token`) adds its security events, so the service's log tells everything that opened the house |
 | `ZIGBEE_SERIAL_PORT`, `ZIGBEE_ADAPTER=ember`, `ZIGBEE_EZSP_PROTOCOL_VERSION=13` | the Sonoff Dongle Lite MG21 (`/dev/ttyUSB0` on the Pi; the service user is put in `dialout`) |
 | `NABAZTAG_HOST` | the rabbit's address, optional |
 | `RTE_CLIENT_ID`, `RTE_CLIENT_SECRET` | optional: RTE's official Tempo API (free account on data.rte-france.com), else open data |
@@ -76,8 +84,21 @@ make deploy-logs         # LOG_TARGET=stack|backend|mosquitto|cloudflared
 make deploy-push         # or ./deploy.sh build|push|upgrade|start|stop
 ```
 
-`PI_PASSWORD` uses `sshpass` instead of a key. Logs: `/var/log/maison.log`,
-`/var/log/cloudflared-maison.log`, `/var/log/mosquitto/mosquitto.log` (logrotate).
+`PI_PASSWORD` uses `sshpass` instead of a key; `PI_TUNNEL_USER` (from the shell, default
+`cloudflared`) names the tunnel's user. Each push also writes `deploy/mosquitto/plugs.allow`
+from `meross-devices.json` (the firewall's list; anything but a private IPv4 address stops
+the deploy), and each start rebuilds the firewall's rules from it. Logs:
+`/var/log/maison.log`, `/var/log/cloudflared-maison.log`, `/var/log/mosquitto/mosquitto.log`,
+0640 (they name people, addresses and refusals), rotated daily and kept 14 days, compressed
+(logrotate): an incident noticed a week late can still be read. Every 401 and 403 is logged
+with its code, the path, who asked and the client's address.
+
+### A copy off the Pi (optional, not set up by deploy.sh)
+
+The logs live on the SD card, which an intruder with root could rewrite. To keep a copy
+elsewhere, BusyBox's syslogd can forward to a host on the LAN (`/etc/conf.d/syslog`:
+`SYSLOGD_OPTS="-R <host>:514 -L"`, forward and keep local), and a small OpenRC service can
+feed the backend's log to it (`tail -F /var/log/maison.log | logger -t maison`).
 
 What a push does to the cache: `cache/tempo/` goes with `--update` (what the Pi learnt since
 stays), except `model.json`, which is always the Mac's. Mutable state files are never pushed.
@@ -90,15 +111,19 @@ Entry is by invitation only. The first one (or a way back in) comes from the Pi:
 ssh <pi> 'cd /opt/maison && ./backend/target/release/maison-backend invite leonard --name Léonard --admin'
 ```
 
-It prints a one-time link (7 days). Open it on the device that will hold the passkey.
-After that, admins invite from « Mon compte ».
+It prints a one-time link (`<PUBLIC_URL>/invite#<token>`; 72 hours for an admin, 7 days
+otherwise). Open it on the device that will hold the passkey.
+After that, admins invite from « Mon compte ». A machine (a companion app) gets a service
+token instead: `maison-backend token create <name>` ([passkeys.md](passkeys.md#service-tokens-machines)).
 
 ## Layout and permissions on the Pi
 
 | Path | Owner, mode | |
 |---|---|---|
 | `/opt/maison` | `root:maison 1775` | group-writable and sticky: the service creates and renames its own files, never root's |
-| `.env`, `devices.json`, `meross-devices.json` | `root:maison 0640` | secrets, pushed |
+| `.env`, `devices.json`, `meross-devices.json` | `root:maison 0640` | secrets, pushed (`.env` without the tunnel's token) |
+| `/etc/cloudflared-maison/token` | `cloudflared`, `0600` (its directory 0700) | the tunnel's token, read by cloudflared alone |
+| `deploy/mosquitto/plugs.allow` | root, `0644` | the plugs' IPv4 addresses, the firewall's list |
 | `auth/`, `matter/` | `maison`, `0700` | people and passkeys; Matter fabric keys and shutters |
 | `cache/`, state files (`*.json`, `adb-key`, `atv-identity`) | `maison` | written by the backend (temp file + rename, 0600 when private) |
 | `scenes.json`, `ir-keymap.json` | `maison` | the scenes and the remote's keys, edited from the web app, never pushed |
@@ -106,9 +131,11 @@ After that, admins invite from « Mon compte ».
 | `matter-trust/` | root | CSA attestation roots (tracked; `scripts/update-matter-trust.sh` refreshes them) |
 
 `deploy.sh` restores that ownership after every push (rsync runs as root). From the LAN,
-`http://<pi>:3033` answers only `/health` and `/api/ir/key`; everything else goes through
-the tunnel, since passkeys need a domain and HTTPS. Mosquitto's plaintext listener is bound
-to 127.0.0.1.
+`http://<pi>:3033` answers only `/health`, `/api/ir/key` and, for an app's service token, the
+device routes (over Tailscale; over the plain LAN only with `ALLOW_LAN_TOKENS`,
+[passkeys.md](passkeys.md#service-tokens-machines)); everything else goes through the
+tunnel, since passkeys need a domain and HTTPS. `/api/ir/key`, the other way round, is
+refused through the tunnel. Mosquitto's plaintext listener is bound to 127.0.0.1.
 
 ## Cloudflare
 

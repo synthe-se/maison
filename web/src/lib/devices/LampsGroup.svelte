@@ -3,7 +3,6 @@
 	// Hue over Bluetooth and Zigbee lamps on the server's coordinator, each family left out when
 	// the server runs without it. The radio is said on the lamp's page. « Tout éteindre » when
 	// one is on; adding a lamp (a Bluetooth search, or opening the Zigbee network) is an admin's.
-	import { DropdownMenu } from 'bits-ui';
 	import { m } from '#lib/paraglide/messages.js';
 	import { hueLampsApi } from './lamps/api.ts';
 	import { live, refresh, type Loadable } from '#lib/live.svelte.ts';
@@ -14,9 +13,10 @@
 	import Group from '#lib/components/Group.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
+	import Menu from '#lib/components/Menu.svelte';
 	import LampTile from './lamps/LampTile.svelte';
 	import ZigbeePairing from './lamps/ZigbeePairing.svelte';
-	import { fromHue, fromZigbee, hue, zigbee, type Lamp, type LampDriver } from './lamps/lamp.ts';
+	import { fromHue, fromZigbee, hue, isLit, zigbee, type Lamp, type LampDriver } from './lamps/lamp.ts';
 	import { everyone, sayOutcome } from './everyone.ts';
 
 	const hueStats = live(hue.stats);
@@ -32,7 +32,7 @@
 	);
 	type Row = { lamp: Lamp; driver: LampDriver };
 	const rows: Row[] = $derived(families.flatMap((f) => f.lamps.map((lamp) => ({ lamp, driver: f.driver }))));
-	const lit = $derived(rows.filter((r) => r.lamp.reachable && r.lamp.isOn));
+	const lit = $derived(rows.filter((r) => isLit(r.lamp)));
 
 	/** The two lists read as one: loading while one is, failed when one did and nothing is
 	 * known (never « no lamp » because a radio did not answer), old when one is (or one failed
@@ -100,23 +100,27 @@
 				</button>
 			{/if}
 			<AdminOnly reason={false}>
-				<DropdownMenu.Root>
-					<DropdownMenu.Trigger class="icon-btn" aria-label={m.lamps_add()} {...pending(g.is('scan'))}>
-						<Icon name="plus" busy={g.is('scan')} />
-					</DropdownMenu.Trigger>
-					<DropdownMenu.Portal>
-						<DropdownMenu.Content class="menu" align="end" sideOffset={4}>
-							{#if hueOn}
-								<DropdownMenu.Item class="menu-item" onSelect={scan}><Icon name="search" />{m.lamps_add_bluetooth()}</DropdownMenu.Item>
-							{/if}
-							{#if zigbeeOn}
-								<DropdownMenu.Item class="menu-item" onSelect={() => (pairing = !pairing)}>
-									<Icon name="radio" />{pairing ? m.lamps_add_zigbee_close() : m.lamps_add_zigbee()}
-								</DropdownMenu.Item>
-							{/if}
-						</DropdownMenu.Content>
-					</DropdownMenu.Portal>
-				</DropdownMenu.Root>
+				<Menu
+					label={m.lamps_add()}
+					icon="plus"
+					busy={g.is('scan')}
+					sections={[
+						{
+							items: [
+								...(hueOn ? [{ label: m.lamps_add_bluetooth(), icon: 'search' as const, onselect: scan }] : []),
+								...(zigbeeOn
+									? [
+											{
+												label: pairing ? m.lamps_add_zigbee_close() : m.lamps_add_zigbee(),
+												icon: 'radio' as const,
+												onselect: () => (pairing = !pairing)
+											}
+										]
+									: [])
+							]
+						}
+					]}
+				/>
 			</AdminOnly>
 		{/snippet}
 

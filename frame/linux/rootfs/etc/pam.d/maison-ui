@@ -1,0 +1,6 @@
+# The native interface's session (maison-ui.service): a service, nobody signs in (systemd asks
+# only account and session); pam_systemd registers it with logind, which gives it the panel and
+# the touch
+account  required pam_unix.so
+session  required pam_unix.so
+session  required pam_systemd.so

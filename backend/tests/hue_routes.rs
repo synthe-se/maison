@@ -18,8 +18,21 @@ async fn connecting_by_hand_is_no_route() {
         "/api/hue-lamps/aabbccddeeff/disconnect",
         "/api/hue-lamps/aabbccddeeff/state",
     ] {
-        let (status, body) = send(&app, Method::POST, path, Some(&admin), Some(json!({"isOn": true}))).await;
-        assert!(matches!(status, StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED), "{path}: {status} {body}");
+        let (status, body) = send(
+            &app,
+            Method::POST,
+            path,
+            Some(&admin),
+            Some(json!({"isOn": true})),
+        )
+        .await;
+        assert!(
+            matches!(
+                status,
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ),
+            "{path}: {status} {body}"
+        );
     }
 }
 
@@ -27,7 +40,14 @@ async fn connecting_by_hand_is_no_route() {
 #[tokio::test]
 async fn blacklisting_an_unknown_lamp_is_not_found() {
     let app = app(isolated_config("maison-hue-routes"));
-    let (status, body) = send(&app, Method::POST, "/api/hue-lamps/nope/blacklist", Some(&test_token()), None).await;
+    let (status, body) = send(
+        &app,
+        Method::POST,
+        "/api/hue-lamps/nope/blacklist",
+        Some(&test_token()),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["success"], false);
 }
