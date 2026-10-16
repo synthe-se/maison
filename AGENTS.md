@@ -398,8 +398,13 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 - Mainline: Maison's address is root's, `/android-data/maison/target` (0600), what the units
   load as their `target` credential. install.sh can only write Android's shell-writable
   `/data/local/tmp/maison/target`; the initramfs adopts it once, while root keeps none, then
-  removes it. The units read only root's copy, so a new system wants the new recovery image
+  removes it. The units read only root's copy, so a new system wants the new boot image
   (its initramfs adopts): flash both. To change the address, remove root's copy first.
+- Linux boots by default from `boot` (14 MiB: our image without the vendor's logo, `image.py
+  --slot boot`; the screen stays black until Linux lights it); Android sits in `recovery`. A new
+  system goes over the Wi-Fi from Linux (`try.sh --install`, its SHA-256 checked); a new kernel to
+  `boot` from the loader (`try.sh --flash`, the reset pinhole). No battery: timesyncd's clock is
+  kept on userdata, and the app never waits for NTP.
 - The mainline USB-C root console exists only while `/android-data/maison/debug-console`
   does (root's password is locked): remove the file once the frame is on the wall.
   `initramfs.py --debug` adds the bring-up's backlight blinks and 8 s pause.

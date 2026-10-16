@@ -5,8 +5,8 @@
 [Unit]
 Description=Maison on the panel
 RequiresMountsFor=/android-data
-Wants=network-online.target systemd-time-wait-sync.service
-After=network-online.target time-sync.target systemd-user-sessions.service
+Wants=network-online.target
+After=network-online.target systemd-user-sessions.service
 
 [Service]
 User=kiosk

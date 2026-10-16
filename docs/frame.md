@@ -101,19 +101,21 @@ The loader may drop halfway: do the reset again, `rkwrite.py` resumes where it s
 - The frame stands in portrait, rotation 1: `ROTATION` in `provision.sh` and
   `bootanimation.sh` is one setting.
 
-## Mainline Linux (in progress)
+## Mainline Linux
 
-Maison on the frame without Android: Linux 7.2 (`frame/linux`) from the **recovery** slot, so
-Android stays whole and boots after a power cut; the system, Debian trixie armhf with cog (WPE
-WebKit) on KMS, is a read-only squashfs in Android's userdata, a tmpfs over it.
+Maison on the frame without Android: Linux 7.2 (`frame/linux`) from the **boot** slot, what a
+power-up starts (a power cut included); the vendor's Android sits in the **recovery** slot
+(`mmcblk0p5.img` of the backup), kept whole. The system, Debian trixie armhf with the native
+interface (and cog, disabled) on KMS, is a read-only squashfs in Android's userdata, a tmpfs
+over it. Linux updates itself: no Android, no ADB.
 
 ```bash
 frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules (Docker)
 frame/linux/rootfs.sh           # the system: rootfs.squashfs (Docker, armhf emulated, ~20 min)
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
-python3 -I frame/linux/image.py frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/recovery-linux.img
-frame/linux/install.sh --target https://<maison>   # once: the system and Maison's address
-frame/linux/try.sh --install --flash                # then: on the frame, booted, its console up
+python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
+frame/linux/try.sh --install    # a new system: over the Wi-Fi, from Linux (USB-C on the Mac), then a reboot
+frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from the loader (the reset pinhole)
 frame/linux/console.sh 'systemctl status maison-ui'   # a root shell over the USB-C
 ```
 
@@ -151,7 +153,18 @@ What the bring-up taught, each point seen on the frame:
   chip's axes, before the swap.
 - WebKit's sandbox needs user namespaces; cog's modeset renderer cannot rotate (gles does);
   simpledrm left beside Rockchip's card is where cog would draw, unseen.
-- `reboot` from mainline brings Android even with the USB-C plugged in; `try.sh` handles either.
+- `boot` holds 14 MiB: our image fits only without the vendor's 3 MB logo in its resource
+  (`image.py --slot boot`, `bootimg.rsce_only`). U-Boot draws its first screen from the image it
+  boots, not from the resource partition: the screen stays black until Linux lights it.
+- Powered up with the USB-C on the Mac, U-Boot still boots `boot` (Linux); `misc` is ignored
+  (a power cycle is the boot slot's). Linux has no way to ask U-Boot for another slot yet: the
+  loader comes from the reset pinhole.
+- No battery and a system in RAM: the clock came back six months behind after a power cut, and
+  the app waited minutes for NTP. timesyncd's clock file is kept on userdata
+  (`systemd-timesyncd.service.d/maison.conf`), and the app never waits for NTP: it retries.
+- A new system goes over the Wi-Fi (install.sh, from Linux): the frame listens once
+  (`systemd-socket-activate`), the Mac sends, the frame checks the SHA-256 said over the console
+  before it renames the image over the old one.
 
 The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)) is in the
 system beside cog: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one

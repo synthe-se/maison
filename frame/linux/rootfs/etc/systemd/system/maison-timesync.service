@@ -1,0 +1,14 @@
+# Where timesyncd keeps its clock across power cuts (systemd-timesyncd.service.d/maison.conf).
+# Early, as timesyncd itself (before sysinit.target): no default dependencies, which would order
+# it after sysinit.target and make a cycle systemd breaks by dropping timesyncd.
+[Unit]
+Description=Where timesyncd keeps its clock, on userdata
+DefaultDependencies=no
+RequiresMountsFor=/android-data
+Before=systemd-timesyncd.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -d -o systemd-timesync -g systemd-timesync -m 0755 /android-data/maison/timesync
