@@ -1,0 +1,12 @@
+# The frame's SSH host key, made once on the frame and kept on userdata (the system lives in RAM:
+# a key made at each boot would be a new host at each boot).
+[Unit]
+Description=The frame's SSH host key, on userdata
+RequiresMountsFor=/android-data
+Before=ssh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -d -o root -g root -m 0700 /android-data/maison/ssh
+ExecStart=/bin/sh -c 'test -s /android-data/maison/ssh/ssh_host_ed25519_key || ssh-keygen -q -t ed25519 -N "" -C maison-frame -f /android-data/maison/ssh/ssh_host_ed25519_key'

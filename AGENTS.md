@@ -404,7 +404,9 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   --slot boot`; the screen stays black until Linux lights it); Android sits in `recovery`. A new
   system goes over the Wi-Fi from Linux (`try.sh --install`, its SHA-256 checked); a new kernel to
   `boot` from the loader (`try.sh --flash`, the reset pinhole). No battery: timesyncd's clock is
-  kept on userdata, and the app never waits for NTP.
+  kept on userdata, and the app never waits for NTP. `ssh root@maison-frame.local` (the Mac's key
+  only); the journal kept on userdata (`journalctl -D /var/log/journal/<boot's machine id>`); the
+  boot picture is the initramfs's (splash.py), each step said under the mark.
 - The mainline USB-C root console exists only while `/android-data/maison/debug-console`
   does (root's password is locked): remove the file once the frame is on the wall.
   `initramfs.py --debug` adds the bring-up's backlight blinks and 8 s pause.

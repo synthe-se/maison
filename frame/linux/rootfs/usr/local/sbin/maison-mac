@@ -1,0 +1,9 @@
+#!/bin/sh
+# wlan0's address from the eMMC's CID (maison-mac.service): 02 (locally administered, unicast),
+# then five bytes of its SHA-256.
+set -eu
+cid=$(cat /sys/block/mmcblk0/device/cid)
+mac=$(printf '%s' "$cid" | sha256sum | sed -E 's/^(..)(..)(..)(..)(..).*/02:\1:\2:\3:\4:\5/')
+ip link set dev wlan0 down
+ip link set dev wlan0 address "$mac"
+echo "wlan0: $mac"

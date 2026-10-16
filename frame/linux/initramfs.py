@@ -18,6 +18,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "system"))
 import bootimg  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import splash  # noqa: E402
+
 FIRMWARE = "lib/firmware/silead/gsl-amaboo-gbzk-y1000.fw"  # the DT's firmware-name
 # build.sh's Wi-Fi driver: its modules, and its firmware where the patched driver reads it
 AIC8800 = Path(__file__).resolve().parents[1] / "build/linux/aic8800"
@@ -68,6 +71,15 @@ console=$!
 
 # 3. what came up, on the panel
 {settle}
+# the boot picture (splash.py) as soon as the framebuffer is there, the kernel's text off the
+# panel (fbcon unbound: the steps say what happens), each step's line under the mark
+for _ in 1 2 3 4 5; do [ -c /dev/fb0 ] && break; sleep 1; done
+show() {{ [ -c /dev/fb0 ] && dd if=/splash/$1.raw of=/dev/fb0 bs={stride} seek={row} conv=notrunc 2>/dev/null; }}
+if [ -c /dev/fb0 ]; then
+	for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name && echo 0 >$v/bind; done
+	cat /splash/splash.raw >/dev/fb0 2>/dev/null
+	show starting
+fi
 # (echo $(…) joins the lines: toybox has no tr)
 say "display: $(echo $(cat /sys/class/drm/*/status 2>/dev/null))"
 say "backlight: $(echo $(ls /sys/class/backlight 2>/dev/null))"
@@ -83,6 +95,7 @@ say "net: $(echo $(ls /sys/class/net))"
 # 5. the system, when Android's userdata holds one: its squashfs, read-only, a tmpfs over it, and
 #    userdata at /android-data, read-write for the kiosk's own state (/android-data/maison: its
 #    cookies, its cache); else this shell stays
+show system
 data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
 img=/android-data/local/tmp/maison/rootfs.squashfs
 mkdir -p /android-data /lower /rw /newroot
@@ -112,17 +125,24 @@ if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data |
 	touch /tmp/stop-console
 	pkill -P $console
 	pkill -f "mksh -i"
+	show launching
 	for m in dev proc sys; do mount --move /$m /newroot/$m; done
 	exec switch_root /newroot /sbin/init
 fi
 say "no system on userdata: the bring-up shell stays"
+show missing
 while :; do sleep 3600; done
 """
 
 
 def init(debug: bool) -> str:
     """The /init script; `debug` adds the blinks and the fixed wait of the bring-up."""
-    return INIT.format(blink=BLINK if debug else "", settle=SETTLE_DEBUG if debug else SETTLE)
+    return INIT.format(
+        blink=BLINK if debug else "",
+        settle=SETTLE_DEBUG if debug else SETTLE,
+        stride=splash.STRIDE,
+        row=splash.STRIP_ROW,
+    )
 
 
 def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
@@ -132,7 +152,7 @@ def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
         ino[0] += 1
         entries.append({"name": name, "data": data, "ino": ino[0], "mode": mode, "uid": 0, "gid": 0, "nlink": 1, "mtime": 0})
 
-    for d in ("bin", "dev", "proc", "sys", "lib", "lib/modules", "lib/firmware", "lib/firmware/silead"):
+    for d in ("bin", "dev", "proc", "sys", "lib", "lib/modules", "lib/firmware", "lib/firmware/silead", "splash"):
         add(d, mode=0o40755)
     parts = AIC8800_FIRMWARE.split("/")
     for i in range(2, len(parts)):
@@ -145,6 +165,8 @@ def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
             add(f"bin/{applet}", b"toybox", 0o120777)
     add("bin/sh", b"mksh", 0o120777)
     add(FIRMWARE, firmware.read_bytes())
+    for name, data in splash.frames().items():
+        add(f"splash/{name}.raw", data)
     for ko in ("aic8800_bsp.ko", "aic8800_fdrv.ko"):
         add(f"lib/modules/{ko}", (AIC8800 / ko).read_bytes())
     for f in sorted((AIC8800 / "firmware").iterdir()):

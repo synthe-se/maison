@@ -1,0 +1,17 @@
+# The Wi-Fi's address, the same at every boot: the AIC8800 has none of its own and the driver
+# draws one at random (a new DHCP lease, a new IP each boot). Made from the eMMC's serial (CID),
+# locally administered and unicast, before the Wi-Fi comes up.
+[Unit]
+Description=The Wi-Fi's stable address
+BindsTo=sys-subsystem-net-devices-wlan0.device
+After=sys-subsystem-net-devices-wlan0.device
+Before=network-pre.target wpa_supplicant@wlan0.service systemd-networkd.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/maison-mac
+
+[Install]
+WantedBy=sys-subsystem-net-devices-wlan0.device

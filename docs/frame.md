@@ -115,8 +115,9 @@ frame/linux/rootfs.sh           # the system: rootfs.squashfs (Docker, armhf emu
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
 python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
 frame/linux/try.sh --install    # a new system: over the Wi-Fi, from Linux (USB-C on the Mac), then a reboot
-frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from the loader (the reset pinhole)
+frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
 frame/linux/console.sh 'systemctl status maison-ui'   # a root shell over the USB-C
+ssh root@maison-frame.local     # the same over the Wi-Fi: root by the Mac's key only
 ```
 
 `--debug` is for bring-up: the backlight blinks five times as soon as init runs (a sign with
@@ -162,9 +163,22 @@ What the bring-up taught, each point seen on the frame:
 - No battery and a system in RAM: the clock came back six months behind after a power cut, and
   the app waited minutes for NTP. timesyncd's clock file is kept on userdata
   (`systemd-timesyncd.service.d/maison.conf`), and the app never waits for NTP: it retries.
-- A new system goes over the Wi-Fi (install.sh, from Linux): the frame listens once
-  (`systemd-socket-activate`), the Mac sends, the frame checks the SHA-256 said over the console
-  before it renames the image over the old one.
+- A file goes over the Wi-Fi (send.sh, from Linux): the frame listens once
+  (`systemd-socket-activate --accept`: without it the reader gets the listening socket), the Mac
+  sends, the frame checks the SHA-256 said over the console before it renames the file. A new
+  system (install.sh) and a new boot image (try.sh --flash) go that way; boot is then written by
+  Linux on /dev/mmcblk0 once the layout's addressing is proved (U-Boot's head where layout.txt
+  says, boot's `ANDROID!` header), read back and compared. The loader stays the way back.
+- The boot picture (splash.py): the initramfs draws Maison's mark on /dev/fb0 as soon as the
+  panel is up, unbinds fbcon (no kernel text over it) and says each step under the mark
+  (« Ouverture du système… », « Système introuvable… »): what a boot without the Mac does shows.
+- SSH: `openssh-server`, root by the Mac's key only (`rootfs.sh` copies `~/.ssh/id_ed25519.pub`,
+  `FRAME_SSH_KEY`), no password; the host key made once on the frame, kept on userdata. The
+  frame answers as `maison-frame.local` (mDNS); its Wi-Fi address comes from the eMMC's serial
+  (maison-mac.service): the AIC8800 has none, the driver drew one per boot (a new lease, a new IP).
+- The journal is kept on userdata (`/var/log/journal`, written every 5 s): a boot that went wrong
+  reads at the next one. Each boot has its own machine id (the system lives in RAM): read one with
+  `journalctl -D /var/log/journal/<id>`.
 
 The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)) is in the
 system beside cog: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
