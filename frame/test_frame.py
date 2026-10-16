@@ -175,6 +175,19 @@ class Resource(unittest.TestCase):
         self.assertEqual(bootimg.rsce_get(image, "logo.bmp"), b"LOGO")
         self.assertEqual(len(image), 512 * 12)
 
+    def test_one_entry_kept_alone_the_others_and_their_data_gone(self):
+        image = bytearray(self.rsce())
+        # the vendor's header: its size, the index's first block, an entry's size, the count
+        image[8:11] = bytes([1, 1, 1])
+        image[12:16] = struct.pack("<I", 2)
+        only = bootimg.rsce_only(bytes(image), "rk-kernel.dtb")
+        self.assertEqual(bootimg.rsce_get(only, "rk-kernel.dtb"), b"DTB1")
+        self.assertEqual(struct.unpack("<I", only[12:16])[0], 1)
+        self.assertEqual(only.find(b"logo.bmp"), -1)
+        self.assertEqual(len(only), 512 * 4, "cut after the kept entry's data")
+        with self.assertRaises(ValueError):
+            bootimg.rsce_only(bytes(image), "nope")
+
     def test_an_entry_larger_than_its_slot_is_refused(self):
         with self.assertRaises(ValueError):
             bootimg.rsce_put(self.rsce(), "rk-kernel.dtb", b"D" * (512 * 5 + 1))

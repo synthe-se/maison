@@ -139,6 +139,33 @@ def rsce_put(image: bytes, name: str, data: bytes) -> bytes:
     return bytes(out)
 
 
+def rsce_only(image: bytes, name: str) -> bytes:
+    """`image` with the entry `name` alone: the others' index entries cleared, the count said, the
+    image cut after its data (the boot slot is too small for the vendor's 3 MB logo, which
+    U-Boot draws from the resource partition, not from the booted image's copy)."""
+    if image[:4] != b"RSCE":
+        raise ValueError("not a Rockchip resource image")
+    out = bytearray(image)
+    keep = out.find(b"ENTR" + name.encode() + b"\0")
+    if keep < 0:
+        raise ValueError(f"resource: no {name}")
+    # the header: its size, the index's first block, an entry's size (in blocks), then the count
+    table, entry = out[9], out[10]
+    count = struct.unpack("<I", out[12:16])[0]
+    entries = [(table + i * entry) * 512 for i in range(count)]
+    if keep not in entries:
+        raise ValueError(f"resource: {name} is not in the index")
+    block, size = struct.unpack("<II", out[keep + 260 : keep + 268])
+    # the kept entry first, the others cleared
+    first = entries[0]
+    out[first : first + entry * 512] = out[keep : keep + entry * 512]
+    for at in entries[1:]:
+        out[at : at + entry * 512] = bytes(entry * 512)
+    out[12:16] = struct.pack("<I", 1)
+    end = -(-(block * 512 + size) // 512) * 512
+    return bytes(out[:end])
+
+
 def rsce_get(image: bytes, name: str) -> bytes:
     at = image.find(b"ENTR" + name.encode() + b"\0")
     if image[:4] != b"RSCE" or at < 0:
