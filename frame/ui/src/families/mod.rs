@@ -4,6 +4,7 @@
 //! `refresh("meross")` reads every plug value again), at the paces of `maison_api::paces`, from
 //! the paths of `crate::paths`.
 
+pub mod cats;
 pub mod climate;
 pub mod lamps;
 pub mod nabaztag;
@@ -62,6 +63,9 @@ pub struct Sources {
     pub climate: Source<serde_json::Value>,
     /// The rabbit (`/nabaztag`): its address set or not, reachable, showing Tempo.
     pub rabbit: Source<serde_json::Value>,
+    /// The cats' devices (`/devices`), and each one's parsed status, made on first ask.
+    pub cats: Source<serde_json::Value>,
+    cat_statuses: HashMap<String, Source<serde_json::Value>>,
     /// The TV and the box (`/tv`, `/androidtv`: `{config, status}`), read as slowly as the TV
     /// allows (its JointSPACE server dies under bursts).
     pub tv: Source<serde_json::Value>,
@@ -79,6 +83,9 @@ pub const TEMPO: &str = "tempo";
 /// The air conditioner's last order: the event the server says when it changes.
 pub const CLIMATE: &str = maison_api::events::CLIMATE;
 pub const NABAZTAG: &str = "nabaztag";
+/// Every cats' key starts with it: one refresh after a gesture reads them all again (the
+/// server says `tuya:<id>:` when a device pushes).
+pub const TUYA: &str = "tuya:";
 pub const TV: &str = "tv";
 /// The box: the event the server says when its power changes.
 pub const BOX: &str = maison_api::events::ANDROID_TV;
@@ -143,6 +150,12 @@ impl Sources {
                 ms(paces::TV_MS),
                 get(paths::ANDROIDTV),
             ),
+            cats: Source::every(
+                format!("{TUYA}devices"),
+                ms(paces::TUYA_DEVICES_MS),
+                get(paths::DEVICES),
+            ),
+            cat_statuses: HashMap::new(),
             rabbit: Source::every(
                 "nabaztag:status",
                 ms(paces::NABAZTAG_MS),
@@ -161,6 +174,22 @@ impl Sources {
             // signed out, the side alone (web/src/lib/sun/data.ts `sideNow`)
             sun: Source::every("sun:side", ms(paces::SUN_SIGNED_OUT_MS), get(paths::SUN)),
         }
+    }
+
+    /// A cat device's parsed status (`/devices/{id}/{kind}/status`), at its kind's pace.
+    pub fn cat_status(&mut self, id: &str, kind: &str) -> &Source<serde_json::Value> {
+        self.cat_statuses.entry(id.to_string()).or_insert_with(|| {
+            let pace = match kind {
+                "feeder" => paces::FEEDER_MS,
+                "fountain" => paces::FOUNTAIN_MS,
+                _ => paces::LITTER_BOX_MS,
+            };
+            let all =
+                get::<serde_json::Value>(paths::of(paths::DEVICES, id, &format!("{kind}/status")));
+            Source::every(format!("{TUYA}{id}:status"), ms(pace), move |c: &Client| {
+                all(c).map(|b| b["parsedStatus"].clone())
+            })
+        })
     }
 
     /// A plug's live power, its source made on first ask.
@@ -198,12 +227,13 @@ impl Cx<'_> {
 }
 
 /// The dashboard's groups, in its order (web/src/routes/+page.svelte): scenes, Tempo, lamps,
-/// the air conditioning, shutters, plugs, the rabbit, « Télé ».
+/// the cats' corner, the air conditioning, shutters, plugs, the rabbit, « Télé ».
 pub fn house(cx: &mut Cx) -> Vec<Group> {
     [
         scenes::group(cx),
         tempo::group(cx),
         lamps::group(cx),
+        cats::group(cx),
         climate::group(cx),
         shutters::group(cx),
         plugs::group(cx),

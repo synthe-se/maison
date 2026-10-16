@@ -37,6 +37,8 @@ pub const ANDROIDTV: &str = "/androidtv";
 pub const BOX_WAKE: &str = "/androidtv/wake";
 pub const BOX_SLEEP: &str = "/androidtv/sleep";
 pub const BOX_LAUNCH: &str = "/androidtv/launch";
+/// The cats' devices (Tuya): the list, `/{id}/{kind}/status`, `/{id}/feeder/feed`.
+pub const DEVICES: &str = "/devices";
 /// Scenes: the list, `/{id}/run`.
 pub const SCENES: &str = "/scenes";
 /// Who the screen is (its cookie renewed).
