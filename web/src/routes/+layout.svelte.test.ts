@@ -22,12 +22,26 @@ vi.mock('$app/navigation', () => ({
 	beforeNavigate: (f: (n: { willUnload: boolean; to: { url: URL } | null }) => void) => kit.before.push(f)
 }));
 vi.mock('$app/state', () => ({ updated: kit.updated, page: kit.page }));
+// the event stream: followed while in, never opened for real here
+const stream = { open: 0, stopped: 0 };
+class FakeEventSource extends EventTarget {
+	static readonly CLOSED = 2;
+	readyState = 0;
+	constructor() {
+		super();
+		stream.open++;
+	}
+	close() {
+		stream.stopped++;
+	}
+}
 
 const signedIn = { 'POST /auth/verify': { success: true, user: { id: 'leonard', name: 'léonard', role: 'admin' } } };
 const show = () => render(Layout, { children: html('<div><h1 tabindex="-1">Salon</h1></div>') });
 
 describe('layout', () => {
 	beforeEach(() => {
+		vi.stubGlobal('EventSource', FakeEventSource);
 		session.status = 'loading';
 		session.user = null;
 		kit.after = [];
@@ -129,6 +143,16 @@ describe('layout', () => {
 		await show();
 		await expect.element(page.getByRole('main').getByRole('heading', { name: 'Salon' })).toBeVisible();
 		await expect.element(page.getByRole('navigation', { name: m.nav_label() }).first()).toBeVisible();
+	});
+
+	it('follows the server’s changes while signed in, and stops on the way out', async () => {
+		stubApi(signedIn);
+		const [open, stopped] = [stream.open, stream.stopped];
+		await show();
+		await expect.element(page.getByRole('main').getByRole('heading', { name: 'Salon' })).toBeVisible();
+		expect(stream.open).toBe(open + 1);
+		session.ended();
+		await expect.poll(() => stream.stopped).toBe(stopped + 1);
 	});
 
 	it('moves the focus to the new view’s title after a navigation, not on the first load', async () => {

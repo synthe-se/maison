@@ -10,6 +10,8 @@
 
 import { time } from '#lib/clock.svelte.ts';
 import { STALE_CADENCES } from '#lib/paces.ts';
+import { API_BASE } from '#lib/api.ts';
+import { CHANGE, PUSHED, PUSHED_SAFETY_MS } from '#lib/events.ts';
 
 /** The poll interval in ms, or a function of the current value and of when this ask began
  * (faster while a motor runs, stopped once a search has gone on long enough); 0: no poll. */
@@ -22,6 +24,9 @@ export interface Source<T, A = never> {
 	fetch: (arg?: A) => Promise<T>;
 	every?: Every<T>;
 }
+
+/** The server's event stream is open: a source it speaks of polls only as a safety net. */
+const stream = $state({ open: false });
 
 class Live<T, A = never> {
 	data = $state.raw<T | undefined>(undefined);
@@ -61,7 +66,9 @@ class Live<T, A = never> {
 
 	#cadence(): number {
 		const every = this.source.every;
-		return typeof every === 'function' ? every(this.data, this.since) : (every ?? 0);
+		const ms = typeof every === 'function' ? every(this.data, this.since) : (every ?? 0);
+		const key = this.source.key;
+		return ms > 0 && stream.open && PUSHED.some((p) => key.startsWith(p)) ? Math.max(ms, PUSHED_SAFETY_MS) : ms;
 	}
 
 	/** Ask now (one request at a time: a second ask joins the first). With `arg`, a new ask of
@@ -121,6 +128,11 @@ class Live<T, A = never> {
 
 	stop() {
 		if (--this.users === 0) clearTimeout(this.#timer);
+	}
+
+	/** The pace changed (the event stream opened or closed): the next poll planned again. */
+	replan() {
+		if (!this.#inflight) this.#schedule();
 	}
 
 	#schedule() {
@@ -209,6 +221,48 @@ export function forgetAll() {
 	for (const release of roots.values()) release();
 	roots.clear();
 	all.clear();
+}
+
+/** How long a closed stream waits before it is opened again, at most (doubling from 1 s). */
+const REOPEN_MAX_MS = 32_000;
+
+/**
+ * Follows the server's event stream (`GET /api/events`) while someone, or a screen, is signed
+ * in: each change names the prefix of the keys to ask again, at once; while it is open, the
+ * sources it speaks of poll only every PUSHED_SAFETY_MS. Opened (again), everything on screen is
+ * asked (what changed while it was closed); closed, the polls take their own pace back and it
+ * is opened again. Returns what stops it.
+ */
+export function listen(open: (url: string) => EventSource = (url) => new EventSource(url)): () => void {
+	let current: EventSource | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let attempt = 0;
+	const pace = (now: boolean) => {
+		if (stream.open === now) return;
+		stream.open = now;
+		for (const v of all.values()) v.replan();
+	};
+	const connect = () => {
+		const es = (current = open(`${API_BASE}/events`));
+		es.addEventListener('open', () => {
+			attempt = 0;
+			pace(true);
+			void refresh('');
+		});
+		es.addEventListener(CHANGE, (e) => void refresh((e as MessageEvent<string>).data));
+		es.addEventListener('error', () => {
+			pace(false);
+			// the browser opens it again by itself, unless the answer was a refusal or not a stream
+			if (es.readyState !== EventSource.CLOSED) return;
+			timer = setTimeout(connect, Math.min(1000 * 2 ** attempt++, REOPEN_MAX_MS));
+		});
+	};
+	connect();
+	return () => {
+		clearTimeout(timer);
+		current?.close();
+		pace(false);
+	};
 }
 
 if (typeof document !== 'undefined') {

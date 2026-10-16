@@ -2,7 +2,7 @@
 // once and transparently, a refusal thrown with its name (`code`) for the app to word it. A wall
 // screen is in by a cookie too (screens.ts): the page never holds a token.
 
-const API_BASE = '/api';
+export const API_BASE = '/api';
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 

@@ -5,6 +5,7 @@
 	import { page, updated } from '$app/state';
 	import { m } from '#lib/paraglide/messages.js';
 	import { session } from '#lib/session.svelte.ts';
+	import { listen } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { cleanupLegacyServiceWorker, forgetLegacyScreenToken } from '#lib/legacy.ts';
 	import { refocus } from '#lib/focus.ts';
@@ -45,6 +46,11 @@
 		const side = bySun ? (ui.sun === undefined ? keptSide() : ui.sun) : ui.theme === 'system' ? null : ui.theme;
 		if (side) root.dataset.theme = side;
 		else delete root.dataset.theme;
+	});
+
+	// someone, or a screen, in: the server says what changed (pushed values read at once)
+	$effect(() => {
+		if (session.status === 'signed_in') return listen();
 	});
 
 	// signed in (a passkey, an invitation): the page replaces the door under the focus, which
