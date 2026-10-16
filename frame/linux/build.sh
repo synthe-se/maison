@@ -28,7 +28,7 @@ git -C "$SRC/aic8800" cat-file -e "$AIC8800_REV^{commit}" 2>/dev/null || git -C 
 git -C "$SRC/aic8800" -c advice.detachedHead=false checkout -q "$AIC8800_REV"
 
 docker volume create "$VOLUME" >/dev/null
-docker run --rm -v "$VOLUME:/build" -v "$SRC:/src:ro" -v "$REPO/frame/linux:/frame:ro" -v "$OUT:/out" \
+docker run --rm --platform linux/arm64 -v "$VOLUME:/build" -v "$SRC:/src:ro" -v "$REPO/frame/linux:/frame:ro" -v "$OUT:/out" \
 	"$ALPINE" sh -euc '
 	apk add -q build-base clang lld llvm bison flex bc perl findutils linux-headers openssl-dev elfutils-dev python3 xz patch patchutils >/dev/null
 	cd /build

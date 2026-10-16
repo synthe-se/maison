@@ -46,6 +46,10 @@ backend/src/
   routes/            one module per domain
   bin/               fit_tempo (Mac only), send_ir, atv_pair, decode_mitsubishi_ir, tuya_probe
 backend/tests/       integration tests (+ `live-runtime-tests` feature for real devices)
+api/                 maison-api: the API's types said once (screens, sun, tempo, lamps, meross,
+                     matter, scenes, remote), `HOUSE_TZ`, the paces (`paces.rs`, one macro; the
+                     web app's `web/src/lib/paces.ts` is generated from it: `bin/paces-ts`); the
+                     backend re-exports them, the frame's native app reads them
 web/src/lib/         live (sources), gesture (pending, unavailable), command, draft, elapsed,
                      stored, options, session, ui (toasts), i18n (every format), focus, errors,
                      api (the fetch core: errors, renewal, upload), passkeys (session, people,
@@ -61,14 +65,17 @@ web/src/styles/      tokens.css (light-dark()), app.css
 web/scripts/         i18n.check, i18n.add, css.check, imports.fix
 i18n/messages/       fr.json, en.json: the only source of texts
 e2e/                 Playwright + axe against the real backend (run.sh, house.ts: typed with the
-                     app's types, built from web/src/lib/test fixtures; words from fr.json)
+                     app's types, built from web/src/lib/test fixtures; words from fr.json;
+                     frame.ts: the native frame app against it, through a proxy serving house.ts)
 frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): android/ (the
                      GeckoView kiosk APK, Kotlin), system/ (build.py: our /system, logo and
                      rescue recovery from the vendor's backup; bootimg.py, rescue-tools.sh),
                      rkwrite.py (loader writes), flash.sh, provision.sh, rescue.sh,
                      bootanimation.sh/.ts, test_frame.py (docs/frame.md); linux/ (mainline
                      from the recovery slot: build.sh, rootfs.sh, initramfs.py, image.py,
-                     install.sh, try.sh, console.sh, the board's device tree)
+                     install.sh, try.sh, console.sh, the board's device tree); ui/ (the native
+                     interface: SDL3 under cage, Rust 2024, ARCHITECTURE.md; build.sh cross-builds
+                     armv7, simulate.sh runs that binary on the frame's system emulated)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
 matter-trust/        CSA attestation roots (tracked)
@@ -150,11 +157,14 @@ make backend / make web / make test
 cd web && bun run check               # i18n, css, oxfmt --check, oxlint, svelte-check, e2e types
 cd web && bun run format              # oxfmt over web/ and e2e/ (`bun run lint`: oxlint alone)
 cd web && bun scripts/i18n.add.ts '{"key": ["français", "English"]}'   # every locale at once
-cd e2e && bun run all                 # after `cargo build` and `bun --cwd web run build`
+cd e2e && bun run all                 # after `cargo build` (backend and frame/ui) and `bun --cwd web run build`
 cargo check --manifest-path backend/Cargo.toml --no-default-features   # the Pi's feature set
 cargo fmt --manifest-path backend/Cargo.toml --check                    # rustfmt's defaults, kept clean
 MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_live -- --nocapture
 python3 -m unittest discover -s frame -p 'test_*.py'   # the frame's tooling
+cd frame/ui && cargo test && cargo clippy --all-targets -- -D warnings && cargo deny check   # the native app
+frame/ui/build.sh && FRAME_SIM=armv7 sh e2e/run.sh frame.ts   # its armv7 binary, emulated, under cage
+cargo run --manifest-path api/Cargo.toml --bin paces-ts > web/src/lib/paces.ts   # after a pace changes
 cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the kiosk APK
 ```
 

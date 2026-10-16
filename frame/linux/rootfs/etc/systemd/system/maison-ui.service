@@ -1,0 +1,33 @@
+# Maison's native interface (frame/ui): cage, a Wayland kiosk compositor on KMS, with the app as
+# its one client, in a logind session on tty7 (cage's own way: PAM opens the session, which
+# hands the panel and the touch to the kiosk user, no root). In place of maison-kiosk (cog), with
+# the same address (the credential `target`) and its own cookie, kept 0600 in
+# /android-data/maison/ui; it pairs from its own door. Not enabled: started by hand
+# (`systemctl stop maison-kiosk; systemctl start maison-ui`), enabled once measured.
+[Unit]
+Description=Maison's native interface
+Conflicts=maison-kiosk.service getty@tty7.service
+RequiresMountsFor=/android-data
+Wants=network-online.target systemd-time-wait-sync.service dbus.socket systemd-logind.service
+After=network-online.target time-sync.target systemd-user-sessions.service dbus.socket systemd-logind.service
+ConditionPathExists=/dev/tty0
+
+[Service]
+User=kiosk
+PAMName=maison-ui
+TTYPath=/dev/tty7
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty7
+UtmpMode=user
+ExecStartPre=+/usr/bin/install -d -o kiosk -g kiosk -m 0700 /android-data/maison/ui
+ExecStartPost=+/usr/bin/chvt 7
+LoadCredential=target:/android-data/local/tmp/maison/target
+Environment=HOME=/home/kiosk LANG=fr_FR.UTF-8 MAISON_STATE=/android-data/maison/ui MAISON_TURN=180 MAISON_STATS=1
+ExecStart=/usr/bin/cage -- /usr/local/sbin/maison-ui
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -17,10 +17,14 @@ PACKAGES=(
 	cog libgl1-mesa-dri libegl-mesa0 libgles2 libgbm1              # the browser on KMS, Lima
 	ca-certificates fonts-noto-core                                # HTTPS, the page's fallback fonts
 	locales                                                        # fr_FR.UTF-8: WebKit reads its language with setlocale()
+	cage libpam-systemd wlr-randr kbd                              # the native interface's spike (frame/ui): its compositor, its session, chvt
+	libwayland-client0 libwayland-egl1 libwayland-cursor0 libxkbcommon0 libegl1   # what its SDL opens at run time
 )
 
 mkdir -p "$OUT"
+mkdir -p "$REPO/frame/build/ui"
 docker run --rm --platform linux/arm/v7 -v "$REPO/frame/linux/rootfs:/overlay:ro" -v "$OUT:/out" \
+	-v "$REPO/frame/build/ui:/ui:ro" \
 	debian:trixie sh -euc '
 	echo "deb [check-valid-until=no] '"$MIRROR"' trixie main" >/etc/apt/sources.list
 	rm -f /etc/apt/sources.list.d/*
@@ -31,6 +35,8 @@ docker run --rm --platform linux/arm/v7 -v "$REPO/frame/linux/rootfs:/overlay:ro
 		--dpkgopt=path-exclude=/usr/share/man/* --dpkgopt=path-exclude=/usr/share/locale/* --dpkgopt=path-include=/usr/share/locale/locale.alias \
 		trixie /tmp/root "deb '"$MIRROR"' trixie main"
 	cp -a /overlay/. /tmp/root/
+	# the native interface, when frame/ui/build.sh made it
+	[ ! -f /ui/maison-frame-ui ] || install -m 0755 /ui/maison-frame-ui /tmp/root/usr/local/bin/
 	chroot /tmp/root sh -euc "
 		echo maison-frame >/etc/hostname
 		ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime
