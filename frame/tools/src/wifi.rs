@@ -197,17 +197,17 @@ mod tests {
 
     #[test]
     fn nothing_can_write_configuration_of_its_own() {
-        assert!(password_fits("sel de mer") && password_fits(&"x".repeat(63)));
-        for refused in [
-            "short",
+        for password in [
             "abc\"defgh",
-            "abc\ndefgh",
+            "abc\ndefgh\nnetwork={",
             "abc\rdefgh",
             "abc\\defgh",
             "abc\0defgh",
-            &"x".repeat(64),
         ] {
-            assert!(!password_fits(refused), "{refused:?}");
+            assert!(password_fits(password));
+            let key = psk("x", password);
+            assert_eq!(key.len(), 64);
+            assert!(key.bytes().all(|b| b.is_ascii_hexdigit()), "{password:?}");
         }
     }
 

@@ -773,14 +773,12 @@ pub mod tests {
         let mut wifi = f.wifi();
         heard(&mut wifi, known(lost()), t0);
         wifi.act(&ssid("Ma Box", true), t0);
-        for typed in ["court", "avec\"guillemet", "anti\\slash1"] {
-            wifi.type_text(typed);
-            wifi.act(&WifiAct::Join, t0);
-            let Some(Screen::Password(p)) = wifi.screen(&words()) else {
-                panic!("still the password")
-            };
-            assert_eq!(p.refused, Some(words().s(k::FRAME_SETUP_PAGE_BAD_PASSWORD)));
-        }
+        wifi.type_text("court");
+        wifi.act(&WifiAct::Join, t0);
+        let Some(Screen::Password(p)) = wifi.screen(&words()) else {
+            panic!("still the password")
+        };
+        assert_eq!(p.refused, Some(words().s(k::FRAME_SETUP_PAGE_BAD_PASSWORD)));
         wifi.key(Key::Back);
         let Some(Screen::Password(p)) = wifi.screen(&words()) else {
             panic!("still the password")
