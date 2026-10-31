@@ -1,6 +1,6 @@
 //! The family's photos on the frame: after `DIM_AFTER` without a finger the house gives way to
-//! them, one every 5 s in random order, crossfaded by the GPU, the backlight going on by day and
-//! night as it does. Three parts, none on the drawing thread but the last: `sync` keeps the cache
+//! them, one every 5 s in random order, crossfaded by the GPU, at the full level by day and dimmed
+//! at night. Three parts, none on the drawing thread but the last: `sync` keeps the cache
 //! (`cache`) in step with Maison's list, so they go on with Maison away; `decode` reads one
 //! photo at a time; `show` says, purely, what is on the panel and what comes next. The drawing
 //! thread only uploads a decoded picture and frees the last one (`Order`): between two fades
@@ -66,6 +66,11 @@ impl Photos {
     #[cfg(test)]
     pub fn kept(&self) -> &[String] {
         &self.kept
+    }
+
+    /// There are photos to show.
+    pub fn any(&self) -> bool {
+        !self.kept.is_empty()
     }
 
     /// The id of the photo on the panel, while the frame shows photos.

@@ -254,7 +254,7 @@ impl App {
         self.toasts.retain(|(_, until)| now < *until);
         self.dirty |= self.toasts.len() != before;
         self.sliders.sweep(now);
-        self.backlight.idle(now, self.touched, self.night());
+        self.rest(now);
         if now.saturating_duration_since(self.touched) >= PAGE_IDLE {
             if self.view != View::House {
                 self.open(View::House, now);
@@ -352,6 +352,11 @@ impl App {
 
     fn night(&self) -> bool {
         self.side == Some(Side::Dark)
+    }
+
+    fn rest(&mut self, now: Instant) {
+        let photos = self.may_show_photos() && self.photos.any();
+        self.backlight.idle(now, self.touched, self.night(), photos);
     }
 
     /// A screen in the house shows its photos, Maison there or not; a door, never.
@@ -488,7 +493,7 @@ impl App {
         self.photos.list(list.flatten());
         if side.is_some() {
             self.side = side;
-            self.backlight.idle(now, self.touched, self.night());
+            self.rest(now);
         }
         self.live.sweep();
         screen
