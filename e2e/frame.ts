@@ -184,6 +184,20 @@ await picture('tempo');
 await tell('press open:house');
 check('« Retour à l’accueil » brings the house back', await saidLine((l) => l === 'screen house', 10_000));
 
+// the litter box's page, from its row: offline here, its connection switched on from the wall
+await tell('press open:device:litter-1');
+check('a cat device’s row opens its page', await saidLine((l) => l === 'screen page Litière', 10_000));
+await picture('litter-box');
+await tell('press tuya:litter-1:connection');
+check(
+	'its connection switch reconnects it',
+	await until(() => state.sent.some((s) => s.startsWith('POST /api/devices/litter-1/connect')), 5_000 * SLOW),
+	state.sent.join(' | ')
+);
+const houses = said.filter((l) => l === 'screen house').length;
+await tell('press open:house');
+check('and back to the house', await until(() => said.filter((l) => l === 'screen house').length > houses, 10_000 * SLOW));
+
 // a finger: the lamp off, its brightness, the plug, the shutter
 const sent = (want: string) => until(() => state.sent.some((s) => s.startsWith(want)), 5_000 * SLOW);
 await tell('press hue-lamp:hue-01:power');

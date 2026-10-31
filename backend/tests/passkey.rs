@@ -83,7 +83,7 @@ impl Device {
             .register(Url::parse(self.1).unwrap(), request, DefaultClientData)
             .await
             .unwrap();
-        serde_json::to_value(created).unwrap()
+        as_browser(serde_json::to_value(created).unwrap())
     }
 
     /// `navigator.credentials.get()`, then `toJSON()`.
@@ -94,7 +94,26 @@ impl Device {
             .authenticate(Url::parse(self.1).unwrap(), request, DefaultClientData)
             .await
             .unwrap();
-        serde_json::to_value(got).unwrap()
+        as_browser(serde_json::to_value(got).unwrap())
+    }
+}
+
+/// What the software client writes as byte arrays, a browser's `toJSON()` says in unpadded
+/// base64url, the only form webauthn-rs reads.
+fn as_browser(value: Value) -> Value {
+    use base64::Engine as _;
+    match value {
+        Value::Array(items) if items.iter().all(Value::is_u64) && !items.is_empty() => {
+            let bytes: Vec<u8> = items.iter().map(|b| b.as_u64().unwrap() as u8).collect();
+            json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+        }
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(name, value)| (name, as_browser(value)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 

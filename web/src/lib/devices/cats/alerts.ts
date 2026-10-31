@@ -7,7 +7,7 @@ import { m } from '#lib/paraglide/messages.js';
 import { clock, when } from '#lib/i18n.svelte.ts';
 import type { Device, FeederStatus, FountainStatus, LitterBoxStatus } from './api.ts';
 import type { Kind } from './data.ts';
-import { LITTER_STATE, STANDBY, litterHalf, waterLow } from './tokens.ts';
+import { LITTER_LEVEL, LITTER_STATE, STANDBY, litterHalf, waterLow, wordOf } from './tokens.ts';
 
 export interface Line {
 	text: string;
@@ -46,6 +46,14 @@ export function tileLine(device: Pick<Device, 'type' | 'connected'>, status: unk
 	const said = statusLine(device.type, status);
 	if (said) return said;
 	return fact(servedAt ? m.feeder_served_at({ time: clock(servedAt) }) : m.device_online());
+}
+
+/** The fact at the end of a cat device's tile: a litter box's level (« Remplie »), seen without
+ * opening its page; nothing offline, where it would be old. */
+export function tileFact(device: Pick<Device, 'type' | 'connected'>, status: unknown): string | undefined {
+	if (!device.connected || device.type !== 'litter-box') return undefined;
+	const level = (status as LitterBoxStatus | undefined)?.sensors?.litterLevel;
+	return level ? wordOf(LITTER_LEVEL, level) : undefined;
 }
 
 /** The feeder's last meal in words (« 2 portions, 08:00 »), from its report; null without one. */

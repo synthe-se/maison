@@ -52,7 +52,7 @@ commands.rs      gestures: optimistic target, slow, late, settle until re-read; 
                  flight per key, the latest waits
 backlight.rs     dims after DIM_AFTER (2 min): 25 % of the start level by day, 4 % at night (sun
                  side), never off; the first touch only wakes
-app.rs           screens and views (house, Tempo page, door), page timeout (PAGE_IDLE), touch:
+app.rs           screens and views (house, Tempo page, a cat device's page, door), page timeout (PAGE_IDLE), touch:
                  the pressed target kept across redraws, REACH tolerance, jitter that scrolls
                  nothing still taps
 families/        now, scenes, tempo, lamps (Hue + Zigbee), cats, climate, shutters, plugs,
@@ -68,7 +68,13 @@ panel), each group one framed list of rows. Row padding is doubled vertically fo
 heights come from the drawing code in a measuring pass (`P::measuring`). A row whose lead is a
 toggle is a toggle target over its whole head.
 
-Not on the frame: device pages, settings, admin, the keymap.
+A cat device's row opens its page (`View::Device`): its local connection as a switch, what it
+reports, and its gestures (the litter cleaned now or marked refilled, the fountain's switches and
+counter resets, a portion). The frame has no dialogs: those gestures go without the web app's
+confirmation.
+
+Not on the frame: other device pages, settings (night hours, preferences, meal plans), admin,
+the keymap.
 
 ## Tests
 
@@ -77,7 +83,7 @@ Not on the frame: device pages, settings, admin, the keymap.
   tokens, fonts, icons, every family on backend JSON, layout (balance, fold, hits), a real
   drawing on SDL's dummy driver.
 - `e2e/frame.ts` (in `bun run all`): real backend, simulated house behind a proxy, paired from a
-  browser, then driven (lamp, slider, AC, plug, shutter, Tempo page, a lamp that never answers,
+  browser, then driven (lamp, slider, AC, plug, shutter, Tempo page, the litter box's page, a lamp that never answers,
   removal); checks the event stream opens once at pairing and stays open. Shots in `e2e/shots`.
 - `FRAME_SIM=armv7`: the same scenario on the armv7 binary in Debian trixie armhf under qemu,
   headless cage, llvmpipe.

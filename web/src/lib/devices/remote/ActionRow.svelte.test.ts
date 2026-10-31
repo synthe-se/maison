@@ -9,7 +9,7 @@ import ActionRow from './ActionRow.svelte';
 import { ACTION_TYPES, NABAZTAG_PRESETS, SCENE_TYPES, SWITCH_STATES, summarize } from './actions.ts';
 
 /** A Select's trigger, named « label value ». */
-const choice = (label: string) => page.getByRole('button', { name: new RegExp(`^${label.replace(/[()]/g, '\\$&')}`) });
+const choice = (label: string) => page.getByRole('combobox', { name: new RegExp(`^${label.replace(/[()]/g, '\\$&')}`) });
 const pick = async (label: string, option: string) => {
 	await choice(label).click();
 	await page.getByRole('option', { name: option, exact: true }).click();

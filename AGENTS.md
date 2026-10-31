@@ -49,6 +49,7 @@ backend/src/
   broadlink.rs broadlink_ir.rs mitsubishi_ir.rs philips_ir.rs   IR blaster, AC and TV frames
   tv.rs              Philips TV (JointSPACE)
   androidtv.rs adb.rs atvremote.rs   Android TV box: native ADB, Remote v2
+  box_clean.rs       the box's cleanup table, what its home is told of the house (docs/box.md)
   ir.rs              set-top-box remote → actions (keymap)
   nabaztag.rs        Tempo colors on the rabbit (garenne)
   json_config.rs     a settings file kept in memory and on disk (TV, box, rabbit, IR codes):
@@ -100,11 +101,12 @@ frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): 
                      ARCHITECTURE.md; maison-api's types, codes, paces and events, `paths.rs`
                      for every path it asks; build.sh cross-builds armv7, simulate.sh runs that
                      binary on the frame's system emulated)
+box/launcher/        the box's home: Compose for TV, for any Android TV (docs/box.md)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
 matter-trust/        CSA attestation roots (tracked)
-docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md, audio.md (planned audio
-                     companion)
+docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md, box.md, audio.md (planned
+                     audio companion)
 ```
 
 Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devices.json`,
@@ -215,6 +217,7 @@ cd frame/ui && cargo test && cargo clippy --all-targets -- -D warnings && cargo 
 frame/ui/build.sh && FRAME_SIM=armv7 sh e2e/run.sh frame.ts   # its armv7 binary, emulated, under cage
 cargo run --manifest-path api/Cargo.toml --bin shared-ts paces > web/src/lib/paces.ts   # codes, events alike
 cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the kiosk APK
+cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the box's home
 ```
 
 ## Gotchas learned the hard way
@@ -316,6 +319,11 @@ cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the 
   app are the box's own settings (`androidtv.json` `host`, `wakeApp`); a `tv.json` that kept
   `boxHost`/`boxWakeApp` still loads.
 
+- Ambilight: `currentconfiguration` answers GET and takes one POST body verified on the set
+  (`FOLLOW_VIDEO`, `STANDARD`), which also brings `mode` back from `lounge` to `internal`. In
+  `lounge` the configuration answers empty and the set holds a color whatever plays. It was once
+  found back there without cause known (a box reboot is not it): the TV page then offers the fix.
+
 ### Android TV box (MECOOL LEAP-S1)
 
 - Keys and app launches go over **Remote v2** (`atvremote.rs`: mutual TLS :6466, hand-encoded
@@ -329,6 +337,9 @@ cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the 
   digest and must be signed **pre-hashed** (`sign_prehash`); hashing again makes the box
   re-prompt forever. Key in `adb-key` (0600), one on-screen approval ever. ADB keeps CEC, box
   state and APK sideloading (`sync:` then `pm install -r`).
+- The box is cleared and runs our home ([docs/box.md](docs/box.md)). A package's disabled state
+  reaches the disk seconds later: a reboot right after brings it back. `com.droidlogic`
+  re-enables katniss, tvrecommendations and tts at boot, so those are removed for user 0.
 
 ### IR remote (AirTies AIR 7310T, custom firmware [uplg/BCM7231B2](https://github.com/uplg/BCM7231B2))
 

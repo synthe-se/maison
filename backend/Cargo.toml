@@ -16,8 +16,8 @@ live-runtime-tests = []
 # what the API answers and reads, shared with the wall frame's native interface (frame/ui)
 maison-api = { path = "../api" }
 # passkeys (docs/passkeys.md): usernameless sign-in needs `conditional-ui`
-webauthn-rs = { version = "0.5.5", default-features = false, features = ["conditional-ui"] }
-webauthn-rs-proto = "0.5.5"   # the same version webauthn-rs pins; for the options it builds
+webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui"] }
+webauthn-rs-proto = "0.6.2"   # the same version webauthn-rs pins; for the options it builds
 # webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the Pi
 # carries it (cargo-zigbuild compiles it with zig cc)
 openssl = { version = "=0.10.81", features = ["vendored"] }
@@ -34,7 +34,7 @@ dotenvy = "0.15.7"
 # dependency and ashv2's internal one use the same patched source.
 # the uplg forks (main = upstream + our fixes), pinned: `cargo update` must not follow a branch
 ashv2 = { git = "https://github.com/uplg/ashv2/", rev = "09ecfc8474d48389a32837a57bd0dd7ef5312afe", version = "15.0.0", features = ["ezsp"] }
-ezsp = "19.0.0"
+ezsp = "19.0.1"
 silizium = { version = "=3.1.0", features = ["le-stream"] }
 futures = "0.3.34"
 heapless = "=0.9.3"
@@ -64,22 +64,22 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 time = "0.3.55"
-tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
 tokio-serial = "5.5.0"
 tower-http = { version = "0.7.1", features = ["cors", "fs", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-uuid = { version = "1.28.0", features = ["v4"] }
+uuid = { version = "1.29.0", features = ["v4"] }
 # Matter controller (Sonoff Orb-RBS shutter switch): commissioning over IP,
 # CASE sessions and the Interaction Model in pure Rust, on the ring already in
 # the tree. matter-codec supplies the TLV tags for command fields.
-matter-controller = "0.18.2"
+matter-controller = "0.18.3"
 matter-codec = "0.3.2"
 sunrise = "3.0.0"
 
 [dev-dependencies]
 # paused time in tests (the Tuya worker lifecycle)
-tokio = { version = "1.53.3", features = ["test-util"] }
+tokio = { version = "1.54.1", features = ["test-util"] }
 # a software authenticator and client: passkeys end to end, discoverable ones included
 passkey = { version = "0.6.0", features = ["rust-crypto"] }
 async-trait = "=0.1.92"
@@ -88,4 +88,4 @@ tempfile = "3.27.0"
 tower = "0.5.3"
 
 [patch.crates-io]
-ezsp = { git = "https://github.com/uplg/ezsp", rev = "8945dca05145de40773f86eefe827291c2ec7bab" }
+ezsp = { git = "https://github.com/uplg/ezsp", rev = "f773a444b0db12cf40acd34f22c653ea59ee6652" }

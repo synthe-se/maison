@@ -409,7 +409,7 @@ impl P<'_, '_, '_, '_> {
             self.hit(x, y, w, h, Target::Act(open.clone()));
         }
         if let Some(order) = self.toggle(&t.lead) {
-            // the frame has no device pages to lead to: a row's head is its on/off, a big
+            // a toggle's row leads nowhere on the frame: its head is its on/off, a big
             // target for a finger on the wall (the controls under it keep theirs)
             let head_h = self.head_height(t, w)?;
             self.hit(x, y, w, ROW_PAD_Y + head_h, Target::Act(Act::Order(order)));

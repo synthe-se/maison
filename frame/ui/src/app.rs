@@ -3,6 +3,7 @@
 //! the toasts; and when it must be drawn again. Nothing here waits: the threads answer over
 //! channels and wake the loop.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -211,7 +212,7 @@ impl App {
         let (side, screen) = match &self.session.screen {
             Who::Paired => (
                 families::sun_signed_in(&mut cx),
-                match self.view {
+                match &self.view {
                     View::House => {
                         let now = cx.house_now();
                         Screen::House {
@@ -220,6 +221,7 @@ impl App {
                         }
                     }
                     View::Tempo => families::tempo::page(&mut cx),
+                    View::Device(id) => families::cats::page(&mut cx, id),
                 },
             ),
             who => (families::sun_signed_out(&mut cx), door(&self.words, who)),
@@ -241,7 +243,11 @@ impl App {
 
     /// The centre of the control whose gesture is `key` (a simulation's `press`).
     pub fn center_of(&self, key: &str) -> Option<(f32, f32)> {
-        let h = self.hits.iter().rev().find(|h| h.what.key() == Some(key))?;
+        let h = self
+            .hits
+            .iter()
+            .rev()
+            .find(|h| h.what.key().as_deref() == Some(key))?;
         Some((h.x + h.w / 2.0, h.y + h.h / 2.0))
     }
 
@@ -259,7 +265,7 @@ impl App {
     pub fn keys(&self) -> Vec<(String, f32, f32)> {
         self.hits
             .iter()
-            .filter_map(|h| Some((h.what.key()?.to_string(), h.x + h.w / 2.0, h.y + h.h / 2.0)))
+            .filter_map(|h| Some((h.what.key()?.into_owned(), h.x + h.w / 2.0, h.y + h.h / 2.0)))
             .collect()
     }
 
@@ -335,7 +341,7 @@ impl App {
             Under::Hit(i) | Under::Slider(i) => self.hits[i]
                 .what
                 .key()
-                .map_or_else(|| "a control".to_string(), str::to_string),
+                .map_or_else(|| "a control".to_string(), Cow::into_owned),
             Under::Nothing => "nothing".to_string(),
         }
     }

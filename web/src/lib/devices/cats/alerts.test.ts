@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { clock, when } from '#lib/i18n.svelte.ts';
-import { lastMeal, statusLine, tileLine } from './alerts.ts';
+import { lastMeal, statusLine, tileFact, tileLine } from './alerts.ts';
 import { STANDBY } from '#lib/devices/cats/tokens.ts';
 
 describe('statusLine', () => {
@@ -32,6 +32,17 @@ describe('statusLine', () => {
 		});
 		expect(statusLine('litter-box', { system: { state: 'cleaning' } })).toEqual({ text: m.litter_box_status_cleaning(), warn: false });
 		expect(statusLine('litter-box', { system: { state: 'cat_inside' } })).toEqual({ text: m.litter_box_status_cat_inside(), warn: false });
+	});
+});
+
+describe('tileFact', () => {
+	it('a litter box’s level, when it is connected', () => {
+		const litter = { type: 'litter-box', connected: true } as const;
+		expect(tileFact(litter, { sensors: { litterLevel: 'full' }, system: { state: STANDBY } })).toBe(m.litter_box_filled());
+		expect(tileFact(litter, { sensors: { litterLevel: 'half' } })).toBe(m.litter_box_half_filled());
+		expect(tileFact(litter, { system: { state: STANDBY } })).toBeUndefined();
+		expect(tileFact({ ...litter, connected: false }, { sensors: { litterLevel: 'full' } })).toBeUndefined();
+		expect(tileFact({ type: 'fountain', connected: true }, { waterLevel: 'ok' })).toBeUndefined();
 	});
 });
 

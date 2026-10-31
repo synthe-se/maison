@@ -135,10 +135,10 @@ describe('TempoCalendar', () => {
 
 	it('jumps to a season’s September from the season picker, and to this month for the current one', async () => {
 		await render(TempoCalendar);
-		await page.getByRole('button', { name: new RegExp(`^${m.tempo_season_label()}`) }).click();
+		await page.getByRole('combobox', { name: new RegExp(`^${m.tempo_season_label()}`) }).click();
 		await page.getByRole('option', { name: m.tempo_season({ season: '2023-2024' }) }).click();
 		await expect.element(table()).toHaveAccessibleName(month(2023, 8));
-		await page.getByRole('button', { name: new RegExp(`^${m.tempo_season_label()}`) }).click();
+		await page.getByRole('combobox', { name: new RegExp(`^${m.tempo_season_label()}`) }).click();
 		await page.getByRole('option', { name: m.tempo_season({ season: '2026-2027' }) }).click();
 		await caption(2026, 11);
 	});

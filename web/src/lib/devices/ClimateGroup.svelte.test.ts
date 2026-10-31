@@ -49,7 +49,7 @@ function server({ devices = [RM4], state = null as BroadlinkClimateState | null 
 const sends = (calls: FetchCall[]) =>
 	calls.filter((c) => c.url === '/api/broadlink/mitsubishi/send').map((c) => [c.init?.method, sentBody(c)]);
 /** A list's trigger, named « label value » (Select.svelte). */
-const choice = (label: string) => page.getByRole('button', { name: new RegExp(`^${label} `) });
+const choice = (label: string) => page.getByRole('combobox', { name: new RegExp(`^${label} `) });
 const settings = () => page.getByRole('button', { name: m.common_settings_of({ name: m.climate_brand_name() }) });
 const disclosure = () => page.getByRole('button', { name: m.climate_generated_command() });
 /** The generated infrared order, folded under its disclosure: unfolded to be read. */

@@ -80,6 +80,7 @@ pub fn router() -> Router<AppState> {
         .route("/key", post(send_key))
         .route("/volume", put(set_volume))
         .route("/ambilight", post(set_ambilight))
+        .route("/ambilight/follow-video", post(ambilight_follow_video))
         .route("/source/box", post(switch_to_box))
 }
 
@@ -132,6 +133,15 @@ async fn set_ambilight(
         .resolve(|| async { Ok(state.tv.ambilight().await?.power) })
         .await?;
     state.tv.set_ambilight_power(on).await?;
+    Ok(Answer::ok(Ambilight {
+        ambilight: state.tv.ambilight().await?,
+    }))
+}
+
+async fn ambilight_follow_video(
+    State(state): State<AppState>,
+) -> Result<Json<Answer<Ambilight>>, AppError> {
+    state.tv.ambilight_follow_video().await?;
     Ok(Answer::ok(Ambilight {
         ambilight: state.tv.ambilight().await?,
     }))

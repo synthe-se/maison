@@ -78,6 +78,7 @@ export const tvApi = {
 	sendKey: (key: TvKey) => post('/tv/key', { key }),
 	setVolume: (level?: number, muted?: boolean) => put<{ success: boolean; volume: TvVolume }>('/tv/volume', { level, muted }),
 	ambilight: (state: 'on' | 'off' | 'toggle') => post<{ success: boolean; ambilight: TvAmbilight }>('/tv/ambilight', { state }),
+	ambilightFollowVideo: () => post<{ success: boolean; ambilight: TvAmbilight }>('/tv/ambilight/follow-video'),
 	switchToBox: () => post('/tv/source/box')
 };
 
@@ -137,6 +138,22 @@ export interface AndroidTvStatusResponse {
 	status: AndroidTvStatus;
 }
 
+export type CleanWhy = 'vendor_agent' | 'home_screen' | 'assistant' | 'casting' | 'unused_app';
+export type CleanState = 'kept' | 'cleaned' | 'absent';
+
+export interface CleanedPackage {
+	package: string;
+	why: CleanWhy;
+	state: CleanState;
+}
+
+export interface CleanupResponse {
+	success: boolean;
+	packages: CleanedPackage[];
+	/** The home that lets Google's go is installed. */
+	launcher: boolean;
+}
+
 /** An APK upload and its install answer together within this long (tens of MB over the Pi's
  * link, then `pm install`). */
 const APK_TIMEOUT_MS = 15 * 60_000;
@@ -149,6 +166,8 @@ export const androidTvApi = {
 	apps: () => get<{ success: boolean; packages: string[] }>('/androidtv/apps'),
 	wake: () => post('/androidtv/wake'),
 	sleep: () => post('/androidtv/sleep'),
+	cleanup: () => get<CleanupResponse>('/androidtv/cleanup'),
+	clean: (action: 'clean' | 'restore') => post<CleanupResponse>('/androidtv/cleanup', { action }),
 	pairStart: () => post('/androidtv/pair/start'),
 	pairFinish: (code: string) => post('/androidtv/pair/finish', { code }),
 

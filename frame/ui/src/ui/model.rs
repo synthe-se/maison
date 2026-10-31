@@ -2,6 +2,8 @@
 //! screen), drawn by `paint`: the web app's bricks, the same names (Group, DeviceTile, Range,
 //! a button row, Loaded's states).
 
+use std::borrow::Cow;
+
 use crate::commands::Order;
 use crate::pairing::Ask;
 use crate::ui::icon::Icon;
@@ -147,24 +149,28 @@ pub enum Act {
     /// The families' sources read again now (a failed group's « Réessayer »).
     Refresh(&'static [&'static str]),
     Pairing(Ask),
-    /// Another screen of the house (the Tempo page); `View::House` is the way back.
+    /// Another screen of the house (the Tempo page, a cat device's); `View::House` is the way
+    /// back.
     Open(View),
 }
 
 /// What the paired screen shows: the house, or one of its pages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum View {
     #[default]
     House,
     Tempo,
+    /// A cat device's page, by its id (`/device/{id}` on the web).
+    Device(String),
 }
 
 impl View {
-    /// What opens it, by name (a simulation's `press open:tempo`).
-    pub fn key(self) -> &'static str {
+    /// What opens it, by name (a simulation's `press open:tempo`, `press open:device:<id>`).
+    pub fn key(&self) -> Cow<'static, str> {
         match self {
-            Self::House => "open:house",
-            Self::Tempo => "open:tempo",
+            Self::House => "open:house".into(),
+            Self::Tempo => "open:tempo".into(),
+            Self::Device(id) => format!("open:device:{id}").into(),
         }
     }
 }

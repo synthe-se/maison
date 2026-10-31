@@ -295,7 +295,7 @@ impl AndroidTvManager {
     }
 
     /// Runs a shell command on the kept connection, reconnecting once if it died.
-    async fn shell(&self, command: &str) -> Result<String, AppError> {
+    pub(crate) async fn shell(&self, command: &str) -> Result<String, AppError> {
         let address = self.address().await?;
         let key = self.signing_key().await?;
         let mut slot = self.device.lock().await;

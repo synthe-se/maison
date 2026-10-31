@@ -25,9 +25,10 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{
-    CreationChallengeResponse, CredentialID, DiscoverableKey, Passkey, PublicKeyCredential,
+    CreationChallengeResponse, CredentialID, Passkey, PublicKeyCredential,
     RegisterPublicKeyCredential, RequestChallengeResponse, Uuid,
 };
 
@@ -71,19 +72,14 @@ fn passkeys(state: &AppState) -> Result<&Arc<PasskeyState>, AppError> {
 
 // ---------- credentials as stored ----------
 
-/// A credential id as text: base64url, as webauthn-rs writes it.
-fn credential_text(id: &CredentialID) -> Result<String, AppError> {
-    match serde_json::to_value(id)? {
-        serde_json::Value::String(s) => Ok(s),
-        _ => Err(AppError::http(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "credential id",
-        )),
-    }
+/// A credential id as stored, the lookup key at sign-in: unpadded base64url, the form every
+/// stored passkey already has (`a_passkey_stored_by_webauthn_rs_0_5_still_reads`).
+fn credential_text(id: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(id)
 }
 
 fn credential_id(text: &str) -> Option<CredentialID> {
-    serde_json::from_value(serde_json::Value::String(text.into())).ok()
+    URL_SAFE_NO_PAD.decode(text).ok()
 }
 
 /// What a stored credential says of its backup: webauthn-rs keeps it inside its credential,
@@ -521,7 +517,7 @@ async fn finish_registration(
     let key = StoredPasskey {
         id: random_id(),
         person: person.clone(),
-        credential_id: credential_text(pk.cred_id())?,
+        credential_id: credential_text(pk.cred_id()),
         passkey: json,
         name,
         backed_up,
@@ -664,7 +660,7 @@ async fn finish_login(
         .webauthn
         .identify_discoverable_authentication(&req.credential)
         .map_err(|_| Refusal::PasskeyRejected)?;
-    let cred_id = credential_text(&CredentialID::from(raw_id.to_vec()))?;
+    let cred_id = credential_text(raw_id);
     // unknown here: the app may tell the device to forget it (signalUnknownCredential)
     let Some((row, person)) = state.people.passkey_by_credential(&cred_id).await? else {
         tracing::warn!(ip = %client_ip(addr, headers), "passkey sign-in refused: an unknown passkey");
@@ -677,7 +673,7 @@ async fn finish_login(
     let mut pk: Passkey = serde_json::from_value(row.passkey)?;
     let result = p
         .webauthn
-        .finish_discoverable_authentication(&req.credential, auth, &[DiscoverableKey::from(&pk)])
+        .finish_discoverable_authentication_v2(&req.credential, auth, &pk)
         .map_err(|e| {
             tracing::warn!(error = %e, person = %person.id, "passkey sign-in refused");
             AppError::from(Refusal::PasskeyRejected)
@@ -787,6 +783,20 @@ async fn remove(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Written by webauthn-rs 0.5.5 itself: what every passkey already stored looks like.
+    const STORED_BY_0_5: &str = r#"{"cred":{"cred_id":"dyQbBWMqJ6PZJFPKnSbDkA","cred":{"type_":"ES256","key":{"EC_EC2":{"curve":"SECP256R1","x":"Nu96dFB7BITvUjaHOsXdPI-U7tJX1xTt6YjBZ9C4vys","y":"gO2WUlIRKr149fGMcGxFc_T09Oxxk3v4P7Q4Jz-4lg0"}}},"counter":0,"transports":null,"user_verified":true,"backup_eligible":true,"backup_state":true,"registration_policy":"required","extensions":{"cred_protect":"Ignored","hmac_create_secret":"NotRequested","appid":"NotRequested","cred_props":{"Unsigned":{"rk":true}}},"attestation":{"data":"None","metadata":"None"},"attestation_format":"none"}}"#;
+
+    /// An upgrade must never lock anyone out: the stored form still reads, gives the same
+    /// lookup key, and says its backup where it did.
+    #[test]
+    fn a_passkey_stored_by_webauthn_rs_0_5_still_reads() {
+        let pk: Passkey = serde_json::from_str(STORED_BY_0_5).expect("the stored form");
+        let id = credential_text(pk.cred_id());
+        assert_eq!(id, "dyQbBWMqJ6PZJFPKnSbDkA", "the lookup key at sign-in");
+        assert_eq!(credential_id(&id).as_ref(), Some(pk.cred_id()));
+        assert!(stored(&pk).expect("stored").1, "backed up");
+    }
 
     #[test]
     fn an_invitation_link_carries_its_token_in_the_fragment() {
