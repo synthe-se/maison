@@ -3,21 +3,38 @@
 // small proxy, everything else goes to the backend. The app pairs as a wall screen (its code
 // given from an admin's phone), shows the house, and a finger acts on it: a lamp toggled, its
 // brightness slid, a plug turned off, a shutter closed, the column scrolled, every device's page,
-// the remotes' keys, a reset asked first, Maison gone and back. Its own window is nowhere (SDL's
+// the remotes' keys, a reset asked first, Maison gone and back, the family's photos taking over
+// when nobody is there. Its own window is nowhere (SDL's
 // dummy driver, software rendering). Pictures land in SHOTS.
 //
 // Needs: `cargo build --manifest-path frame/ui/Cargo.toml`.
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { LAMP_LIMIT_MS } from '../web/src/lib/paces.ts';
 import type { BroadlinkClimateStateResponse } from '../web/src/lib/devices/climate/api.ts';
 import type { AndroidTvStatusResponse, TvStatusResponse } from '../web/src/lib/devices/tv/api.ts';
-import { PAIRING_CODE, SHOTS, BASE, check, done, fr, launch, open, pairScreen, removeScreen, signIn, until } from './lib.ts';
+import {
+	PAIRING_CODE,
+	SHOTS,
+	BASE,
+	check,
+	done,
+	fr,
+	launch,
+	open,
+	pairScreen,
+	photoFile,
+	removeScreen,
+	signIn,
+	toast,
+	until,
+	visit
+} from './lib.ts';
 import { house } from './house.ts';
 
 const APP = new URL('../frame/ui/target/debug/maison-frame-ui', import.meta.url).pathname;
@@ -375,10 +392,82 @@ down = false;
 await tell('drag 300 1100');
 check('it comes back by itself', await until(async () => !(await noGesture()), 40_000));
 
-// removed in « Mon compte »: the app says so, then offers a new code
+/** What only time can show: nothing happening, a fade running. */
+const pause = (ms: number) => until(() => false, ms);
+
+// the family's photos: added from the admin's phone, they reach the frame by themselves
+const kept = () => (existsSync(join(stateDir, 'photos')) ? readdirSync(join(stateDir, 'photos')).filter((f) => f.endsWith('.jpg')) : []);
+await visit(phone, '/photos');
+await phone
+	.getByLabel(fr.photos_add())
+	.setInputFiles([await photoFile(phone, 'plage.png', '#e0a030'), await photoFile(phone, 'neige.png', '#3060c0')]);
+await toast(phone, fr.photos_added({ count: 2 }));
+check('added on the phone, they reach the frame by themselves', await until(() => kept().length === 2, 40_000), kept().join(' '));
+
+// nobody at the frame: the house gives way to them
+const isPhotos = (l: string) => l.startsWith('screen photos ');
+const showing = () => said.findLast(isPhotos);
+await tell('idle');
+check('nobody there, it shows a photo', await saidLine(isPhotos));
+const first = showing()!;
+check('one of those kept', kept().includes(`${first.slice('screen photos '.length)}.jpg`), first);
+await pause(1_200); // its fade over
+await picture('photos');
+const quiet = reads.length;
+await pause(6_000);
+check(
+	'while they show, the house is not read',
+	!reads.slice(quiet).some((r) => /\/(hue-lamps|meross|matter\/covers)/.test(r.path)),
+	reads
+		.slice(quiet)
+		.map((r) => r.path)
+		.join(' ')
+);
+await tell('turn');
+check('its time up, the other one comes in', await until(() => showing() !== first, 10_000), showing());
+await pause(300); // in the middle of its fade
+await picture('photos-fade');
+
+// Maison gone: they go on from the frame's own copy, and no band says anything
+down = true;
+stream?.destroy();
+const before = showing();
+await pause(1_500); // its fade over: a turn is for a photo at rest
+await tell('turn');
+check('Maison gone, they go on', await until(() => showing() !== before, 10_000), showing());
+down = false;
+
+// the first finger brings the house back, and does nothing else
+const orders = state.sent.length;
+const housesBefore = said.filter((l) => l === 'screen house').length;
+await tell('tap 200 300');
+check('a finger brings the house back', await until(() => said.filter((l) => l === 'screen house').length > housesBefore, 10_000));
+check('and does nothing else', state.sent.length === orders, state.sent.slice(orders).join(' | '));
+
+// removed on the phone, they leave the frame; with none left it only dims, as it did
+for (const left of [2, 1]) {
+	await phone.getByRole('button', { name: fr.common_remove_named({ name: fr.photos_alt({ number: 1 }) }) }).click();
+	await phone.getByRole('alertdialog').getByRole('button', { name: fr.photos_remove_action() }).click();
+	check(`${left} removed, the frame follows`, await until(() => kept().length === left - 1, 40_000), kept().join(' '));
+	await (left > 1 ? phone.getByText(fr.photos_count({ count: 1 })) : phone.getByText(fr.photos_none(), { exact: true })).waitFor();
+}
+const afterRemoval = said.filter(isPhotos).length;
+await tell('idle');
+await pause(1_000);
+check('no photo left: it stays on the house', said.filter(isPhotos).length === afterRemoval);
+await tell('tap 200 300');
+
+// removed in « Mon compte »: the app says so, then offers a new code; what it kept goes with it
+await phone.getByLabel(fr.photos_add()).setInputFiles(await photoFile(phone, 'chat.png', '#40a060'));
+await toast(phone, fr.photos_added({ count: 1 }));
+check('a new photo reaches the frame', await until(() => kept().length === 1, 40_000));
+await visit(phone, '/account');
 await removeScreen(phone, 'Cadre natif');
+// the event stream open, pushed sources read once a minute: a page opened reads at once
+await tell('press open:tempo');
 check('removed, the app says so', await saidLine((l) => l === `screen door ${fr.screen_revoked_title()}`, 15_000));
 await picture('revoked');
+check('a removed screen keeps no photo', await until(() => kept().length === 0, 10_000), kept().join(' '));
 check('the app is still running', !gone);
 
 end();

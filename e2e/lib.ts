@@ -172,6 +172,22 @@ export async function visit(page: Page, path: string) {
 	await settled(page);
 }
 
+// ---- photos
+
+/** A real picture, as `setInputFiles` takes it: larger than the frame, one `color` all over. */
+export async function photoFile(page: Page, name: string, color: string) {
+	const data = await page.evaluate((fill) => {
+		const canvas = document.createElement('canvas');
+		canvas.width = 2400;
+		canvas.height = 1800;
+		const context = canvas.getContext('2d')!;
+		context.fillStyle = fill;
+		context.fillRect(0, 0, 2400, 1800);
+		return canvas.toDataURL('image/png');
+	}, color);
+	return { name, mimeType: 'image/png', buffer: Buffer.from(data.split(',')[1], 'base64') };
+}
+
 // ---- wall screens
 
 /** A wall screen's pairing code, as the backend makes it (backend screens.rs). */

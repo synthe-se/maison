@@ -11,8 +11,8 @@ import PhotosPage from './PhotosPage.svelte';
 
 const photo = (id: string) => ({ id, bytes: 1000 });
 
-/** The backend: `list` at GET /photos, « ok » to a removal; records calls. */
-const serve = (list: string[]) => stubApi({ 'GET /photos': { success: true, photos: list.map(photo) } }, { success: true, message: 'ok' });
+/** The backend: `ids` at GET /photos, « ok » to a removal; records calls. */
+const serve = (ids: string[]) => stubApi({ 'GET /photos': { success: true, photos: ids.map(photo) } }, { success: true, message: 'ok' });
 
 /** An upload the test drives by hand (`upload` goes through XMLHttpRequest for its progress). */
 const xhrs: FakeXhr[] = [];
