@@ -43,7 +43,8 @@ fn volume_steps(w: &Words, name: &str, volume: &Value) -> Option<Part> {
         volume["max"].as_i64().unwrap_or(i64::MAX),
     );
     let step = |delta: i64, icon| {
-        let to = (level + delta).clamp(min, max);
+        // never `clamp`: a server's bounds, even crossed, are no reason to panic while drawing
+        let to = level.saturating_add(delta).min(max).max(min);
         let order = Order::one(
             format!("{TV}:volume"),
             name,
@@ -316,6 +317,21 @@ mod tests {
         assert!(up.posts[0].1.put);
         assert_eq!(up.posts[0].1.path, "/tv/volume");
         assert_eq!(up.posts[0].1.body.as_ref().unwrap()["level"], 13);
+    }
+
+    #[test]
+    fn crossed_bounds_from_the_server_are_survived() {
+        let w = Words::new(Lang::Fr);
+        let t = tv_tile(
+            &w,
+            &body(
+                r#"{"success":true,"config":{},"status":{"configured":true,"power":"on","name":"","volume":{"current":12,"min":60,"max":0,"muted":false}}}"#,
+            ),
+        );
+        let [Part::Row(v)] = &t.parts[..] else {
+            panic!("{:?}", t.parts)
+        };
+        assert_eq!(v.len(), 2);
     }
 
     #[test]

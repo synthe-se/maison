@@ -6,6 +6,8 @@
 //!   target's token). HTTPS only, but for this computer (`localhost`, a loopback address) and a
 //!   simulation that says `MAISON_ALLOW_HTTP=1` (the host seen from a container): the screen's
 //!   cookie never crosses the Wi-Fi in clear;
+//! - no address at all: the app starts on its setup view, with what `MAISON_SETUP_SSID`,
+//!   `MAISON_SETUP_PASSWORD` and `MAISON_SETUP_URL` say of the frame's Wi-Fi and its page;
 //! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
 //!   `$XDG_DATA_HOME/maison-ui`;
 //! - its language: `MAISON_LANG`, else `LANG` (`fr_FR.UTF-8`);
@@ -23,14 +25,23 @@ pub const PANEL: (u32, u32) = (800, 1280);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    /// `https://maison.example` (no trailing slash).
-    pub origin: String,
+    /// `https://maison.example` (no trailing slash); none: the setup view.
+    pub origin: Option<String>,
+    pub setup: Setup,
     pub state_dir: PathBuf,
     pub lang: Lang,
     pub rotate: bool,
     pub scale: f32,
     /// A window of this size, not the full screen.
     pub window: Option<(u32, u32)>,
+}
+
+/// How a frame without an address is given one: its Wi-Fi and the page there, as far as told.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Setup {
+    pub ssid: Option<String>,
+    pub password: Option<String>,
+    pub url: Option<String>,
 }
 
 impl Config {
@@ -56,13 +67,17 @@ impl Config {
         credential: Option<String>,
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, String> {
-        let target = credential
+        let allow_http = env("MAISON_ALLOW_HTTP").as_deref() == Some("1");
+        let origin = credential
             .or_else(|| env("MAISON_TARGET"))
-            .ok_or("no Maison address: the credential `target` or MAISON_TARGET")?;
-        let origin = origin(
-            target.trim(),
-            env("MAISON_ALLOW_HTTP").as_deref() == Some("1"),
-        )?;
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| origin(t.trim(), allow_http))
+            .transpose()?;
+        let setup = Setup {
+            ssid: env("MAISON_SETUP_SSID"),
+            password: env("MAISON_SETUP_PASSWORD"),
+            url: env("MAISON_SETUP_URL"),
+        };
         let state_dir = env("MAISON_STATE")
             .map(PathBuf::from)
             .or_else(|| env("XDG_DATA_HOME").map(|d| PathBuf::from(d).join("maison-ui")))
@@ -95,6 +110,7 @@ impl Config {
         };
         Ok(Self {
             origin,
+            setup,
             state_dir,
             lang,
             rotate,
@@ -158,7 +174,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(c.origin, "https://maison.example");
+        assert_eq!(c.origin.as_deref(), Some("https://maison.example"));
         assert_eq!(
             c.state_dir,
             PathBuf::from("/android-data/maison/ui/maison-ui")
@@ -183,7 +199,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(c.origin, "http://localhost:3999");
+        assert_eq!(c.origin.as_deref(), Some("http://localhost:3999"));
         assert_eq!(c.lang, Lang::En);
         assert!(c.rotate);
         assert_eq!(c.scale, 1.5);
@@ -191,19 +207,35 @@ mod tests {
     }
 
     #[test]
+    fn no_address_is_no_error_the_setup_view_says_what_it_was_told() {
+        let state = ("MAISON_STATE", "/tmp/s");
+        let c = Config::from(None, vars(&[state])).unwrap();
+        assert_eq!((c.origin, c.setup), (None, Setup::default()));
+        let c = Config::from(
+            Some(" \n".into()),
+            vars(&[
+                state,
+                ("MAISON_SETUP_SSID", "maison-frame"),
+                ("MAISON_SETUP_PASSWORD", "sel"),
+                ("MAISON_SETUP_URL", "http://10.42.0.1"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(c.origin, None, "an empty credential says no address");
+        assert_eq!(c.setup.ssid.as_deref(), Some("maison-frame"));
+        assert_eq!(c.setup.password.as_deref(), Some("sel"));
+        assert_eq!(c.setup.url.as_deref(), Some("http://10.42.0.1"));
+    }
+
+    #[test]
     fn what_is_wrong_is_said() {
         let state = ("MAISON_STATE", "/tmp/s");
-        assert!(
-            Config::from(None, vars(&[state]))
-                .unwrap_err()
-                .contains("no Maison address")
-        );
         assert!(Config::from(Some("ftp://x".into()), vars(&[state])).is_err());
         assert!(Config::from(Some("https://".into()), vars(&[state])).is_err());
         // in clear, only to this computer, or for a simulation that says so
         let http = |t: &str, allow: &str| {
             Config::from(Some(t.into()), vars(&[state, ("MAISON_ALLOW_HTTP", allow)]))
-                .map(|c| c.origin)
+                .map(|c| c.origin.unwrap())
         };
         assert!(http("http://maison.lan", "").unwrap_err().contains("HTTPS"));
         assert!(http("http://192.168.1.103:3000", "0").is_err());

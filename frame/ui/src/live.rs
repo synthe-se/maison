@@ -303,9 +303,9 @@ impl Live {
         came
     }
 
-    /// A read said 401: the screen was removed (or never paired).
-    pub fn signed_out(&self) -> bool {
-        self.signed_out
+    /// A read said 401 since the last asked: the screen may have been removed, or never paired.
+    pub fn signed_out(&mut self) -> bool {
+        std::mem::take(&mut self.signed_out)
     }
 
     /// Everything stops and is forgotten (signed out: the house is no longer shown).

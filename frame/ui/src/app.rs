@@ -13,7 +13,7 @@ use maison_api::sun::Side;
 use crate::backlight::Backlight;
 use crate::client::Client;
 use crate::commands::{Commands, Toast};
-use crate::config::Config;
+use crate::config::{Config, Setup};
 use crate::families::{self, Cx, Sources};
 use crate::i18n::{Words, k};
 use crate::live::Live;
@@ -80,14 +80,22 @@ pub struct App {
 
 impl App {
     pub fn new(config: &Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let client = Client::new(&config.origin, &config.state_dir, HTTP_WAIT);
+        let client = config.origin.as_ref().map_or_else(
+            || Client::nowhere(HTTP_WAIT),
+            |origin| Client::new(origin, &config.state_dir, HTTP_WAIT),
+        );
         let mut live = Live::new(client.clone(), wake.clone());
-        // what the server says changed: read again at once, the polls a safety net
-        live.listen();
+        let session = if config.origin.is_some() {
+            // what the server says changed: read again at once, the polls a safety net
+            live.listen();
+            Session::start(client.clone(), wake.clone())
+        } else {
+            Session::idle(Who::Setup(config.setup.clone()))
+        };
         Self {
             words: Words::new(config.lang),
             live,
-            session: Session::start(client.clone(), wake.clone()),
+            session,
             commands: Commands::new(client, wake),
             sliders: Sliders::default(),
             sources: Sources::new(),
@@ -118,11 +126,24 @@ impl App {
 
     /// What the threads said since; the screen is drawn again if anything changed.
     pub fn take(&mut self) {
-        let paired = self.session.screen == Who::Paired;
+        let (paired, revoked) = (
+            self.session.screen == Who::Paired,
+            self.session.screen == Who::Revoked,
+        );
         let mut changed = self.session.take();
+        let now = Instant::now();
+        if paired != (self.session.screen == Who::Paired) {
+            // what the finger held is on another screen now
+            self.end_gesture(now);
+        }
         if !paired && self.session.screen == Who::Paired {
             // refused until now: the event stream opens at once, not after its wait
             self.live.reopen();
+        }
+        if !revoked && self.session.screen == Who::Revoked {
+            // the screen was removed: the house goes, the pairing says so
+            self.live.clear();
+            self.open(View::House, now);
         }
         let came = self.live.take();
         changed |= came.changed;
@@ -134,16 +155,12 @@ impl App {
         changed |= self
             .commands
             .take(&self.words, &mut |f| live.refresh(f), &mut toasts);
-        let now = Instant::now();
         for t in toasts {
             self.toast(t, now);
         }
-        if self.live.signed_out() {
-            // the screen was removed: the house goes, the pairing says so
-            self.live.clear();
-            self.view = View::House;
-            self.session.ask(Ask::SignedOut);
-            changed = true;
+        // one read's 401 is no verdict: the pairing asks who the screen is
+        if self.live.signed_out() && self.session.screen == Who::Paired {
+            self.session.recheck();
         }
         self.dirty |= changed;
     }
@@ -265,6 +282,7 @@ impl App {
                     View::Device(id) => families::cats::page(&mut cx, id),
                 },
             ),
+            who @ Who::Setup(_) => (None, door(&self.words, who)),
             who => (families::sun_signed_out(&mut cx), door(&self.words, who)),
         };
         if side.is_some() {
@@ -475,8 +493,24 @@ fn door(w: &Words, who: &Who) -> Screen {
     let (title, lead, code, hint, button, warn) = match who {
         // shown only once the house is: the door of a screen still asking who it is
         Who::Checking | Who::Paired => (
-            k::SCREEN_PAIR_TITLE,
-            w.s(k::COMMON_LOADING),
+            k::SCREEN_WAITING_TITLE,
+            vec![w.s(k::COMMON_LOADING)],
+            None,
+            None,
+            None,
+            false,
+        ),
+        Who::Waiting => (
+            k::SCREEN_WAITING_TITLE,
+            vec![w.s(k::SCREEN_WAITING_BODY)],
+            None,
+            None,
+            None,
+            false,
+        ),
+        Who::Setup(s) => (
+            k::SCREEN_SETUP_TITLE,
+            setup_lead(w, s),
             None,
             None,
             None,
@@ -484,7 +518,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Code { code, minutes } => (
             k::SCREEN_PAIR_TITLE,
-            w.s(k::SCREEN_PAIR_INTRO),
+            vec![w.s(k::SCREEN_PAIR_INTRO)],
             Some(code.clone()),
             Some(w.t(
                 k::SCREEN_PAIR_VALID,
@@ -495,7 +529,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Expired => (
             k::SCREEN_PAIR_TITLE,
-            w.s(k::SCREEN_PAIR_EXPIRED),
+            vec![w.s(k::SCREEN_PAIR_EXPIRED)],
             None,
             None,
             pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
@@ -503,7 +537,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Failed(f) => (
             k::SCREEN_PAIR_TITLE,
-            w.failure(f),
+            vec![w.failure(f)],
             None,
             None,
             pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
@@ -511,7 +545,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Revoked => (
             k::SCREEN_REVOKED_TITLE,
-            w.s(k::SCREEN_REVOKED_BODY),
+            vec![w.s(k::SCREEN_REVOKED_BODY)],
             None,
             None,
             pair(&w.s(k::SCREEN_PAIR_RETRY), Ask::Pair),
@@ -520,12 +554,28 @@ fn door(w: &Words, who: &Who) -> Screen {
     };
     Screen::Door {
         title: w.s(title),
-        lead: vec![lead],
+        lead,
         code,
         hint,
         button,
         warn,
     }
+}
+
+/// What the setup view says: join the frame's Wi-Fi, and each thing the frame was told of it.
+fn setup_lead(w: &Words, s: &Setup) -> Vec<String> {
+    let line = |key: &str, name: &str, value: &Option<String>| {
+        value.as_deref().map(|v| w.t(key, &[(name, v.into())]))
+    };
+    [
+        Some(w.s(k::SCREEN_SETUP_JOIN)),
+        line(k::SCREEN_SETUP_NETWORK, "ssid", &s.ssid),
+        line(k::SCREEN_SETUP_PASSWORD, "password", &s.password),
+        line(k::SCREEN_SETUP_OPEN, "url", &s.url),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 #[cfg(test)]
@@ -536,10 +586,12 @@ mod tests {
     use crate::testing::{temp_dir, wait_until};
     use crate::ui::model::Slider;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn config(origin: &str, state_dir: PathBuf) -> Config {
         Config {
-            origin: origin.into(),
+            origin: Some(origin.into()),
+            setup: Setup::default(),
             state_dir,
             lang: Lang::Fr,
             rotate: false,
@@ -827,13 +879,15 @@ mod tests {
     #[test]
     fn a_removed_screen_leaves_the_house_for_its_door() {
         let dir = temp_dir("app-removed");
-        let stub = serve(|line| match line {
-            l if l.starts_with("POST /api/screens/me") => (
+        let removed = Arc::new(AtomicBool::new(false));
+        let gone = removed.clone();
+        let stub = serve(move |line| match line {
+            l if l.starts_with("POST /api/screens/me") && !gone.load(Ordering::SeqCst) => (
                 200,
                 vec![],
                 r#"{"success":true,"screen":{"name":"Salon"}}"#.into(),
             ),
-            // removed in « Mon compte »: every read now says 401
+            // removed in « Mon compte »: every read now says 401, and `/me` once it is asked
             _ => (401, vec![], r#"{"code":"not_signed_in"}"#.into()),
         });
         std::fs::write(
@@ -846,8 +900,21 @@ mod tests {
             app.take();
             matches!(app.screen(Instant::now()), Screen::House { .. })
         });
-        // the house's reads say 401: the pairing is told, the screen says it was removed
+        // one read's 401 alone removes nothing: `/me` still knows the screen
+        let asked_me = || {
+            let asked = stub.asked.lock().unwrap();
+            asked.iter().filter(|a| a.line.contains("/me")).count()
+        };
         wait_until(|| {
+            app.take();
+            asked_me() >= 2
+        });
+        assert_eq!(app.session.screen, Who::Paired);
+        assert!(dir.join("screen-cookie").exists());
+        // the house's reads say 401 and `/me` agrees: the screen says it was removed
+        removed.store(true, Ordering::SeqCst);
+        wait_until(|| {
+            app.screen(Instant::now());
             app.take();
             app.session.screen == Who::Revoked
         });
@@ -867,6 +934,8 @@ mod tests {
         let w = Words::new(Lang::Fr);
         for who in [
             Who::Checking,
+            Who::Waiting,
+            Who::Setup(Setup::default()),
             Who::Code {
                 code: "ABCD-2345".into(),
                 minutes: 10,
@@ -880,5 +949,49 @@ mod tests {
             };
             assert!(!title.is_empty() && !lead[0].is_empty(), "{who:?}");
         }
+    }
+
+    #[test]
+    fn a_paired_screen_that_waits_for_maison_is_offered_no_new_code() {
+        let w = Words::new(Lang::Fr);
+        let Screen::Door {
+            title,
+            lead,
+            button,
+            warn,
+            ..
+        } = door(&w, &Who::Waiting)
+        else {
+            panic!("a door")
+        };
+        assert_eq!(title, w.s(k::SCREEN_WAITING_TITLE));
+        assert_eq!(lead, [w.s(k::SCREEN_WAITING_BODY)]);
+        assert!(button.is_none() && !warn, "calm, and nothing to do");
+    }
+
+    #[test]
+    fn without_a_target_the_app_starts_on_its_setup_view() {
+        let mut c = config("", temp_dir("app-setup"));
+        c.origin = None;
+        c.setup = Setup {
+            ssid: Some("maison-frame".into()),
+            password: Some("sel-de-mer".into()),
+            url: Some("http://10.42.0.1".into()),
+        };
+        let mut app = App::new(&c, Arc::new(|| {}));
+        let Screen::Door { title, lead, .. } = app.screen(Instant::now()) else {
+            panic!("a door")
+        };
+        assert_eq!(title, app.words.s(k::SCREEN_SETUP_TITLE));
+        assert_eq!(lead.len(), 4);
+        assert!(lead[1].contains("maison-frame"));
+        assert!(lead[2].contains("sel-de-mer"));
+        assert!(lead[3].contains("http://10.42.0.1"));
+        // what it was not told, it does not say
+        let bare = setup_lead(&app.words, &Setup::default());
+        assert_eq!(bare, [app.words.s(k::SCREEN_SETUP_JOIN)]);
+        // and it reads nothing
+        app.take();
+        assert_eq!(app.next_wake(app.touched), app.backlight.next(app.touched));
     }
 }
