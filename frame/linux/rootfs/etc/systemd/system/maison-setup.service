@@ -1,8 +1,10 @@
-# The first setup's page, started by maison-wifi only on a frame not set up
+# The setup's page, started by maison-wifi on a frame not set up or that lost its network. It binds
+# the access point's address, which comes seconds later: retried without a limit
 [Unit]
-Description=The frame's first setup
+Description=The frame's setup
 RequiresMountsFor=/android-data
 After=wpa_supplicant@wlan0.service
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/bin/maison-setup

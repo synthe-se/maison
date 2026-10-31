@@ -6,7 +6,10 @@
 # and wireless-regdb for cfg80211.
 # Sources and build stay off the repo, in ~/maison-frame/src and a Docker volume; the outputs land
 # in frame/build/linux (aic8800/: the modules and the firmware the initramfs ships).
-# Usage: frame/linux/build.sh
+# With --initramfs <file.cpio.gz> (initramfs.py's, itself built on these modules) the kernel is
+# linked again with it inside, as frame/build/linux/zImage.boot: U-Boot puts an image's initramfs
+# where only its own device tree says, which the kernel in `boot` does not read.
+# Usage: frame/linux/build.sh [--initramfs <file.cpio.gz>]
 set -euo pipefail
 . "$(dirname "$0")/../docker.sh"
 
@@ -22,6 +25,26 @@ AIC8800_REV=fce88024ed40279def034e203128e0892fdbcac3
 REGDB=2026.09.03
 
 mkdir -p "$SRC" "$OUT"
+if [ "${1:-}" = --initramfs ]; then
+	gzip -dc "$2" >"$OUT/initramfs.cpio"
+	docker run --rm --platform linux/arm64 -v "$VOLUME:/build" -v "$OUT:/out" "$ALPINE" sh -euc '
+		apk add -q build-base clang lld llvm bison flex bc perl findutils linux-headers openssl-dev elfutils-dev python3 xz lz4 lzop patch bash >/dev/null
+		cd /build
+		cp /out/initramfs.cpio usr/maison-initramfs.cpio
+		m="make ARCH=arm LLVM=1 KCFLAGS=-mtune=cortex-a7 -j$(nproc)"
+		scripts/config --set-str INITRAMFS_SOURCE usr/maison-initramfs.cpio --enable INITRAMFS_COMPRESSION_GZIP
+		$m olddefconfig >/dev/null
+		if ! $m zImage >embed.log 2>&1; then grep -E "error|Error" embed.log | head -20; exit 1; fi
+		if grep -E "warning:|Warning" embed.log; then echo "warnings in the build" >&2; exit 1; fi
+		grep -q "^CONFIG_INITRAMFS_SOURCE=\"usr/maison-initramfs.cpio\"$" .config
+		cp arch/arm/boot/zImage /out/zImage.boot
+		scripts/config --set-str INITRAMFS_SOURCE ""
+		$m olddefconfig >/dev/null
+		echo "zImage.boot: $(stat -c %s /out/zImage.boot) bytes"
+	'
+	rm -f "$OUT/initramfs.cpio"
+	exit 0
+fi
 tarball="$SRC/linux-$VERSION.tar.xz"
 [ -f "$tarball" ] || curl -sfL "https://cdn.kernel.org/pub/linux/kernel/v${VERSION%%.*}.x/linux-$VERSION.tar.xz" -o "$tarball"
 curl -sfL "https://cdn.kernel.org/pub/linux/kernel/v${VERSION%%.*}.x/sha256sums.asc" | grep " linux-$VERSION.tar.xz$" |

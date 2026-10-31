@@ -408,16 +408,18 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 - Our build.prop sets `ro.adb.secure=1` (the vendor's default.prop leaves it out). The kiosk's
   activity is exported (it is the home): it lifts itself only with the one-time grant
   `ProvisionReceiver` (DUMP: the shell's alone) hands it, never on its own action's word.
+- Mainline, Wi-Fi lost for 10 minutes: `maison-wifi-watch` opens the setup's access point for 30
+  (`/run/maison-lost`, nothing on the eMMC), then back, without a restart; never on trial.
 - Mainline: Maison's address is root's, `/android-data/maison/target` (0600), what the units
   load as their `target` credential, from the first setup or adopted once from Android's
   shell-writable `/data/local/tmp/maison/target`. To change it, remove root's copy first.
-- Linux boots by default from `boot` (14 MiB: our image without the vendor's logo, `image.py
-  --slot boot`; the screen stays black until Linux lights it); Android sits in `recovery`. A new
+- Linux boots by default from `boot` (`image.py`: the vendor's resource for U-Boot's logo; our device
+  tree after a zImage holding its initramfs, since U-Boot says where it put one only in its own tree); Android sits in `recovery`. A new
   system goes to a slot over the Wi-Fi (`try.sh --install`, checked and tried); a new kernel to
   `boot` from Linux, else the loader (`try.sh --flash`). No battery: timesyncd's clock is
   kept on userdata, and the app never waits for NTP. SSH by certificate; the journal kept on userdata (`/var/log/journal`, one machine id from the eMMC's serial); the
-  boot pictures are the initramfs's (splash.py): Synthèse's mark, then Maison's with its ring, a
-  line only on failure. The kernel
+  boot pictures: U-Boot's Synthèse (the `resource` partition), then the initramfs's Maison with its
+  ring (splash.py), a line only on failure. The kernel
   has no console on the panel: no text can reach it.
 - The kernel is `allnoconfig` + `maison.config`, every symbol said; a dropped symbol or any build
   warning fails `build.sh`. Nothing drives the CPU's rail (PWM1 reads zero, the vendor's kernel never

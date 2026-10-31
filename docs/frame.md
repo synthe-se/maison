@@ -113,9 +113,11 @@ Android, no ADB.
 frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules (Docker)
 frame/linux/buildroot.sh        # the system: frame/build/buildroot/rootfs.squashfs (Docker, ~25 min from nothing)
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
-python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
+frame/linux/build.sh --initramfs frame/build/linux-initramfs.cpio.gz   # the kernel of `boot`, holding it
+python3 -I frame/linux/image.py frame/build/linux/zImage.boot frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/boot-linux.img
 frame/linux/try.sh --install [--kernel]   # an update to the free slot, tried, kept or rolled back
 frame/linux/try.sh --ram        # a new kernel and initramfs run from RAM (kexec): a power cut returns to boot's
+frame/linux/try.sh --logo       # U-Boot's picture, in the resource partition
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
 frame/linux/console.sh 'systemctl status maison-ui'   # a command over SSH (FRAME_HOST=<address> without mDNS)
 frame/linux/release.sh [--kernel] [--publish]   # a signed release, for updates over the air
@@ -147,9 +149,11 @@ What the bring-up taught, each point seen on the frame:
 - The touch chip's axes are swapped, 1024 down by 640 across; `touchscreen-size-*` are the
   chip's axes, before the swap.
 - simpledrm left beside Rockchip's card is a second card, where a client would draw unseen.
-- `boot` holds 14 MiB: our image fits only without the vendor's 3 MB logo in its resource
-  (`image.py --slot boot`, `bootimg.rsce_only`). U-Boot draws its first screen from the image it
-  boots, not from the resource partition: the screen stays black until Linux lights it.
+- U-Boot draws its logo only with the vendor's device tree, kept in the boot image's resource, and it
+  takes the picture from the `resource` partition (`try.sh --logo`), not from the image. The kernel
+  ignores that device tree: ours follows the zImage (`ARM_APPENDED_DTB`). U-Boot moves an image's
+  initramfs (0x65bf0000 here) and says so only in its own device tree, so the kernel of `boot` holds
+  its initramfs (`build.sh --initramfs`); none of U-Boot's command line reaches it either.
 - Powered up with the USB-C on a computer, U-Boot still boots `boot` (Linux); `misc` is ignored
   (a power cycle is the boot slot's): the loader comes from the reset pinhole.
 - No battery and a system in RAM: the clock came back six months behind after a power cut, and
@@ -160,9 +164,8 @@ What the bring-up taught, each point seen on the frame:
   (try.sh --flash) go that way; boot is then written by Linux on /dev/mmcblk0 once the layout's
   addressing is proved (U-Boot's head where layout.txt says, boot's `ANDROID!` header), read back
   and compared. The loader stays the way back.
-- The boot pictures (splash.py): U-Boot draws nothing (the screen is black for about 2 s). As soon
-  as the panel is up the initramfs draws Synthèse's mark on /dev/fb0, then, the system mounted,
-  Maison's mark with a ring turning under it (loader.c, a static binary, outliving the initramfs)
+- The boot pictures (splash.py): U-Boot draws Synthèse's mark; as soon as Linux has the panel, the
+  initramfs draws Maison's mark with a ring turning under it (loader.c, a static binary, outliving the initramfs)
   until `maison-ui` starts. The kernel has no console on the panel: no text at boot, the log stays
   in the journal. A line appears only on failure (« Système introuvable… »).
 - SSH: root by a certificate of the frames' CA only (`ssh-cert.sh`, 8 hours, the CA in
@@ -226,7 +229,7 @@ has drawn (its heartbeat) without a restart, with the Wi-Fi and SSH, for 45 s, e
 150 s; a system already proved only has to draw, so that a router out of order is no failure.
 Tries spent, the slot goes to `slots/failed` and the frame stays on the one before. Each boot of
 the active slot is counted the same way: 4 without a proof and the frame moves to the other, 8 and
-it stops on the failure's line. All of a slot is checked against its `sums` at every boot. A slot's kernel adds a kexec to each boot until it is flashed to `boot`. A flash that dies
+it stops on the failure's line. All of a slot is checked against its `sums` at every boot, the Wi-Fi driver loading beside it when no slot holds a kernel (a kexec wants the hardware free). e2fsck takes `broken_system_clock`: no RTC, a clock at 1970 must force no full check. A slot's kernel adds a kexec to each boot until it is flashed to `boot`. A flash that dies
 midway still wants the reset pinhole.
 
 Over the air: a release is `manifest.json`, its Ed25519 signature `manifest.sig` and its files under
@@ -241,13 +244,22 @@ Failures provoked on the frame, each back on the good slot by itself: an image t
 `sums` (27 s), an unreadable image with valid `sums` (39 s), a kernel that panics (49 s), a kernel
 that hangs (73 s, a real watchdog reset). A good `--kernel` slot boots by kexec under that watchdog.
 An update over the air, from updates.synthe.se to the frame: 80 s. Not proved on the frame: the
-first setup's access point.
+setup's access point, which needs an image with wpa_supplicant's AP mode (none before it was in the
+defconfig), and the live switches below.
 
 First setup: with no network or no address (`maison-wifi`), the frame is its own Wi-Fi, named and
 locked from its eMMC's serial; the interface shows both and the address of its page (`maison-setup`,
 http://192.168.4.1), which takes the house's network and Maison's address, writes them to
 `/android-data/maison` (0600) and restarts. An image's factory install: `rootfs.squashfs` left in
 `/data/local/tmp/maison`, adopted once into slot a while userdata holds no state.
+
+Network lost (`maison-wifi-watch`, the kernel's `operstate`, not carrier: a wrong password raises
+carrier too): 10 minutes without associating, after boot or a lost link, the frame opens the same
+setup: `/run/maison-lost` makes `maison-wifi` take its access-point branch, the watch restarts
+wpa_supplicant, reloads networkd and restarts `maison-ui`, which reads `MAISON_SETUP_*` as it starts.
+The page has the kept address already in the form. 30 minutes after the page's last request the
+same steps return to the configured network without a restart, and the count starts again. An
+update on trial never counts: `maison-commit` judges it, within its 150 s, before the 10 minutes.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.

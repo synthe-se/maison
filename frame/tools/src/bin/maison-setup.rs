@@ -1,6 +1,8 @@
-//! The first setup, while the frame is its own Wi-Fi: one page on 192.168.4.1 asks for the house's
-//! network and Maison's address, writes them where the system reads them, and restarts. The words
-//! are i18n/messages/fr.json's. Only ever runs on a frame not set up (maison-wifi).
+//! The setup, while the frame is its own Wi-Fi: one page on 192.168.4.1 asks for the house's network
+//! and Maison's address (the one kept, if any, already there), writes them where the system reads
+//! them, and restarts. The words are i18n/messages/fr.json's. Only ever runs on a frame not set up
+//! or that lost its network (maison-wifi, maison-wifi-watch). Each request touches `SETUP`: someone
+//! at the form holds the watch's way back to the configured network.
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -8,11 +10,13 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
+use std::time::SystemTime;
 use std::{fs, process};
 
 const LISTEN: &str = "192.168.4.1:80";
 const WIFI: &str = "/android-data/maison/wifi.conf";
 const TARGET: &str = "/android-data/maison/target";
+const SETUP: &str = "/run/maison-setup";
 const MESSAGES: &str = include_str!("../../../../i18n/messages/fr.json");
 
 #[derive(Debug, PartialEq)]
@@ -36,7 +40,7 @@ fn escaped(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn page(error: Option<&str>) -> String {
+fn page(error: Option<&str>, target: &str) -> String {
     let w = words();
     let line = error
         .map(|k| format!("<p role=alert>{}</p>", escaped(word(&w, k))))
@@ -48,12 +52,13 @@ fn page(error: Option<&str>) -> String {
          <h1>{title}</h1>{line}<form method=post>\
          <label>{ssid}<input name=ssid required autocomplete=off></label>\
          <label>{password}<input name=password type=password required minlength=8 maxlength=63></label>\
-         <label>{target}<input name=target type=url required placeholder=https://></label>\
+         <label>{target}<input name=target type=url required placeholder=https:// value=\"{kept}\"></label>\
          <button>{save}</button></form></html>",
         title = escaped(word(&w, "screen_setup_title")),
         ssid = escaped(word(&w, "frame_setup_page_ssid")),
         password = escaped(word(&w, "frame_setup_page_password")),
         target = escaped(word(&w, "frame_setup_page_target")),
+        kept = escaped(target),
         save = escaped(word(&w, "common_save")),
     )
 }
@@ -131,6 +136,23 @@ fn save(answer: &Answer) -> std::io::Result<()> {
     private(Path::new(TARGET), &answer.target)
 }
 
+/// The address a frame already has, for the form.
+fn kept_target() -> String {
+    fs::read_to_string(TARGET)
+        .map(|t| t.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn seen() {
+    let touched = fs::File::options()
+        .write(true)
+        .open(SETUP)
+        .and_then(|f| f.set_modified(SystemTime::now()));
+    if let Err(e) = touched {
+        eprintln!("{SETUP}: {e}");
+    }
+}
+
 fn serve(stream: TcpStream) -> std::io::Result<bool> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request = String::new();
@@ -162,10 +184,10 @@ fn serve(stream: TcpStream) -> std::io::Result<bool> {
                     true,
                 )
             }
-            Err(key) => (page(Some(key)), false),
+            Err(key) => (page(Some(key), &kept_target()), false),
         }
     } else {
-        (page(None), false)
+        (page(None, &kept_target()), false)
     };
     write!(
         writer,
@@ -181,6 +203,7 @@ fn main() {
         process::exit(1);
     });
     for stream in listener.incoming().flatten() {
+        seen();
         match serve(stream) {
             Ok(true) => {
                 let _ = Command::new("systemctl").arg("reboot").status();
@@ -251,7 +274,14 @@ mod tests {
 
     #[test]
     fn the_page_names_what_it_is_told_is_wrong() {
-        assert!(page(None).contains("<form method=post>"));
-        assert!(page(Some("frame_setup_page_bad_ssid")).contains("role=alert"));
+        assert!(page(None, "").contains("<form method=post>"));
+        assert!(page(Some("frame_setup_page_bad_ssid"), "").contains("role=alert"));
+    }
+
+    #[test]
+    fn an_address_already_kept_is_in_the_form_and_cannot_leave_its_attribute() {
+        assert!(page(None, "").contains("value=\"\""));
+        assert!(page(None, "https://home.example").contains("value=\"https://home.example\""));
+        assert!(page(None, "https://a\"><b").contains("value=\"https://a&quot;>&lt;b\""));
     }
 }

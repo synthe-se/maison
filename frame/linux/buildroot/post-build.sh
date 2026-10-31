@@ -45,6 +45,7 @@ enable systemd-timesyncd.service
 enable sshd.service
 enable maison-ui.service
 enable maison-mac.service
+enable maison-wifi-watch.service
 enable wpa_supplicant@.service wlan0
 enable maison-commit.service
 enable maison-update.timer
