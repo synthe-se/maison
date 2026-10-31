@@ -5,7 +5,9 @@
 
 import gzip
 import os
+import re
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -293,6 +295,130 @@ class Initramfs(unittest.TestCase):
         boot = initramfs.init(False)
         self.assertIn("sha256sum /sys/block/mmcblk0/device/cid", boot)
         self.assertIn('echo "$id" >/newroot/etc/machine-id', boot)
+
+
+def stubs(root: Path, **scripts) -> None:
+    """Commands of the system, each a /bin/sh body, first in PATH."""
+    bin_dir = root / "stubs"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in scripts.items():
+        path = bin_dir / name.replace("_", "-")
+        path.write_text(f"#!/bin/sh\nROOT={root}\nLOG=$ROOT/log\n{body}\n")
+        path.chmod(0o755)
+
+
+def rooted(text: str, root: Path, *directories: str) -> str:
+    """A script of the frame with its absolute paths under `root`."""
+    names = "|".join(re.escape(d) for d in directories)
+    return re.sub(rf"(?<![\w.$}}/])/({names})\b", rf"{root}/\1", text)
+
+
+class BootInit(unittest.TestCase):
+    """The generated /init, run: the frame's commands stubbed, its paths in a temporary directory."""
+
+    PATHS = ("sys", "proc", "dev", "android-data", "lower", "rw", "newroot", "tmp", "splash")
+    STATE = "active=a\npending=\ntries=0\nboots=0\n"
+    TRIAL = "active=a\npending=b\ntries=2\nboots=0\n"
+
+    def boot(self, state, kernels="", broken=""):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        root = Path(d.name)
+        (root / "log").touch()
+        for name in self.PATHS:
+            (root / name).mkdir()
+        slots = root / "android-data/maison/slots"
+        for slot in "ab":
+            (slots / slot).mkdir(parents=True)
+            (slots / slot / "sums").write_text("x\n")
+            if slot in kernels:
+                (slots / slot / "zImage").write_text("z")
+            if slot in broken:
+                (slots / slot / "bad").touch()
+        (slots / "state").write_text(state)
+        (root / "sys/class/block/p").mkdir(parents=True)
+        (root / "sys/class/block/p/uevent").write_text("PARTNAME=userdata\nDEVNAME=p\n")
+        (root / "proc/cmdline").write_text("root=x console=tty0 y\n")
+        (root / "newroot/etc").mkdir()
+        logged = 'echo "$(basename "$0") $*" >>$LOG'
+        wait = "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e $ROOT/%s ] && break; /bin/sleep 0.02; done"
+        stubs(
+            root,
+            mount=logged,
+            umount=logged,
+            e2fsck=logged,
+            kexec=logged,
+            losetup=f'if [ "$1" = -f ]; then echo loop; else {logged}; fi',
+            switch_root=logged,
+            maison_guard=":",
+            maison_loader=":",
+            chown=":",
+            sync=":",
+            sleep=":",
+            reboot=f"{logged}\nkill -9 $PPID",
+            # each waits for the other, long enough to tell that one never overlaps the other
+            insmod=f"""case "$1" in *fdrv*) {wait % "began"} ;; esac
+{logged}
+case "$1" in *fdrv*) : >$ROOT/loaded ;; esac""",
+            sha256sum=f"""[ "$1" = -c ] || {{ echo 0123; exit 0; }}
+echo "sums $(basename "$PWD") begin" >>$LOG
+: >$ROOT/began
+{wait % "loaded"}
+echo "sums $(basename "$PWD") end" >>$LOG
+[ ! -e bad ]""",
+        )
+        init = root / "init"
+        init.write_text(rooted(initramfs.init(False), root, *self.PATHS).replace("export PATH=/bin", f"export PATH={root}/stubs:$PATH"))
+        subprocess.run(["sh", str(init)], capture_output=True, timeout=30)
+        return (root / "log").read_text().splitlines(), (slots / "state").read_text()
+
+    @staticmethod
+    def started(log):
+        return [line.split("/")[-2] for line in log if line.startswith("losetup")]
+
+    @staticmethod
+    def loads(log):
+        return [i for i, line in enumerate(log) if line.startswith("insmod")]
+
+    def test_it_parses(self):
+        for debug in (False, True):
+            subprocess.run(["sh", "-n"], input=initramfs.init(debug).encode(), check=True)
+
+    def test_without_a_kernel_the_driver_loads_during_the_sums_then_the_slot_starts(self):
+        log, state = self.boot(self.STATE)
+        self.assertEqual(len(self.loads(log)), 2, "loaded once")
+        self.assertLess(log.index("sums a begin"), self.loads(log)[1])
+        self.assertLess(self.loads(log)[1], log.index("sums a end"))
+        self.assertLess(log.index("sums a end"), next(i for i, line in enumerate(log) if line.startswith("losetup")))
+        self.assertEqual(self.started(log), ["a"])
+        self.assertIn("boots=1", state)
+
+    def test_a_slot_that_fails_its_sums_is_never_mounted(self):
+        log, state = self.boot(self.TRIAL, broken="b")
+        self.assertIn("sums b end", log)
+        self.assertEqual(self.started(log), ["a"])
+        self.assertEqual(state, "active=a\npending=\ntries=0\nboots=1\n")
+
+    def test_a_try_is_counted_before_the_system_starts(self):
+        log, state = self.boot(self.TRIAL)
+        self.assertEqual(self.started(log), ["b"])
+        self.assertEqual(state, "active=a\npending=b\ntries=1\nboots=0\n")
+
+    def test_a_slot_with_its_kernel_starts_it_with_the_hardware_free(self):
+        log, _ = self.boot(self.STATE, kernels="a")
+        self.assertTrue([line for line in log if line.startswith("kexec -l")])
+        self.assertEqual((self.loads(log), self.started(log)), ([], []))
+
+    def test_a_kernel_a_failure_could_reach_keeps_the_driver_for_after_the_sums(self):
+        log, _ = self.boot(self.STATE, kernels="b")
+        self.assertLess(log.index("sums a end"), self.loads(log)[0])
+        log, _ = self.boot(self.STATE, kernels="b", broken="a")
+        self.assertTrue([line for line in log if line.startswith("kexec -l")])
+        self.assertEqual(self.loads(log), [])
+
+    def test_e2fsck_believes_no_clock_and_repairs_without_optimising(self):
+        self.assertEqual(initramfs.E2FSCK_CONF, "[options]\nbroken_system_clock = 1\n")
+        self.assertIn("e2fsck -p -E fixes_only $device", initramfs.init(False))
 
 
 if __name__ == "__main__":

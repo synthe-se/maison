@@ -61,6 +61,8 @@ HANDOVER = """	touch /tmp/stop-console
 	pkill -P $console
 	pkill -f "mksh -i"
 """
+# No battery: at this point the clock says 1970, so a time-based check must never be believed
+E2FSCK_CONF = "[options]\nbroken_system_clock = 1\n"
 SETTLE = 'for _ in 1 2 3 4 5 6 7 8 9 10; do ls /sys/class/drm/*/status >/dev/null 2>&1 && break; sleep 1; done'
 
 INIT = """#!/bin/mksh
@@ -142,38 +144,50 @@ choose() {{
 	# what cannot be counted (userdata full) still boots, and a slot failed for ever stops here
 	if [ "${{boots:-0}}" -lt 8 ]; then remember "$active" "" 0 $((${{boots:-0}} + 1)); slot=$active; fi
 }}
+own_kernel() {{
+	here=$slots/$slot
+	maison-guard arm
+	say "kernel of slot $slot"
+	line=$(uboot_line)
+	if kexec -l $here/zImage --dtb=$here/board.dtb --initrd=$here/initramfs.cpio.gz --command-line="$line maison.slot=$slot"; then
+		umount /android-data
+		kexec -e
+		reboot -f
+	fi
+	# never a trial of a kernel that did not run: spent, the next boot goes back
+	say "kexec of slot $slot failed"
+	[ -z "$trial" ] || remember "$active" "$pending" 0 "$boots"
+	reboot -f
+}}
+# its board support, then the driver itself, without its power save (the frame lives on the mains;
+# the driver sets it whatever cfg80211's default)
+wifi() {{ insmod /lib/modules/aic8800_bsp.ko && insmod /lib/modules/aic8800_fdrv.ko ps_on=0; }}
+loading=
 # after a kexec, the first kernel chose
 slot=$(sed -n 's/.*maison\\.slot=\\([ab]\\).*/\\1/p' /proc/cmdline)
 if [ -n "$data" ]; then
 	device=/dev/$(grep "^DEVNAME=" $data | cut -d= -f2)
-	[ -n "$slot" ] || e2fsck -p $device >/dev/null 2>&1
+	# clean or journal replayed, it stops at the superblock; a full check (errors found) repairs
+	# without optimising
+	[ -n "$slot" ] || e2fsck -p -E fixes_only $device >/dev/null 2>&1
 	if mount -t ext4 -o rw,noatime,nosuid,nodev,noexec $device /android-data; then
 		if [ -n "$slot" ]; then
 			[ "$(key pending)" = "$slot" ] && trial=1
 		else
-			choose
-			if [ -n "$slot" ] && [ -s $slots/$slot/zImage ]; then
-				here=$slots/$slot
-				maison-guard arm
-				say "kernel of slot $slot"
-				line=$(uboot_line)
-				if kexec -l $here/zImage --dtb=$here/board.dtb --initrd=$here/initramfs.cpio.gz --command-line="$line maison.slot=$slot"; then
-					umount /android-data
-					kexec -e
-					reboot -f
-				fi
-				# never a trial of a kernel that did not run: spent, the next boot goes back
-				say "kexec of slot $slot failed"
-				[ -z "$trial" ] || remember "$active" "$pending" 0 "$boots"
-				reboot -f
+			# no slot holds a kernel: whichever choose takes, no kexec follows, so the driver
+			# loads beside the sums (nothing here reads a slot)
+			if [ ! -s $slots/a/zImage ] && [ ! -s $slots/b/zImage ]; then
+				wifi &
+				loading=$!
 			fi
+			choose
+			[ -z "$slot" ] || [ ! -s $slots/$slot/zImage ] || own_kernel
 		fi
 	fi
 fi
 
-# 5. the Wi-Fi driver: its board support, then the driver itself, without its power save (the frame
-#    lives on the mains; the driver sets it whatever cfg80211's default)
-insmod /lib/modules/aic8800_bsp.ko && insmod /lib/modules/aic8800_fdrv.ko ps_on=0
+# 5. the Wi-Fi driver, unless it already started beside the sums
+if [ -n "$loading" ]; then wait $loading; else wifi; fi
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d /sys/class/net/wlan0 ] && break; sleep 1; done
 say "net: $(echo $(ls /sys/class/net))"
 
@@ -249,12 +263,13 @@ def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
         ino[0] += 1
         entries.append({"name": name, "data": data, "ino": ino[0], "mode": mode, "uid": 0, "gid": 0, "nlink": 1, "mtime": 0})
 
-    for d in ("bin", "dev", "proc", "sys", "lib", "lib/modules", "lib/firmware", "lib/firmware/silead", "splash"):
+    for d in ("bin", "dev", "etc", "proc", "sys", "lib", "lib/modules", "lib/firmware", "lib/firmware/silead", "splash"):
         add(d, mode=0o40755)
     parts = AIC8800_FIRMWARE.split("/")
     for i in range(2, len(parts)):
         add("/".join(parts[: i + 1]), mode=0o40755)
     add("init", init(debug).encode(), 0o100755)
+    add("etc/e2fsck.conf", E2FSCK_CONF.encode())
     add("bin/mksh", (tools / "mksh").read_bytes(), 0o100755)
     add("bin/toybox", (tools / "toybox").read_bytes(), 0o100755)
     for tool in ("maison-loader", "maison-guard", "kexec", "e2fsck"):

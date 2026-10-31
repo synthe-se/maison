@@ -224,7 +224,7 @@ has drawn (its heartbeat) without a restart, with the Wi-Fi and SSH, for 45 s, e
 150 s; a system already proved only has to draw, so that a router out of order is no failure.
 Tries spent, the slot goes to `slots/failed` and the frame stays on the one before. Each boot of
 the active slot is counted the same way: 4 without a proof and the frame moves to the other, 8 and
-it stops on the failure's line. All of a slot is checked against its `sums` at every boot. A slot's kernel adds a kexec to each boot until it is flashed to `boot`. A flash that dies
+it stops on the failure's line. All of a slot is checked against its `sums` at every boot, the Wi-Fi driver loading beside it when no slot holds a kernel (a kexec wants the hardware free). e2fsck takes `broken_system_clock`: no RTC, a clock at 1970 must force no full check. A slot's kernel adds a kexec to each boot until it is flashed to `boot`. A flash that dies
 midway still wants the reset pinhole.
 
 Over the air: a release is `manifest.json`, its Ed25519 signature `manifest.sig` and its files under
