@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use maison_api::lamps::{HueLamp, LampList, LampStats, ZigbeeLamp};
 use maison_api::matter::Covers;
 use maison_api::meross::{Consumption, ElectricityAnswer, PlugList};
+use maison_api::photos::PhotoList;
 use maison_api::scenes::SceneList;
 use maison_api::sun::{Side, SunNow, Where};
 use maison_api::tempo::{Calendar, Forecast, Today};
@@ -75,6 +76,8 @@ pub struct Sources {
     pub androidtv: Source<serde_json::Value>,
     pub place: Source<Where>,
     pub sun: Source<SunNow>,
+    /// The frame's photos: what the cache follows (`crate::photos`), never drawn as such.
+    pub photos: Source<PhotoList>,
 }
 
 pub const HUE: &str = "hue-lamp";
@@ -180,6 +183,11 @@ impl Sources {
             ),
             // signed out, the side alone (web/src/lib/sun/data.ts `sideNow`)
             sun: Source::every("sun:side", ms(paces::SUN_SIGNED_OUT_MS), get(paths::SUN)),
+            photos: Source::every(
+                format!("{}:list", maison_api::events::PHOTOS),
+                ms(paces::PHOTOS_MS),
+                get(paths::PHOTOS),
+            ),
         }
     }
 

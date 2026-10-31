@@ -9,8 +9,10 @@
 //! - `drag Y0 Y1`: a finger from Y0 to Y1 down the middle (the column scrolls)
 //! - `shot PATH`: the next drawing saved there as PNG
 //! - `keys`: every control's key, one line each
+//! - `idle`: as if nobody had touched the panel for `DIM_AFTER` (no two-minute wait in a run)
+//! - `turn`: the photo on the panel's time is up
 //!
-//! Said: `screen house`, `screen door TITLE`, `code CODE` (a pairing code shown), `shot PATH`,
+//! Said: `screen house`, `screen photos ID`, `screen door TITLE`, `code CODE` (a pairing code shown), `shot PATH`,
 //! `ok COMMAND` or `error COMMAND: why`.
 
 use std::io::BufRead;
@@ -28,6 +30,8 @@ pub enum Command {
     Drag(f32, f32),
     Shot(String),
     Keys,
+    Idle,
+    Turn,
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -40,6 +44,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         ["drag", y0, y1] => Ok(Command::Drag(num(y0)?, num(y1)?)),
         ["shot", path] => Ok(Command::Shot((*path).into())),
         ["keys"] => Ok(Command::Keys),
+        ["idle"] => Ok(Command::Idle),
+        ["turn"] => Ok(Command::Turn),
         _ => Err(format!("unknown command: {line}")),
     }
 }
@@ -98,6 +104,8 @@ pub fn run(app: &mut App, c: Command) -> Result<Option<String>, String> {
                 println!("key {key} {x:.0} {y:.0}");
             }
         }
+        Command::Idle => app.nobody_since(now),
+        Command::Turn => app.photo_turn(now),
     }
     app.dirty = true;
     Ok(None)
@@ -121,6 +129,8 @@ mod tests {
             Ok(Command::Shot("/tmp/a.png".into()))
         );
         assert_eq!(parse("keys"), Ok(Command::Keys));
+        assert_eq!(parse("idle"), Ok(Command::Idle));
+        assert_eq!(parse("turn"), Ok(Command::Turn));
         assert!(parse("fly").is_err());
         assert!(parse("tap x 1").is_err());
     }

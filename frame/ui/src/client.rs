@@ -176,15 +176,24 @@ impl Jar {
                 _ => Ok(()),
             };
         };
-        let dir = self.file.parent().unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir)?;
-        let temp = dir.join(format!(".{COOKIE_FILE}.tmp"));
-        let mut f = open_private(&temp)?;
-        writeln!(f, "{}", self.origin)?;
-        writeln!(f, "{cookie}")?;
-        f.sync_all()?;
-        std::fs::rename(&temp, &self.file)
+        write_private(
+            &self.file,
+            format!("{}\n{cookie}\n", self.origin).as_bytes(),
+        )
     }
+}
+
+/// `bytes` in `file`, whole or not at all, readable by the service alone: a temp file beside it,
+/// synced, renamed over it.
+pub fn write_private(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    let temp = dir.join(format!(".{name}.tmp"));
+    let mut f = open_private(&temp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    std::fs::rename(&temp, file)
 }
 
 #[cfg(unix)]
@@ -277,6 +286,25 @@ impl Client {
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
         let req = self.agent.get(format!("{}{path}", self.api));
         self.answer(self.with_cookie(req).call())
+    }
+
+    /// What `path` answers as it is, `limit` bytes at most (a photo).
+    pub fn bytes(&self, path: &str, limit: u64) -> Result<Vec<u8>, Failure> {
+        let req = self.agent.get(format!("{}{path}", self.api));
+        let mut res = self
+            .with_cookie(req)
+            .call()
+            .map_err(|e| Failure::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        if !(200..=299).contains(&status) {
+            let text = res.body_mut().read_to_string().unwrap_or_default();
+            return Err(refused(status, code_of(&text)));
+        }
+        res.body_mut()
+            .with_config()
+            .limit(limit)
+            .read_to_vec()
+            .map_err(|e| Failure::Unreachable(e.to_string()))
     }
 
     /// The server's event stream (`GET /api/events`), read line by line as it comes: no total
@@ -543,6 +571,25 @@ mod tests {
         c.forget_cookie();
         assert!(!file.exists());
         assert!(!c.has_cookie());
+    }
+
+    #[test]
+    fn bytes_come_as_they_are_bounded_and_a_refusal_is_told() {
+        let stub = serve(|line| match line {
+            l if l.contains("/photo") => (200, vec![], "\u{e9}jpeg".into()),
+            _ => (404, vec![], r#"{"code":"not_found"}"#.into()),
+        });
+        let dir = temp_dir("bytes");
+        let c = Client::new(&stub.origin, &dir, Duration::from_secs(5));
+        assert_eq!(c.bytes("/photo", 1024).unwrap(), "\u{e9}jpeg".as_bytes());
+        assert!(matches!(c.bytes("/photo", 2), Err(Failure::Unreachable(_))));
+        assert_eq!(
+            c.bytes("/other", 1024),
+            Err(Failure::Refused {
+                status: 404,
+                code: Some(Code::NotFound)
+            })
+        );
     }
 
     #[test]

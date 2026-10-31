@@ -21,6 +21,7 @@ mod i18n;
 mod live;
 mod pairing;
 mod paths;
+mod photos;
 mod sim;
 #[cfg(test)]
 mod testing;
@@ -41,6 +42,7 @@ use crate::app::App;
 use crate::config::{Config, PANEL};
 use crate::heartbeat::Heartbeat;
 use crate::i18n::k;
+use crate::photos::Order;
 use crate::ui::gfx::{Draw, Error, Gfx};
 use crate::ui::layout::{Ctx, Drawn};
 use crate::ui::model::Screen;
@@ -249,6 +251,7 @@ fn run() -> Result<(), Error> {
             app.dirty = true;
         }
         app.tick(now);
+        panel.stage(&mut app);
         if let Some(h) = &mut heart {
             h.idle(now);
         }
@@ -411,6 +414,7 @@ fn said_touches() -> bool {
 fn say_screen(screen: &Screen, said: &mut String) {
     let now_said = match screen {
         Screen::House { .. } => "screen house".to_string(),
+        Screen::Photos { photo, .. } => format!("screen photos {photo}"),
         Screen::Page { title, .. } => format!("screen page {title}"),
         Screen::Door { title, code, .. } => match code {
             Some(c) => format!("screen door {title}\ncode {c}"),
@@ -435,6 +439,23 @@ struct Panel<'t> {
 }
 
 impl Panel<'_> {
+    /// What the photos ask of the GPU: only here, on the drawing thread.
+    fn stage(&mut self, app: &mut App) {
+        for order in app.photo_orders() {
+            match order {
+                Order::Load(picture) => match self.gfx.stage(picture) {
+                    Ok(()) => app.photo_staged(Instant::now()),
+                    Err(e) => {
+                        eprintln!("a photo could not reach the panel: {e}");
+                        app.photo_not_staged(Instant::now());
+                    }
+                },
+                Order::Settle => self.gfx.settle(),
+                Order::Clear => self.gfx.clear_stage(),
+            }
+        }
+    }
+
     /// One drawing of `shown`, presented (and saved first to `shot`, a simulation's).
     fn draw(
         &mut self,
@@ -457,6 +478,7 @@ impl Panel<'_> {
             height: h as f32,
             scroll: app.scroll,
             over: app.over(now),
+            fade: app.photo_fade(now),
         };
         let drawn = if self.rotate {
             let target = match &mut self.turned {

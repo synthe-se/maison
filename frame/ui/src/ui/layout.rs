@@ -106,6 +106,8 @@ pub struct Ctx<'a> {
     /// How far the house's column is scrolled, in the panel's pixels.
     pub scroll: f32,
     pub over: Over<'a>,
+    /// How far the photo on the panel has come in over the last one (0 to 1).
+    pub fade: f32,
 }
 
 /// What a drawing leaves.

@@ -49,7 +49,6 @@ impl Backlight {
         }
     }
 
-    #[cfg(test)]
     pub fn asleep(&self) -> bool {
         self.asleep
     }

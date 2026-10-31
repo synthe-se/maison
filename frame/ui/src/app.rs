@@ -18,6 +18,7 @@ use crate::families::{self, Cx, Sources};
 use crate::i18n::{Words, k};
 use crate::live::Live;
 use crate::pairing::{Ask, Screen as Who, Session};
+use crate::photos::{Order, Photos};
 use crate::theme::{self, Palette};
 use crate::ui::icon;
 use crate::ui::layout::{Hit, Over, REACH, Rect, Target};
@@ -91,6 +92,8 @@ pub struct App {
     /// else until it lifts.
     backlight: Backlight,
     waking: bool,
+    /// The family's photos, shown while the panel sleeps.
+    photos: Photos,
     /// The column's height and the panel's, from the last drawing.
     content: f32,
     height: f32,
@@ -114,6 +117,7 @@ impl App {
             || Client::nowhere(HTTP_WAIT),
             |origin| Client::new(origin, &config.state_dir, HTTP_WAIT),
         );
+        let photos = Photos::new(&client, &config.state_dir, wake.clone());
         let mut live = Live::new(client.clone(), wake.clone());
         let session = if config.origin.is_some() {
             // what the server says changed: read again at once, the polls a safety net
@@ -144,6 +148,7 @@ impl App {
             touched: Instant::now(),
             backlight: Backlight::open(std::path::Path::new("/sys/class/backlight")),
             waking: false,
+            photos,
             content: 0.0,
             height: 0.0,
             hits: Vec::new(),
@@ -178,10 +183,12 @@ impl App {
             self.live.reopen();
         }
         if !revoked && self.session.screen == Who::Revoked {
-            // the screen was removed: the house goes, the pairing says so
+            // the screen was removed: the house goes, its photos too, the pairing says so
             self.live.clear();
+            self.photos.forget();
             self.open(View::House, now);
         }
+        self.photos.take();
         let came = self.live.take();
         changed |= came.changed;
         for (key, asked) in &came.read {
@@ -247,6 +254,11 @@ impl App {
         for t in self.commands.overdue(&self.words, now) {
             self.toast(t, now);
         }
+        let step = self
+            .photos
+            .tick(now, self.may_show_photos(), self.backlight.asleep());
+        self.scrolled |= step.redraw;
+        self.dirty |= step.screen;
         // what turns with time alone wakes the loop for this
         self.dirty |= self.next_look().is_some_and(|t| t <= now);
     }
@@ -290,6 +302,7 @@ impl App {
             (self.view != View::House || self.asking.is_some() || self.unfolded)
                 .then(|| self.touched + PAGE_IDLE),
             self.backlight.next(self.touched),
+            self.photos.next(now),
             self.look
                 .filter(|_| self.pressed.is_none())
                 .map(|(_, until)| until),
@@ -303,6 +316,42 @@ impl App {
 
     fn night(&self) -> bool {
         self.side == Some(Side::Dark)
+    }
+
+    /// A screen in the house shows its photos, Maison there or not; a door, never.
+    fn may_show_photos(&self) -> bool {
+        matches!(self.session.screen, Who::Paired | Who::Waiting)
+    }
+
+    pub fn photo_orders(&mut self) -> Vec<Order> {
+        self.photos.orders()
+    }
+
+    /// The panel took the photo: its fade starts, and the house's sources rest (`Screen::Photos`
+    /// reads none of them).
+    pub fn photo_staged(&mut self, now: Instant) {
+        self.photos.staged(now);
+        self.dirty = true;
+    }
+
+    pub fn photo_not_staged(&mut self, now: Instant) {
+        self.photos.not_staged(now);
+    }
+
+    pub fn photo_fade(&self, now: Instant) -> f32 {
+        self.photos.fade(now)
+    }
+
+    /// A simulation's hurry: nobody has touched the panel for long enough.
+    pub fn nobody_since(&mut self, now: Instant) {
+        self.touched = now
+            .checked_sub(crate::backlight::DIM_AFTER)
+            .unwrap_or(self.touched);
+    }
+
+    /// A simulation's hurry: the next photo now.
+    pub fn photo_turn(&mut self, now: Instant) {
+        self.photos.turn(now);
     }
 
     pub fn palette(&self) -> &'static Palette {
@@ -342,7 +391,9 @@ impl App {
     /// What the screen shows now, from who it is and what the house says.
     pub fn screen(&mut self, now: Instant) -> Screen {
         self.looked = now;
-        self.minute = (self.session.screen == Who::Paired).then(|| {
+        let paired = self.session.screen == Who::Paired;
+        let photo = self.photos.on().map(str::to_owned);
+        self.minute = (paired || photo.is_some()).then(|| {
             let into = chrono::Utc::now().timestamp().rem_euclid(MINUTE);
             now + Duration::from_secs((MINUTE - into) as u64)
         });
@@ -355,8 +406,19 @@ impl App {
             month: self.month,
             now,
         };
-        let (side, screen) = match &self.session.screen {
-            Who::Paired => (
+        // the cache follows Maison's list, photos shown or not
+        let list = paired.then(|| cx.live.want(&cx.sources.photos).data);
+        let (side, screen) = match (&self.session.screen, photo) {
+            (Who::Paired | Who::Waiting, Some(photo)) => {
+                let side = if paired {
+                    families::sun_signed_in(&mut cx)
+                } else {
+                    families::sun_signed_out(&mut cx)
+                };
+                let time = self.words.clock(cx.house_now().time());
+                (side, Screen::Photos { time, photo })
+            }
+            (Who::Paired, None) => (
                 families::sun_signed_in(&mut cx),
                 match &self.view {
                     View::House => {
@@ -377,9 +439,10 @@ impl App {
                     View::Plug(id) => families::plugs::page(&mut cx, id),
                 },
             ),
-            who @ Who::Setup(_) => (None, door(&self.words, who)),
-            who => (families::sun_signed_out(&mut cx), door(&self.words, who)),
+            (who @ Who::Setup(_), _) => (None, door(&self.words, who)),
+            (who, _) => (families::sun_signed_out(&mut cx), door(&self.words, who)),
         };
+        self.photos.list(list.flatten());
         if side.is_some() {
             self.side = side;
             self.backlight.idle(now, self.touched, self.night());
@@ -459,6 +522,7 @@ impl App {
         self.touched = now;
         // asleep: this finger only wakes the panel
         if self.backlight.wake(self.night()) {
+            self.photos.stop();
             self.waking = true;
             self.dirty = true;
             return;
@@ -722,6 +786,9 @@ mod tests {
     use super::*;
     use crate::client::stub::serve;
     use crate::i18n::Lang;
+    use crate::photos::cache::Cache;
+    use crate::photos::decode::tests::RED;
+    use crate::photos::show::FADE;
     use crate::testing::{temp_dir, wait_until};
     use crate::ui::model::Slider;
     use std::path::PathBuf;
@@ -1191,9 +1258,200 @@ mod tests {
         assert!(app.dirty);
     }
 
+    fn photo_id(n: u8) -> String {
+        format!("{n:0>64}")
+    }
+
+    /// An app in the house, with one photo in its cache.
+    fn with_photo(name: &str, who: Who) -> App {
+        let dir = temp_dir(name);
+        Cache::new(&dir).save(&photo_id(1), RED).unwrap();
+        let mut app = App::new(&config("http://127.0.0.1:9", dir), Arc::new(|| {}));
+        app.session = Session::idle(who);
+        app
+    }
+
+    /// Asleep at `now`, as the loop does it: time passes, the reader answers, the panel takes
+    /// the picture.
+    fn photos_on(app: &mut App, now: Instant) {
+        app.tick(now);
+        wait_until(|| {
+            app.take();
+            let loaded = app
+                .photo_orders()
+                .iter()
+                .any(|o| matches!(o, Order::Load(_)));
+            if loaded {
+                app.photo_staged(now);
+            }
+            loaded
+        });
+    }
+
+    #[test]
+    fn nobody_at_the_frame_the_photos_show_and_a_finger_only_brings_the_house_back() {
+        let mut app = with_photo("app-photos", Who::Paired);
+        let open = Target::Act(Act::Open(View::Tempo));
+        let whole = Hit {
+            x: 0.0,
+            y: 0.0,
+            w: 800.0,
+            h: 1280.0,
+            what: open,
+        };
+        app.drawn(drawing(vec![whole], 1280.0), 1280.0);
+        let before = app.touched + crate::backlight::DIM_AFTER - FRAME;
+        app.tick(before);
+        assert!(matches!(app.screen(before), Screen::House { .. }));
+        let asleep = app.touched + crate::backlight::DIM_AFTER;
+        assert!(app.next_wake(asleep) <= Some(asleep), "it wakes to dim");
+
+        photos_on(&mut app, asleep);
+        assert!(app.dirty, "the screen changes");
+        let Screen::Photos { time, photo } = app.screen(asleep) else {
+            panic!("the photos")
+        };
+        assert_eq!(photo, photo_id(1));
+        assert!(time.contains(':'), "{time}");
+        assert_eq!(app.photo_fade(asleep), 0.0);
+
+        let touch = asleep + Duration::from_secs(5);
+        app.drawn(drawing(Vec::new(), 0.0), 1280.0);
+        app.finger_down(400.0, 600.0, touch);
+        app.finger_up(400.0, 600.0, touch + FRAME);
+        assert_eq!(app.view, View::House, "the waking tap opened nothing");
+        assert!(app.owed());
+        assert!(matches!(app.screen(touch), Screen::House { .. }));
+        assert!(
+            app.photo_orders().iter().any(|o| matches!(o, Order::Clear)),
+            "its textures go"
+        );
+    }
+
+    #[test]
+    fn between_two_fades_nothing_is_drawn_but_the_minute() {
+        let mut app = with_photo("app-photos-idle", Who::Paired);
+        let asleep = app.touched + crate::backlight::DIM_AFTER;
+        photos_on(&mut app, asleep);
+        app.screen(asleep);
+        app.dirty = false;
+
+        // the fade: every frame, the same screen
+        assert_eq!(app.next_wake(asleep), Some(asleep), "paced by the panel");
+        app.tick(asleep + FADE / 2);
+        assert!(app.scrolled && !app.dirty);
+        app.scrolled = false;
+        app.tick(asleep + FADE);
+        assert!(app.scrolled, "its last frame");
+        assert!(
+            app.photo_orders()
+                .iter()
+                .any(|o| matches!(o, Order::Settle))
+        );
+
+        // then only the minute, and this one photo's turn
+        app.scrolled = false;
+        let rest = asleep + FADE * 2;
+        app.tick(rest);
+        assert!(!app.owed(), "at rest, no drawing");
+        let next = app.next_wake(rest).unwrap();
+        assert!(next > rest, "at rest, no wake");
+        assert_eq!(Some(next), app.minute.min(app.photos.next(rest)));
+        let minute = app.minute.unwrap();
+        app.tick(minute);
+        assert!(app.dirty, "the clock's minute");
+        assert!(matches!(app.screen(minute), Screen::Photos { .. }));
+    }
+
+    #[test]
+    fn while_the_photos_show_the_house_is_not_read() {
+        let mut app = with_photo("app-photos-rest", Who::Paired);
+        let t0 = app.touched;
+        app.screen(t0);
+        assert!(app.live.reading().contains(&"meross:list"));
+        let asleep = t0 + crate::backlight::DIM_AFTER;
+        photos_on(&mut app, asleep);
+        app.screen(asleep);
+        let mut reading = app.live.reading();
+        reading.sort_unstable();
+        assert_eq!(
+            reading,
+            ["photos:list", "shutters:place"],
+            "the sun's side for the backlight, the list for the cache"
+        );
+        app.finger_down(1.0, 1.0, asleep);
+        app.screen(asleep);
+        assert!(app.live.reading().contains(&"meross:list"), "and back");
+    }
+
+    #[test]
+    fn with_no_photo_or_at_a_door_the_panel_only_dims() {
+        let dir = temp_dir("app-no-photo");
+        let mut none = App::new(&config("http://127.0.0.1:9", dir), Arc::new(|| {}));
+        none.session = Session::idle(Who::Paired);
+        let asleep = none.touched + crate::backlight::DIM_AFTER;
+        none.tick(asleep);
+        none.take();
+        assert!(none.backlight.asleep());
+        assert!(matches!(none.screen(asleep), Screen::House { .. }));
+        assert_eq!(none.photos.next(asleep), None);
+
+        let mut door = with_photo("app-photo-door", Who::Expired);
+        let asleep = door.touched + crate::backlight::DIM_AFTER;
+        door.tick(asleep);
+        assert!(door.backlight.asleep());
+        assert_eq!(door.photos.on(), None);
+        assert!(door.photo_orders().is_empty());
+    }
+
+    #[test]
+    fn maison_away_the_photos_go_on_from_the_cache() {
+        let mut app = with_photo("app-photos-away", Who::Waiting);
+        let asleep = app.touched + crate::backlight::DIM_AFTER;
+        photos_on(&mut app, asleep);
+        assert!(matches!(app.screen(asleep), Screen::Photos { .. }));
+        assert!(app.minute.is_some(), "the clock still turns");
+        // told to pair again, the photos stop there
+        app.session = Session::idle(Who::Expired);
+        app.tick(asleep + FRAME);
+        assert_eq!(app.photos.on(), None);
+        assert!(app.dirty);
+        assert!(matches!(app.screen(asleep), Screen::Door { .. }));
+    }
+
+    #[test]
+    fn the_cache_follows_maisons_list_and_the_show_with_it() {
+        let id = photo_id(2);
+        let list = format!(r#"{{"success":true,"photos":[{{"id":"{id}","bytes":777}}]}}"#);
+        let stub = serve(move |line| match line {
+            l if l.starts_with("GET /api/photos ") => (200, vec![], list.clone()),
+            l if l.starts_with("GET /api/photos/") => {
+                let jpeg = String::from_utf8_lossy(RED).into_owned();
+                (200, vec![], jpeg)
+            }
+            _ => (503, vec![], String::new()),
+        });
+        let dir = temp_dir("app-photos-list");
+        let cache = Cache::new(&dir);
+        cache.save(&photo_id(1), RED).unwrap();
+        let mut app = App::new(&config(&stub.origin, dir), Arc::new(|| {}));
+        app.session = Session::idle(Who::Paired);
+        wait_until(|| {
+            app.screen(Instant::now());
+            app.take();
+            cache.ids() == [id.as_str()]
+        });
+        wait_until(|| {
+            app.take();
+            app.photos.kept() == [id.as_str()]
+        });
+    }
+
     #[test]
     fn a_removed_screen_leaves_the_house_for_its_door() {
         let dir = temp_dir("app-removed");
+        let cache = Cache::new(&dir);
+        cache.save(&photo_id(1), RED).unwrap();
         let removed = Arc::new(AtomicBool::new(false));
         let gone = removed.clone();
         let stub = serve(move |line| match line {
@@ -1242,6 +1500,7 @@ mod tests {
             Some(Act::Pairing(Ask::Pair))
         ));
         assert!(!dir.join("screen-cookie").exists());
+        wait_until(|| cache.ids().is_empty());
     }
 
     #[test]

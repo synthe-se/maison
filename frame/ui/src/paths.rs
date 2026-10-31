@@ -53,6 +53,8 @@ pub const BOX_KEY: &str = "/androidtv/key";
 pub const DEVICES: &str = "/devices";
 /// Scenes: the list, `/{id}/run`.
 pub const SCENES: &str = "/scenes";
+/// The frame's photos (`maison_api::photos`): the list, `/{id}` one's bytes.
+pub const PHOTOS: &str = "/photos";
 /// Who the screen is (its cookie renewed).
 pub const SCREEN_ME: &str = "/screens/me";
 /// A new pairing code.
@@ -63,6 +65,11 @@ pub const PAIRING_CLAIM: &str = "/screens/pairing/claim";
 /// `{base}/{id}/{action}`, the id escaped (a lamp's `aa:bb` is one segment).
 pub fn of(base: &str, id: &str, action: &str) -> String {
     format!("{base}/{}/{action}", segment(id))
+}
+
+/// One photo's bytes.
+pub fn photo(id: &str) -> String {
+    format!("{PHOTOS}/{}", segment(id))
 }
 
 /// An id in a path, as the web app's `path` tag writes it.
