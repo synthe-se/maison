@@ -2,7 +2,7 @@
 # The frame's mainline system, updated: Linux boots by default (the `boot` slot; the vendor's
 # Android sits in `recovery`, for the record). With --install the system (rootfs.squashfs) goes to
 # userdata from Linux itself over the Wi-Fi (install.sh: its SHA-256 checked over the USB
-# console); with --flash the kernel image (frame/build/boot-linux.img: image.py --slot boot) is
+# console); with --flash the kernel image (frame/build/boot-linux.img: image.py) is
 # written to `boot`: from Linux itself when it is up (sent over the Wi-Fi, the eMMC's addressing
 # proved first by reading U-Boot's head where layout.txt says and finding boot's header, then
 # written, read back and compared), else from the loader (rkwrite.py; the reset pinhole, as
@@ -10,7 +10,9 @@
 # eMMC's slots untouched, so that cutting the power comes back to what is flashed. Then the frame
 # is rebooted and its app waited for. Every wait has a deadline and fails the script, loudly; each
 # step is timed.
-# Usage: frame/linux/try.sh [--install [--kernel]] [--flash | --ram]
+# With --logo, U-Boot's first picture: the `resource` partition, read, its logo replaced, written
+# back and read back, under the same proof of addressing.
+# Usage: frame/linux/try.sh [--install [--kernel]] [--logo] [--flash | --ram]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -36,9 +38,9 @@ wait_for() {
 c() { "$REPO/frame/linux/console.sh" "$@"; }
 ui_active() { [ "$(c 'systemctl is-active maison-ui' 20 2>/dev/null)" = active ]; }
 
-install=false flash=false ram=false kernel=
+install=false flash=false ram=false logo=false kernel=
 for a in "$@"; do
-	case "$a" in --install) install=true ;; --kernel) kernel=--kernel ;; --flash) flash=true ;; --ram) ram=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
+	case "$a" in --install) install=true ;; --kernel) kernel=--kernel ;; --flash) flash=true ;; --ram) ram=true ;; --logo) logo=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
 done
 if $flash && $ram; then echo "--flash or --ram" >&2; exit 2; fi
 
@@ -52,6 +54,38 @@ BACKUP="$HOME/maison-frame/backup"
 start_of() { awk -v p="$1" -F'[ =]' '$1==p {print $3}' "$BACKUP/layout.txt"; }
 size_of() { awk -v p="$1" -F'[ =]' '$1==p {print $5}' "$BACKUP/layout.txt"; }
 
+# the eMMC as Linux sees it is the layout's: U-Boot's head where it says, boot's header where it says
+proved() {
+	local uboot head_sum
+	uboot=$(start_of mmcblk0p1)
+	head_sum=$(head -c 4096 "$BACKUP/mmcblk0p1.img" | shasum -a 256 | cut -c1-64)
+	[ "$(c "dd if=/dev/mmcblk0 bs=512 skip=$uboot count=8 2>/dev/null | sha256sum | cut -c1-64" 90)" = "$head_sum" ] ||
+		{ echo "the eMMC's addressing is not the layout's (U-Boot's head differs): nothing written" >&2; exit 1; }
+	[ "$(c "dd if=/dev/mmcblk0 bs=512 skip=$1 count=1 2>/dev/null | head -c 8; echo" 90)" = "ANDROID!" ] ||
+		{ echo "no boot image header at sector $1: nothing written" >&2; exit 1; }
+}
+
+if $logo; then
+	wait_for "the frame (USB console or SSH, Linux up)" 120 console
+	proved "$(start_of mmcblk0p5)"
+	start=$(start_of mmcblk0p3) sectors=$(size_of mmcblk0p3)
+	dir=$(mktemp -d)
+	step "reading the resource partition"
+	"$REPO/frame/linux/frame-read.sh" "dd if=/dev/mmcblk0 bs=512 skip=$start count=$sectors 2>/dev/null" "$dir/resource.img"
+	[ "$(head -c 4 "$dir/resource.img")" = RSCE ] || { echo "no resource image at sector $start: nothing written" >&2; exit 1; }
+	python3 -I "$REPO/frame/linux/splash.py" "$dir/resource.img" "$dir/logo.img"
+	"$REPO/frame/linux/send.sh" "$dir/logo.img" /tmp/logo.img
+	step "writing it (sector $start, $sectors sectors)"
+	c "dd if=/tmp/logo.img of=/dev/mmcblk0 bs=512 seek=$start conv=notrunc,fsync 2>&1 | tail -1; sync; echo 3 > /proc/sys/vm/drop_caches" 120
+	want=$(shasum -a 256 "$dir/logo.img" | cut -c1-64)
+	got=$(c "dd if=/dev/mmcblk0 bs=512 skip=$start count=$sectors 2>/dev/null | sha256sum | cut -c1-64" 120)
+	[ "$got" = "$want" ] || { echo "resource reads back $got, not $want" >&2; exit 1; }
+	c 'rm -f /tmp/logo.img' 10
+	rm -rf "$dir"
+	step "the logo written and read back"
+	$flash || $ram || exit 0
+fi
+
 if $ram; then
 	BUILD="$REPO/frame/build"
 	for f in linux/zImage linux/rk3126-amaboo-gbzk-y1000.dtb linux-initramfs.cpio.gz; do
@@ -64,16 +98,11 @@ if $ram; then
 	c 'systemctl kexec' 10 || true
 	wait_for "the console to go" 60 no_console
 elif $flash && console; then
-	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
-	boot=$(start_of mmcblk0p5) uboot=$(start_of mmcblk0p1)
+	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py first" >&2; exit 1; }
+	boot=$(start_of mmcblk0p5)
 	sectors=$(($(wc -c <"$IMG") / 512))
 	[ "$sectors" -le "$(size_of mmcblk0p5)" ] || { echo "$IMG: $sectors sectors, boot holds $(size_of mmcblk0p5)" >&2; exit 1; }
-	# the eMMC as Linux sees it is the layout's: U-Boot's head where it says, boot's header where it says
-	head_sum=$(head -c 4096 "$BACKUP/mmcblk0p1.img" | shasum -a 256 | cut -c1-64)
-	[ "$(c "dd if=/dev/mmcblk0 bs=512 skip=$uboot count=8 2>/dev/null | sha256sum | cut -c1-64" 90)" = "$head_sum" ] ||
-		{ echo "the eMMC's addressing is not the layout's (U-Boot's head differs): nothing written" >&2; exit 1; }
-	[ "$(c "dd if=/dev/mmcblk0 bs=512 skip=$boot count=1 2>/dev/null | head -c 8; echo" 90)" = "ANDROID!" ] ||
-		{ echo "no boot image header at sector $boot: nothing written" >&2; exit 1; }
+	proved "$boot"
 	step "addressing proved: sending $(basename "$IMG")"
 	"$REPO/frame/linux/send.sh" "$IMG" /tmp/boot-linux.img
 	step "writing it to boot (sector $boot, $sectors sectors)"
@@ -85,7 +114,7 @@ elif $flash && console; then
 	c 'rm -f /tmp/boot-linux.img; systemctl reboot' 10 || true
 	wait_for "the console to go" 60 no_console
 elif $flash; then
-	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
+	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py first" >&2; exit 1; }
 	step "the loader: power off, hold the reset pinhole, power on with the USB-C on this machine"
 	wait_for "the loader" 300 loader
 	step "writing $(basename "$IMG") to boot (about 1 min)"

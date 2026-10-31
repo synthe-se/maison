@@ -1,14 +1,16 @@
 #!/bin/sh
 # What wpa_supplicant@wlan0 reads (/etc is the tmpfs over the read-only system: rebuilt at every
 # boot, never written to the eMMC): the network the frame's setup was given, else the ones Android
-# knows, with only the keys both supplicants read the same way. With no network or no address, the
-# frame is its own Wi-Fi for its first setup (maison-setup): named and locked from its eMMC's
-# serial, what the interface shows, the only time it is ever an access point.
+# knows, with only the keys both supplicants read the same way. With no network or no address, or
+# while maison-wifi-watch says the network is lost, the frame is its own Wi-Fi for its setup
+# (maison-setup): named and locked from its eMMC's serial, what the interface shows, the only times
+# it is ever an access point.
 set -eu
 own=/android-data/maison/wifi.conf
 android=/android-data/misc/wifi/wpa_supplicant.conf
 target=/android-data/maison/target
 out=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+lost=/run/maison-lost
 umask 077
 mkdir -p /etc/wpa_supplicant
 # no address yet: an empty one, for the interface's credential; it then asks to set the frame up
@@ -30,7 +32,7 @@ networks() {
 }
 
 found=$(networks)
-if [ -n "$found" ] && [ -s "$target" ]; then
+if [ -n "$found" ] && [ -s "$target" ] && [ ! -e "$lost" ]; then
 	printf 'ctrl_interface=/run/wpa_supplicant\ncountry=FR\n%s\n' "$found" >"$out"
 	echo "maison-wifi: $(grep -c '^network=' "$out") network(s)"
 	exit 0
@@ -42,7 +44,9 @@ password=$(echo "$serial" | cut -c5-16)
 printf 'ctrl_interface=/run/wpa_supplicant\ncountry=FR\nap_scan=2\nnetwork={\n\tssid="%s"\n\tmode=2\n\tfrequency=2437\n\tkey_mgmt=WPA-PSK\n\tproto=RSN\n\tpairwise=CCMP\n\tgroup=CCMP\n\tpsk="%s"\n}\n' "$ssid" "$password" >"$out"
 printf 'MAISON_SETUP_SSID=%s\nMAISON_SETUP_PASSWORD=%s\nMAISON_SETUP_URL=http://192.168.4.1\n' "$ssid" "$password" >/run/maison-setup
 chmod 644 /run/maison-setup
+# networkd's user reads it, whatever this script's umask
 mkdir -p /run/systemd/network
+chmod 755 /run/systemd/network
 printf '[Match]\nName=wlan0\n\n[Network]\nAddress=192.168.4.1/24\nDHCPServer=yes\n' >/run/systemd/network/40-maison-setup.network
 chmod 644 /run/systemd/network/40-maison-setup.network
 systemctl --no-block start maison-setup

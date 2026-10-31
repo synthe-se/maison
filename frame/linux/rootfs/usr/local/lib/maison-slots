@@ -9,5 +9,5 @@ remember() { printf 'active=%s\npending=%s\ntries=%s\nboots=%s\n' "$1" "$2" "$3"
 other() { if [ "$1" = a ]; then echo b; else echo a; fi; }
 # every file of the slot as `sums` says it
 whole() { [ -s $slots/$1/sums ] && (cd $slots/$1 && sha256sum -c sums >/dev/null 2>&1); }
-# the command line U-Boot gave, without what our kernel adds to it
-uboot_line() { sed "s/ console=tty0 .*//" /proc/cmdline; }
+# the command line this kernel was given, without what it adds itself
+uboot_line() { sed "s/ *console=tty0 .*//" /proc/cmdline; }
