@@ -315,7 +315,6 @@
 	"frame_setup_page_password": "Wi-Fi password",
 	"frame_setup_page_ssid": "Name of the house’s Wi-Fi",
 	"frame_setup_page_target": "Maison’s address",
-	"frame_setup_page_title": "Set up this frame",
 	"group_partial": "{done} · no answer from: {names}",
 	"hue_lamps_address": "Bluetooth address",
 	"hue_lamps_blacklist": "Hide the lamp",

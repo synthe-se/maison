@@ -50,7 +50,7 @@ fn page(error: Option<&str>) -> String {
          <label>{password}<input name=password type=password required minlength=8 maxlength=63></label>\
          <label>{target}<input name=target type=url required placeholder=https://></label>\
          <button>{save}</button></form></html>",
-        title = escaped(word(&w, "frame_setup_page_title")),
+        title = escaped(word(&w, "screen_setup_title")),
         ssid = escaped(word(&w, "frame_setup_page_ssid")),
         password = escaped(word(&w, "frame_setup_page_password")),
         target = escaped(word(&w, "frame_setup_page_target")),
