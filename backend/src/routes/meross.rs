@@ -4,14 +4,14 @@ use axum::{
     Json, Router,
 };
 use maison_api::{
-    meross::{ElectricityAnswer, PlugList, ToggleRequest},
+    meross::{Consumption, ElectricityAnswer, PlugList, ToggleRequest},
     OfDevice,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     error::AppError,
-    meross::{MerossConsumptionEntry, MerossConsumptionSummary, MerossStatus},
+    meross::MerossStatus,
     routes::{Answer, DeviceRef, Reply},
     AppState,
 };
@@ -31,13 +31,6 @@ fn answer<T: Serialize>(device: DeviceRef, message: impl Into<String>, body: T) 
 #[serde(rename_all = "camelCase")]
 struct Status {
     status: MerossStatus,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Consumption {
-    consumption: Vec<MerossConsumptionEntry>,
-    summary: MerossConsumptionSummary,
 }
 
 #[derive(Debug, Serialize)]

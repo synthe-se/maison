@@ -9,10 +9,10 @@ use std::time::Instant;
 
 use crate::commands::Commands;
 use crate::i18n::Words;
-use crate::theme::{self, Palette, Rgba, Type, coarse, px, ty, wide};
+use crate::theme::{self, Face, Palette, Rgba, Type, coarse, px, ty, wide};
 use crate::ui::gfx::{Draw, Error, Pen};
 use crate::ui::icon::Icon;
-use crate::ui::model::{Act, Slider};
+use crate::ui::model::{Act, Asked, Slider};
 use crate::ui::slider::Sliders;
 
 /// What a finger can land on, in the panel's pixels as drawn (scroll applied).
@@ -60,12 +60,35 @@ impl Target {
     /// The key of what it does: an order's, a slider's (a simulation finds controls by it).
     pub fn key(&self) -> Option<Cow<'_, str>> {
         match self {
-            Self::Act(Act::Order(o)) => Some(o.key.as_str().into()),
+            Self::Act(Act::Order(o) | Act::Key(o, _)) => Some(o.key.as_str().into()),
+            Self::Act(Act::Ask(a)) => Some(format!("ask:{}", a.order.key).into()),
+            Self::Act(Act::Keep) => Some("dialog:keep".into()),
+            Self::Act(Act::Sure) => Some("dialog:sure".into()),
+            Self::Act(Act::Jump(to)) => Some(format!("jump:{to}").into()),
+            Self::Act(Act::Unfold) => Some("now:more".into()),
             Self::Slider { slider, .. } => Some(slider.key.as_str().into()),
             Self::Act(Act::Open(v)) => Some(v.key()),
             _ => None,
         }
     }
+}
+
+/// A box in the panel's pixels.
+pub type Rect = (f32, f32, f32, f32);
+
+/// What the app adds over the screen, this drawing.
+#[derive(Default, Clone, Copy)]
+pub struct Over<'a> {
+    /// What the finger is on (docs/ux.md § 7: every target acknowledges a touch).
+    pub pressed: Option<Rect>,
+    /// Maison does not answer: one word for the house, the gestures out of reach.
+    pub gone: bool,
+    /// The question asked (a dialog over the screen).
+    pub asking: Option<&'a Asked>,
+    /// « Maintenant » shown whole.
+    pub unfolded: bool,
+    /// The group a chip just led to.
+    pub flash: Option<&'static str>,
 }
 
 /// What the painter reads besides the screen.
@@ -82,6 +105,7 @@ pub struct Ctx<'a> {
     pub height: f32,
     /// How far the house's column is scrolled, in the panel's pixels.
     pub scroll: f32,
+    pub over: Over<'a>,
 }
 
 /// What a drawing leaves.
@@ -89,6 +113,8 @@ pub struct Drawn {
     pub hits: Vec<Hit>,
     /// The house's column, in the panel's pixels (what scrolls).
     pub content: f32,
+    /// How far the column scrolls to bring each anchored group under the header.
+    pub anchors: Vec<(&'static str, f32)>,
 }
 
 pub const GROUP_HEAD: f32 = px::CONTROL_H;
@@ -98,6 +124,26 @@ pub const TOUCH: f32 = coarse::CONTROL_H_S;
 pub const TITLE: Type = ty::BODY.weight(600);
 
 // The components' own measures, written in their Svelte (not tokens yet): said here once.
+/// The home's head: the brand, the time and the date, read across the room.
+pub const HOUSE_HEAD: f32 = 96.0;
+/// The time on the wall (no Svelte: a phone has its own clock).
+pub const CLOCK: Type = Type {
+    weight: 600,
+    size: 72.0,
+    line: 80.0,
+    face: Face::Display,
+};
+/// A chip's words, read from a metre (the web's `--t-tiny` is for a phone in a hand).
+pub const CHIP: Type = ty::BODY.weight(500);
+/// A calendar's cell, at most (Swatch.svelte `.cell`: `--tile-icon`), and between two.
+pub const CELL_GAP: f32 = px::S_HALF * 2.0;
+/// A remote's pad: three keys high, three wide (Pad.svelte), arrows and OK 8 px apart.
+pub const PAD_H: f32 = 2.0 * px::REMOTE_KEY + px::REMOTE_OK + 2.0 * px::S_2;
+pub const PAD_W: f32 = PAD_H;
+/// A line of facts, a table's row (StatusRow).
+pub const FACT_H: f32 = ty::SECONDARY.line + px::S_2;
+/// A dialog's width (ConfirmDialog: `--measure` on a panel this narrow, less than its margins).
+pub const DIALOG_W: f32 = 520.0;
 /// Icon.svelte's default size (a button's icon).
 pub const ICON: f32 = 18.0;
 /// DeviceTile's gesture icon.
@@ -136,9 +182,9 @@ pub const ROW_PAD_BOTTOM: f32 = px::S_3;
 /// Between a row's head and each control under it (`.tile`'s gap).
 pub const PART_GAP: f32 = px::S_2;
 /// « Maintenant » (NowStrip): two lines of chips at most, 4 px apart, 16 px over the groups; a
-/// chip's warning triangle (Chip.svelte: 14 px).
+/// chip's warning triangle (Chip.svelte: 14 px, grown with its words).
 pub const NOW_LINES: usize = 2;
-pub const CHIP_ICON: f32 = 14.0;
+pub const CHIP_ICON: f32 = 16.0;
 
 /// Which chips fit `lines` lines `w` wide, `gap` apart, given their widths and whether each
 /// needs a hand, and how many wait behind « +N » (`more`: its width for a count): the facts
@@ -262,6 +308,7 @@ pub struct P<'d, 'a, 't, 'c> {
     /// Measuring only: nothing drawn, no hit left, every height said (the columns' balance
     /// asks each group's height of the same code that draws it).
     pub measuring: bool,
+    pub anchors: Vec<(&'static str, f32)>,
 }
 
 impl P<'_, '_, '_, '_> {
@@ -457,10 +504,19 @@ impl P<'_, '_, '_, '_> {
         self.hit(x, y, w, h, Target::Cover);
     }
 
+    /// Whether a gesture can go now: while Maison is gone, what would send nothing but a look.
+    pub fn can(&self, act: &Act) -> bool {
+        let sends = matches!(
+            act,
+            Act::Order(_) | Act::Key(..) | Act::Ask(_) | Act::Sure | Act::Refresh(_)
+        );
+        !(self.c.over.gone && sends)
+    }
+
     /// Words, then « · » and a link (underlined, `ink`), on one secondary line at (x, y) in `w`
     /// CSS px (Stale's « Dernière lecture 14:02 · Réessayer », a tile's « Pas de réponse ·
     /// Réessayer », a shutter's « Fermeture 20:24 · Ne pas fermer ce soir »). The link is a 44 px
-    /// target from `target_y` when it acts (`act`).
+    /// target from `target_y`: it acts (`act`), or keeps its hit and does nothing.
     #[allow(clippy::too_many_arguments)] // one line's pieces: words, link, where, how
     pub fn link_line(
         &mut self,
@@ -482,15 +538,10 @@ impl P<'_, '_, '_, '_> {
         let lw = self.line(link, t, ink, lx, y, w - used - sep_w)?;
         // app.css: `text-underline-offset: var(--s-half)`
         self.rounded(lx, y + t.line - px::S_HALF, lw, 1.0, 0.0, ink)?;
-        if let Some(act) = act {
-            self.hit(
-                lx - px::S_2,
-                target_y,
-                lw + px::S_4,
-                TOUCH,
-                Target::Act(act),
-            );
-        }
+        let what = act
+            .filter(|a| self.can(a))
+            .map_or(Target::Cover, Target::Act);
+        self.hit(lx - px::S_2, target_y, lw + px::S_4, TOUCH, what);
         Ok(())
     }
 }

@@ -21,19 +21,19 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use maison_api::lamps::{HueLamp, LampList, LampStats, ZigbeeLamp};
 use maison_api::matter::Covers;
-use maison_api::meross::{ElectricityAnswer, PlugList};
+use maison_api::meross::{Consumption, ElectricityAnswer, PlugList};
 use maison_api::scenes::SceneList;
 use maison_api::sun::{Side, SunNow, Where};
-use maison_api::tempo::{Forecast, Today};
-use maison_api::{Answer, HOUSE_TZ, Tz, paces};
+use maison_api::tempo::{Calendar, Forecast, Today};
+use maison_api::{Answer, HOUSE_TZ, OfDevice, Tz, paces};
 
 use crate::client::Client;
-use crate::commands::{Outcome, Toast};
+use crate::commands::{Commands, Outcome, Toast};
 use crate::i18n::{Words, k};
 use crate::live::{Live, Source, View};
 use crate::paths;
-use crate::ui::icon;
-use crate::ui::model::{Act, Body, Button, Group};
+use crate::ui::icon::{self, Icon};
+use crate::ui::model::{self, Act, Body, Button, Group, Lead, Part, Screen, Tile};
 
 fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
@@ -58,6 +58,8 @@ pub struct Sources {
     pub covers: Source<Covers>,
     pub plugs: Source<PlugList>,
     electricity: HashMap<String, Source<ElectricityAnswer>>,
+    consumption: HashMap<String, Source<OfDevice<Consumption>>>,
+    calendars: HashMap<String, Source<Calendar>>,
     pub scenes: Source<SceneList>,
     /// The IR blasters found (`/broadlink/discover`), the air conditioner's last order.
     pub blasters: Source<serde_json::Value>,
@@ -87,6 +89,8 @@ pub const NABAZTAG: &str = "nabaztag";
 /// Every cats' key starts with it: one refresh after a gesture reads them all again (the
 /// server says `tuya:<id>:` when a device pushes).
 pub const TUYA: &str = maison_api::events::TUYA;
+/// What « Maintenant » leads to the lamps' group by (the families have their own prefixes).
+pub const LAMPS_GROUP: &str = "lamps";
 pub const TV: &str = "tv";
 /// The box: the event the server says when its power changes.
 pub const BOX: &str = maison_api::events::ANDROID_TV;
@@ -133,6 +137,8 @@ impl Sources {
             ),
             plugs: Source::every("meross:list", ms(paces::MEROSS_LIST_MS), get(paths::MEROSS)),
             electricity: HashMap::new(),
+            consumption: HashMap::new(),
+            calendars: HashMap::new(),
             scenes: Source::every("scenes:list", ms(paces::SCENES_MS), get(paths::SCENES)),
             // asked often until the blaster answers (the web's search), then seldom
             blasters: Source::paced(
@@ -193,6 +199,28 @@ impl Sources {
         })
     }
 
+    /// A plug's days, its source made on first ask.
+    pub fn consumption(&mut self, id: &str) -> &Source<OfDevice<Consumption>> {
+        self.consumption.entry(id.to_string()).or_insert_with(|| {
+            Source::every(
+                format!("{MEROSS}:consumption:{id}"),
+                ms(paces::MEROSS_CONSUMPTION_MS),
+                get(paths::of(paths::MEROSS, id, "consumption")),
+            )
+        })
+    }
+
+    /// A Tempo season's days, its source made on first ask.
+    pub fn calendar(&mut self, season: &str) -> &Source<Calendar> {
+        self.calendars.entry(season.to_string()).or_insert_with(|| {
+            Source::every(
+                format!("{TEMPO}:calendar:{season}"),
+                ms(paces::TEMPO_MS),
+                get(format!("{}?season={season}", paths::TEMPO_CALENDAR)),
+            )
+        })
+    }
+
     /// A plug's live power, its source made on first ask.
     pub fn electricity(&mut self, id: &str) -> &Source<ElectricityAnswer> {
         self.electricity.entry(id.to_string()).or_insert_with(|| {
@@ -210,6 +238,10 @@ pub struct Cx<'a> {
     pub live: &'a mut Live,
     pub words: &'a Words,
     pub sources: &'a mut Sources,
+    /// The gestures, for what only they know (an assumed state's last order).
+    pub commands: &'a Commands,
+    /// The Tempo calendar's month, once another was asked.
+    pub month: Option<i32>,
     pub now: Instant,
 }
 
@@ -302,6 +334,27 @@ pub fn stale<T>(
         cx.words.t(k::LIVE_STALE, &[("time", time.into())]),
         Button::new(None, cx.words.s(k::COMMON_RETRY), Act::Refresh(refresh)),
     ))
+}
+
+/// A page of the house: its title, the way back, its groups.
+pub fn page(w: &Words, title: String, groups: Vec<Group>) -> Screen {
+    Screen::Page {
+        title,
+        back: Box::new(Button::new(
+            Some(icon::ARROW_LEFT),
+            w.s(k::BACK_HOME),
+            Act::Open(model::View::House),
+        )),
+        groups,
+    }
+}
+
+/// A fact of a device's page (StatusRow): what it is, its value, in the warning style when it
+/// needs a hand; its controls under it.
+pub fn fact(icon: Icon, label: &str, value: String, warn: bool, parts: Vec<Part>) -> Tile {
+    Tile::new(label, value, Lead::Glyph { icon, on: false })
+        .warn(warn)
+        .parts(parts)
 }
 
 /// How a group's « Tout … » went (everyone.ts `sayOutcome`): all done in `said(count)`; else a

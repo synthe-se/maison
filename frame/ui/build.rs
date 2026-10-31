@@ -141,11 +141,18 @@ fn ident(name: &str) -> String {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Rgba([u8; 4]);
 
-/// `#f2f0ea`, `#fff`, `transparent`.
+/// `#f2f0ea`, `#fff`, `transparent`, `rgb(21 26 33 / 45%)`.
 fn color(s: &str) -> Option<Rgba> {
     let s = s.trim();
     if s == "transparent" {
         return Some(Rgba([0, 0, 0, 0]));
+    }
+    if let Some(args) = s.strip_prefix("rgb(").and_then(|a| a.strip_suffix(')')) {
+        let (rgb, alpha) = args.split_once('/')?;
+        let mut n = rgb.split_whitespace().map(str::parse::<u8>);
+        let (r, g, b) = (n.next()?.ok()?, n.next()?.ok()?, n.next()?.ok()?);
+        let percent: f32 = alpha.trim().strip_suffix('%')?.parse().ok()?;
+        return Some(Rgba([r, g, b, (percent * 2.55).round() as u8]));
     }
     let hex = s.strip_prefix('#')?;
     let hex: String = match hex.len() {

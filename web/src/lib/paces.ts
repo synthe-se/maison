@@ -121,6 +121,18 @@ export const SLIDER_THROTTLE_MS = 300;
 /** A slider let go holds its value this long against an older reading. */
 export const SLIDER_HOLD_MS = 3000;
 
+/** A press stays visible at least this long (docs/ux.md § 7). */
+export const PRESSED_MS = 100;
+
+/** A remote's key held repeats after this long. */
+export const KEY_REPEAT_DELAY_MS = 500;
+
+/** Then this often. */
+export const KEY_REPEAT_MS = 100;
+
+/** The volume's keys, what the TV follows. */
+export const VOLUME_REPEAT_MS = 200;
+
 /** How long a toast stays. */
 export const TOAST_MS = 5000;
 

@@ -3,20 +3,25 @@
 //! sent, « Allumer » sends the last settings again (without their sleep timer, as the remote's
 //! `climate_on`), « Éteindre » switches it off, and the two setpoint buttons send the same
 //! settings a degree cooler or warmer, each saying the setpoint it sends. The settings are the
-//! backend's (`settings` in its answer, written into a command by it): the frame changes only
-//! their temperature. Without a blaster on the network the buttons stay, out of reach.
+//! backend's (`settings` in its answer, written into a command by it). Without a blaster on the
+//! network the buttons stay, out of reach. Its row opens its page (SettingsFields, ClimateForm):
+//! mode, fan, vane, econo, the sleep timer, each choice sent at once, as a remote's key sends
+//! the unit its whole state; the order keeps the running timer. Off, nothing there can be sent
+//! (the grammar's `state-off` carries no settings): out of reach, said why.
 
 use chrono::DateTime;
 use maison_api::Tz;
-use maison_api::climate::{self, FIRST_ON_COMMAND, OFF_COMMAND, SendRequest};
+use maison_api::climate::{
+    self, FANS, FIRST_ON_COMMAND, MODES, OFF_COMMAND, STOP_CHOICES_MIN, SendRequest, VANES,
+};
 use serde_json::Value;
 
-use super::{CLIMATE, Cx, loaded, stale};
+use super::{CLIMATE, Cx, fact, loaded, stale};
 use crate::commands::{Order, Post};
 use crate::i18n::{Words, k};
 use crate::paths;
-use crate::ui::icon;
-use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Tile};
+use crate::ui::icon::{self, Icon};
+use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Screen, Tile, View};
 
 /// Every order to the unit goes under one key: one at a time, the latest waits.
 const KEY: &str = "broadlink:climate:send";
@@ -41,6 +46,28 @@ pub fn mode_label(w: &Words, mode: &str) -> String {
     }
 }
 
+/// A fan speed in words (`FAN_LABEL`).
+fn fan_label(w: &Words, fan: &str) -> String {
+    match fan {
+        "auto" => w.s(k::CLIMATE_AUTO),
+        "silent" => w.s(k::CLIMATE_FAN_LEVELS_SILENT),
+        level => w.t(k::CLIMATE_FAN_LEVELS_LEVEL, &[("level", level.into())]),
+    }
+}
+
+/// A vane's place in words (`VANE_LABEL`).
+fn vane_label(w: &Words, vane: &str) -> String {
+    w.s(match vane {
+        "highest" => k::CLIMATE_VANES_HIGHEST,
+        "high" => k::CLIMATE_VANES_HIGH,
+        "middle" => k::CLIMATE_VANES_MIDDLE,
+        "low" => k::CLIMATE_VANES_LOW,
+        "lowest" => k::CLIMATE_VANES_LOWEST,
+        "swing" => k::CLIMATE_VANES_SWING,
+        _ => k::CLIMATE_AUTO,
+    })
+}
+
 /// The first blaster found (`/broadlink/discover`'s `devices`).
 pub fn blaster(found: &Value) -> Option<&str> {
     found["devices"][0]["host"].as_str()
@@ -53,7 +80,7 @@ enum Sent {
 }
 
 /// The order sending `what` through the blaster at `host`.
-fn send(host: &str, what: Sent) -> Order {
+fn send(w: &Words, host: &str, what: Sent) -> Order {
     let (command, settings) = match what {
         Sent::Command(c) => (Some(c.to_string()), None),
         Sent::Settings(s) => (None, Some(s)),
@@ -65,16 +92,35 @@ fn send(host: &str, what: Sent) -> Order {
         settings,
         model: Some(climate::MODEL.to_string()),
     };
-    Order::one(KEY, "climate", Post::json(paths::CLIMATE_SEND, &body)).then_refresh(&[CLIMATE])
+    let name = w.s(k::CLIMATE_BRAND_NAME);
+    Order::one(KEY, name, Post::json(paths::CLIMATE_SEND, &body)).then_refresh(&[CLIMATE])
 }
 
-/// The last settings sent, again: without their sleep timer, at `temperature` if given.
-fn settings_at(settings: &Value, temperature: Option<u8>) -> Sent {
+/// A button sending `what`; without it, or a blaster, out of reach.
+fn button(
+    w: &Words,
+    host: Option<&str>,
+    icon: Option<Icon>,
+    label: String,
+    what: Option<Sent>,
+) -> Button {
+    let o = what.and_then(|what| host.map(|h| send(w, h, what)));
+    let out = o.is_none();
+    let act = o.map_or(Act::Refresh(&[CLIMATE]), Act::Order);
+    Button::new(icon, label, act).unavailable(out)
+}
+
+/// The last settings sent, again, without their sleep timer (« Allumer »).
+fn again(settings: &Value) -> Sent {
     let mut s = settings.clone();
     s["stopInMinutes"] = Value::Null;
-    if let Some(t) = temperature {
-        s["temperature"] = t.into();
-    }
+    Sent::Settings(s)
+}
+
+/// The last settings with one thing changed, what runs left running.
+fn changed(settings: &Value, change: impl FnOnce(&mut Value)) -> Sent {
+    let mut s = settings.clone();
+    change(&mut s);
     Sent::Settings(s)
 }
 
@@ -107,13 +153,8 @@ pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &DateTime<Tz>) -> 
         )),
         _ => None,
     };
-    let button = |icon, label: String, what: Option<Sent>| {
-        let o = what.and_then(|what| host.map(|h| send(h, what)));
-        let out = o.is_none();
-        let act = o.map_or(Act::Refresh(&[CLIMATE]), Act::Order);
-        Button::new(Some(icon), label, act).unavailable(out)
-    };
-    let on = settings.map_or(Sent::Command(FIRST_ON_COMMAND), |s| settings_at(s, None));
+    let button = |icon, label: String, what: Option<Sent>| button(w, host, Some(icon), label, what);
+    let on = settings.map_or(Sent::Command(FIRST_ON_COMMAND), again);
     let mut parts = Vec::new();
     if host.is_none() {
         parts.push(Part::Hint(w.s(k::CLIMATE_SEARCHING_TITLE)));
@@ -133,7 +174,7 @@ pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &DateTime<Tz>) -> 
             button(
                 icon,
                 degrees(w, u64::from(to)),
-                (to != t).then(|| settings_at(s, Some(to))),
+                (to != t).then(|| changed(s, |s| s["temperature"] = to.into())),
             )
         };
         parts.push(Part::Row(vec![
@@ -151,6 +192,157 @@ pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &DateTime<Tz>) -> 
     )
     .fact(fact)
     .parts(parts)
+    .open(Some(Act::Open(View::Climate)))
+}
+
+/// One setting: its name, what it is now, its choices (the chosen one marked), each sent at once.
+fn choice(
+    w: &Words,
+    host: Option<&str>,
+    (icon, label, now): (Icon, &str, String),
+    can: bool,
+    options: impl Iterator<Item = (String, bool, Sent)>,
+) -> Tile {
+    let buttons = options
+        .map(|(word, chosen, sent)| {
+            button(w, host, None, word, can.then_some(sent)).primary(chosen)
+        })
+        .collect();
+    fact(icon, label, now, false, vec![Part::Flow(buttons)])
+}
+
+/// What the page sets, from the last order the server kept; `None` before the first: there is
+/// nothing yet to change.
+pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<Tile>> {
+    let s = last.get("settings").filter(|s| s.is_object())?;
+    let can = last["power"].as_bool().unwrap_or(false);
+    let word = |key: &str| s[key].as_str().unwrap_or_default().to_string();
+    let (mode, fan, vane) = (word("mode"), word("fan"), word("vane"));
+    let econo = s["econo"].as_bool().unwrap_or(false);
+    let stop = s["stopInMinutes"].as_u64().unwrap_or(0);
+    let mut minutes: Vec<u64> = STOP_CHOICES_MIN.iter().map(|m| u64::from(*m)).collect();
+    if stop > 0 && !minutes.contains(&stop) {
+        // a timer from elsewhere stays in the list
+        minutes.push(stop);
+        minutes.sort_unstable();
+    }
+    let timer_word = |m: u64| match m {
+        0 => w.s(k::CLIMATE_TIMER_MODES_NONE),
+        m => w.duration(m * 60),
+    };
+    let timer = std::iter::once(0).chain(minutes).map(|m| {
+        let sent = changed(s, |s| {
+            s["stopInMinutes"] = if m == 0 { Value::Null } else { m.into() };
+        });
+        (timer_word(m), m == stop, sent)
+    });
+    let mut econo_parts = vec![Part::Row(vec![
+        button(
+            w,
+            host,
+            Some(icon::LEAF),
+            w.s(k::CLIMATE_ECONO_COOL),
+            (can && mode == "cool").then(|| changed(s, |s| s["econo"] = (!econo).into())),
+        )
+        .primary(econo),
+    ])];
+    if mode != "cool" {
+        econo_parts.push(Part::Hint(w.s(k::CLIMATE_ECONO_COOL_DESCRIPTION)));
+    }
+    let on_off = w.s(if econo { k::STATE_ON } else { k::STATE_OFF });
+    let mut tiles = Vec::new();
+    if !can {
+        tiles.push(fact(
+            icon::POWER,
+            &w.s(k::CLIMATE_MODE),
+            w.s(k::CLIMATE_ON_FIRST),
+            false,
+            Vec::new(),
+        ));
+    }
+    tiles.extend([
+        choice(
+            w,
+            host,
+            (
+                icon::THERMOMETER,
+                &w.s(k::CLIMATE_MODE),
+                mode_label(w, &mode),
+            ),
+            can,
+            MODES.iter().map(|m| {
+                let sent = changed(s, |s| {
+                    s["mode"] = (*m).into();
+                    // econo works in cooling only: another mode turns it off
+                    s["econo"] = (econo && *m == "cool").into();
+                });
+                (mode_label(w, m), *m == mode, sent)
+            }),
+        ),
+        choice(
+            w,
+            host,
+            (icon::ACTIVITY, &w.s(k::CLIMATE_FAN), fan_label(w, &fan)),
+            can,
+            FANS.iter().map(|f| {
+                let sent = changed(s, |s| s["fan"] = (*f).into());
+                (fan_label(w, f), *f == fan, sent)
+            }),
+        ),
+        choice(
+            w,
+            host,
+            (
+                icon::BLINDS,
+                &w.s(k::CLIMATE_VERTICAL_VANE),
+                vane_label(w, &vane),
+            ),
+            can,
+            VANES.iter().map(|v| {
+                let sent = changed(s, |s| s["vane"] = (*v).into());
+                (vane_label(w, v), *v == vane, sent)
+            }),
+        ),
+        fact(
+            icon::LEAF,
+            &w.s(k::CLIMATE_ECONO_COOL),
+            on_off,
+            false,
+            econo_parts,
+        ),
+        choice(
+            w,
+            host,
+            (icon::CLOCK, &w.s(k::CLIMATE_TIMER_MODE), timer_word(stop)),
+            can,
+            timer,
+        ),
+    ]);
+    Some(tiles)
+}
+
+/// The air conditioner's page: its tile, then what it is set to.
+pub fn page(cx: &mut Cx) -> Screen {
+    let found = cx.live.want(&cx.sources.blasters);
+    let state = cx.live.want(&cx.sources.climate);
+    let now = cx.house_now();
+    let w = cx.words;
+    let host = found.data.as_deref().and_then(blaster).map(str::to_string);
+    let head = loaded(w, &state, &[CLIMATE], ("", ""), |s| {
+        let t = tile(w, host.as_deref(), &s["state"], &now).open(None);
+        Some(Body::Tiles(vec![t]))
+    });
+    let mut groups = vec![
+        Group::new(w.s(k::CLIMATE_DASHBOARD_TITLE), head).stale(stale(cx, &state, &[CLIMATE])),
+    ];
+    if let Some(tiles) = state
+        .data
+        .as_deref()
+        .and_then(|s| setting_tiles(w, host.as_deref(), &s["state"]))
+    {
+        groups.push(Group::new(w.s(k::COMMON_SETTINGS), Body::Tiles(tiles)));
+    }
+    super::page(w, w.s(k::CLIMATE_BRAND_NAME), groups)
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
@@ -218,6 +410,83 @@ mod tests {
         assert_eq!(posted(&steps[0])["settings"]["temperature"], 20);
         assert_eq!(steps[1].label, "22\u{a0}°C");
         assert_eq!(posted(&steps[1])["settings"]["mode"], "cool");
+        assert_eq!(
+            posted(&steps[1])["settings"]["stopInMinutes"],
+            180,
+            "a step leaves the timer running"
+        );
+        assert!(matches!(t.open, Some(Act::Open(View::Climate))));
+    }
+
+    fn flow(t: &Tile) -> &[Button] {
+        let Part::Flow(b) = &t.parts[0] else {
+            panic!("{:?}", t.parts)
+        };
+        b
+    }
+
+    #[test]
+    fn its_page_sets_each_thing_at_once_the_chosen_one_marked() {
+        let w = Words::new(Lang::Fr);
+        let s = state(ON);
+        let t = setting_tiles(&w, Some("192.168.1.60"), &s["state"]).unwrap();
+        let [mode, fan, vane, econo, timer] = &t[..] else {
+            panic!("{t:?}")
+        };
+        assert_eq!((mode.name.as_str(), mode.state.as_str()), ("Mode", "Froid"));
+        let m = flow(mode);
+        assert_eq!(m.len(), 5);
+        assert!(m[0].primary && !m[1].primary);
+        assert_eq!(m[1].label, "Chaud");
+        assert_eq!(posted(&m[1])["settings"]["mode"], "heat");
+        assert_eq!(posted(&m[1])["host"], "192.168.1.60");
+        assert_eq!(
+            posted(&m[1])["settings"]["stopInMinutes"],
+            180,
+            "the timer keeps running"
+        );
+        let f = flow(fan);
+        assert_eq!(f[1].label, "Niveau 1");
+        assert_eq!(posted(&f[5])["settings"]["fan"], "silent");
+        assert_eq!(fan.state, "Auto");
+        assert_eq!(posted(&flow(vane)[6])["settings"]["vane"], "swing");
+        let Part::Row(e) = &econo.parts[0] else {
+            panic!()
+        };
+        assert!(!e[0].unavailable);
+        assert_eq!(posted(&e[0])["settings"]["econo"], true);
+        let c = flow(timer);
+        assert_eq!(c[0].label, "Désactivé");
+        assert_eq!(posted(&c[0])["settings"]["stopInMinutes"], Value::Null);
+        assert!(c[4].primary, "180 min: {:?}", c[4].label);
+        assert_eq!(timer.state, "3\u{a0}h");
+        assert_eq!(posted(&c[1])["settings"]["stopInMinutes"], 30);
+    }
+
+    #[test]
+    fn econo_is_for_cooling_and_leaving_it_turns_econo_off() {
+        let w = Words::new(Lang::Fr);
+        let s = state(&ON.replace("\"econo\":false", "\"econo\":true"));
+        let t = setting_tiles(&w, Some("h"), &s["state"]).unwrap();
+        assert_eq!(posted(&flow(&t[0])[1])["settings"]["econo"], false);
+        let dry = state(&ON.replace("\"mode\":\"cool\"", "\"mode\":\"dry\""));
+        let t = setting_tiles(&w, Some("h"), &dry["state"]).unwrap();
+        let [Part::Row(e), Part::Hint(why)] = &t[3].parts[..] else {
+            panic!()
+        };
+        assert!(e[0].unavailable);
+        assert_eq!(why, "Utile uniquement en mode froid.");
+    }
+
+    #[test]
+    fn off_nothing_can_be_set_and_it_says_why() {
+        let w = Words::new(Lang::Fr);
+        let s = state(&ON.replace("\"power\":true", "\"power\":false"));
+        let t = setting_tiles(&w, Some("h"), &s["state"]).unwrap();
+        assert_eq!(t[0].state, "Allume la clim pour la régler.");
+        assert!(flow(&t[1]).iter().all(|b| b.unavailable));
+        let none = state(r#"{"success":true,"state":null,"message":"none"}"#);
+        assert!(setting_tiles(&w, Some("h"), &none["state"]).is_none());
     }
 
     #[test]

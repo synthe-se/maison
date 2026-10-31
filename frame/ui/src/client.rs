@@ -37,6 +37,21 @@ pub enum Failure {
     Unreadable(String),
 }
 
+impl Failure {
+    /// Nobody answered for Maison: no answer at all, or the tunnel's gateway without a code (a
+    /// device out of reach is a coded answer: Maison heard).
+    pub fn gone(&self) -> bool {
+        matches!(
+            self,
+            Self::Unreachable(_)
+                | Self::Refused {
+                    status: 502..=504 | 530,
+                    code: None
+                }
+        )
+    }
+}
+
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -2,19 +2,21 @@
 //! turns a plug on or off, its live power read every 5 s and what it costs at the Tempo price in
 //! force (« 42 W · 0,7 c€/h »); drawing power in a red day's peak hours, its line says so in the
 //! warning style. A plug that does not answer is not asked (its tile stays, saying since when).
+//! Its row opens its page (PlugPage): volts, amps, watts, its last days, the month's estimate.
 
-use chrono::{DateTime, TimeZone};
+use chrono::{DateTime, Datelike, TimeZone};
 use maison_api::Tz;
-use maison_api::meross::{Plug, ToggleRequest};
+use maison_api::meross::{Consumption, ElectricityRaw, Plug, ToggleRequest};
+use maison_api::tempo::{Calendar, Today, season_of};
 
-use super::tempo::{Period, PriceNow, price_now};
-use super::{Cx, MEROSS, loaded, stale};
+use super::tempo::{Period, PriceNow, color_on, month_estimate, price_now};
+use super::{Cx, MEROSS, fact, loaded, stale};
 use crate::commands::{Order, Post, limit};
 use crate::i18n::{Words, count, k};
 use crate::live::View;
 use crate::paths;
 use crate::ui::icon;
-use crate::ui::model::{Body, Button, Group, Lead, Tile};
+use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Screen, Tile, View as Page};
 
 /// Above this a plug draws enough to matter during red peak hours (standby leaks do not).
 pub const NUDGE_WATTS: f64 = 5.0;
@@ -134,6 +136,7 @@ pub fn tile(
     )
     .warn(nudge.is_some() && plug.is_on)
     .fact(fact)
+    .open(Some(Act::Open(Page::Plug(plug.id.clone()))))
 }
 
 pub fn plugs_group(
@@ -160,6 +163,7 @@ pub fn plugs_group(
         |plugs| (!plugs.is_empty()).then(|| Body::Tiles(tiles(plugs))),
     );
     Group::new(w.s(k::MEROSS_TITLE), body)
+        .anchor(MEROSS)
         .fact(fact)
         .stale(stale)
 }
@@ -199,6 +203,176 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
         },
         old,
     ))
+}
+
+/// « 4,12 € ».
+fn euros(w: &Words, e: f64) -> String {
+    w.t(k::PRICE_EUROS, &[("euros", w.num(e, 2).into())])
+}
+
+/// « 0,123 kWh ».
+fn kwh(w: &Words, energy: f64) -> String {
+    w.t(k::MEROSS_KWH, &[("energy", w.num(energy, 3).into())])
+}
+
+/// What was read for a plug's page.
+pub struct Reads<'a> {
+    pub electricity: Option<&'a ElectricityRaw>,
+    pub days: Option<&'a Consumption>,
+    pub today: Option<&'a Today>,
+    pub season: Option<&'a Calendar>,
+}
+
+/// A plug's days, newest first (the last week), with the month's estimate above them.
+fn consumption(w: &Words, c: &Consumption, r: &Reads, now: &DateTime<Tz>) -> Option<Group> {
+    if c.consumption.is_empty() {
+        return None;
+    }
+    let days: Vec<(String, String)> = c
+        .consumption
+        .iter()
+        .rev()
+        .take(7)
+        .map(|d| {
+            let day = chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")
+                .map_or_else(|_| d.date.clone(), |day| w.short_day(day));
+            (day, kwh(w, f64::from(d.value) / 1000.0))
+        })
+        .collect();
+    let month = now.format("%Y-%m").to_string();
+    let estimate = r.today.and_then(|t| {
+        let e = month_estimate(
+            &c.consumption,
+            |day| color_on(day, r.season, Some(t)),
+            t.tariffs.as_ref()?,
+            &t.hours,
+            &month,
+        );
+        (e.days > 0).then_some((e, t.hours.peak_share()))
+    });
+    let days_said = format!(
+        "{} · {}",
+        w.t(k::MEROSS_CONSUMPTION_DAYS, &[count(c.summary.days)]),
+        kwh(w, c.summary.total_kwh)
+    );
+    let mut parts = Vec::new();
+    let tile = match estimate {
+        Some((e, peak)) => {
+            parts.push(Part::Hint(w.t(
+                k::MEROSS_ESTIMATE_HINT,
+                &[count(e.days), ("peak", w.percent(peak).into())],
+            )));
+            fact(
+                icon::EURO,
+                &w.t(
+                    k::MEROSS_MONTH_SO_FAR,
+                    &[("cost", euros(w, e.euros).into())],
+                ),
+                format!("{} · {days_said}", w.s(k::MEROSS_ESTIMATE)),
+                false,
+                Vec::new(),
+            )
+        }
+        None => fact(
+            icon::GAUGE,
+            &kwh(w, c.summary.total_kwh),
+            days_said,
+            false,
+            Vec::new(),
+        ),
+    };
+    parts.push(Part::Facts(days));
+    Some(Group::new(
+        w.s(k::MEROSS_CONSUMPTION),
+        Body::Tiles(vec![tile.parts(parts)]),
+    ))
+}
+
+/// What a plug's page shows: its tile, what it reports now, its days.
+pub fn plug_groups(
+    w: &Words,
+    plug: &Plug,
+    r: &Reads,
+    price: Option<&PriceNow>,
+    now: &DateTime<Tz>,
+) -> Vec<Group> {
+    let power = r.electricity.map(ElectricityRaw::watts);
+    let mut head = tile(w, plug, power, price, now).open(None);
+    if !plug.is_online {
+        head.parts
+            .push(Part::Hint(w.s(k::MEROSS_NOT_CONNECTED_DESCRIPTION)));
+    }
+    let mut groups = vec![Group::new(
+        w.s(k::MEROSS_PLUG_CONTROL),
+        Body::Tiles(vec![head]),
+    )];
+    if let Some(e) = r.electricity {
+        let volts = w.t(k::MEROSS_VOLTS, &[("voltage", w.num(e.volts(), 1).into())]);
+        let amps = w.t(
+            k::MEROSS_MILLIAMPS,
+            &[("current", w.num(e.amperes() * 1000.0, 0).into())],
+        );
+        let power = w.t(k::MEROSS_WATTS, &[("power", w.num(e.watts(), 1).into())]);
+        groups.push(Group::new(
+            w.s(k::MEROSS_ELECTRICITY),
+            Body::Parts(vec![Part::Facts(vec![
+                (w.s(k::MEROSS_VOLTAGE), volts),
+                (w.s(k::MEROSS_CURRENT), amps),
+                (w.s(k::MEROSS_POWER), power),
+            ])]),
+        ));
+    }
+    groups.extend(r.days.and_then(|c| consumption(w, c, r, now)));
+    groups
+}
+
+/// A plug's page, from the list; the list unread says so, a plug it lacks is « introuvable ».
+pub fn page(cx: &mut Cx, id: &str) -> Screen {
+    let list = cx.live.want(&cx.sources.plugs);
+    let now = cx.house_now();
+    let w = cx.words;
+    let found = list
+        .data
+        .as_deref()
+        .and_then(|l| l.devices.iter().find(|p| p.id == id).cloned());
+    let Some(plug) = found else {
+        let title = if list.loading {
+            k::COMMON_LOADING
+        } else {
+            k::MEROSS_NOT_FOUND
+        };
+        let body = loaded(w, &list, &[MEROSS], (k::MEROSS_NOT_FOUND, ""), |_| None);
+        return super::page(
+            w,
+            w.s(title),
+            vec![Group::new(w.s(k::MEROSS_PLUG_CONTROL), body)],
+        );
+    };
+    let today = cx.live.want(&cx.sources.tempo).data;
+    let price = today.as_deref().and_then(|t| price_now(&now, t));
+    let electricity = if plug.is_online {
+        let source = cx.sources.electricity(id).clone();
+        cx.live.want(&source).data
+    } else {
+        None
+    };
+    let source = cx.sources.consumption(id).clone();
+    let days = cx.live.want(&source).data;
+    let source = cx
+        .sources
+        .calendar(&season_of(now.year(), now.month0()))
+        .clone();
+    let season = cx.live.want(&source).data;
+    let reads = Reads {
+        electricity: electricity.as_deref().map(|e| &e.electricity.raw),
+        days: days.as_deref().map(|d| &d.body),
+        today: today.as_deref(),
+        season: season.as_deref(),
+    };
+    let old = stale(cx, &list, &[MEROSS]);
+    let mut groups = plug_groups(w, &plug, &reads, price.as_ref(), &now);
+    groups[0].stale = old;
+    super::page(w, plug.name.clone(), groups)
 }
 
 #[cfg(test)]
@@ -246,6 +420,102 @@ mod tests {
             None,
             "standby does not count"
         );
+    }
+
+    const CONSUMPTION: &str = r#"{"consumption":[{"date":"2026-10-31","time":1,"value":500},{"date":"2026-11-11","time":2,"value":1000},{"date":"2026-11-12","time":3,"value":2000}],"summary":{"days":3,"totalWh":3500,"totalKwh":3.5}}"#;
+
+    fn plug(on: bool, online: bool) -> Plug {
+        Plug {
+            id: "p1".into(),
+            name: "Bouilloire".into(),
+            ip: "192.168.1.20".into(),
+            is_online: online,
+            is_on: on,
+            last_ping: 0,
+        }
+    }
+
+    fn today() -> Today {
+        serde_json::from_str(r#"{"yesterday":{"date":"2026-11-11","color":"WHITE"},"today":{"date":"2026-11-12","color":"RED"},"tomorrow":{"date":"2026-11-13","color":null},"tariffs":{"blue":{"offPeak":0.13,"peak":0.16},"white":{"offPeak":0.15,"peak":0.3},"red":{"offPeak":0.16,"peak":0.7},"subscription":null,"startsOn":"2026-08-01"},"hours":{"peakStart":"06:00","peakEnd":"22:00"},"stock":{"season":"2026-2027","blue":{"used":0,"total":300,"remaining":300},"white":{"used":0,"total":43,"remaining":43},"red":{"used":0,"total":22,"remaining":22}},"lastUpdated":null,"cached":false}"#).unwrap()
+    }
+
+    #[test]
+    fn a_plug_opens_its_page() {
+        let w = Words::new(Lang::Fr);
+        let t = tile(&w, &plug(true, true), None, None, &now());
+        assert!(matches!(&t.open, Some(Act::Open(Page::Plug(id))) if id == "p1"));
+    }
+
+    #[test]
+    fn its_page_says_volts_amps_its_days_and_the_month() {
+        let w = Words::new(Lang::Fr);
+        let raw = ElectricityRaw {
+            channel: 0,
+            current: 183,
+            voltage: 2301,
+            power: 42_000,
+            config: None,
+        };
+        let days: Consumption = serde_json::from_str(CONSUMPTION).unwrap();
+        let t = today();
+        let reads = Reads {
+            electricity: Some(&raw),
+            days: Some(&days),
+            today: Some(&t),
+            season: None,
+        };
+        let g = plug_groups(&w, &plug(true, true), &reads, None, &now());
+        assert_eq!(g.len(), 3);
+        let Body::Tiles(head) = &g[0].body else {
+            panic!()
+        };
+        assert!(head[0].open.is_none());
+        let Body::Parts(e) = &g[1].body else { panic!() };
+        let Part::Facts(f) = &e[0] else { panic!() };
+        assert_eq!(f[0].1, "230,1\u{a0}V");
+        assert_eq!(f[1].1, "183\u{a0}mA");
+        assert_eq!(f[2].1, "42,0\u{a0}W");
+        let Body::Tiles(month) = &g[2].body else {
+            panic!()
+        };
+        // 1 kWh white, 2 kWh red, 2/3 of each at the peak price; October's day is not this month
+        let euros_ = (0.3 * 2.0 + 0.15) / 3.0 + 2.0 * (0.7 * 2.0 + 0.16) / 3.0;
+        assert_eq!(
+            month[0].name,
+            format!("Ce mois-ci\u{a0}: {}\u{a0}€", w.num(euros_, 2))
+        );
+        assert_eq!(
+            month[0].state,
+            "estimation · 3 derniers jours · 3,500\u{a0}kWh"
+        );
+        let [Part::Hint(hint), Part::Facts(rows)] = &month[0].parts[..] else {
+            panic!("{:?}", month[0].parts)
+        };
+        assert!(hint.contains('2'), "two days counted: {hint}");
+        assert_eq!(rows[0].0, "jeu. 12 nov.", "newest first");
+        assert_eq!(rows[0].1, "2,000\u{a0}kWh");
+    }
+
+    #[test]
+    fn offline_it_says_so_and_without_prices_no_estimate() {
+        let w = Words::new(Lang::Fr);
+        let days: Consumption = serde_json::from_str(CONSUMPTION).unwrap();
+        let reads = Reads {
+            electricity: None,
+            days: Some(&days),
+            today: None,
+            season: None,
+        };
+        let g = plug_groups(&w, &plug(false, false), &reads, None, &now());
+        assert_eq!(g.len(), 2, "nothing read now");
+        let Body::Tiles(head) = &g[0].body else {
+            panic!()
+        };
+        assert!(matches!(&head[0].parts[..], [Part::Hint(_)]));
+        let Body::Tiles(month) = &g[1].body else {
+            panic!()
+        };
+        assert_eq!(month[0].name, "3,500\u{a0}kWh");
     }
 
     #[test]

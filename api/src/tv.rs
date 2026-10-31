@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::remote::{SwitchState, default_true};
+use crate::remote::{SwitchState, TvKey, default_true};
 
 /// `POST /api/tv/power`, as `IrAction::TvPower` powers it, with the same defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +24,21 @@ pub struct VolumeRequest {
     pub level: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
+}
+
+/// `POST /api/tv/key`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyRequest {
+    pub key: TvKey,
+}
+
+/// `POST /api/tv/ambilight`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AmbilightRequest {
+    #[serde(default)]
+    pub state: SwitchState,
 }
 
 #[cfg(test)]
@@ -51,5 +66,11 @@ mod tests {
             muted: None,
         };
         assert_eq!(to_value(&level).unwrap(), json!({ "level": 12 }));
+        let key = KeyRequest {
+            key: TvKey::CursorUp,
+        };
+        assert_eq!(to_value(key).unwrap(), json!({ "key": "cursor_up" }));
+        let bare: AmbilightRequest = from_str("{}").unwrap();
+        assert_eq!(bare.state, SwitchState::Toggle);
     }
 }

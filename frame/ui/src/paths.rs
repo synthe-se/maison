@@ -5,11 +5,13 @@
 pub const TEMPO: &str = "/tempo";
 /// Maison's forecast of the next days (`maison_api::tempo::Forecast`).
 pub const TEMPO_FORECAST: &str = "/tempo/forecast";
-/// Hue lamps over Bluetooth: the list, `/{id}/power`, `/{id}/brightness`.
+/// A season's days (`?season=2026-2027`).
+pub const TEMPO_CALENDAR: &str = "/tempo/calendar";
+/// Hue lamps over Bluetooth: the list, `/{id}/{power,brightness,temperature}`.
 pub const HUE_LAMPS: &str = "/hue-lamps";
 /// Whether the server runs Bluetooth at all (`maison_api::lamps::LampStats`).
 pub const HUE_LAMPS_STATS: &str = "/hue-lamps/stats";
-/// Zigbee lamps: the list, `/{id}/power`, `/{id}/brightness`.
+/// Zigbee lamps: the list, `/{id}/{power,brightness,temperature,color,effect}`.
 pub const ZIGBEE_LAMPS: &str = "/zigbee/lamps";
 pub const ZIGBEE_LAMPS_STATS: &str = "/zigbee/lamps/stats";
 /// Matter shutters: the list, `/{id}/{open,close,stop,position,skip}`.
@@ -18,7 +20,7 @@ pub const COVERS: &str = "/matter/covers";
 pub const PLACE: &str = "/matter/place";
 /// The sun's side alone (signed out).
 pub const SUN: &str = "/sun";
-/// Meross plugs: the list, `/{id}/toggle`, `/{id}/electricity`.
+/// Meross plugs: the list, `/{id}/{toggle,electricity,consumption}`.
 pub const MEROSS: &str = "/meross";
 /// The IR blasters on the network, as the server last found them.
 pub const BROADLINK_DISCOVER: &str = "/broadlink/discover";
@@ -32,13 +34,21 @@ pub const NABAZTAG_TEMPO_PUSH: &str = "/nabaztag/tempo/push";
 /// The Philips TV: its status and settings, `/power` (over infrared).
 pub const TV: &str = "/tv";
 pub const TV_POWER: &str = "/tv/power";
-/// The TV's volume, set by PUT (`{level}`).
+/// The TV's volume, set by PUT (`{level}` or `{muted}`).
 pub const TV_VOLUME: &str = "/tv/volume";
+/// One of its remote's keys.
+pub const TV_KEY: &str = "/tv/key";
+pub const TV_AMBILIGHT: &str = "/tv/ambilight";
+pub const TV_AMBILIGHT_FOLLOW: &str = "/tv/ambilight/follow-video";
+/// Its input to the box's HDMI.
+pub const TV_SOURCE_BOX: &str = "/tv/source/box";
 /// The Android box: its status, `/wake`, `/sleep`, `/launch` (an app, the TV turned on first).
 pub const ANDROIDTV: &str = "/androidtv";
 pub const BOX_WAKE: &str = "/androidtv/wake";
 pub const BOX_SLEEP: &str = "/androidtv/sleep";
 pub const BOX_LAUNCH: &str = "/androidtv/launch";
+/// One of its remote's keys.
+pub const BOX_KEY: &str = "/androidtv/key";
 /// The cats' devices (Tuya): the list, `/{id}/{kind}/status`, `/{id}/feeder/feed`.
 pub const DEVICES: &str = "/devices";
 /// Scenes: the list, `/{id}/run`.

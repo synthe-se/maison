@@ -1,17 +1,20 @@
 //! The web app's bricks, drawn: a button (`.btn`), a row of them that wraps, a slider (Range),
-//! a tile (DeviceTile) with its lead (a gesture, a glyph, a Tempo swatch) and its parts.
+//! a tile (DeviceTile) with its lead (a gesture, a glyph, a Tempo swatch) and its parts, a
+//! remote's pad, a month of Tempo days. What cannot act now keeps its hit (`P::cover`): a finger
+//! on it does nothing, and never falls through to the row under it.
 
 use crate::commands::{Order, State};
 use crate::i18n::k;
-use crate::theme::{Rgba, hatch, px, ty};
+use crate::theme::{DARK, Palette, Rgba, hatch, px, ty};
 use crate::ui::gfx::Error;
 use crate::ui::icon;
 use crate::ui::layout::{
-    GLYPH_ICON, ICON, P, PART_GAP, RING, ROW_PAD_BOTTOM, ROW_PAD_X, ROW_PAD_Y, SWATCH_RING,
-    THUMB_RING, TITLE, TOUCH, Target,
+    CELL_GAP, FACT_H, GLYPH_ICON, ICON, P, PAD_H, PAD_W, PART_GAP, RING, ROW_PAD_BOTTOM, ROW_PAD_X,
+    ROW_PAD_Y, SWATCH_RING, THUMB_RING, TITLE, TOUCH, Target,
 };
-use crate::ui::model::{Act, Button, Lead, Part, Slider, Tile};
+use crate::ui::model::{Act, Button, Day, Lead, Month, Pad, Part, Slider, Tile};
 use maison_api::tempo::Color;
+use std::time::Duration;
 
 /// A tile's head, for a tile of one width: the fact's width, the name's column and height, its
 /// height whole.
@@ -21,6 +24,104 @@ struct HeadBox {
     name_h: f32,
     h: f32,
 }
+
+/// How a Tempo day is marked (Swatch.svelte).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Mark {
+    color: Option<Color>,
+    /// Not published: a dashed outline over a wash.
+    forecast: bool,
+    /// A forecast under 60 %: dotted, no wash.
+    unsure: bool,
+    /// A calendar's square, not a tile's disc.
+    cell: bool,
+}
+
+impl Mark {
+    /// What it is kept under, once per palette.
+    fn key(self, dark: bool) -> u32 {
+        let color = self.color.map_or(0, |c| c.index() as u32 + 1);
+        color
+            | u32::from(self.forecast) << 2
+            | u32::from(self.unsure) << 3
+            | u32::from(self.cell) << 4
+            | u32::from(dark) << 5
+    }
+
+    /// Swatch.svelte in a 48 box, the web's 2 px ring drawn inside: blue filled, white a ring,
+    /// red filled and hatched as `--tempo-red-hatch` says, unknown a dashed muted ring; a
+    /// forecast dashed over a wash of its color, its red still hatched.
+    fn svg(self, pal: &Palette) -> String {
+        let hex = |c: Rgba| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
+        let alpha = |c: Rgba| f32::from(c.3) / 255.0;
+        let ring = match self.color {
+            Some(Color::Blue) => pal.tempo_blue,
+            Some(Color::White) => pal.tempo_white_ring,
+            Some(Color::Red) => pal.tempo_red,
+            None => pal.ink_muted,
+        };
+        let fill = match (self.color, self.forecast, self.unsure) {
+            (Some(Color::Blue), false, _) => format!(r#"fill="{}""#, hex(pal.tempo_blue)),
+            (Some(Color::Blue), true, false) => format!(
+                r#"fill="{}" fill-opacity="{FORECAST_WASH}""#,
+                hex(pal.tempo_blue)
+            ),
+            (Some(Color::White), false, _) => format!(
+                r#"fill="{}" fill-opacity="{}""#,
+                hex(pal.tempo_white),
+                alpha(pal.tempo_white)
+            ),
+            (Some(Color::Red), _, _) => r#"fill="url(#h)""#.to_string(),
+            _ => r#"fill="none""#.to_string(),
+        };
+        // `color-mix(in srgb, first p%, towards)`
+        let mix = |a: Rgba, b: Rgba, t: f32| {
+            let m = |x: u8, y: u8| (f32::from(x) * t + f32::from(y) * (1.0 - t)).round() as u8;
+            Rgba(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2), 255)
+        };
+        let first = hatch::first(pal);
+        let second = mix(first, hatch::towards(pal), hatch::MIX);
+        let dash = if self.unsure {
+            r#" stroke-dasharray="1 3""#
+        } else if self.color.is_none() || self.forecast {
+            r#" stroke-dasharray="4 3""#
+        } else {
+            ""
+        };
+        // a forecast's hatching: thin red over nothing
+        let (first_o, second_o) = if self.forecast {
+            (FORECAST_HATCH, 0.0)
+        } else {
+            (1.0, 1.0)
+        };
+        let inset = SWATCH_RING / 2.0;
+        let side = 48.0 - SWATCH_RING;
+        let shape = if self.cell {
+            let r = px::RADIUS_M;
+            format!(r#"<rect x="{inset}" y="{inset}" width="{side}" height="{side}" rx="{r}""#)
+        } else {
+            let r = side / 2.0;
+            format!(r#"<circle cx="24" cy="24" r="{r}""#)
+        };
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><defs><pattern id="h" width="{period}" height="{period}" patternUnits="userSpaceOnUse" patternTransform="rotate({angle})"><rect width="{stripe}" height="{period}" fill="{first}" fill-opacity="{first_o}"/><rect x="{stripe}" width="{rest}" height="{period}" fill="{second}" fill-opacity="{second_o}"/></pattern></defs>{shape} {fill} stroke="{ring}" stroke-width="{SWATCH_RING}"{dash}/></svg>"##,
+            period = hatch::PERIOD,
+            angle = hatch::ANGLE,
+            stripe = hatch::STRIPE,
+            rest = hatch::PERIOD - hatch::STRIPE,
+            first = hex(first),
+            second = hex(second),
+            ring = hex(ring),
+        )
+    }
+}
+
+/// Swatch.svelte's forecast: `color-mix(…18%, transparent)`, its red at 35 %.
+const FORECAST_WASH: f32 = 0.18;
+const FORECAST_HATCH: f32 = 0.35;
+
+/// A table's first column, of its width.
+const TABLE_FIRST: f32 = 0.22;
 
 /// A button's icon and the gap after it (none before no words).
 fn icon_room(icon: bool, label: &str) -> (f32, f32) {
@@ -34,7 +135,7 @@ fn icon_room(icon: bool, label: &str) -> (f32, f32) {
 impl P<'_, '_, '_, '_> {
     /// A button's width for its content.
     pub fn button_width(&mut self, b: &Button) -> Result<f32, Error> {
-        let (icon, gap) = icon_room(b.icon.is_some(), &b.label);
+        let (icon, gap) = icon_room(b.icon.is_some() || b.dot.is_some(), &b.label);
         Ok(px::S_3 * 2.0 + icon + gap + self.width(&b.label, ty::LABEL)?)
     }
 
@@ -47,8 +148,9 @@ impl P<'_, '_, '_, '_> {
     pub fn button(&mut self, b: &Button, x: f32, y: f32, w: f32, h: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         let busy = self.busy(b);
+        let off = b.unavailable || !self.can(&b.act);
         let fade = |c: Rgba| {
-            if b.unavailable {
+            if off {
                 c.faded(px::DISABLED_OPACITY)
             } else {
                 c
@@ -66,7 +168,7 @@ impl P<'_, '_, '_, '_> {
             b.icon
         };
         let label_w = self.width(&b.label, ty::LABEL)?;
-        let (icon_w, gap) = icon_room(icon.is_some(), &b.label);
+        let (icon_w, gap) = icon_room(icon.is_some() || b.dot.is_some(), &b.label);
         let words =
             !b.label.is_empty() && icon_w + gap + label_w <= w - px::S_3 * 2.0 || icon.is_none();
         let content = icon_w
@@ -78,6 +180,10 @@ impl P<'_, '_, '_, '_> {
         let mut cx = x + (w - content) / 2.0;
         if let Some(icon) = icon {
             self.icon(icon, cx, y + (h - ICON) / 2.0, ICON, fade(ink))?;
+            cx += ICON + gap;
+        } else if let Some(dot) = b.dot {
+            let ring = Some((RING, fade(pal.line)));
+            self.disc(cx, y + (h - ICON) / 2.0, ICON, fade(dot), ring)?;
             cx += ICON + gap;
         }
         if words {
@@ -91,7 +197,10 @@ impl P<'_, '_, '_, '_> {
                 room,
             )?;
         }
-        if !b.unavailable && !busy {
+        // busy or out of reach, it keeps its hit: nothing under it is reached instead
+        if off || busy {
+            self.cover(x, y, w, h);
+        } else {
             self.hit(x, y, w, h, Target::Act(b.act.clone()));
         }
         Ok(())
@@ -128,6 +237,14 @@ impl P<'_, '_, '_, '_> {
     pub fn slider(&mut self, s: &Slider, x: f32, y: f32, w: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         let value = self.c.sliders.shown(s, self.c.now);
+        let off = s.off || self.c.over.gone;
+        let fade = |c: Rgba| {
+            if off {
+                c.faded(px::DISABLED_OPACITY)
+            } else {
+                c
+            }
+        };
         let share =
             |v: f64| ((v - s.min) / (s.max - s.min).max(f64::EPSILON)).clamp(0.0, 1.0) as f32;
         // the thumb's centre travels between half a thumb from each end
@@ -135,7 +252,14 @@ impl P<'_, '_, '_, '_> {
         let ty0 = y + (px::CONTROL_H - px::TRACK_H) / 2.0;
         self.rounded(x, ty0, w, px::TRACK_H, px::RADIUS_PILL, pal.ground_raised)?;
         let at = x0 + (x1 - x0) * share(value);
-        self.rounded(x, ty0, at - x, px::TRACK_H, px::RADIUS_PILL, pal.accent)?;
+        self.rounded(
+            x,
+            ty0,
+            at - x,
+            px::TRACK_H,
+            px::RADIUS_PILL,
+            fade(pal.accent),
+        )?;
         // where the device is while it travels, once it is apart from the thumb (Range's mark)
         if let Some(m) = s.mark.filter(|m| (m - value).abs() > s.near) {
             let mx = x0 + (x1 - x0) * share(m);
@@ -153,7 +277,7 @@ impl P<'_, '_, '_, '_> {
             y + (px::CONTROL_H - px::THUMB) / 2.0,
             px::THUMB,
             pal.surface,
-            Some((THUMB_RING, pal.accent)),
+            Some((THUMB_RING, fade(pal.accent))),
         )?;
         if let Some((left, right)) = &s.ends {
             let ey = y + px::CONTROL_H + px::S_2;
@@ -161,17 +285,184 @@ impl P<'_, '_, '_, '_> {
             let rw = self.width(right, ty::META)?;
             self.line(right, ty::META, pal.ink_muted, x + w - rw, ey, w / 2.0)?;
         }
-        self.hit(
-            x,
-            y,
-            w,
-            px::CONTROL_H,
+        let what = if off {
+            Target::Cover
+        } else {
             Target::Slider {
                 slider: s.clone(),
                 x0: x0 * self.s(),
                 x1: x1 * self.s(),
-            },
+            }
+        };
+        self.hit(x, y, w, px::CONTROL_H, what);
+        Ok(())
+    }
+
+    /// A remote's four arrows around its OK, the keys under them, centred (Pad.svelte).
+    fn pad(&mut self, p: &Pad, x: f32, y: f32, w: f32) -> Result<(), Error> {
+        let (k, ok, g) = (px::REMOTE_KEY, px::REMOTE_OK, px::S_2);
+        let (ky, kx) = (y + k + g + (ok - k) / 2.0, x + (w - PAD_W) / 2.0);
+        let mid = kx + k + g + (ok - k) / 2.0;
+        self.button(&p.up, mid, y, k, k)?;
+        self.button(&p.left, kx, ky, k, k)?;
+        self.button(&p.ok, kx + k + g, y + k + g, ok, ok)?;
+        self.button(&p.right, kx + k + g + ok + g, ky, k, k)?;
+        self.button(&p.down, mid, y + k + g + ok + g, k, k)?;
+        self.row(&p.under, x, y + PAD_H + px::S_3, w)
+    }
+
+    /// Equal buttons side by side.
+    fn row(&mut self, buttons: &[Button], x: f32, y: f32, w: f32) -> Result<(), Error> {
+        let n = buttons.len().max(1) as f32;
+        let bw = (w - px::S_2 * (n - 1.0)) / n;
+        for (i, b) in buttons.iter().enumerate() {
+            self.button(b, x + i as f32 * (bw + px::S_2), y, bw, TOUCH)?;
+        }
+        Ok(())
+    }
+
+    /// Progress.svelte: its words, the elapsed seconds at the end, a bar.
+    fn progress(
+        &mut self,
+        (label, elapsed): (&str, &str),
+        (gone, limit): (Duration, Duration),
+        x: f32,
+        y: f32,
+        w: f32,
+    ) -> Result<(), Error> {
+        let pal = self.c.pal;
+        let t = ty::SECONDARY;
+        let seconds = gone.as_secs();
+        let said = self.c.words.t(
+            elapsed,
+            &[("seconds", crate::i18n::Arg::Count(seconds as f64))],
         );
+        let sw = self.width(&said, t)?;
+        self.line(label, t, pal.ink_muted, x, y, w - sw - px::S_2)?;
+        self.line(&said, t, pal.ink_muted, x + w - sw, y, sw)?;
+        let (by, h) = (y + t.line + px::S_1, px::BAR_THIN);
+        self.rounded(x, by, w, h, h / 2.0, pal.ground_raised)?;
+        let share = (gone.as_secs_f32() / limit.as_secs_f32().max(1.0)).min(1.0);
+        self.rounded(x, by, w * share, h, h / 2.0, pal.accent)
+    }
+
+    /// A cell's side in a `w` wide month.
+    fn cell(w: f32) -> f32 {
+        ((w - 6.0 * CELL_GAP) / 7.0).min(px::TILE_ICON)
+    }
+
+    fn month_height(m: &Month, w: f32) -> f32 {
+        let rows = (m.lead + m.days.len()).div_ceil(7) as f32;
+        ty::LABEL.line + px::S_2 + ty::META.line + px::S_1 + rows * (Self::cell(w) + CELL_GAP)
+    }
+
+    /// TempoCalendar's table: the month's name, the days of the week, its days.
+    fn month(&mut self, m: &Month, x: f32, y: f32, w: f32) -> Result<(), Error> {
+        let pal = self.c.pal;
+        let side = Self::cell(w);
+        let step = side + CELL_GAP;
+        self.line(&m.title, ty::LABEL, pal.ink, x, y, w)?;
+        let head = y + ty::LABEL.line + px::S_2;
+        for (i, day) in m.weekdays.iter().enumerate() {
+            let dw = self.width(day, ty::META)?;
+            let dx = x + i as f32 * step + (side - dw) / 2.0;
+            self.line(day, ty::META, pal.ink_muted, dx, head, side)?;
+        }
+        let top = head + ty::META.line + px::S_1;
+        for (i, d) in m.days.iter().enumerate() {
+            let at = m.lead + i;
+            let cx = x + (at % 7) as f32 * step;
+            let cy = top + (at / 7) as f32 * step;
+            if self.visible(cy, side) {
+                self.day(d, cx, cy, side)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A day: its mark, its number, a forecast's probability under it; today ringed.
+    fn day(&mut self, d: &Day, x: f32, y: f32, side: f32) -> Result<(), Error> {
+        let pal = self.c.pal;
+        if d.today {
+            let r = px::RADIUS_M;
+            let g = px::S_HALF;
+            self.rounded(
+                x - g,
+                y - g,
+                side + 2.0 * g,
+                side + 2.0 * g,
+                r + g,
+                pal.accent,
+            )?;
+            self.rounded(x, y, side, side, r, pal.surface)?;
+        }
+        let forecast = d.forecast.is_some();
+        let unsure = d.forecast.as_ref().is_some_and(|(_, u)| *u);
+        self.swatch(
+            Mark {
+                color: d.color,
+                forecast,
+                unsure,
+                cell: true,
+            },
+            x,
+            y,
+            side,
+        )?;
+        let filled = !forecast && matches!(d.color, Some(Color::Blue | Color::Red));
+        let ink = if filled { pal.on_tempo } else { pal.ink };
+        let number = d.day.to_string();
+        let text_h = ty::META.line + if forecast { ty::TINY.line } else { 0.0 };
+        let top = y + (side - text_h) / 2.0;
+        let nw = self.width(&number, ty::META)?;
+        self.line(&number, ty::META, ink, x + (side - nw) / 2.0, top, side)?;
+        if let Some((pct, _)) = &d.forecast {
+            let pw = self.width(pct, ty::TINY)?;
+            let py = top + ty::META.line;
+            self.line(pct, ty::TINY, ink, x + (side - pw) / 2.0, py, side)?;
+        }
+        Ok(())
+    }
+
+    /// A table: the head muted, the first column short and left, the others right, equal.
+    fn table(
+        &mut self,
+        head: &[String],
+        rows: &[Vec<String>],
+        x: f32,
+        y: f32,
+        w: f32,
+    ) -> Result<(), Error> {
+        let pal = self.c.pal;
+        let first = w * TABLE_FIRST;
+        let cw = (w - first) / head.len().saturating_sub(1).max(1) as f32;
+        let mut cy = y;
+        let lines = std::iter::once((head, ty::META, pal.ink_muted))
+            .chain(rows.iter().map(|r| (r.as_slice(), ty::SECONDARY, pal.ink)));
+        for (row, t, ink) in lines {
+            for (i, text) in row.iter().enumerate() {
+                let tw = self.width(text, t)?.min(cw);
+                let tx = match i {
+                    0 => x,
+                    _ => x + first + i as f32 * cw - tw,
+                };
+                self.line(text, t, ink, tx, cy, if i == 0 { first } else { cw })?;
+            }
+            cy += FACT_H;
+        }
+        Ok(())
+    }
+
+    /// Label and value, a line each: the value at the end (StatusRow).
+    fn facts(&mut self, facts: &[(String, String)], x: f32, y: f32, w: f32) -> Result<(), Error> {
+        let pal = self.c.pal;
+        let t = ty::SECONDARY;
+        for (i, (label, value)) in facts.iter().enumerate() {
+            let fy = y + i as f32 * FACT_H;
+            let vw = self.width(value, t)?.min(w * 0.6);
+            self.line(label, t, pal.ink_muted, x, fy, w - vw - px::S_2)?;
+            self.line(value, t, pal.ink, x + w - vw, fy, vw)?;
+        }
         Ok(())
     }
 
@@ -185,6 +476,21 @@ impl P<'_, '_, '_, '_> {
             Part::Bar { thin: false, .. } => px::BAR_H,
             Part::Bar { thin: true, .. } => px::BAR_THIN,
             Part::Note { .. } => TOUCH,
+            Part::Flow(buttons) => {
+                let measuring = std::mem::replace(&mut self.measuring, true);
+                let h = self.flow(buttons, 0.0, 0.0, w);
+                self.measuring = measuring;
+                h?
+            }
+            Part::Pad(p) if p.under.is_empty() => PAD_H,
+            Part::Pad(_) => PAD_H + px::S_3 + TOUCH,
+            Part::Facts(facts) => facts.len() as f32 * FACT_H,
+            Part::Progress { key, .. } => match self.c.commands.elapsed(key) {
+                Some(_) => ty::SECONDARY.line + px::S_1 + px::BAR_THIN,
+                None => 0.0,
+            },
+            Part::Calendar(m) => Self::month_height(m, w),
+            Part::Table { rows, .. } => (rows.len() + 1) as f32 * FACT_H,
         })
     }
 
@@ -208,18 +514,46 @@ impl P<'_, '_, '_, '_> {
         })
     }
 
+    /// Parts framed without a head: their height whole.
+    pub fn parts_height(&mut self, parts: &[Part], w: f32) -> Result<f32, Error> {
+        let inner = w - 2.0 * ROW_PAD_X;
+        let mut h = ROW_PAD_BOTTOM;
+        for p in parts {
+            let ph = self.part_height(p, inner)?;
+            if ph > 0.0 {
+                h += ph + ROW_PAD_BOTTOM;
+            }
+        }
+        Ok(h)
+    }
+
+    /// Parts one under the other at (x, y), in a frame `w` wide already drawn.
+    pub fn parts(&mut self, parts: &[Part], x: f32, y: f32, w: f32) -> Result<(), Error> {
+        let inner = w - 2.0 * ROW_PAD_X;
+        let mut py = y + ROW_PAD_BOTTOM;
+        for p in parts {
+            let ph = self.part_height(p, inner)?;
+            if ph > 0.0 {
+                self.part(p, x + ROW_PAD_X, py, inner)?;
+                py += ph + ROW_PAD_BOTTOM;
+            }
+        }
+        Ok(())
+    }
+
     /// A row's height (the dashboard's `.tile`): its head, each control under it, its padding.
     pub fn tile_height(&mut self, t: &Tile, w: f32) -> Result<f32, Error> {
         let inner = w - 2.0 * ROW_PAD_X;
         let mut h = ROW_PAD_Y + self.head_box(t, w)?.h;
+        let mut parts = false;
         for p in &t.parts {
-            h += PART_GAP + self.part_height(p, inner)?;
+            let ph = self.part_height(p, inner)?;
+            if ph > 0.0 {
+                h += PART_GAP + ph;
+                parts = true;
+            }
         }
-        Ok(h + if t.parts.is_empty() {
-            ROW_PAD_Y
-        } else {
-            ROW_PAD_BOTTOM
-        })
+        Ok(h + if parts { ROW_PAD_BOTTOM } else { ROW_PAD_Y })
     }
 
     /// The tile's state line, as its gesture says it (DeviceTile's `line`): « Pas de réponse »
@@ -264,6 +598,9 @@ impl P<'_, '_, '_, '_> {
     /// The order a tap on a toggle sends: to the other side of what it shows (the target while
     /// one travels); none for a device out of reach, or a lead that is no gesture.
     fn toggle(&self, lead: &Lead) -> Option<Order> {
+        if self.c.over.gone {
+            return None;
+        }
         let Lead::Toggle {
             on,
             offline: false,
@@ -311,11 +648,20 @@ impl P<'_, '_, '_, '_> {
                 } else {
                     (pal.surface, pal.ink_muted, pal.ink_muted)
                 };
-                self.disc(x, y, size, fill, Some((RING, ring)))?;
-                self.icon(*icon, x + inset, y + inset, GLYPH_ICON, ink)?;
-                if let Some(order) = self.toggle(lead) {
-                    self.hit(x, y, size, size, Target::Act(Act::Order(order)));
-                }
+                let fade = |c: Rgba| {
+                    if self.c.over.gone {
+                        c.faded(px::DISABLED_OPACITY)
+                    } else {
+                        c
+                    }
+                };
+                self.disc(x, y, size, fade(fill), Some((RING, fade(ring))))?;
+                self.icon(*icon, x + inset, y + inset, GLYPH_ICON, fade(ink))?;
+                // out of reach, it keeps its hit: the row's page is not opened by a miss
+                let what = self
+                    .toggle(lead)
+                    .map_or(Target::Cover, |o| Target::Act(Act::Order(o)));
+                self.hit(x, y, size, size, what);
             }
             Lead::Glyph { icon, on } => {
                 let (fill, ink) = if *on {
@@ -326,58 +672,28 @@ impl P<'_, '_, '_, '_> {
                 self.rounded(x, y, size, size, px::RADIUS_M, fill)?;
                 self.icon(*icon, x + inset, y + inset, GLYPH_ICON, ink)?;
             }
-            Lead::Swatch(color) => self.swatch(*color, x, y, size)?,
+            Lead::Swatch(color) => {
+                let mark = Mark {
+                    color: *color,
+                    forecast: false,
+                    unsure: false,
+                    cell: false,
+                };
+                self.swatch(mark, x, y, size)?;
+            }
         }
         Ok(())
     }
 
-    /// Swatch.svelte at its tile size: blue filled, white a ring, red filled and hatched as
-    /// `--tempo-red-hatch` says, unknown a dashed muted ring; a 2 px ring in its color.
-    fn swatch(&mut self, color: Option<Color>, x: f32, y: f32, size: f32) -> Result<(), Error> {
+    /// A Tempo mark `size` square at (x, y), rasterised once.
+    fn swatch(&mut self, mark: Mark, x: f32, y: f32, size: f32) -> Result<(), Error> {
         if !self.visible(y, size) {
             return Ok(());
         }
         let pal = self.c.pal;
-        let hex = |c: Rgba| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
-        let alpha = |c: Rgba| f32::from(c.3) / 255.0;
-        // in a 48 box, the web's 2 px ring drawn inside
-        let (ring, fill) = match color {
-            Some(Color::Blue) => (pal.tempo_blue, format!(r#"fill="{}""#, hex(pal.tempo_blue))),
-            Some(Color::White) => (
-                pal.tempo_white_ring,
-                format!(
-                    r#"fill="{}" fill-opacity="{}""#,
-                    hex(pal.tempo_white),
-                    alpha(pal.tempo_white)
-                ),
-            ),
-            Some(Color::Red) => (pal.tempo_red, r#"fill="url(#h)""#.to_string()),
-            None => (pal.ink_muted, r#"fill="none""#.to_string()),
-        };
-        // `color-mix(in srgb, first p%, towards)`
-        let mix = |a: Rgba, b: Rgba, t: f32| {
-            let m = |x: u8, y: u8| (f32::from(x) * t + f32::from(y) * (1.0 - t)).round() as u8;
-            Rgba(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2), 255)
-        };
-        let first = hatch::first(pal);
-        let second = hex(mix(first, hatch::towards(pal), hatch::MIX));
-        let dash = if color.is_none() {
-            r#" stroke-dasharray="4 3""#
-        } else {
-            ""
-        };
-        let r = 24.0 - SWATCH_RING / 2.0;
-        let svg = format!(
-            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><defs><pattern id="h" width="{period}" height="{period}" patternUnits="userSpaceOnUse" patternTransform="rotate({angle})"><rect width="{stripe}" height="{period}" fill="{first}"/><rect x="{stripe}" width="{rest}" height="{period}" fill="{second}"/></pattern></defs><circle cx="24" cy="24" r="{r}" {fill} stroke="{ring}" stroke-width="{SWATCH_RING}"{dash}/></svg>"##,
-            period = hatch::PERIOD,
-            angle = hatch::ANGLE,
-            stripe = hatch::STRIPE,
-            rest = hatch::PERIOD - hatch::STRIPE,
-            first = hex(first),
-            ring = hex(ring),
-        );
-        let (px_, py, pw) = (self.d(x), self.y(y), self.d(size).max(1) as u32);
-        self.d.picture(&svg, px_, py, pw, pw)
+        let key = mark.key(std::ptr::eq(pal, &DARK));
+        let (at, side) = ((self.d(x), self.y(y)), self.d(size).max(1) as u32);
+        self.d.mark(key, side, || mark.svg(pal), at)
     }
 
     /// Shares in Tempo's colours on one track (ForecastCard's `.bar`, Share.svelte's): blue,
@@ -417,9 +733,11 @@ impl P<'_, '_, '_, '_> {
             self.hit(x, y, w, h, Target::Act(open.clone()));
         }
         let head = self.head_box(t, w)?;
-        if let Some(order) = self.toggle(&t.lead) {
-            // a toggle's row leads nowhere on the frame: its head is its on/off, a big
-            // target for a finger on the wall (the controls under it keep theirs)
+        if t.open.is_none()
+            && let Some(order) = self.toggle(&t.lead)
+        {
+            // a row that leads nowhere: its head is its on/off, a big target for a finger on
+            // the wall (the controls under it keep theirs); with a page, the disc alone
             self.hit(x, y, w, ROW_PAD_Y + head.h, Target::Act(Act::Order(order)));
         }
         let (ix, iy) = (x + ROW_PAD_X, y + ROW_PAD_Y);
@@ -427,8 +745,11 @@ impl P<'_, '_, '_, '_> {
         self.tile_head(t, &head, ix, iy, inner)?;
         let mut py = iy + head.h;
         for p in &t.parts {
-            py += PART_GAP;
             let ph = self.part_height(p, inner)?;
+            if ph <= 0.0 {
+                continue;
+            }
+            py += PART_GAP;
             if py > y + h {
                 break;
             }
@@ -497,11 +818,22 @@ impl P<'_, '_, '_, '_> {
         let pal = self.c.pal;
         match p {
             Part::Slider(s) => self.slider(s, ix, py, inner)?,
-            Part::Row(buttons) => {
-                let n = buttons.len().max(1) as f32;
-                let bw = (inner - px::S_2 * (n - 1.0)) / n;
-                for (i, b) in buttons.iter().enumerate() {
-                    self.button(b, ix + i as f32 * (bw + px::S_2), py, bw, TOUCH)?;
+            Part::Row(buttons) => self.row(buttons, ix, py, inner)?,
+            Part::Flow(buttons) => {
+                self.flow(buttons, ix, py, inner)?;
+            }
+            Part::Pad(p) => self.pad(p, ix, py, inner)?,
+            Part::Facts(facts) => self.facts(facts, ix, py, inner)?,
+            Part::Calendar(m) => self.month(m, ix, py, inner)?,
+            Part::Table { head, rows } => self.table(head, rows, ix, py, inner)?,
+            Part::Progress {
+                key,
+                label,
+                elapsed,
+                limit,
+            } => {
+                if let Some(gone) = self.c.commands.elapsed(key) {
+                    self.progress((label, elapsed), (gone, *limit), ix, py, inner)?;
                 }
             }
             Part::Hint(text) => {

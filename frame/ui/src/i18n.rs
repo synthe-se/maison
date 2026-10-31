@@ -234,6 +234,40 @@ impl Words {
         }
     }
 
+    /// « samedi 31 octobre », « samedi 1er novembre », « Saturday, October 31 »: the clock's date.
+    pub fn long_date(&self, day: NaiveDate) -> String {
+        let (i, d, m) = (
+            day.weekday().num_days_from_monday() as usize,
+            day.day(),
+            day.month0() as usize,
+        );
+        match self.lang {
+            Lang::Fr if d == 1 => format!("{} 1er {}", WEEKDAYS_FR[i], MONTHS_LONG_FR[m]),
+            Lang::Fr => format!("{} {d} {}", WEEKDAYS_FR[i], MONTHS_LONG_FR[m]),
+            Lang::En => format!("{}, {} {d}", WEEKDAYS_EN[i], MONTHS_LONG_EN[m]),
+        }
+    }
+
+    /// « Novembre 2026 »: a month as the calendar's caption says it; `month0` from 0.
+    pub fn month_year(&self, year: i32, month0: usize) -> String {
+        let names = match self.lang {
+            Lang::Fr => &MONTHS_LONG_FR,
+            Lang::En => &MONTHS_LONG_EN,
+        };
+        let name = names[month0 % 12];
+        let mut c = name.chars();
+        let first: String = c.next().into_iter().flat_map(char::to_uppercase).collect();
+        format!("{first}{} {year}", c.as_str())
+    }
+
+    /// « lun. », Monday first: a calendar's head.
+    pub fn weekday_short(&self, i: usize) -> &'static str {
+        match self.lang {
+            Lang::Fr => WEEKDAYS_SHORT_FR[i % 7],
+            Lang::En => WEEKDAYS_SHORT_EN[i % 7],
+        }
+    }
+
     /// A duration in seconds, two units at most (format.ts `formatDuration`).
     pub fn duration(&self, seconds: u64) -> String {
         const MINUTE: u64 = 60;
@@ -353,6 +387,34 @@ const MONTHS_FR: [&str; 12] = [
 const MONTHS_EN: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
+const MONTHS_LONG_FR: [&str; 12] = [
+    "janvier",
+    "février",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "août",
+    "septembre",
+    "octobre",
+    "novembre",
+    "décembre",
+];
+const MONTHS_LONG_EN: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
 const WEEKDAYS_FR: [&str; 7] = [
     "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
 ];
@@ -449,6 +511,12 @@ mod tests {
         assert_eq!(fr.short_day(today), "jeu. 12 nov.");
         assert_eq!(en.short_day(today), "Thu, Nov 12");
         assert_eq!(fr.short_day(d("2027-02-01")), "lun. 1 févr.");
+        assert_eq!(fr.long_date(today), "jeudi 12 novembre");
+        assert_eq!(fr.long_date(d("2026-11-01")), "dimanche 1er novembre");
+        assert_eq!(en.long_date(today), "Thursday, November 12");
+        assert_eq!(fr.month_year(2026, 7), "Août 2026");
+        assert_eq!(en.month_year(2027, 0), "January 2027");
+        assert_eq!((fr.weekday_short(0), en.weekday_short(6)), ("lun.", "Sun"));
     }
 
     #[test]

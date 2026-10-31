@@ -5,24 +5,22 @@ import { m } from '#lib/paraglide/messages.js';
 import { CONFIRM, TAP } from '#lib/haptics.ts';
 import type { Gesture } from '#lib/gesture.svelte.ts';
 import type { IconName } from '#lib/components/Icon.svelte';
+import { KEY_REPEAT_DELAY_MS, KEY_REPEAT_MS, PRESSED_MS, VOLUME_REPEAT_MS } from '#lib/paces.ts';
 
 /**
  * Repeat on hold (docs/ux.md § 7, NSStepper.autorepeat): one step on press,
  * then after 500 ms ten steps a second. Volume is capped at five a second, what the TV follows.
  */
-const REPEAT_DELAY = 500;
-const REPEAT_EVERY = 100;
-const REPEAT_EVERY_VOLUME = 200;
 /** A press stays visible at least this long, the only feedback on an iPhone (no web vibration). */
-export const PRESSED_MIN = 100;
+export const PRESSED_MIN = PRESSED_MS;
 
 /** The keys a pad sends, named once; each remote maps them to its own API's keys. */
 export type PadKey = 'up' | 'down' | 'left' | 'right' | 'ok' | 'back' | 'home' | 'menu' | 'volume_up' | 'volume_down' | 'mute';
 
 /** How often a key repeats while held, or 0: never for OK, Back, Home, mute (§ 7). */
 export function repeatEvery(key: PadKey): number {
-	if (key === 'volume_up' || key === 'volume_down') return REPEAT_EVERY_VOLUME;
-	if (key === 'up' || key === 'down' || key === 'left' || key === 'right') return REPEAT_EVERY;
+	if (key === 'volume_up' || key === 'volume_down') return VOLUME_REPEAT_MS;
+	if (key === 'up' || key === 'down' || key === 'left' || key === 'right') return KEY_REPEAT_MS;
 	return 0;
 }
 
@@ -57,7 +55,7 @@ export function holdRepeat(fire: (repeat: boolean) => unknown, every: number): (
 	let timer = setTimeout(function tick() {
 		void fire(true);
 		timer = setTimeout(tick, every);
-	}, REPEAT_DELAY);
+	}, KEY_REPEAT_DELAY_MS);
 	return () => clearTimeout(timer);
 }
 

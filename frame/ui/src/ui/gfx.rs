@@ -142,6 +142,8 @@ pub struct Gfx<'t> {
     icons: HashMap<(Icon, u32), Texture<'t>>,
     /// Pictures drawn in their own colors (a Tempo swatch), by size, by their SVG.
     pub(super) pictures: HashMap<(u32, u32), HashMap<String, Texture<'t>>>,
+    /// Pictures made from a small key (a Tempo mark): nothing is written to find one.
+    marks: HashMap<(u32, u32), Texture<'t>>,
     creator: &'t TextureCreator<WindowContext>,
     ttf: Sdl3TtfContext,
     frame: u64,
@@ -160,6 +162,7 @@ impl<'t> Gfx<'t> {
             shapes: HashMap::new(),
             icons: HashMap::new(),
             pictures: HashMap::new(),
+            marks: HashMap::new(),
             creator,
             ttf,
             frame: 0,
@@ -363,19 +366,41 @@ impl<'t> Gfx<'t> {
     pub(super) fn picture(&mut self, svg: &str, w: u32, h: u32) -> Result<&Texture<'t>, Error> {
         let creator = self.creator;
         let pictures = self.pictures.entry((w, h)).or_default();
-        let picture = cached(pictures, svg, || {
-            let tree = usvg::Tree::from_str(svg, &usvg::Options::default())?;
-            let mut pm = Pixmap::new(w, h).ok_or("a picture of no size")?;
-            let size = tree.size();
-            resvg::render(
-                &tree,
-                Transform::from_scale(w as f32 / size.width(), h as f32 / size.height()),
-                &mut pm.as_mut(),
-            );
-            straight_texture(creator, pm)
-        })?;
+        let picture = cached(pictures, svg, || rasterise(creator, svg, w, h))?;
         Ok(picture)
     }
+
+    /// The picture `svg()` makes, kept under `key` at side `size`.
+    fn mark(
+        &mut self,
+        key: u32,
+        size: u32,
+        svg: impl FnOnce() -> String,
+    ) -> Result<&Texture<'t>, Error> {
+        let creator = self.creator;
+        let mark = cached(&mut self.marks, &(key, size), || {
+            rasterise(creator, &svg(), size, size)
+        })?;
+        Ok(mark)
+    }
+}
+
+/// An SVG on a `w` × `h` texture.
+fn rasterise<'t>(
+    creator: &'t TextureCreator<WindowContext>,
+    svg: &str,
+    w: u32,
+    h: u32,
+) -> Result<Texture<'t>, Error> {
+    let tree = usvg::Tree::from_str(svg, &usvg::Options::default())?;
+    let mut pm = Pixmap::new(w, h).ok_or("a picture of no size")?;
+    let size = tree.size();
+    resvg::render(
+        &tree,
+        Transform::from_scale(w as f32 / size.width(), h as f32 / size.height()),
+        &mut pm.as_mut(),
+    );
+    straight_texture(creator, pm)
 }
 
 /// The embedded face at `style`, loaded once.
@@ -597,6 +622,20 @@ impl Draw<'_, '_> {
         let t = self.gfx.picture(svg, w, h)?;
         self.canvas
             .copy(t, None, FRect::new(x as f32, y as f32, w as f32, h as f32))?;
+        Ok(())
+    }
+
+    /// The picture kept under `key`, `side` square at (x, y); `svg` written only the first time.
+    pub fn mark(
+        &mut self,
+        key: u32,
+        side: u32,
+        svg: impl FnOnce() -> String,
+        (x, y): (i32, i32),
+    ) -> Result<(), Error> {
+        let t = self.gfx.mark(key, side, svg)?;
+        let box_ = FRect::new(x as f32, y as f32, side as f32, side as f32);
+        self.canvas.copy(t, None, box_)?;
         Ok(())
     }
 }

@@ -5,13 +5,13 @@ use axum::{
 };
 use futures::TryStreamExt;
 use maison_api::{
-    androidtv::{Cleanup, LaunchRequest},
+    androidtv::{Cleanup, KeyRequest, LaunchRequest},
     Message,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    androidtv::{self, AndroidKey, AndroidTvConfig, AndroidTvStatus},
+    androidtv::{self, AndroidTvConfig, AndroidTvStatus},
     auth::AdminUser,
     box_clean,
     error::{AppError, Refusal},
@@ -44,12 +44,6 @@ struct Status {
 #[serde(rename_all = "camelCase")]
 struct PairFinishRequest {
     code: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct KeyRequest {
-    key: AndroidKey,
 }
 
 #[derive(Debug, Deserialize)]

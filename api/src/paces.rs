@@ -91,6 +91,14 @@ paces! {
     SLIDER_THROTTLE_MS = 300;
     /// A slider let go holds its value this long against an older reading.
     SLIDER_HOLD_MS = 3_000;
+    /// A press stays visible at least this long (docs/ux.md § 7).
+    PRESSED_MS = 100;
+    /// A remote's key held repeats after this long.
+    KEY_REPEAT_DELAY_MS = 500;
+    /// Then this often.
+    KEY_REPEAT_MS = 100;
+    /// The volume's keys, what the TV follows.
+    VOLUME_REPEAT_MS = 200;
     /// How long a toast stays.
     TOAST_MS = 5_000;
     /// How long a toast with an action stays (time to reach it).

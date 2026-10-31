@@ -98,6 +98,31 @@ pub struct ElectricityAnswer {
     pub electricity: Electricity,
 }
 
+/// A day's energy as the plug keeps it (`date`: « 2026-10-16 », `value`: Wh).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumptionEntry {
+    pub date: String,
+    pub time: i64,
+    pub value: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumptionSummary {
+    pub days: usize,
+    pub total_wh: i32,
+    pub total_kwh: f64,
+}
+
+/// `GET /api/meross/{id}/consumption`, under `OfDevice`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Consumption {
+    pub consumption: Vec<ConsumptionEntry>,
+    pub summary: ConsumptionSummary,
+}
+
 /// `POST /api/meross/{id}/toggle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,7 +133,15 @@ pub struct ToggleRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Answer;
+    use crate::{Answer, OfDevice};
+
+    #[test]
+    fn a_plugs_days_round_trip() {
+        let json = r#"{"success":true,"device":{"id":"p1","name":"Bureau"},"message":"Consumption history retrieved","consumption":[{"date":"2026-10-16","time":1760000000,"value":1234}],"summary":{"days":1,"totalWh":1234,"totalKwh":1.234}}"#;
+        let c: Answer<OfDevice<Consumption>> = serde_json::from_str(json).unwrap();
+        assert_eq!(c.body.body.consumption[0].value, 1234);
+        assert_eq!(serde_json::to_string(&c).unwrap(), json);
+    }
 
     #[test]
     fn the_list_and_a_reading_round_trip() {

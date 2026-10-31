@@ -283,7 +283,7 @@ fn run() -> Result<(), Error> {
                 continue;
             }
         };
-        app.drawn(drawn.hits, drawn.content, h as f32);
+        app.drawn(drawn, h as f32);
         if let Some(h) = &mut heart {
             h.presented(Instant::now());
         }
@@ -456,6 +456,7 @@ impl Panel<'_> {
             width: w as f32,
             height: h as f32,
             scroll: app.scroll,
+            over: app.over(now),
         };
         let drawn = if self.rotate {
             let target = match &mut self.turned {

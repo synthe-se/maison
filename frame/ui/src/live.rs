@@ -6,10 +6,14 @@
 //! a family again at once. Values reach the drawing thread over a channel, which then wakes.
 //!
 //! A value is stale once it is older than `STALE_CADENCES` times its pace (a source that stopped
-//! answering), or when its last read failed: the screen says it is old, never blank.
+//! answering), or when Maison refused its last read: the screen says it is old, never blank.
+//!
+//! Sources that get no answer at all, with nothing heard since, are Maison gone (`gone`): one
+//! state for the whole house, ended by the first answer. The first silence asks every source
+//! again at once, so a slow read alone is told from a server that is down.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -19,6 +23,9 @@ use crate::client::{Client, Failure};
 
 /// A value read late this many times its pace is said to be old (the web app's `STALE_CADENCES`).
 const STALE_CADENCES: u32 = maison_api::paces::STALE_CADENCES as u32;
+
+/// Without an answer this long, Maison is said gone.
+const GONE_AFTER: Duration = Duration::from_secs(5);
 
 /// What a source reads.
 pub type Fetch<T> = Arc<dyn Fn(&Client) -> Result<T, Failure> + Send + Sync>;
@@ -106,7 +113,7 @@ pub struct View<T> {
     pub loading: bool,
     /// How the last read failed (and nothing else is known when `data` is none).
     pub failure: Option<Failure>,
-    /// Older than `STALE_CADENCES` paces, or its last read failed: shown, said old.
+    /// Older than `STALE_CADENCES` paces, or its last read refused: shown, said old.
     pub stale: bool,
     /// When the value shown was read.
     pub at: Option<Instant>,
@@ -171,6 +178,8 @@ pub struct Live {
     drawing: u64,
     /// The last read said the screen is not signed in.
     signed_out: bool,
+    /// No answer since then, and the sources that got none.
+    silent: Option<(Instant, HashSet<String>)>,
     /// Wakes the event stream's thread from its wait (the screen was just paired).
     reopen: Option<Sender<()>>,
 }
@@ -189,6 +198,7 @@ impl Live {
             wake,
             drawing: 0,
             signed_out: false,
+            silent: None,
         }
     }
 
@@ -223,7 +233,9 @@ impl Live {
             e.poke = poke;
         }
         let data = e.value.clone().and_then(|v| v.downcast::<T>().ok());
-        let stale = data.is_some() && (e.old() || e.failure.is_some());
+        // no answer at all is Maison's silence, said once for the house (`gone`), not per value
+        let refused = e.failure.as_ref().is_some_and(|f| !f.gone());
+        let stale = data.is_some() && (e.old() || refused);
         View {
             data,
             loading: e.at.is_none() && e.failure.is_none(),
@@ -264,6 +276,7 @@ impl Live {
     /// ends a failure or an old value.
     pub fn take(&mut self) -> Came {
         let mut came = Came::default();
+        let now = Instant::now();
         while let Ok(read) = self.rx.try_recv() {
             match read {
                 Read::Value {
@@ -273,6 +286,8 @@ impl Live {
                     asked,
                 } => {
                     came.read.push((key.clone(), asked));
+                    came.changed |= self.gone(now);
+                    self.silent = None;
                     if let Some(e) = self.entries.get_mut(&key) {
                         came.changed |= value.is_some() || e.failure.is_some() || e.old();
                         if value.is_some() {
@@ -287,6 +302,7 @@ impl Live {
                 Read::Changed(prefix) => self.refresh(&prefix),
                 Read::Failed { key, failure, pace } => {
                     came.read.push((key.clone(), Instant::now()));
+                    came.changed |= self.heard(&key, &failure, now);
                     if failure == Failure::SignedOut {
                         self.signed_out = true;
                     } else {
@@ -301,6 +317,38 @@ impl Live {
             }
         }
         came
+    }
+
+    /// A read failed: whether it adds to Maison's silence or breaks it. True when what the screen
+    /// says of it changes.
+    fn heard(&mut self, key: &str, failure: &Failure, now: Instant) -> bool {
+        if !failure.gone() {
+            let was = self.gone(now);
+            self.silent = None;
+            return was;
+        }
+        let first = self.silent.is_none();
+        let (_, keys) = self.silent.get_or_insert_with(|| (now, HashSet::new()));
+        let more = keys.insert(key.to_string());
+        if first {
+            self.refresh("");
+        }
+        more
+    }
+
+    /// Maison has not answered for `GONE_AFTER`: two sources in silence, or one with the event
+    /// stream closed (open, it says Maison is there and one read was merely slow).
+    pub fn gone(&self, now: Instant) -> bool {
+        self.silent.as_ref().is_some_and(|(since, keys)| {
+            now.saturating_duration_since(*since) >= GONE_AFTER
+                && (keys.len() >= 2 || !self.pushed.load(Ordering::Acquire))
+        })
+    }
+
+    /// When Maison will be said gone, if nothing is heard, after `after`.
+    pub fn next_gone(&self, after: Instant) -> Option<Instant> {
+        let (since, _) = self.silent.as_ref()?;
+        Some(*since + GONE_AFTER).filter(|t| *t > after)
     }
 
     /// A read said 401 since the last asked: the screen may have been removed, or never paired.
@@ -367,6 +415,11 @@ impl Live {
                                 wake();
                             }
                             pushed.store(false, Ordering::Release);
+                            // the polls waited at the safety pace: asked now, they tell why
+                            if tx.send(Read::Changed(String::new())).is_err() {
+                                return;
+                            }
+                            wake();
                         }
                         Err(f) => {
                             pushed.store(false, Ordering::Release);
@@ -665,6 +718,72 @@ mod tests {
         assert!(live.signed_out());
         live.clear();
         assert!(live.peek::<u32>("n:count").is_none());
+    }
+
+    #[test]
+    fn no_answer_is_maison_gone_until_anything_answers() {
+        let (mut live, _) = live("http://127.0.0.1:9");
+        let t0 = Instant::now();
+        let silence = Failure::Unreachable("x".into());
+        assert!(!live.gone(t0));
+        live.heard("a", &silence, t0);
+        assert!(!live.gone(t0 + GONE_AFTER / 2), "not yet");
+        assert_eq!(live.next_gone(t0), Some(t0 + GONE_AFTER));
+        assert!(
+            live.gone(t0 + GONE_AFTER),
+            "the stream closed: one is enough"
+        );
+        // the stream open, one slow read says nothing of Maison; a second source does
+        live.pushed.store(true, Ordering::Release);
+        assert!(!live.gone(t0 + GONE_AFTER));
+        live.heard("b", &silence, t0);
+        assert!(live.gone(t0 + GONE_AFTER));
+        // a device's coded refusal is Maison answering
+        let refused = Failure::Refused {
+            status: 503,
+            code: Some(maison_api::codes::Code::DeviceUnreachable),
+        };
+        assert!(live.heard("c", &refused, t0 + GONE_AFTER), "said over");
+        assert!(!live.gone(t0 + GONE_AFTER * 2));
+        // the tunnel's gateway says nothing of Maison either
+        assert!(
+            Failure::Refused {
+                status: 502,
+                code: None
+            }
+            .gone()
+        );
+    }
+
+    #[test]
+    fn a_silent_read_is_no_old_value_until_its_time() {
+        let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
+        let (mut live, wakes) = live(&stub.origin);
+        let source = counter();
+        live.begin();
+        live.want(&source);
+        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
+        live.take();
+        live.entries.get_mut("n:count").unwrap().failure = Some(Failure::Unreachable("x".into()));
+        let v = live.want(&source);
+        assert!(
+            !v.stale && v.failed(),
+            "nothing shifts while Maison is silent"
+        );
+    }
+
+    #[test]
+    fn the_first_answer_ends_it() {
+        let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
+        let (mut live, wakes) = live(&stub.origin);
+        let source = counter();
+        live.begin();
+        live.want(&source);
+        live.silent = Some((Instant::now() - GONE_AFTER, HashSet::new()));
+        assert!(live.gone(Instant::now()));
+        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
+        assert!(live.take().changed);
+        assert!(!live.gone(Instant::now()));
     }
 
     #[test]

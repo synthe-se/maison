@@ -3,7 +3,8 @@
 //! here runs, and the pairing code is never written to the journal.
 //!
 //! - `tap X Y`: a finger down and up there (the panel's pixels, as the picture shows them)
-//! - `press KEY`: a tap on the control whose gesture is KEY (`hue-lamp:hue-01:power`)
+//! - `press KEY`: a tap on the control whose gesture is KEY (`hue-lamp:hue-01:power`, `open:tv`,
+//!   `jump:lamps`, `ask:tuya:f1:water`, `dialog:sure`)
 //! - `slide KEY SHARE`: the slider KEY taken from its far end and let go at SHARE (0..1) of its band
 //! - `drag Y0 Y1`: a finger from Y0 to Y1 down the middle (the column scrolls)
 //! - `shot PATH`: the next drawing saved there as PNG

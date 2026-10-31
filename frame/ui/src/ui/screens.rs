@@ -1,6 +1,7 @@
-//! The screens, drawn from the bricks: the house (the header, then each group: its head, its
-//! « old » line, its body), the door (a screen not paired: the brand, words, a code, a button),
-//! and the toasts over both.
+//! The screens, drawn from the bricks: the house (the header with the time and the date, then
+//! each group: its head, its « old » line, its body), the door (a screen not paired: the brand,
+//! words, a code, a button), and over them the toasts, a dialog, what the finger presses, and
+//! one band while Maison does not answer (no line per group, nothing moves).
 
 use crate::commands::Toast;
 use crate::i18n::k;
@@ -8,16 +9,26 @@ use crate::theme::{px, ty};
 use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
 use crate::ui::layout::{
-    BRAND_NUDGE, CHIP_ICON, CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP,
-    HEADER_MARK, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH, balance, clip_above, columns,
-    fold, margin,
+    BRAND_NUDGE, CHIP, CHIP_ICON, CLOCK, CODE_SPACING, COLUMN_GAP, Ctx, DIALOG_W, Drawn, GROUP_GAP,
+    GROUP_HEAD, HEAD_GAP, HEADER_MARK, HOUSE_HEAD, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH,
+    Target, balance, clip_above, columns, fold, margin,
 };
-use crate::ui::model::{Body, Button, Chip, Group, Screen};
+use crate::ui::model::{Act, Asked, Body, Button, Chip, Group, Screen};
 
 /// What the header says: the brand (the house), or a page's way back and its title.
 enum Head<'a> {
-    Brand,
+    /// The home's: the time and the date.
+    Brand(&'a str, &'a str),
     Back(&'a Button, &'a str),
+}
+
+impl Head<'_> {
+    fn height(&self) -> f32 {
+        match self {
+            Self::Brand(..) => HOUSE_HEAD,
+            Self::Back(..) => px::HEADER_H,
+        }
+    }
 }
 
 impl P<'_, '_, '_, '_> {
@@ -25,7 +36,8 @@ impl P<'_, '_, '_, '_> {
     fn group(&mut self, g: &Group, x: f32, y: f32, w: f32) -> Result<f32, Error> {
         self.group_head(g, x, y, w)?;
         let mut cy = y + GROUP_HEAD + HEAD_GAP;
-        if let Some((said, retry)) = &g.stale {
+        // Maison gone, one band says it for every group
+        if let Some((said, retry)) = g.stale.as_ref().filter(|_| !self.c.over.gone) {
             self.stale(said, retry, x, cy, w)?;
             cy += TOUCH + HEAD_GAP;
         }
@@ -37,6 +49,9 @@ impl P<'_, '_, '_, '_> {
     fn group_head(&mut self, g: &Group, x: f32, y: f32, w: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         let mut end = x + w;
+        if g.anchor.is_some() && g.anchor == self.c.over.flash {
+            self.rounded(x, y, w, GROUP_HEAD, px::RADIUS, pal.accent_wash)?;
+        }
         let mut widths = Vec::with_capacity(g.actions.len());
         for b in &g.actions {
             widths.push(self.button_width(b)?);
@@ -74,32 +89,37 @@ impl P<'_, '_, '_, '_> {
     }
 
     /// « Maintenant » at (x, y), `w` wide: its chips on two lines at most, the rest behind
-    /// « +N »; its height.
+    /// « +N », which shows them all; each leads to its group; its height.
     fn now_strip(&mut self, chips: &[Chip], x: f32, y: f32, w: f32) -> Result<f32, Error> {
         let pal = self.c.pal;
-        let h = px::CONTROL_H_XS;
+        let h = TOUCH;
         let gap = px::S_1;
         let mut widths = Vec::with_capacity(chips.len());
         for c in chips {
             let icon = if c.warn { CHIP_ICON + px::S_1 } else { 0.0 };
-            widths.push(self.width(&c.text, ty::TINY)? + 2.0 * px::S_2 + icon);
+            widths.push(self.width(&c.text, CHIP)? + 2.0 * px::S_3 + icon);
         }
         let mut mores = Vec::new();
         for n in 0..=chips.len() {
-            mores.push(self.width(&format!("+{n}"), ty::TINY)? + 2.0 * px::S_2);
+            mores.push(self.width(&format!("+{n}"), CHIP)? + 2.0 * px::S_3);
         }
         let warn: Vec<bool> = chips.iter().map(|c| c.warn).collect();
-        let (shown, folded) = fold(&widths, &warn, w, gap, NOW_LINES, |n| mores[n]);
+        let lines = if self.c.over.unfolded {
+            chips.len()
+        } else {
+            NOW_LINES
+        };
+        let (shown, folded) = fold(&widths, &warn, w, gap, lines, |n| mores[n]);
         let more = format!("+{folded}");
         let pills = chips
             .iter()
             .zip(&widths)
             .zip(&shown)
             .filter(|(_, s)| **s)
-            .map(|((c, cw), _)| (c.text.as_str(), c.warn, *cw))
-            .chain((folded > 0).then(|| (more.as_str(), false, mores[folded])));
+            .map(|((c, cw), _)| (c.text.as_str(), c.warn, *cw, Act::Jump(c.to)))
+            .chain((folded > 0).then(|| (more.as_str(), false, mores[folded], Act::Unfold)));
         let (mut cx, mut cy) = (x, y);
-        for (text, warn, cw) in pills {
+        for (text, warn, cw, act) in pills {
             if cx > x && cx + cw > x + w {
                 cx = x;
                 cy += h + gap;
@@ -110,7 +130,8 @@ impl P<'_, '_, '_, '_> {
                 (pal.ground, pal.line, pal.ink)
             };
             self.framed((cx, cy, cw, h), px::RADIUS_PILL, fill, line)?;
-            let mut tx = cx + px::S_2;
+            self.hit(cx, cy, cw, h, Target::Act(act));
+            let mut tx = cx + px::S_3;
             if warn {
                 self.icon(
                     icon::TRIANGLE_ALERT,
@@ -121,7 +142,7 @@ impl P<'_, '_, '_, '_> {
                 )?;
                 tx += CHIP_ICON + px::S_1;
             }
-            self.line(text, ty::TINY, ink, tx, cy + (h - ty::TINY.line) / 2.0, cw)?;
+            self.line(text, CHIP, ink, tx, cy + (h - CHIP.line) / 2.0, cw)?;
             cx += cw + gap;
         }
         Ok(cy + h - y)
@@ -154,12 +175,17 @@ impl P<'_, '_, '_, '_> {
     fn body(&mut self, body: &Body, x: f32, y: f32, w: f32) -> Result<f32, Error> {
         let pal = self.c.pal;
         let mut cy = y;
+        // a row's place, held (Loaded's skeleton: a gesture and its padding); Maison gone, the
+        // band says why, not each group
+        let held = px::TILE_ICON + 2.0 * px::S_1;
         match body {
             Body::Loading => {
-                // a row's place, held (Loaded's skeleton: a gesture and its padding)
-                let th = px::TILE_ICON + 2.0 * px::S_1;
-                self.rounded(x, cy, w, th, px::RADIUS_L, pal.ground_raised)?;
-                cy += th;
+                self.rounded(x, cy, w, held, px::RADIUS_L, pal.ground_raised)?;
+                cy += held;
+            }
+            Body::Failed { .. } if self.c.over.gone => {
+                self.rounded(x, cy, w, held, px::RADIUS_L, pal.ground_raised)?;
+                cy += held;
             }
             Body::Failed { text, retry } => {
                 cy += self.para(text, ty::BODY, pal.warn_text, x, cy, w)?;
@@ -173,6 +199,14 @@ impl P<'_, '_, '_, '_> {
                 cy += self.para(hint, ty::SECONDARY, pal.ink_muted, x, cy, w)?;
             }
             Body::Buttons(buttons) => cy += self.flow(buttons, x, cy, w)?,
+            Body::Parts(parts) => {
+                let h = self.parts_height(parts, w)?;
+                self.framed((x, cy, w, h), px::RADIUS_L, pal.surface, pal.line)?;
+                if self.visible(cy, h) {
+                    self.parts(parts, x, cy, w)?;
+                }
+                cy += h;
+            }
             Body::Tiles(tiles) => {
                 let mut hs = Vec::with_capacity(tiles.len());
                 for t in tiles {
@@ -218,7 +252,8 @@ impl P<'_, '_, '_, '_> {
         }
         self.measuring = measuring;
         let starts = balance(&hs, cols, GROUP_GAP);
-        let mut top = px::HEADER_H + px::S_5;
+        let head_h = head.height();
+        let mut top = head_h + px::S_5;
         if !now.is_empty() {
             top += self.now_strip(now, m, top, inner)? + px::S_4;
         }
@@ -229,35 +264,44 @@ impl P<'_, '_, '_, '_> {
             let mut y = top;
             for (g, h) in groups[from..to].iter().zip(&hs[from..to]) {
                 self.group(g, x, y, cw)?;
+                if let Some(anchor) = g.anchor {
+                    let s = self.s();
+                    self.anchors.push((anchor, (y - head_h - GROUP_GAP) * s));
+                }
                 y += h + GROUP_GAP;
             }
             bottom = bottom.max(y - GROUP_GAP);
         }
-        let content = (bottom + px::S_5) * self.s();
+        // the band over the bottom hides nothing for good: the column goes on past it
+        let band = if self.c.over.gone { TOUCH } else { 0.0 };
+        let content = (bottom + px::S_5 + band) * self.s();
         // the header stays, a line under it: the brand, or a page's way back and its title; what
         // scrolled under it is hidden from the finger too
         self.dy = 0.0;
-        let edge = px::HEADER_H * self.s();
+        let edge = head_h * self.s();
         clip_above(&mut self.hits, edge);
-        self.cover(0.0, 0.0, wcss, px::HEADER_H);
-        self.rounded(0.0, 0.0, wcss, px::HEADER_H, 0.0, pal.ground)?;
+        self.cover(0.0, 0.0, wcss, head_h);
+        self.rounded(0.0, 0.0, wcss, head_h, 0.0, pal.ground)?;
         let hair = 1.0 / self.s();
-        self.rounded(0.0, px::HEADER_H - hair, wcss, hair, 0.0, pal.line)?;
-        if let Head::Back(back, title) = head {
-            let bw = self.button_width(back)?;
-            self.button(back, m, (px::HEADER_H - TOUCH) / 2.0, bw, TOUCH)?;
-            let tx = m + bw + px::S_4;
-            self.line(
-                title,
-                ty::GROUP,
-                pal.ink,
-                tx,
-                (px::HEADER_H - ty::GROUP.line) / 2.0,
-                wcss - tx - m,
-            )?;
-            return Ok(content);
-        }
-        let my = (px::HEADER_H - HEADER_MARK) / 2.0;
+        self.rounded(0.0, head_h - hair, wcss, hair, 0.0, pal.line)?;
+        let (time, date) = match head {
+            Head::Back(back, title) => {
+                let bw = self.button_width(back)?;
+                self.button(back, m, (head_h - TOUCH) / 2.0, bw, TOUCH)?;
+                let tx = m + bw + px::S_4;
+                self.line(
+                    title,
+                    ty::GROUP,
+                    pal.ink,
+                    tx,
+                    (head_h - ty::GROUP.line) / 2.0,
+                    wcss - tx - m,
+                )?;
+                return Ok(content);
+            }
+            Head::Brand(time, date) => (time, date),
+        };
+        let my = (head_h - HEADER_MARK) / 2.0;
         if self.visible(my, HEADER_MARK) {
             let mark = self.d(HEADER_MARK).max(1) as u32;
             self.d
@@ -265,15 +309,75 @@ impl P<'_, '_, '_, '_> {
         }
         let bx = m + HEADER_MARK + px::S_2;
         let brand = self.c.words.s(k::BRANDING_NAME);
-        self.line(
+        let brand_w = self.line(
             &brand,
             ty::BRAND,
             pal.ink,
             bx,
-            (px::HEADER_H - ty::BRAND.line) / 2.0 + BRAND_NUDGE * ty::BRAND.size,
+            (head_h - ty::BRAND.line) / 2.0 + BRAND_NUDGE * ty::BRAND.size,
             wcss - bx - m,
         )?;
+        // the time at the end, the date before it: from across the room
+        let tw = self.width(time, CLOCK)?;
+        let tx = wcss - m - tw;
+        self.line(time, CLOCK, pal.ink, tx, (head_h - CLOCK.line) / 2.0, tw)?;
+        let room = tx - px::S_4 - (bx + brand_w + px::S_4);
+        let dw = self.width(date, ty::PAGE)?.min(room);
+        let dy = (head_h - ty::PAGE.line) / 2.0;
+        self.line(date, ty::PAGE, pal.ink_muted, tx - px::S_4 - dw, dy, dw)?;
         Ok(content)
+    }
+
+    /// The house-wide word while Maison does not answer, along the panel's bottom; its height.
+    fn gone_band(&mut self, wcss: f32) -> Result<f32, Error> {
+        let pal = self.c.pal;
+        self.dy = 0.0;
+        let y = self.c.height / self.s() - TOUCH;
+        self.rounded(0.0, y, wcss, TOUCH, 0.0, pal.blocked_wash)?;
+        self.rounded(0.0, y, wcss, 1.0 / self.s(), 0.0, pal.blocked)?;
+        let m = margin(wcss);
+        let iy = y + (TOUCH - CHIP_ICON) / 2.0;
+        self.icon(icon::TRIANGLE_ALERT, m, iy, CHIP_ICON, pal.warn_text)?;
+        let said = self.c.words.s(k::SCREEN_WAITING_BODY);
+        let tx = m + CHIP_ICON + px::S_2;
+        let ly = y + (TOUCH - ty::BODY.line) / 2.0;
+        self.line(&said, ty::BODY, pal.warn_text, tx, ly, wcss - tx - m)?;
+        self.cover(0.0, y, wcss, TOUCH);
+        Ok(TOUCH)
+    }
+
+    /// ConfirmDialog, over everything: the consequence said, the precise verb and « Garder »,
+    /// no default button; a finger anywhere else reaches nothing.
+    fn dialog(&mut self, a: &Asked, wcss: f32) -> Result<(), Error> {
+        let pal = self.c.pal;
+        self.dy = 0.0;
+        let hcss = self.c.height / self.s();
+        self.rounded(0.0, 0.0, wcss, hcss, 0.0, pal.overlay)?;
+        self.cover(0.0, 0.0, wcss, hcss);
+        let w = (wcss - 2.0 * margin(wcss)).min(DIALOG_W);
+        let inner = w - 2.0 * px::S_5;
+        let title_h = self.para_height(&a.title, ty::GROUP, inner)?;
+        let text_h = self.para_height(&a.text, ty::BODY, inner)?;
+        let h = 2.0 * px::S_5 + title_h + px::S_3 + text_h + px::S_5 + TOUCH;
+        let (x, y) = ((wcss - w) / 2.0, (hcss - h) / 2.0);
+        self.framed((x, y, w, h), px::RADIUS_L, pal.surface, pal.line)?;
+        let (ix, mut cy) = (x + px::S_5, y + px::S_5);
+        cy += self.para(&a.title, ty::GROUP, pal.ink, ix, cy, inner)? + px::S_3;
+        cy += self.para(&a.text, ty::BODY, pal.ink_muted, ix, cy, inner)? + px::S_5;
+        let keep = Button::new(None, self.c.words.s(k::DEVICE_KEEP), Act::Keep);
+        let sure = Button::new(None, a.action.clone(), Act::Sure);
+        let bw = (inner - px::S_2) / 2.0;
+        self.button(&keep, ix, cy, bw, TOUCH)?;
+        self.button(&sure, ix + bw + px::S_2, cy, bw, TOUCH)
+    }
+
+    /// What the finger is on: a wash over its box, whatever the target (docs/ux.md § 7).
+    fn pressed(&mut self, (x, y, w, h): (f32, f32, f32, f32)) -> Result<(), Error> {
+        let s = self.s();
+        let r = if w == h { w / 2.0 / s } else { px::RADIUS };
+        self.dy = 0.0;
+        let wash = self.c.pal.ink.faded(px::FAINT_OPACITY);
+        self.rounded(x / s, y / s, w / s, h / s, r, wash)
     }
 
     #[allow(clippy::too_many_arguments)] // the door's pieces, as `Screen::Door` holds them
@@ -347,13 +451,13 @@ impl P<'_, '_, '_, '_> {
     }
 
     /// The toasts, at the bottom, above everything (app.css `.toasts`, `.toast`, `.toast.warn`).
-    fn toasts(&mut self, toasts: &[Toast], wcss: f32) -> Result<(), Error> {
+    fn toasts(&mut self, toasts: &[Toast], wcss: f32, band: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         self.dy = 0.0;
         let tw = (wcss - px::S_6).min(px::TOAST_W);
         let x = (wcss - tw) / 2.0;
         let text_w = tw - px::S_4 - px::S_3;
-        let mut y = self.c.height / self.s() - px::S_4;
+        let mut y = self.c.height / self.s() - px::S_4 - band;
         for t in toasts.iter().rev() {
             let text_h = self.para_height(&t.text, ty::BODY, text_w)?;
             let th = (text_h + 2.0 * px::S_2).max(TOUCH);
@@ -389,10 +493,16 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
         hits: Vec::new(),
         dy: -c.scroll,
         measuring: false,
+        anchors: Vec::new(),
     };
     let wcss = c.width / c.scale;
     let content = match screen {
-        Screen::House { now, groups } => p.house(now, groups, Head::Brand, wcss)?,
+        Screen::House {
+            time,
+            date,
+            now,
+            groups,
+        } => p.house(now, groups, Head::Brand(time, date), wcss)?,
         Screen::Page {
             title,
             back,
@@ -418,10 +528,22 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
             0.0
         }
     };
-    p.toasts(toasts, wcss)?;
+    let band = if c.over.gone && !matches!(screen, Screen::Door { .. }) {
+        p.gone_band(wcss)?
+    } else {
+        0.0
+    };
+    if let Some(a) = c.over.asking {
+        p.dialog(a, wcss)?;
+    }
+    p.toasts(toasts, wcss, band)?;
+    if let Some(r) = c.over.pressed {
+        p.pressed(r)?;
+    }
     Ok(Drawn {
         hits: p.hits,
         content,
+        anchors: p.anchors,
     })
 }
 
@@ -435,15 +557,15 @@ mod tests {
 
     use super::*;
     use crate::client::Client;
-    use crate::commands::{Commands, Order};
+    use crate::commands::{Commands, Order, Post};
     use crate::families::lamps::{HUE_DRIVER, Lamp, lamps_group};
     use crate::i18n::{Lang, Words};
     use crate::live::View;
     use crate::testing::{temp_dir, wait_until};
     use crate::theme::{Face, LIGHT, Rgba, Style};
     use crate::ui::gfx::{Gfx, Pen};
-    use crate::ui::layout::{Hit, Target};
-    use crate::ui::model::{Act, Lead};
+    use crate::ui::layout::{Hit, Over};
+    use crate::ui::model::{Lead, Part, Tile};
     use crate::ui::slider::Sliders;
     use maison_api::HOUSE_TZ;
 
@@ -456,6 +578,8 @@ mod tests {
             last_seen: None,
             is_on: on,
             brightness: 60,
+            temperature: None,
+            color: false,
         }
     }
 
@@ -543,6 +667,7 @@ mod tests {
             width: 800.0,
             height: 1280.0,
             scroll: 0.0,
+            over: Over::default(),
         };
         let toasts = [Toast {
             text: "Pas de réponse".into(),
@@ -553,9 +678,12 @@ mod tests {
             gfx: &mut gfx,
         };
         let house = Screen::House {
+            time: "19:05".into(),
+            date: words.long_date(now_tz.date_naive()),
             now: vec![Chip {
                 text: "2 lampes allumées".into(),
                 warn: false,
+                to: "lamps",
             }],
             groups: vec![group.clone()],
         };
@@ -569,6 +697,12 @@ mod tests {
         // and the late one's « Réessayer », which turns it on again
         let has = |k: &str| keys.iter().any(|x| x == k);
         assert!(has("lamps:all-off"), "{keys:?}");
+        assert!(has("jump:lamps"), "a chip leads to its group: {keys:?}");
+        assert_eq!(
+            drawn.anchors,
+            [("lamps", px::S_5 + TOUCH + px::S_4 - GROUP_GAP)],
+            "under the header, chips above it"
+        );
         assert_eq!(
             keys.iter().filter(|k| *k == "hue-lamp:2:power").count(),
             3,
@@ -615,6 +749,7 @@ mod tests {
             scale: 1.0,
             width: 800.0,
             height: 1280.0,
+            over: Over::default(),
         };
         let moved = paint(&mut d, &scrolled, &house, &[]).unwrap();
         assert!(
@@ -635,6 +770,7 @@ mod tests {
                 hits: Vec::new(),
                 dy: 0.0,
                 measuring: false,
+                anchors: Vec::new(),
             };
             let Body::Tiles(tiles) = &group.body else {
                 panic!("tiles")
@@ -700,6 +836,265 @@ mod tests {
                 .all(|p| p == &bare[..4])
         );
 
+        // what cannot act keeps its hit: a finger on it never opens the row's page
+        let mut busy = Commands::new(
+            Client::new(
+                "http://127.0.0.1:9",
+                &temp_dir("busy"),
+                Duration::from_secs(1),
+            ),
+            Arc::new(|| {}),
+        );
+        let travelling = Order::one("k:busy", "x", Post::empty("/x"));
+        busy.run(travelling.clone());
+        busy.run(
+            Order::one("k:timed", "x", Post::empty("/x"))
+                .toggle(true)
+                .within(Duration::from_secs(30))
+                .timed(true),
+        );
+        let open = Some(Act::Open(crate::ui::model::View::Plug("p".into())));
+        let row = Tile::new(
+            "Prise",
+            "Allumée",
+            Lead::Glyph {
+                icon: icon::PLUG,
+                on: true,
+            },
+        )
+        .open(open)
+        .parts(vec![Part::Row(vec![
+            Button::new(None, "Sans réponse", Act::Order(travelling)),
+            Button::new(None, "Hors de portée", Act::Refresh(&[])).unavailable(true),
+        ])]);
+        let page = Screen::Page {
+            title: "Prise".into(),
+            back: Box::new(Button::new(
+                None,
+                "Retour",
+                Act::Open(crate::ui::model::View::House),
+            )),
+            groups: vec![Group::new("Prise", Body::Tiles(vec![row]))],
+        };
+        let ctx_with = |commands, over| Ctx {
+            pal: &LIGHT,
+            words: &words,
+            commands,
+            sliders: &sliders,
+            now: ctx.now,
+            scale: 1.0,
+            width: 800.0,
+            height: 1280.0,
+            scroll: 0.0,
+            over,
+        };
+        let drawn = paint(&mut d, &ctx_with(&busy, Over::default()), &page, &[]).unwrap();
+        let on = |hits: &[Hit], what: &str| {
+            // the last drawn wins, as `App::under` reads them
+            let covers: Vec<_> = hits
+                .iter()
+                .filter(|h| matches!(h.what, Target::Cover) && h.y > px::HEADER_H)
+                .collect();
+            assert_eq!(
+                covers.len(),
+                2,
+                "{what}: both buttons keep their hit: {hits:?}"
+            );
+            let last = hits
+                .iter()
+                .rposition(|h| h.contains(covers[0].x + 5.0, covers[0].y + 5.0));
+            assert!(matches!(hits[last.unwrap()].what, Target::Cover), "{what}");
+        };
+        on(&drawn.hits, "busy, unavailable");
+
+        // Maison gone: one band, no line per group, every gesture out of reach, nothing shifted
+        let stale_group = group.clone().stale(Some((
+            "Dernière lecture".into(),
+            Button::new(None, "Réessayer", Act::Refresh(&[])),
+        )));
+        let failed = Group::new(
+            "Prises",
+            Body::Failed {
+                text: "Maison ne répond pas".into(),
+                retry: Button::new(None, "Réessayer", Act::Refresh(&[])),
+            },
+        );
+        let old = Screen::Page {
+            title: "Maison".into(),
+            back: Box::new(Button::new(
+                None,
+                "Retour",
+                Act::Open(crate::ui::model::View::House),
+            )),
+            groups: vec![stale_group, failed],
+        };
+        let shown = paint(&mut d, &ctx, &old, &[]).unwrap();
+        let gone = Over {
+            gone: true,
+            ..Over::default()
+        };
+        let toast = [toasts[0].clone()];
+        let drawn = paint(&mut d, &ctx_with(&commands, gone), &old, &toast).unwrap();
+        assert!(
+            !drawn
+                .hits
+                .iter()
+                .any(|h| h.what.key().is_some_and(|k| k.contains("lamp"))),
+            "no gesture left: {:?}",
+            drawn.hits
+        );
+        assert!(
+            drawn
+                .hits
+                .iter()
+                .any(|h| matches!(h.what, Target::Act(Act::Open(_)))),
+            "the way back stays"
+        );
+        assert!(
+            drawn.content < shown.content,
+            "stale lines gone, nothing pushed down"
+        );
+        let band = drawn
+            .hits
+            .iter()
+            .find(|h| matches!(h.what, Target::Cover) && h.w == 800.0 && h.y == 1280.0 - TOUCH);
+        assert!(band.is_some(), "one band along the bottom");
+        let toast_hit = drawn.hits.last().unwrap();
+        assert!(
+            toast_hit.y + toast_hit.h <= 1280.0 - TOUCH,
+            "the toast above it"
+        );
+
+        // a dialog: nothing reached around it, its two answers
+        let asked = crate::ui::model::Asked {
+            title: words.s(k::FOUNTAIN_RESET_FILTER_TITLE),
+            text: words.s(k::FOUNTAIN_RESET_DESCRIPTION),
+            action: words.s(k::DEVICE_RESET),
+            order: Order::one("r", "x", Post::empty("/x")),
+        };
+        let over = Over {
+            asking: Some(&asked),
+            ..Over::default()
+        };
+        let drawn = paint(&mut d, &ctx_with(&commands, over), &house, &[]).unwrap();
+        let answers: Vec<_> = drawn.hits.iter().rev().take(2).collect();
+        assert_eq!(answers[0].what.key().as_deref(), Some("dialog:sure"));
+        assert_eq!(answers[1].what.key().as_deref(), Some("dialog:keep"));
+        let top = drawn
+            .hits
+            .iter()
+            .rposition(|h| h.contains(10.0, 640.0))
+            .unwrap();
+        assert!(matches!(drawn.hits[top].what, Target::Cover));
+
+        // a press shows on any target, in a wash over its box
+        let box_ = (100.0, 300.0, 200.0, 44.0);
+        let plain = Over::default();
+        let pressed = Over {
+            pressed: Some(box_),
+            ..plain
+        };
+        let read = |d: &mut Draw, over| {
+            paint(d, &ctx_with(&commands, over), &house, &[]).unwrap();
+            d.canvas
+                .read_pixels(None)
+                .unwrap()
+                .with_lock(<[u8]>::to_vec)
+        };
+        assert!(read(&mut d, plain) != read(&mut d, pressed));
+
+        // every part of a page draws, and a finger finds its keys
+        let key = |name: &str, repeat| {
+            let o = Order::one(format!("key:{name}"), "x", Post::empty("/x"));
+            Button::new(Some(icon::CHEVRON_UP), "", Act::Key(o, repeat))
+        };
+        let pad = crate::ui::model::Pad {
+            up: key("up", Some(Duration::from_millis(100))),
+            left: key("left", None),
+            ok: key("ok", None),
+            right: key("right", None),
+            down: key("down", None),
+            under: vec![key("back", None)],
+        };
+        let month = crate::ui::model::Month {
+            title: "Novembre 2026".into(),
+            weekdays: ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."],
+            lead: 6,
+            days: [
+                (Some(maison_api::tempo::Color::Red), None),
+                (Some(maison_api::tempo::Color::White), None),
+                (
+                    Some(maison_api::tempo::Color::Blue),
+                    Some(("81 %".to_string(), false)),
+                ),
+                (
+                    Some(maison_api::tempo::Color::Red),
+                    Some(("40 %".to_string(), true)),
+                ),
+                (None, None),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (color, forecast))| crate::ui::model::Day {
+                day: i as u32 + 1,
+                color,
+                forecast,
+                today: i == 1,
+            })
+            .collect(),
+        };
+        let parts = vec![
+            Part::Pad(Box::new(pad)),
+            Part::Flow(vec![
+                Button::new(None, "Rouge", Act::Refresh(&[])).dot(Rgba(239, 68, 68, 255)),
+                Button::new(None, "Bleu", Act::Refresh(&[])).primary(true),
+            ]),
+            Part::Facts(vec![("Tension".into(), "230,1 V".into())]),
+            Part::Table {
+                head: vec!["Échéance".into(), "Hiver".into()],
+                rows: vec![vec!["J+1".into(), "90 %".into()]],
+            },
+            Part::Calendar(Box::new(month)),
+            Part::Progress {
+                key: "k:timed".into(),
+                label: words.s(k::TV_WAKING),
+                elapsed: k::TV_WAKING_ELAPSED,
+                limit: Duration::from_secs(30),
+            },
+        ];
+        let page = Screen::Page {
+            title: "Page".into(),
+            back: Box::new(Button::new(
+                None,
+                "Retour",
+                Act::Open(crate::ui::model::View::House),
+            )),
+            groups: vec![Group::new("Pavé", Body::Parts(parts.clone()))],
+        };
+        let drawn = paint(&mut d, &ctx, &page, &[]).unwrap();
+        let center = |k: &str| {
+            let h = drawn
+                .hits
+                .iter()
+                .find(|h| h.what.key().as_deref() == Some(k))
+                .unwrap_or_else(|| panic!("{k}: {:?}", drawn.hits));
+            (h.x + h.w / 2.0, h.y + h.h / 2.0, h.w)
+        };
+        let (ux, uy, uw) = center("key:up");
+        let (ox, oy, ow) = center("key:ok");
+        let (lx, ly, _) = center("key:left");
+        assert_eq!((uw, ow), (px::REMOTE_KEY, px::REMOTE_OK));
+        assert!((ux - ox).abs() < 1.0 && uy < oy, "the arrows around OK");
+        assert!((ly - oy).abs() < 1.0 && lx < ox);
+        // a timed order: its bar takes its place only while it travels
+        let tall = |commands, d: &mut Draw| {
+            paint(d, &ctx_with(commands, Over::default()), &page, &[])
+                .unwrap()
+                .content
+        };
+        let idle = tall(&commands, &mut d);
+        assert!(tall(&busy, &mut d) > idle);
+
         // the door: its one button found
         let door = Screen::Door {
             title: words.s(k::SCREEN_PAIR_TITLE),
@@ -722,5 +1117,6 @@ mod tests {
         // the late gesture's post found nobody: its answer comes back
         let mut said = Vec::new();
         wait_until(|| commands.take(&words, &mut |_| {}, &mut said));
+        wait_until(|| busy.take(&words, &mut |_| {}, &mut said));
     }
 }
