@@ -1,4 +1,4 @@
-//! Maison on the wall frame, drawn natively: SDL 3 under cage (Wayland, EGL, GLES 2 on Lima),
+//! Maison on the wall frame, drawn natively: SDL 3 on KMS (EGL, GLES 2 on Lima),
 //! no WebView (ARCHITECTURE.md). The loop sleeps on SDL's events: a finger, a window event, or
 //! a thread's word that something came (a read, an answer); it draws only when something
 //! changed, and every frame while a fling runs. Idle, the CPU sleeps.
@@ -27,6 +27,7 @@ mod sim;
 mod testing;
 mod theme;
 mod ui;
+mod wifi;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -197,6 +198,10 @@ fn run() -> Result<(), Error> {
             .borderless()
             .build()?,
     };
+    // on the panel nothing else draws one: a finger is not a pointer
+    if config.window.is_none() {
+        sdl.mouse().show_cursor(false);
+    }
     // fallible: `into_canvas` panics when the driver has no renderer (GLES missing)
     let mut canvas = sdl3::render::create_renderer(window, None)?;
     canvas.set_blend_mode(sdl3::render::BlendMode::Blend);
@@ -292,6 +297,9 @@ fn run() -> Result<(), Error> {
         }
         drawings += 1;
         if drawings == 1 {
+            // KMSDRM makes its surface anew at the first present and shows that, blank: a screen
+            // that never changes (the setup's) would stay black until a finger came
+            app.dirty = true;
             println!(
                 "first frame after {:.0} ms",
                 started.elapsed().as_secs_f64() * 1000.0
@@ -416,6 +424,8 @@ fn say_screen(screen: &Screen, said: &mut String) {
         Screen::House { .. } => "screen house".to_string(),
         Screen::Photos { photo, .. } => format!("screen photos {photo}"),
         Screen::Page { title, .. } => format!("screen page {title}"),
+        Screen::Wifi { word, .. } => format!("screen wifi {word}"),
+        Screen::Password(p) => format!("screen password {}", p.title),
         Screen::Door { title, code, .. } => match code {
             Some(c) => format!("screen door {title}\ncode {c}"),
             None => format!("screen door {title}"),

@@ -9,10 +9,11 @@
 //! - `drag Y0 Y1`: a finger from Y0 to Y1 down the middle (the column scrolls)
 //! - `shot PATH`: the next drawing saved there as PNG
 //! - `keys`: every control's key, one line each
-//! - `idle`: as if nobody had touched the panel for `DIM_AFTER` (no two-minute wait in a run)
+//! - `idle`: as if nobody had touched the panel for `DIM_AFTER` (no wait in a run)
 //! - `turn`: the photo on the panel's time is up
+//! - `type TEXT`: TEXT in the keyboard's field, as keys would type it (`press kb:a`, one key)
 //!
-//! Said: `screen house`, `screen photos ID`, `screen door TITLE`, `code CODE` (a pairing code shown), `shot PATH`,
+//! Said: `screen house`, `screen photos ID`, `screen door TITLE`, `screen wifi WORD`, `screen password NETWORK`, `code CODE` (a pairing code shown), `shot PATH`,
 //! `ok COMMAND` or `error COMMAND: why`.
 
 use std::io::BufRead;
@@ -32,6 +33,7 @@ pub enum Command {
     Keys,
     Idle,
     Turn,
+    Type(String),
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -46,6 +48,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         ["keys"] => Ok(Command::Keys),
         ["idle"] => Ok(Command::Idle),
         ["turn"] => Ok(Command::Turn),
+        ["type", text] => Ok(Command::Type((*text).into())),
         _ => Err(format!("unknown command: {line}")),
     }
 }
@@ -106,6 +109,7 @@ pub fn run(app: &mut App, c: Command) -> Result<Option<String>, String> {
         }
         Command::Idle => app.nobody_since(now),
         Command::Turn => app.photo_turn(now),
+        Command::Type(text) => app.type_text(&text),
     }
     app.dirty = true;
     Ok(None)
@@ -131,6 +135,7 @@ mod tests {
         assert_eq!(parse("keys"), Ok(Command::Keys));
         assert_eq!(parse("idle"), Ok(Command::Idle));
         assert_eq!(parse("turn"), Ok(Command::Turn));
+        assert_eq!(parse("type abc"), Ok(Command::Type("abc".into())));
         assert!(parse("fly").is_err());
         assert!(parse("tap x 1").is_err());
     }

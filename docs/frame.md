@@ -127,10 +127,14 @@ frame/linux/ssh-cert.sh         # a certificate for 8 hours (console.sh and send
 `--debug` is for bring-up: a root console on the USB-C, the backlight blinks five times as soon as
 init runs (a sign with no console at all) and the initramfs waits 8 s before saying what came up.
 
-Maison's address is root's: `/android-data/maison/target` (0600), loaded by the units as their
-`target` credential, written by the first setup (below), or adopted once from where Android's
-shell writes, `/data/local/tmp/maison/target`, while root keeps none. The Wi-Fi takes the network
-of the first setup, else the ones Android knows (its own `wpa_supplicant.conf`).
+Maison's address is never typed on the frame. It is root's: `/android-data/maison/target` (0600),
+changed over SSH, or adopted once from where Android's shell writes, `/data/local/tmp/maison/target`,
+while root keeps none. Without it the image's default applies: `FRAME_TARGET=https://… frame/linux/buildroot.sh`
+writes `/etc/maison-target`. `maison-wifi` hands the one that holds to the interface as
+`/run/maison-target`, its `target` credential (`systemctl restart maison-ui` runs it again); with
+neither, the interface says so in plain words.
+The Wi-Fi takes the network joined on the frame (`wifi.conf`), else the ones Android knows (its own
+`wpa_supplicant.conf`).
 
 There is no console on a product's boot: no getty, no shell on the USB-C, root's password locked.
 `initramfs.py --debug` builds an image with a root shell on the USB-C, for bring-up only. A
@@ -175,20 +179,24 @@ What the bring-up taught, each point seen on the frame:
   drew one per boot (a new lease, a new IP).
 - No cable, the tools go over SSH: console.sh takes the USB console when it is there, else
   `ssh root@maison-frame.local`; install, flash and journals work with the frame on the wall.
-- The panel dims after 2 minutes without a finger (a quarter of its level by day, 4 % at
+- The panel dims after a minute without a finger (a quarter of its level by day, 4 % at
   night, by the sun's side); the first touch only wakes it, the next acts. The app writes
   /sys/class/backlight itself: the video group may (70-maison-backlight.rules).
-- With photos added from « Cadre photo », the dimmed panel shows them, a minute each, from its own
+- With photos added from « Cadre photo », the panel shows them instead, 5 s each, at its full level by day and dimmed
+  at night, from its own
   copy (`/android-data/maison/ui/photos`, 256 MiB at most); the unit's `ReadWritePaths` covers it.
 - The journal is kept on userdata (`/var/log/journal`, written every minute, at once for errors):
   a boot that went wrong reads at the next one. The initramfs derives the machine id from the
   eMMC's serial, so that it stays one directory, within its 64 MB.
 
 The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)) is in the
-system: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
-client, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`;
-its launcher (`/usr/local/sbin/maison-ui`) turns the output with `wlr-randr` (`MAISON_TURN`, 0
-or 180, else the app turns its own picture).
+system: `maison-ui.service` runs `maison-frame-ui` on tty7, SDL straight on KMS with no
+compositor, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`.
+It turns its own picture (`MAISON_ROTATE=180`); its launcher (`/usr/local/sbin/maison-ui`) gives
+SDL the card that has the panel. SDL is built without a window system
+(`sdl-unix-console-build`), and hides the cursor on the panel. Measured against cage on the frame:
+99 to 92 MB of RAM, a draw 28 to 29-34 ms, first picture unchanged at 1.1 s; what compositing itself
+cost is not measured.
 
 A wall screen's theme follows the sun at the house when nothing is chosen (« Soleil », which
 anyone may choose too): dark from sunset to sunrise, from the house's place (set with the
@@ -243,23 +251,43 @@ newer, or once failed, downloads to the free slot, resumed if cut, and restarts 
 Failures provoked on the frame, each back on the good slot by itself: an image that fails its
 `sums` (27 s), an unreadable image with valid `sums` (39 s), a kernel that panics (49 s), a kernel
 that hangs (73 s, a real watchdog reset). A good `--kernel` slot boots by kexec under that watchdog.
-An update over the air, from updates.synthe.se to the frame: 80 s. Not proved on the frame: the
-setup's access point, which needs an image with wpa_supplicant's AP mode (none before it was in the
-defconfig), and the live switches below.
+An update over the air, from updates.synthe.se to the frame: 80 s.
 
-First setup: with no network or no address (`maison-wifi`), the frame is its own Wi-Fi, named and
-locked from its eMMC's serial; the interface shows both and the address of its page (`maison-setup`,
-http://192.168.4.1), which takes the house's network and Maison's address, writes them to
-`/android-data/maison` (0600) and restarts. An image's factory install: `rootfs.squashfs` left in
-`/data/local/tmp/maison`, adopted once into slot a while userdata holds no state.
+Joining a network happens on the frame's own touch screen, no phone: the interface's Wi-Fi screen
+lists the networks in range, a keyboard takes the password, the frame says it connected or why not.
+It opens by itself with no network configured, or when the frame lost its own, and leaves by itself
+when one is back. By hand: a link on every door, and on the band that says Maison is silent. A house
+that answers offers none: a wall is touched by anyone. Listed: WPA-PSK and open networks, what
+`wifi.conf` can say; a WPA3-only network is not. An image's factory install: `rootfs.squashfs` left
+in `/data/local/tmp/maison`, adopted once into slot a while userdata holds no state.
+
+The interface stays `kiosk`: `maison-wifid`, root, answers it over `/run/maison-wifi/socket` (the
+directory 0750 root:kiosk), one JSON line each way: scan, list, connect, status, nothing else
+(`frame/tools/src/wifi.rs`). It is the boundary: a name goes in hex, a password only as its 802.11i
+key (`psk`, also what `wifi.conf` holds: never the password), a request is at most 1 KiB, unknown fields are refused.
+It speaks to wpa_supplicant's control socket directly (no wpa_cli). A network is joined live and
+written to `wifi.conf` (0600, atomic, as `maison-setup` writes it) only once associated: a wrong
+password loses nothing, the others are enabled again.
 
 Network lost (`maison-wifi-watch`, the kernel's `operstate`, not carrier: a wrong password raises
-carrier too): 10 minutes without associating, after boot or a lost link, the frame opens the same
-setup: `/run/maison-lost` makes `maison-wifi` take its access-point branch, the watch restarts
-wpa_supplicant, reloads networkd and restarts `maison-ui`, which reads `MAISON_SETUP_*` as it starts.
-The page has the kept address already in the form. 30 minutes after the page's last request the
-same steps return to the configured network without a restart, and the count starts again. An
-update on trial never counts: `maison-commit` judges it, within its 150 s, before the 10 minutes.
+carrier too): 10 minutes without associating, after boot or a lost link, `/run/maison-lost` says so
+and `maison-wifid` tells the interface, at its next look (15 s). An association removes it. The photos
+go on over it; a finger finds the Wi-Fi screen. An update on trial never counts: `maison-commit` judges
+it, within its 150 s, before the 10 minutes.
+
+The hotspot is the last resort of a dead touch panel. It stays in the image and never starts by
+itself: only the power key held 10 s opens it (`maison-power-key`, gpio-keys' `KEY_POWER`, then
+`maison-hotspot open`; `logind.conf.d/maison.conf` keeps logind off the key). `/run/maison-hotspot`
+makes `maison-wifi` take its access-point branch: the frame is its own Wi-Fi, named and locked from
+its eMMC's serial; wpa_supplicant and networkd restart, and `maison-ui`, which reads `MAISON_SETUP_*`
+as it starts, shows both and the address of its page (`maison-setup`, http://192.168.4.1). The page
+takes the house's network and Maison's address, the kept one already in the form, writes them to
+`/android-data/maison` (0600) and restarts. 30 minutes after its last request, `maison-hotspot close`
+returns to the configured network without a restart.
+
+Seen on the frame: scan and list, a wrong password then the right one, the power key held 10 s, the
+access point on the AIC8800 and the setup view. A photo's fade draws at 20 images a second, 63 ms at
+worst. Not seen: the page's form submitted from a phone, and `maison-hotspot close` after its 30 minutes.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.

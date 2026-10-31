@@ -1,0 +1,13 @@
+# The power key held 10 s opens the frame's own Wi-Fi (frame/tools: maison-power-key): nothing else
+# ever does. It waits for the key's device by failing until it is there.
+[Unit]
+Description=The power key, held
+After=systemd-udevd.service
+
+[Service]
+ExecStart=/usr/local/bin/maison-power-key
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

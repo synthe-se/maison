@@ -1,21 +1,12 @@
 #!/bin/sh
-# Under cage (maison-ui.service): the panel turned as it is mounted, upside down, by the
-# compositor (wlr-randr, the output's transform), then Maison's native interface. Should the
-# compositor refuse, the app turns its own picture (MAISON_ROTATE): the touch needs neither, the
-# device tree maps it to what the person sees. Its address comes from the credential `target`.
+# Maison's native interface, on the card that has the panel: Lima's is a card too, and which of the
+# two comes first is the probe's.
 set -eu
-turn=${MAISON_TURN:-180}
-# the app turns only half a turn: anything else is said and drawn upright
-case "$turn" in
-0 | 180) ;;
-*)
-	echo "MAISON_TURN=$turn: 0 or 180; drawn upright" >&2
-	turn=0
-	;;
-esac
-output=$(wlr-randr | awk 'NR == 1 { print $1 }')
-if [ "$turn" != 0 ] && ! wlr-randr --output "$output" --transform "$turn"; then
-	echo "the compositor did not turn $output: the app turns its picture" >&2
-	export MAISON_ROTATE="$turn"
-fi
-exec /usr/local/bin/maison-frame-ui
+for connector in /sys/class/drm/card*-DSI-*; do
+	[ -e "$connector" ] || break
+	card=${connector#/sys/class/drm/card}
+	export SDL_KMSDRM_DEVICE_INDEX="${card%%-*}"
+	exec /usr/local/bin/maison-frame-ui
+done
+echo "no panel on any card" >&2
+exit 1

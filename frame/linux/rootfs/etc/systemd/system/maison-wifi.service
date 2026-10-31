@@ -1,7 +1,7 @@
-# The networks Android knows (its own wpa_supplicant.conf, in its userdata), handed to ours. Not
-# RemainAfterExit: restarting wpa_supplicant@wlan0 runs it again (maison-wifi-watch)
+# The frame's network and address for this boot (usr/local/sbin/maison-wifi). Not RemainAfterExit:
+# restarting wpa_supplicant@wlan0 runs it again (maison-hotspot)
 [Unit]
-Description=The Wi-Fi networks Android knows
+Description=The frame's network and address
 Before=wpa_supplicant@wlan0.service systemd-networkd.service
 RequiresMountsFor=/android-data
 

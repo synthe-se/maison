@@ -246,7 +246,7 @@ class Initramfs(unittest.TestCase):
         self.assertLess(boot.index("rm -f $left"), boot.index("switch_root"))
         units = HERE / "linux/rootfs/etc/systemd/system"
         text = (units / "maison-ui.service").read_text()
-        self.assertIn("LoadCredential=target:/android-data/maison/target\n", text)
+        self.assertIn("LoadCredential=target:/run/maison-target\n", text)
         self.assertNotIn("local/tmp", text.split("LoadCredential=")[1])
 
     def test_no_root_console_but_in_a_bring_up_image(self):
@@ -425,27 +425,33 @@ echo "sums $(basename "$PWD") end" >>$LOG
 
 
 class WifiWatch(unittest.TestCase):
-    """maison-wifi and maison-wifi-watch, run over a timeline of 15 s steps."""
+    """maison-wifi, maison-wifi-watch and maison-hotspot, run over a timeline of 15 s steps."""
 
     SBIN = HERE / "linux/rootfs/usr/local/sbin"
-    PATHS = ("run", "sys", "android-data", "etc/wpa_supplicant")
+    PATHS = ("run", "sys", "android-data", "etc/wpa_supplicant", "etc/maison-target")
     OPEN = ["systemctl restart wpa_supplicant@wlan0", "systemctl --no-block start maison-setup", "networkctl reload", "systemctl restart maison-ui"]
     BACK = ["systemctl stop maison-setup", "systemctl restart wpa_supplicant@wlan0", "networkctl reload", "systemctl restart maison-ui"]
     OPERSTATE = "echo %s >$ROOT/sys/class/net/wlan0/operstate"
+    # the power key held
+    HELD = "maison-hotspot open"
     # a request on the page: maison-setup touches the file
     REQUEST = "touch -t 203001010000 $ROOT/run/maison-setup"
 
-    def run_watch(self, until, events=None, state="active=a\npending=\ntries=0\nboots=0\n", target="https://a.b"):
+    def run_watch(self, until, events=None, state="active=a\npending=\ntries=0\nboots=0\n", target="https://a.b", wifi="network={\n}\n", built=None):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         root = self.root = Path(d.name)
         maison = root / "android-data/maison"
         (maison / "slots").mkdir(parents=True)
         (maison / "slots/state").write_text(state)
-        (maison / "wifi.conf").write_text("network={\n}\n")
-        (maison / "target").write_text(target)
+        if wifi:
+            (maison / "wifi.conf").write_text(wifi)
+        if target is not None:
+            (maison / "target").write_text(target)
         (root / "run").mkdir()
         (root / "etc").mkdir()
+        if built:
+            (root / "etc/maison-target").write_text(built)
         (root / "sys/class/net/wlan0").mkdir(parents=True)
         (root / "sys/class/net/wlan0/operstate").write_text("dormant\n")
         (root / "log").touch()
@@ -455,7 +461,7 @@ class WifiWatch(unittest.TestCase):
             (root / f"at/{at}").write_text(command)
         slots = (self.SBIN.parent / "lib/maison-slots").read_text()
         (root / "maison-slots").write_text(rooted(slots, root, *self.PATHS))
-        for name in ("maison-wifi", "maison-wifi-watch"):
+        for name in ("maison-wifi", "maison-wifi-watch", "maison-hotspot"):
             script = rooted((self.SBIN / name).read_text(), root, *self.PATHS)
             (root / name).write_text(script.replace("/usr/local/lib/maison-slots", f"{root}/maison-slots"))
         stubs(
@@ -466,6 +472,7 @@ echo $t >$ROOT/clock
 [ "$t" -le {until} ] || exit 1
 [ ! -e $ROOT/at/$t ] || . $ROOT/at/$t""",
             networkctl='echo "$(cat $ROOT/clock) networkctl $*" >>$LOG',
+            maison_hotspot='sh $ROOT/maison-hotspot "$@"',
             # wpa_supplicant@wlan0 requires maison-wifi
             systemctl="""echo "$(cat $ROOT/clock) systemctl $*" >>$LOG
 [ "$*" != "restart wpa_supplicant@wlan0" ] || sh $ROOT/maison-wifi""",
@@ -483,8 +490,53 @@ echo $t >$ROOT/clock
     def conf(self):
         return (self.root / "etc/wpa_supplicant/wpa_supplicant-wlan0.conf").read_text()
 
-    def test_ten_minutes_without_a_network_open_the_setup(self):
-        self.assertEqual(self.run_watch(700), self.at(600, self.OPEN))
+    def lost(self):
+        return (self.root / "run/maison-lost").exists()
+
+    def test_ten_minutes_without_a_network_tell_the_interface_and_open_nothing(self):
+        self.assertEqual(self.run_watch(585), [])
+        self.assertFalse(self.lost())
+        self.assertEqual(self.run_watch(4000), [], "no access point, however long")
+        self.assertTrue(self.lost())
+        self.assertNotIn("mode=2", self.conf())
+        self.assertFalse((self.root / "run/maison-setup").exists())
+
+    def test_an_association_says_the_network_is_back(self):
+        self.run_watch(800, {705: self.OPERSTATE % "up"})
+        self.assertFalse(self.lost())
+
+    def test_a_lost_link_counts_from_its_loss(self):
+        events = {300: self.OPERSTATE % "up", 1500: self.OPERSTATE % "dormant"}
+        self.run_watch(1500 + 570, events)
+        self.assertFalse(self.lost())
+        self.run_watch(1500 + 600, events)
+        self.assertTrue(self.lost())
+
+    def test_never_while_an_update_is_on_trial(self):
+        self.assertEqual(self.run_watch(1000, state="active=a\npending=b\ntries=1\nboots=0\n"), [])
+        self.assertFalse(self.lost())
+        self.assertEqual(self.done.returncode, 1, "stopped by the timeline, not by itself")
+
+    def test_a_frame_with_no_network_scans_with_no_access_point(self):
+        self.assertEqual(self.run_watch(100, wifi=None, target=None), [])
+        self.assertEqual(self.conf(), "ctrl_interface=/run/wpa_supplicant\ncountry=FR\n\n".replace("/run", f"{self.root}/run"))
+        self.assertEqual(self.done.returncode, 1, "it keeps watching")
+
+    def test_the_address_is_roots_else_the_images_else_none(self):
+        address = lambda: (self.root / "run/maison-target").read_text()
+        self.run_watch(15, target="https://a.b", built="https://built")
+        self.assertEqual(address(), "https://a.b")
+        self.run_watch(15, target=None, built="https://built")
+        self.assertEqual(address(), "https://built")
+        self.assertFalse((self.root / "android-data/maison/target").exists(), "root's stays root's to write")
+        self.run_watch(15, target="", built="https://built")
+        self.assertEqual(address(), "https://built", "an older frame's empty file says none")
+        self.run_watch(15, target=None)
+        self.assertEqual(address(), "")
+        self.assertEqual(stat.S_IMODE((self.root / "run/maison-target").stat().st_mode), 0o600)
+
+    def test_the_power_key_held_opens_the_frames_own_wifi(self):
+        self.assertEqual(self.run_watch(1100, {990: self.HELD}), self.at(990, self.OPEN))
         self.assertIn("mode=2", self.conf())
         setup = (self.root / "run/maison-setup").read_text()
         self.assertIn("MAISON_SETUP_SSID=Maison-0123\n", setup)
@@ -494,47 +546,64 @@ echo $t >$ROOT/clock
         self.assertEqual(stat.S_IMODE(network.stat().st_mode), 0o755, "networkd's user reads it")
         self.assertEqual(stat.S_IMODE((network / "40-maison-setup.network").stat().st_mode), 0o644)
 
-    def test_thirty_minutes_later_it_returns_to_its_network_and_the_cycle_repeats(self):
-        back = 600 + 15 + 1800
-        self.assertEqual(self.run_watch(back + 60), self.at(600, self.OPEN) + self.at(back, self.BACK))
+    def test_held_twice_it_opens_once(self):
+        self.assertEqual(self.run_watch(1100, {990: self.HELD, 1050: self.HELD}), self.at(990, self.OPEN))
+
+    def test_thirty_minutes_later_it_returns_to_its_network(self):
+        back = 990 + 1800
+        self.assertEqual(self.run_watch(back + 60, {990: self.HELD}), self.at(990, self.OPEN) + self.at(back, self.BACK))
         self.assertNotIn("mode=2", self.conf())
         self.assertFalse((self.root / "run/maison-setup").exists())
-        self.assertFalse((self.root / "run/maison-lost").exists())
+        self.assertFalse((self.root / "run/maison-hotspot").exists())
         self.assertFalse((self.root / "run/systemd/network/40-maison-setup.network").exists())
-        log = self.run_watch(back + 700)
-        self.assertEqual(log, self.at(600, self.OPEN) + self.at(back, self.BACK) + self.at(back + 600, self.OPEN))
-
-    def test_an_association_stops_the_count_and_a_lost_link_counts_from_its_loss(self):
-        events = {300: self.OPERSTATE % "up", 1500: self.OPERSTATE % "dormant"}
-        self.assertEqual(self.run_watch(2200, events), self.at(1500 + 585, self.OPEN))
-
-    def test_never_while_an_update_is_on_trial(self):
-        self.assertEqual(self.run_watch(1000, state="active=a\npending=b\ntries=1\nboots=0\n"), [])
-        self.assertEqual(self.done.returncode, 1, "stopped by the timeline, not by itself")
-
-    def test_a_first_setup_stays_open_whatever_the_time(self):
-        self.assertEqual(self.run_watch(1000, target=""), [])
-        self.assertEqual(self.done.returncode, 0, "nothing to watch")
-        self.assertIn("mode=2", self.conf())
 
     def test_someone_at_the_page_holds_the_way_back(self):
-        self.assertEqual(self.run_watch(4300, {2400: self.REQUEST}), self.at(600, self.OPEN) + self.at(2400 + 1800, self.BACK))
+        self.assertEqual(self.run_watch(4300, {990: self.HELD, 2400: self.REQUEST}), self.at(990, self.OPEN) + self.at(2400 + 1800, self.BACK))
+
+    def test_it_says_how_it_is_used(self):
+        done = subprocess.run(["sh", str(self.SBIN / "maison-hotspot")], capture_output=True)
+        self.assertEqual(done.returncode, 2)
 
     def test_its_ten_minutes_come_after_maison_commit_is_done(self):
         watch = (self.SBIN / "maison-wifi-watch").read_text()
         commit = (self.SBIN / "maison-commit").read_text()
         self.assertIn("patience=600\n", watch)
         self.assertIn('[ "$waited" -lt 150 ]', commit)
-        self.assertIn("[ ! -e /run/maison-setup ] || exit 0", commit)
 
-    def test_it_runs_on_every_frame_and_the_image_can_be_an_access_point(self):
+    def test_only_the_power_key_opens_the_access_point(self):
+        for name in ("maison-wifi-watch", "maison-commit", "maison-wifi"):
+            self.assertNotIn("hotspot open", (self.SBIN / name).read_text())
+        self.assertNotRegex((self.SBIN / "maison-wifi-watch").read_text(), r": >\"\$hotspot\"")
+
+    def test_the_image_holds_all_of_it_and_the_power_key_shuts_nothing_down(self):
         linux = HERE / "linux"
-        self.assertIn("enable maison-wifi-watch.service\n", (linux / "buildroot/post-build.sh").read_text())
+        post = (linux / "buildroot/post-build.sh").read_text()
+        for unit in ("maison-wifi-watch", "maison-wifid", "maison-power-key"):
+            self.assertIn(f"enable {unit}.service\n", post)
+        for tool in ("maison-wifid", "maison-power-key", "maison-setup"):
+            self.assertIn(f"--bin {tool}", (linux / "buildroot.sh").read_text())
+        self.assertIn("maison-setup maison-wifid maison-power-key", post)
         self.assertIn("BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT=y\n", (linux / "buildroot/maison_defconfig").read_text())
         units = linux / "rootfs/etc/systemd/system"
         self.assertNotIn("RemainAfterExit=", (units / "maison-wifi.service").read_text())
         self.assertIn("EnvironmentFile=-/run/maison-setup\n", (units / "maison-ui.service").read_text())
-        self.assertTrue(os.access(self.SBIN / "maison-wifi-watch", os.X_OK))
+        for script in ("maison-wifi-watch", "maison-hotspot"):
+            self.assertTrue(os.access(self.SBIN / script, os.X_OK))
+        logind = (linux / "rootfs/etc/systemd/logind.conf.d/maison.conf").read_text()
+        self.assertIn("HandlePowerKey=ignore\n", logind)
+        self.assertIn("HandlePowerKeyLongPress=ignore\n", logind)
+
+    def test_the_interface_reaches_the_service_by_its_group_alone(self):
+        unit = (HERE / "linux/rootfs/etc/systemd/system/maison-wifid.service").read_text()
+        self.assertIn("Group=kiosk\n", unit)
+        self.assertIn("RuntimeDirectoryMode=0750\n", unit)
+        self.assertIn('pub const SOCKET: &str = "/run/maison-wifi/socket";', (HERE / "tools/src/wifi.rs").read_text())
+
+    def test_a_default_address_at_build_is_https(self):
+        script = (HERE / "linux/buildroot.sh").read_text()
+        self.assertIn('"" | https://?*) ;;', script)
+        self.assertIn('printf "%s" "$ADDRESS" >/tmp/maison-target', script)
+        self.assertIn('cp /tmp/maison-target "$root/etc/maison-target"', (HERE / "linux/buildroot/post-build.sh").read_text())
 
 
 if __name__ == "__main__":

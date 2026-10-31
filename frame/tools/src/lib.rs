@@ -1,10 +1,13 @@
-//! What the frame's updates share: the signed manifest, what it may say, and how a release is
+//! What the frame's tools share: its Wi-Fi (`wifi`, `wpa`), and for its updates the signed manifest, what it may say, and how a release is
 //! checked. A release is `manifest.json`, its detached Ed25519 signature `manifest.sig`, and the
 //! files it names, under `<version>/`. The private key never leaves the build machine.
 
 use ring::digest::{Context, SHA256};
 use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
+
+pub mod wifi;
+pub mod wpa;
 
 /// The release key: `maison-sign keygen` writes it here; the frame trusts nothing else.
 pub const RELEASE_KEY_HEX: &str = include_str!("../release.pub");

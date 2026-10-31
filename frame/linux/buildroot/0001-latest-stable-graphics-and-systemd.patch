@@ -1,26 +1,6 @@
-Mesa 26.2.6, wlroots 0.20.2, cage 0.3.1, systemd 258.12: what Buildroot 2026.08.1 ships behind
+Mesa 26.2.6, systemd 258.12: what Buildroot 2026.08.1 ships behind
 them, from its master (15b0457158bbe24264ab241cbe87c52b4d659f4e), Mesa on to its last release.
 
---- a/package/cage/cage.hash
-+++ b/package/cage/cage.hash
-@@ -1,5 +1,5 @@
- # Locally computed, after checking PGP signature
--sha256  cd2510f83bef3e08e660d99492ca7761b218ecb53ee01cdbbeee3d6aabc7734e  cage-0.3.0.tar.gz
-+sha256  edafc173b6f56a3e1564933e272a54aaa9fe158d330e6a415d57b44ab880fe2b  cage-0.3.1.tar.gz
- 
- # Hashes for license files:
- sha256  e117104073335dbaf78596fb1bedf89dda63c71f60f0b665947b2d369c77ecee  LICENSE
---- a/package/cage/cage.mk
-+++ b/package/cage/cage.mk
-@@ -4,7 +4,7 @@
- #
- ################################################################################
- 
--CAGE_VERSION = 0.3.0
-+CAGE_VERSION = 0.3.1
- CAGE_SITE = https://github.com/cage-kiosk/cage/releases/download/v$(CAGE_VERSION)
- CAGE_LICENSE = MIT
- CAGE_LICENSE_FILES = LICENSE
 --- a/package/mesa3d/0005-nir-load_libclc-do-not-compare-sys_path-against-NULL.patch
 +++ b/package/mesa3d/0005-nir-load_libclc-do-not-compare-sys_path-against-NULL.patch
 @@ -0,0 +1,129 @@
@@ -830,26 +810,3 @@ them, from its master (15b0457158bbe24264ab241cbe87c52b4d659f4e), Mesa on to its
  
  HOST_SYSTEMD_NINJA_ENV = DESTDIR=$(HOST_DIR)
  
---- a/package/wlroots/wlroots.hash
-+++ b/package/wlroots/wlroots.hash
-@@ -1,7 +1,7 @@
- # Locally calculated after checking pgp signature
--# https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.20.0/downloads/wlroots-0.20.0.tar.gz.sig
-+# https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.20.2/downloads/wlroots-0.20.2.tar.gz.sig
- # with key 34FF9526CFEF0E97A340E2E40FDE7BE0E88F5E48 "emersion <contact@emersion.fr>"
--sha256  33f52414e1b280839aeb70786f0ae2c9f54e27ad4873108d86270a2f89c4934b  wlroots-0.20.0.tar.gz
-+sha256  80c567d2ed4efb2cfa6b077f22c7a710d9c78ba4e185a75e8694001114af0733  wlroots-0.20.2.tar.gz
- 
- # Hashes for license files:
- sha256  35d427c043dcafe8893b9e7247348f599847c81d9a067703587c80707f3d58df  LICENSE
---- a/package/wlroots/wlroots.mk
-+++ b/package/wlroots/wlroots.mk
-@@ -4,7 +4,7 @@
- #
- ################################################################################
- 
--WLROOTS_VERSION = 0.20.0
-+WLROOTS_VERSION = 0.20.2
- WLROOTS_SITE = https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/$(WLROOTS_VERSION)/downloads
- WLROOTS_LICENSE = MIT
- WLROOTS_LICENSE_FILES = LICENSE

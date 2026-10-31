@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 use super::Picture;
 
 /// How long a photo stays, from the start of its fade to the start of the next one's.
-pub const HOLD: Duration = Duration::from_secs(60);
+pub const HOLD: Duration = Duration::from_secs(5);
 /// The crossfade.
 pub const FADE: Duration = Duration::from_secs(1);
 /// The next photo is read this long before its turn, never more: at most one is decoded ahead,
 /// for this long. Far above what a decode takes, so its fade starts on time.
-const LEAD: Duration = Duration::from_secs(5);
+const LEAD: Duration = Duration::from_secs(2);
 
 /// A shuffled deck: each photo once, in random order, before any comes again, and never the same
 /// one twice in a row. Not secret, only varied: a small generator, no dependency.

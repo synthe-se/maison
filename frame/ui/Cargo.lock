@@ -454,14 +454,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "maison-frame-tools"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "maison-frame-ui"
 version = "0.1.0"
 dependencies = [
  "allsorts",
  "chrono",
  "maison-api",
+ "maison-frame-tools",
  "resvg",
  "sdl3",
+ "sdl3-sys",
  "sdl3-ttf-sys",
  "serde",
  "serde_json",

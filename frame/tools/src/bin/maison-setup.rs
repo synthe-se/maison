@@ -1,20 +1,19 @@
 //! The setup, while the frame is its own Wi-Fi: one page on 192.168.4.1 asks for the house's network
 //! and Maison's address (the one kept, if any, already there), writes them where the system reads
-//! them, and restarts. The words are i18n/messages/fr.json's. Only ever runs on a frame not set up
-//! or that lost its network (maison-wifi, maison-wifi-watch). Each request touches `SETUP`: someone
-//! at the form holds the watch's way back to the configured network.
+//! them, and restarts. The words are i18n/messages/fr.json's. Only ever runs when the power key was
+//! held (maison-power-key, maison-hotspot): the last resort of a dead touch panel. Each request
+//! touches `SETUP`: someone at the form holds the watch's way back to the configured network.
 
+use maison_frame_tools::wifi::{CONF, network, password_fits, private, ssid_fits};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
 use std::time::SystemTime;
 use std::{fs, process};
 
 const LISTEN: &str = "192.168.4.1:80";
-const WIFI: &str = "/android-data/maison/wifi.conf";
 const TARGET: &str = "/android-data/maison/target";
 const SETUP: &str = "/run/maison-setup";
 const MESSAGES: &str = include_str!("../../../../i18n/messages/fr.json");
@@ -92,10 +91,10 @@ fn parsed(form: &str) -> Result<Answer, &'static str> {
             .unwrap_or_default()
     };
     let (ssid, password, target) = (field("ssid"), field("password"), field("target"));
-    if ssid.is_empty() || ssid.len() > 32 {
+    if !ssid_fits(&ssid) {
         return Err("frame_setup_page_bad_ssid");
     }
-    if !(8..=63).contains(&password.len()) || password.contains(['"', '\n', '\r', '\\']) {
+    if !password_fits(&password) {
         return Err("frame_setup_page_bad_password");
     }
     let host = target.strip_prefix("https://").unwrap_or("");
@@ -109,30 +108,9 @@ fn parsed(form: &str) -> Result<Answer, &'static str> {
     })
 }
 
-fn network(answer: &Answer) -> String {
-    let ssid: String = answer.ssid.bytes().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "network={{\n\tssid={ssid}\n\tpsk=\"{}\"\n}}\n",
-        answer.password
-    )
-}
-
-fn private(path: &Path, text: &str) -> std::io::Result<()> {
-    let next = path.with_extension("new");
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&next)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    fs::set_permissions(&next, fs::Permissions::from_mode(0o600))?;
-    fs::rename(&next, path)
-}
-
 fn save(answer: &Answer) -> std::io::Result<()> {
-    private(Path::new(WIFI), &network(answer))?;
+    let wifi = network(&answer.ssid, Some(&answer.password));
+    private(Path::new(CONF), &wifi)?;
     private(Path::new(TARGET), &answer.target)
 }
 
@@ -237,10 +215,7 @@ mod tests {
 
     #[test]
     fn nothing_can_write_configuration_of_its_own() {
-        assert_eq!(
-            parsed("ssid=x&password=abc%22def%0Agh&target=https%3A%2F%2Fa.b"),
-            Err("frame_setup_page_bad_password")
-        );
+        assert!(parsed("ssid=x&password=abc%22def%0Agh&target=https%3A%2F%2Fa.b").is_ok());
         assert_eq!(
             parsed("ssid=x&password=abcdefgh&target=http%3A%2F%2Fa.b"),
             Err("frame_setup_page_bad_target")
@@ -256,19 +231,6 @@ mod tests {
         assert_eq!(
             parsed("ssid=x&password=short&target=https%3A%2F%2Fa.b"),
             Err("frame_setup_page_bad_password")
-        );
-    }
-
-    #[test]
-    fn a_network_name_goes_in_hex_whatever_it_holds() {
-        let a = Answer {
-            ssid: "a\"b".into(),
-            password: "abcdefgh".into(),
-            target: String::new(),
-        };
-        assert_eq!(
-            network(&a),
-            "network={\n\tssid=612262\n\tpsk=\"abcdefgh\"\n}\n"
         );
     }
 

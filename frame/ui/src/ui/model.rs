@@ -9,6 +9,7 @@ use crate::commands::Order;
 use crate::pairing::Ask;
 use crate::theme::Rgba;
 use crate::ui::icon::Icon;
+use crate::ui::keyboard::{Key, Keyboard};
 use maison_api::tempo::Color;
 
 /// A dashboard group (Group.svelte): a title, a fact or actions in its head, then its body.
@@ -306,6 +307,58 @@ pub enum Act {
     /// Another screen of the house (the Tempo page, a cat device's); `View::House` is the way
     /// back.
     Open(View),
+    Wifi(WifiAct),
+    /// A key of the on-screen keyboard.
+    Keyboard(Key),
+}
+
+/// What a tap does on the Wi-Fi's screens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WifiAct {
+    Open,
+    Back,
+    Rescan,
+    /// A network of the list; `locked`: its password is asked first.
+    Choose {
+        ssid: String,
+        locked: bool,
+    },
+    /// The network that failed, again.
+    Retry,
+    /// The password as typed, or hidden.
+    Show,
+    /// The password typed goes.
+    Join,
+}
+
+impl WifiAct {
+    /// Its name (a simulation's `press wifi:rescan`).
+    pub fn key(&self) -> Cow<'_, str> {
+        match self {
+            Self::Open => "wifi:open".into(),
+            Self::Back => "wifi:back".into(),
+            Self::Rescan => "wifi:rescan".into(),
+            Self::Choose { ssid, .. } => format!("wifi:network:{ssid}").into(),
+            Self::Retry => "wifi:retry".into(),
+            Self::Show => "wifi:show".into(),
+            Self::Join => "wifi:join".into(),
+        }
+    }
+}
+
+/// A network's password being typed: its name, the field, the keyboard.
+#[derive(Debug, Clone)]
+pub struct Password {
+    pub title: String,
+    pub back: Box<Button>,
+    pub label: String,
+    /// What the field shows: bullets unless asked (`show`).
+    pub field: String,
+    /// Why it cannot go.
+    pub refused: Option<String>,
+    pub show: Box<Button>,
+    pub join: Box<Button>,
+    pub keyboard: Keyboard,
 }
 
 /// What the paired screen shows: the house, or one of its pages.
@@ -403,8 +456,22 @@ pub enum Screen {
         hint: Option<String>,
         button: Option<Box<Button>>,
         warn: bool,
+        /// The way to the Wi-Fi, quiet under the rest.
+        link: Option<Box<Button>>,
     },
+    /// The networks in range, one column; no way back while the frame has no network.
+    Wifi {
+        title: String,
+        /// How the network stands, in words.
+        word: String,
+        back: Option<Box<Button>>,
+        groups: Vec<Group>,
+    },
+    Password(Box<Password>),
     /// Nobody at the frame: the family's photos and the time. Its pictures are the renderer's
     /// (`Gfx::stage`); `photo` names the one on top.
-    Photos { time: String, photo: String },
+    Photos {
+        time: String,
+        photo: String,
+    },
 }

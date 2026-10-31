@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How long without a finger before the panel dims.
-pub const DIM_AFTER: Duration = Duration::from_secs(120);
+pub const DIM_AFTER: Duration = Duration::from_secs(60);
 /// The dimmed level, a share of the awake one: by day, by night.
 const DAY: f32 = 0.25;
 const NIGHT: f32 = 0.04;
@@ -81,11 +81,12 @@ impl Backlight {
     }
 
     /// Time passed, or the sun's side changed: asleep once `touched` long enough ago, at the level
-    /// of the hour. True when it just fell asleep.
-    pub fn idle(&mut self, now: Instant, touched: Instant, night: bool) -> bool {
+    /// of the hour; photos by day are there to be seen, and stay at the full level. True when it
+    /// just fell asleep.
+    pub fn idle(&mut self, now: Instant, touched: Instant, night: bool, photos: bool) -> bool {
         let fell = !self.asleep && now.saturating_duration_since(touched) >= DIM_AFTER;
         self.asleep |= fell;
-        self.set(if self.asleep {
+        self.set(if self.asleep && !(photos && !night) {
             self.dimmed(night)
         } else {
             self.lit(night)
@@ -130,11 +131,11 @@ mod tests {
     fn idle_long_enough_it_dims_and_a_touch_brings_it_back() {
         let (file, mut b) = panel("128\n");
         let t0 = Instant::now();
-        assert!(!b.idle(t0 + Duration::from_secs(60), t0, false), "not yet");
-        assert!(b.idle(t0 + DIM_AFTER, t0, false));
+        assert!(!b.idle(t0 + DIM_AFTER / 2, t0, false, false), "not yet");
+        assert!(b.idle(t0 + DIM_AFTER, t0, false, false));
         assert_eq!(level(&file), "32");
         assert!(b.asleep());
-        assert!(!b.idle(t0 + DIM_AFTER * 2, t0, false), "once");
+        assert!(!b.idle(t0 + DIM_AFTER * 2, t0, false, false), "once");
         assert!(b.wake(false), "the touch only wakes it");
         assert_eq!(level(&file), "128");
         assert!(!b.wake(false), "awake: a touch acts");
@@ -153,23 +154,38 @@ mod tests {
         let (file, mut b) = panel("128");
         let t0 = Instant::now();
         let asleep = t0 + DIM_AFTER;
-        b.idle(asleep, t0, false);
+        b.idle(asleep, t0, false, false);
         assert_eq!(level(&file), "32");
-        assert!(!b.idle(asleep, t0, true), "still asleep");
+        assert!(!b.idle(asleep, t0, true, false), "still asleep");
         assert_eq!(level(&file), "5", "the sun went down");
-        b.idle(asleep, t0, false);
+        b.idle(asleep, t0, false, false);
         assert_eq!(level(&file), "32", "and came up");
+    }
+
+    #[test]
+    fn photos_keep_the_full_level_by_day_and_dim_with_the_evening() {
+        let (file, mut b) = panel("128");
+        let t0 = Instant::now();
+        let asleep = t0 + DIM_AFTER;
+        assert!(b.idle(asleep, t0, false, true));
+        assert_eq!(level(&file), "128", "by day");
+        b.idle(asleep, t0, true, true);
+        assert_eq!(level(&file), "5", "the sun went down");
+        b.idle(asleep, t0, false, true);
+        assert_eq!(level(&file), "128", "and came up");
+        b.idle(asleep, t0, false, false);
+        assert_eq!(level(&file), "32", "no photos: it only dims");
     }
 
     #[test]
     fn a_touch_at_night_does_not_light_it_in_full() {
         let (file, mut b) = panel("128");
         let t0 = Instant::now();
-        b.idle(t0 + DIM_AFTER, t0, true);
+        b.idle(t0 + DIM_AFTER, t0, true, false);
         assert!(b.wake(true));
         assert_eq!(level(&file), "51");
         // awake when the sun comes up
-        b.idle(t0, t0, false);
+        b.idle(t0, t0, false, false);
         assert_eq!(level(&file), "128");
     }
 
@@ -181,7 +197,7 @@ mod tests {
         let mut b = Backlight::open(file.parent().unwrap().parent().unwrap());
         assert_eq!(b.lit(false), 128);
         let t0 = Instant::now();
-        b.idle(t0, t0, false);
+        b.idle(t0, t0, false, false);
         assert_eq!(level(&file), "128", "brought back at the first tick");
     }
 
@@ -189,7 +205,7 @@ mod tests {
     fn without_a_backlight_it_still_sleeps_and_wakes() {
         let mut b = Backlight::open(Path::new("/nonexistent"));
         let t0 = Instant::now();
-        assert!(b.idle(t0 + DIM_AFTER, t0, true));
+        assert!(b.idle(t0 + DIM_AFTER, t0, true, false));
         assert!(b.wake(true));
     }
 }

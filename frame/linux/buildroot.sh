@@ -4,6 +4,7 @@
 # host's architecture), in Docker volumes; the sources are pinned and checked. Out:
 # frame/build/buildroot/rootfs.squashfs, the same system frame/linux/install.sh sends.
 # Usage: frame/linux/buildroot.sh
+# FRAME_TARGET=https://… : Maison's address for a frame with none of its own (/etc/maison-target).
 set -euo pipefail
 . "$(dirname "$0")/../docker.sh"
 
@@ -19,6 +20,11 @@ SSH_CA="$HOME/maison-frame/keys/ssh_ca.pub"
 # an image number that only goes up, and where frames look for updates (FRAME_UPDATE_URL= for none)
 IMAGE_VERSION=$(date -u +%Y%m%d%H%M)
 UPDATE_URL="${FRAME_UPDATE_URL-https://updates.synthe.se/frame}"
+ADDRESS="${FRAME_TARGET-}"
+case "$ADDRESS" in
+"" | https://?*) ;;
+*) echo "FRAME_TARGET=$ADDRESS: an https:// address" >&2; exit 1 ;;
+esac
 [ -n "$RUST" ] || { echo "frame/ui/Cargo.toml says no rust-version" >&2; exit 1; }
 
 tarball="$SRC/buildroot-$VERSION.tar.xz"
@@ -29,7 +35,7 @@ docker volume create maison-buildroot >/dev/null
 docker volume create maison-frame-ui >/dev/null
 docker run --rm --platform linux/arm64 -v maison-buildroot:/build -v maison-frame-ui:/cache -v "$SRC:/src:ro" \
 	-v "$REPO:/repo:ro" -v "$REPO/frame:/frame:ro" -v "$OUT:/out" -v "$SSH_CA:/ssh-ca.pub:ro" \
-	-e RUST="$RUST" -e TARGET="$TARGET" -e VERSION="$VERSION" -e IMAGE_VERSION="$IMAGE_VERSION" -e UPDATE_URL="$UPDATE_URL" debian:trixie sh -euc '
+	-e RUST="$RUST" -e TARGET="$TARGET" -e VERSION="$VERSION" -e IMAGE_VERSION="$IMAGE_VERSION" -e UPDATE_URL="$UPDATE_URL" -e ADDRESS="$ADDRESS" debian:trixie sh -euc '
 	export DEBIAN_FRONTEND=noninteractive FORCE_UNSAFE_CONFIGURE=1 BR2_DL_DIR=/build/dl
 	apt-get -qq update
 	apt-get -qq install -y --no-install-recommends build-essential file wget cpio unzip rsync bc python3 perl \
@@ -49,7 +55,7 @@ docker run --rm --platform linux/arm64 -v maison-buildroot:/build -v maison-fram
 	# the file must have been taken whole, as the kernel'"'"'s
 	missing=$(grep -E "^BR2_[A-Za-z0-9_]+=" /frame/linux/buildroot/maison_defconfig | while read -r l; do grep -qx "$l" /build/out/.config || echo "$l"; done)
 	[ -z "$missing" ] || { echo "not taken by kconfig: $missing" >&2; exit 1; }
-	date; $m toolchain libdrm wayland libxkbcommon mesa3d systemd >/build/deps.log 2>&1 || { tail -30 /build/deps.log; exit 1; }
+	date; $m toolchain libdrm mesa3d systemd >/build/deps.log 2>&1 || { tail -30 /build/deps.log; exit 1; }
 	# the app and the tools, against what the frame runs
 	date
 	H=/build/out/host; S=$H/arm-buildroot-linux-gnueabihf/sysroot
@@ -65,10 +71,11 @@ docker run --rm --platform linux/arm64 -v maison-buildroot:/build -v maison-fram
 	cargo +$RUST build --locked --release --target $TARGET
 	cp /cache/target-buildroot/$TARGET/release/maison-frame-ui /tmp/
 	cd /repo/frame/tools
-	cargo +$RUST build --locked --release --target $TARGET --bin maison-update --bin maison-setup
-	cp /cache/target-buildroot/$TARGET/release/maison-update /cache/target-buildroot/$TARGET/release/maison-setup /tmp/
+	cargo +$RUST build --locked --release --target $TARGET --bin maison-update --bin maison-setup --bin maison-wifid --bin maison-power-key
+	for tool in maison-update maison-setup maison-wifid maison-power-key; do cp /cache/target-buildroot/$TARGET/release/$tool /tmp/; done
 	echo $IMAGE_VERSION >/tmp/maison-version
 	printf "%s" "$UPDATE_URL" >/tmp/maison-update-url
+	printf "%s" "$ADDRESS" >/tmp/maison-target
 	date; cd /build/buildroot-$VERSION
 	$m >/build/make.log 2>&1 || { tail -30 /build/make.log; exit 1; }
 	cp /build/out/images/rootfs.squashfs /out/

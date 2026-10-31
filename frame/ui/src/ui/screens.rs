@@ -8,18 +8,20 @@ use crate::i18n::k;
 use crate::theme::{px, ty};
 use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
+use crate::ui::keyboard;
 use crate::ui::layout::{
-    BRAND_NUDGE, CHIP, CHIP_ICON, CLOCK, CODE_SPACING, COLUMN_GAP, Ctx, DIALOG_W, Drawn, GROUP_GAP,
-    GROUP_HEAD, HEAD_GAP, HEADER_MARK, HOUSE_HEAD, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH,
-    Target, balance, clip_above, columns, fold, margin,
+    BRAND_NUDGE, CHIP, CHIP_ICON, CLOCK, CODE_SPACING, COLUMN_GAP, Ctx, DIALOG_W, Drawn, FIELD_H,
+    GROUP_GAP, GROUP_HEAD, HEAD_GAP, HEADER_MARK, HOUSE_HEAD, MARK, MARK_SVG, NOW_LINES, P,
+    STALE_ICON, TOUCH, Target, balance, clip_above, columns, fold, margin,
 };
-use crate::ui::model::{Act, Asked, Body, Button, Chip, Group, Screen};
+use crate::ui::model::{Act, Asked, Body, Button, Chip, Group, Password, Screen};
 
 /// What the header says: the brand (the house), or a page's way back and its title.
 enum Head<'a> {
     /// The home's: the time and the date.
     Brand(&'a str, &'a str),
-    Back(&'a Button, &'a str),
+    /// A way back, if there is one, and the title.
+    Back(Option<&'a Button>, &'a str),
 }
 
 impl Head<'_> {
@@ -238,11 +240,12 @@ impl P<'_, '_, '_, '_> {
         groups: &[Group],
         head: Head,
         wcss: f32,
+        columned: bool,
     ) -> Result<f32, Error> {
         let pal = self.c.pal;
         let m = margin(wcss);
         let inner = wcss - 2.0 * m;
-        let cols = columns(inner);
+        let cols = if columned { columns(inner) } else { 1 };
         let cw = (inner - COLUMN_GAP * (cols as f32 - 1.0)) / cols as f32;
         // each group's height, from the code that draws it
         let measuring = std::mem::replace(&mut self.measuring, true);
@@ -286,9 +289,12 @@ impl P<'_, '_, '_, '_> {
         self.rounded(0.0, head_h - hair, wcss, hair, 0.0, pal.line)?;
         let (time, date) = match head {
             Head::Back(back, title) => {
-                let bw = self.button_width(back)?;
-                self.button(back, m, (head_h - TOUCH) / 2.0, bw, TOUCH)?;
-                let tx = m + bw + px::S_4;
+                let mut tx = m;
+                if let Some(back) = back {
+                    let bw = self.button_width(back)?;
+                    self.button(back, m, (head_h - TOUCH) / 2.0, bw, TOUCH)?;
+                    tx += bw + px::S_4;
+                }
                 self.line(
                     title,
                     ty::GROUP,
@@ -340,9 +346,26 @@ impl P<'_, '_, '_, '_> {
         self.icon(icon::TRIANGLE_ALERT, m, iy, CHIP_ICON, pal.warn_text)?;
         let said = self.c.words.s(k::SCREEN_WAITING_BODY);
         let tx = m + CHIP_ICON + px::S_2;
-        let ly = y + (TOUCH - ty::BODY.line) / 2.0;
-        self.line(&said, ty::BODY, pal.warn_text, tx, ly, wcss - tx - m)?;
         self.cover(0.0, y, wcss, TOUCH);
+        if let Some(wifi) = self.c.over.wifi {
+            let ly = y + (TOUCH - ty::SECONDARY.line) / 2.0;
+            let (words, link) = (
+                (said.as_str(), pal.warn_text),
+                (wifi.label.as_str(), pal.warn_text),
+            );
+            self.link_line(
+                words,
+                link,
+                tx,
+                ly,
+                wcss - tx - m,
+                y,
+                Some(wifi.act.clone()),
+            )?;
+        } else {
+            let ly = y + (TOUCH - ty::BODY.line) / 2.0;
+            self.line(&said, ty::BODY, pal.warn_text, tx, ly, wcss - tx - m)?;
+        }
         Ok(TOUCH)
     }
 
@@ -389,6 +412,7 @@ impl P<'_, '_, '_, '_> {
         hint: Option<&str>,
         button: Option<&Button>,
         warn: bool,
+        link: Option<&Button>,
     ) -> Result<(), Error> {
         let pal = self.c.pal;
         let wcss = self.c.width / self.s();
@@ -414,6 +438,9 @@ impl P<'_, '_, '_, '_> {
         }
         if button.is_some() {
             h += px::S_5 + px::CONTROL_H_L;
+        }
+        if link.is_some() {
+            h += px::S_5 + TOUCH;
         }
         let mut y = ((hcss - h) / 2.0).max(m);
         let mark = self.d(MARK).max(1) as u32;
@@ -446,8 +473,53 @@ impl P<'_, '_, '_, '_> {
             y += px::S_5;
             let bw = self.button_width(b)? + px::S_4;
             self.button(b, x, y, bw, px::CONTROL_H_L)?;
+            y += px::CONTROL_H_L;
+        }
+        if let Some(l) = link {
+            y += px::S_5;
+            let bw = self.button_width(l)?;
+            self.button(l, x, y, bw, TOUCH)?;
         }
         Ok(())
+    }
+
+    /// A password typed on the panel: the network in the header, the field and its toggle under it,
+    /// the keyboard along the bottom, where a hand is, and the one action just above it.
+    fn password(&mut self, e: &Password, wcss: f32) -> Result<f32, Error> {
+        let pal = self.c.pal;
+        let content = self.house(&[], &[], Head::Back(Some(&e.back), &e.title), wcss, false)?;
+        self.dy = 0.0;
+        let m = margin(wcss);
+        let inner = wcss - 2.0 * m;
+        let mut y = px::HEADER_H + px::S_5;
+        self.line(&e.label, ty::BODY, pal.ink, m, y, inner)?;
+        y += ty::BODY.line + px::S_2;
+        let show_w = self.button_width(&e.show)?;
+        let field_w = inner - show_w - px::S_2;
+        self.framed((m, y, field_w, FIELD_H), px::RADIUS, pal.surface, pal.line)?;
+        let (tx, ty_field) = (m + px::S_3, y + (FIELD_H - ty::BODY.line) / 2.0);
+        let room = field_w - 2.0 * px::S_3;
+        let typed = self.line(&e.field, ty::BODY, pal.ink, tx, ty_field, room)?;
+        // where the next character goes: still, nothing blinks
+        self.rounded(
+            tx + typed + 1.0,
+            ty_field,
+            2.0,
+            ty::BODY.line,
+            0.0,
+            pal.accent,
+        )?;
+        self.button(&e.show, m + field_w + px::S_2, y, show_w, FIELD_H)?;
+        y += FIELD_H + px::S_2;
+        if let Some(why) = &e.refused {
+            self.para(why, ty::SECONDARY, pal.warn_text, m, y, inner)?;
+        }
+        let bottom = self.c.height / self.s() - px::S_2;
+        let keys_y = bottom - keyboard::height();
+        let join_y = keys_y - px::S_4 - px::CONTROL_H_L;
+        self.button(&e.join, m, join_y, inner, px::CONTROL_H_L)?;
+        self.keyboard(&e.keyboard, px::S_2, keys_y, wcss - 2.0 * px::S_2)?;
+        Ok(content)
     }
 
     /// The toasts, at the bottom, above everything (app.css `.toasts`, `.toast`, `.toast.warn`).
@@ -517,12 +589,19 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
             date,
             now,
             groups,
-        } => p.house(now, groups, Head::Brand(time, date), wcss)?,
+        } => p.house(now, groups, Head::Brand(time, date), wcss, true)?,
         Screen::Page {
             title,
             back,
             groups,
-        } => p.house(&[], groups, Head::Back(back, title), wcss)?,
+        } => p.house(&[], groups, Head::Back(Some(back), title), wcss, true)?,
+        Screen::Wifi {
+            title,
+            back,
+            groups,
+            ..
+        } => p.house(&[], groups, Head::Back(back.as_deref(), title), wcss, false)?,
+        Screen::Password(e) => p.password(e, wcss)?,
         Screen::Door {
             title,
             lead,
@@ -530,6 +609,7 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
             hint,
             button,
             warn,
+            link,
         } => {
             p.dy = 0.0;
             p.door(
@@ -539,6 +619,7 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
                 hint.as_deref(),
                 button.as_deref(),
                 *warn,
+                link.as_deref(),
             )?;
             0.0
         }
@@ -551,7 +632,11 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
             });
         }
     };
-    let band = if c.over.gone && !matches!(screen, Screen::Door { .. }) {
+    let band = if c.over.gone
+        && !matches!(
+            screen,
+            Screen::Door { .. } | Screen::Wifi { .. } | Screen::Password(_)
+        ) {
         p.gone_band(wcss)?
     } else {
         0.0
@@ -587,8 +672,9 @@ mod tests {
     use crate::testing::{temp_dir, wait_until};
     use crate::theme::{Face, LIGHT, Rgba, Style};
     use crate::ui::gfx::{Gfx, Pen};
+    use crate::ui::keyboard::Keyboard;
     use crate::ui::layout::{Hit, Over};
-    use crate::ui::model::{Lead, Part, Tile};
+    use crate::ui::model::{Lead, Part, Tile, WifiAct};
     use crate::ui::slider::Sliders;
     use maison_api::HOUSE_TZ;
 
@@ -1133,12 +1219,165 @@ mod tests {
                 Act::Pairing(crate::pairing::Ask::Again),
             ))),
             warn: false,
+            link: None,
         };
         let drawn = paint(&mut d, &ctx, &door, &[]).unwrap();
         assert!(matches!(
             drawn.hits.as_slice(),
             [h] if matches!(h.what, Target::Act(Act::Pairing(_)))
         ));
+        // its way to the Wi-Fi, under it
+        let entry = Button::new(
+            Some(icon::WIFI),
+            words.s(k::WIFI_ENTRY),
+            Act::Wifi(WifiAct::Open),
+        );
+        let Screen::Door {
+            title,
+            lead,
+            code,
+            hint,
+            button,
+            warn,
+            ..
+        } = door
+        else {
+            unreachable!()
+        };
+        let linked = Screen::Door {
+            title,
+            lead,
+            code,
+            hint,
+            button,
+            warn,
+            link: Some(Box::new(entry.clone())),
+        };
+        let drawn = paint(&mut d, &ctx, &linked, &[]).unwrap();
+        assert!(matches!(
+            drawn.hits.as_slice(),
+            [a, b] if matches!(a.what, Target::Act(Act::Pairing(_)))
+                && matches!(b.what, Target::Act(Act::Wifi(WifiAct::Open)))
+                && b.y >= a.y + a.h
+        ));
+
+        // Maison silent: the band offers the Wi-Fi, the rest of it stays out of reach
+        let quiet = Over {
+            gone: true,
+            wifi: Some(&entry),
+            ..Over::default()
+        };
+        let silent = Ctx {
+            pal: &LIGHT,
+            words: &words,
+            commands: &commands,
+            sliders: &sliders,
+            now: ctx.now,
+            scale: 1.0,
+            width: 800.0,
+            height: 1280.0,
+            scroll: 0.0,
+            over: quiet,
+            fade: 0.0,
+        };
+        let page = Screen::Wifi {
+            title: words.s(k::WIFI_TITLE),
+            word: words.s(k::WIFI_LOST),
+            back: None,
+            groups: vec![Group::new(
+                words.s(k::WIFI_NETWORKS),
+                Body::Tiles(vec![
+                    Tile::new(
+                        "Ma Box",
+                        words.s(k::WIFI_LOCKED),
+                        Lead::Glyph {
+                            icon: icon::LOCK,
+                            on: false,
+                        },
+                    )
+                    .fact(Some(words.s(k::WIFI_SIGNAL_GOOD)))
+                    .open(Some(Act::Wifi(WifiAct::Choose {
+                        ssid: "Ma Box".into(),
+                        locked: true,
+                    }))),
+                ]),
+            )],
+        };
+        // no band over the screens that have the panel's bottom, whatever it says
+        let band = |t: &Target| matches!(t, Target::Act(Act::Wifi(WifiAct::Open)));
+        let drawn = paint(&mut d, &silent, &page, &[]).unwrap();
+        assert!(!drawn.hits.iter().any(|h| band(&h.what)));
+        // one column, the whole panel's width less its margins
+        let row = drawn
+            .hits
+            .iter()
+            .find(|h| matches!(h.what, Target::Act(Act::Wifi(WifiAct::Choose { .. }))))
+            .unwrap();
+        assert!(row.w > 700.0, "{}", row.w);
+
+        // with no way back, the title takes its place
+        let house = Screen::House {
+            time: "12:34".into(),
+            date: "lundi".into(),
+            now: Vec::new(),
+            groups: Vec::new(),
+        };
+        let drawn = paint(&mut d, &silent, &house, &[]).unwrap();
+        let link = drawn.hits.iter().rfind(|h| band(&h.what)).unwrap();
+        assert!(link.y >= 1280.0 - TOUCH - 1.0 && link.h >= TOUCH);
+        assert_eq!(
+            drawn.hits.iter().filter(|h| band(&h.what)).count(),
+            1,
+            "one way in"
+        );
+
+        // the password: every key a fingertip's, nothing under the bottom, the action above them
+        let typed = Password {
+            title: "Ma Box".into(),
+            back: Box::new(Button::new(
+                None,
+                words.s(k::KEY_BACK),
+                Act::Wifi(WifiAct::Back),
+            )),
+            label: words.s(k::WIFI_PASSWORD),
+            field: "••••".into(),
+            refused: Some(words.s(k::FRAME_SETUP_PAGE_BAD_PASSWORD)),
+            show: Box::new(Button::new(
+                None,
+                words.s(k::WIFI_SHOW),
+                Act::Wifi(WifiAct::Show),
+            )),
+            join: Box::new(Button::new(
+                None,
+                words.s(k::WIFI_JOIN),
+                Act::Wifi(WifiAct::Join),
+            )),
+            keyboard: Keyboard::new(63),
+        };
+        let drawn = paint(&mut d, &ctx, &Screen::Password(Box::new(typed)), &[]).unwrap();
+        let keys: Vec<&Hit> = drawn
+            .hits
+            .iter()
+            .filter(|h| matches!(h.what, Target::Act(Act::Keyboard(_))))
+            .collect();
+        assert_eq!(keys.len(), 10 + 10 + 9 + 4);
+        for key in &keys {
+            assert!(key.w >= 70.0 && key.h >= 88.0, "{} × {}", key.w, key.h);
+            assert!(key.x >= 0.0 && key.x + key.w <= 800.5, "{}", key.x + key.w);
+            assert!(key.y + key.h <= 1280.0, "{}", key.y + key.h);
+        }
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                let apart = a.x + a.w <= b.x + 0.5 || b.x + b.w <= a.x + 0.5;
+                assert!(apart || a.y != b.y, "two keys in one place");
+            }
+        }
+        let join = drawn
+            .hits
+            .iter()
+            .find(|h| matches!(h.what, Target::Act(Act::Wifi(WifiAct::Join))))
+            .unwrap();
+        assert!(join.y + join.h <= keys[0].y && join.w > 700.0);
 
         // the photos: the new one comes in over the last, the time in a corner, nothing else
         let colour = |id: &str, rgb: [u8; 4]| crate::photos::Picture {

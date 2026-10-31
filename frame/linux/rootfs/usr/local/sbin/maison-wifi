@@ -1,20 +1,28 @@
 #!/bin/sh
-# What wpa_supplicant@wlan0 reads (/etc is the tmpfs over the read-only system: rebuilt at every
-# boot, never written to the eMMC): the network the frame's setup was given, else the ones Android
-# knows, with only the keys both supplicants read the same way. With no network or no address, or
-# while maison-wifi-watch says the network is lost, the frame is its own Wi-Fi for its setup
-# (maison-setup): named and locked from its eMMC's serial, what the interface shows, the only times
-# it is ever an access point.
+# What wpa_supplicant@wlan0 and the interface read (/etc and /run are tmpfs: rebuilt at every boot,
+# never written to the eMMC). The network the frame joined, else the ones Android knows, with only
+# the keys both supplicants read the same way; none: wpa_supplicant still runs, for the interface to
+# scan (maison-wifid). The address: root's, else the image's default. Only maison-hotspot makes the
+# frame its own Wi-Fi for maison-setup: named and locked from its eMMC's serial, what the interface
+# shows, the last resort of a dead touch panel.
 set -eu
 own=/android-data/maison/wifi.conf
 android=/android-data/misc/wifi/wpa_supplicant.conf
 target=/android-data/maison/target
+built=/etc/maison-target
 out=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
-lost=/run/maison-lost
+hotspot=/run/maison-hotspot
 umask 077
 mkdir -p /etc/wpa_supplicant
-# no address yet: an empty one, for the interface's credential; it then asks to set the frame up
-[ -e "$target" ] || : >"$target"
+
+# the interface's credential: empty, it says the frame has no address
+if [ -s "$target" ]; then
+	cat "$target" >/run/maison-target
+elif [ -s "$built" ]; then
+	cat "$built" >/run/maison-target
+else
+	: >/run/maison-target
+fi
 
 networks() {
 	if [ -s "$own" ]; then
@@ -31,10 +39,9 @@ networks() {
 	fi
 }
 
-found=$(networks)
-if [ -n "$found" ] && [ -s "$target" ] && [ ! -e "$lost" ]; then
-	printf 'ctrl_interface=/run/wpa_supplicant\ncountry=FR\n%s\n' "$found" >"$out"
-	echo "maison-wifi: $(grep -c '^network=' "$out") network(s)"
+if [ ! -e "$hotspot" ]; then
+	printf 'ctrl_interface=/run/wpa_supplicant\ncountry=FR\n%s\n' "$(networks)" >"$out"
+	echo "maison-wifi: $(grep -c '^network=' "$out" || :) network(s)"
 	exit 0
 fi
 
@@ -50,4 +57,4 @@ chmod 755 /run/systemd/network
 printf '[Match]\nName=wlan0\n\n[Network]\nAddress=192.168.4.1/24\nDHCPServer=yes\n' >/run/systemd/network/40-maison-setup.network
 chmod 644 /run/systemd/network/40-maison-setup.network
 systemctl --no-block start maison-setup
-echo "maison-wifi: to be set up, as $ssid"
+echo "maison-wifi: its own Wi-Fi, as $ssid"

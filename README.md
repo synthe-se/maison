@@ -27,7 +27,7 @@ Controls Hue and Zigbee lamps (and the Hue dimmer), Matter roller shutters that 
 A Frameo photo frame (RK3126, four Cortex-A7, 1 GB, an 800×1280 touch panel) turned into the house's wall screen: no Android, no browser.
 
 - **Mainline Linux 7.3 and Buildroot**, built here (`frame/linux`): our device tree, the panel, the touch, the Wi-Fi; the system a read-only squashfs on the eMMC. It boots by itself on its own power, a power cut included; the vendor's Android stays whole in the recovery slot.
-- **A native app in Rust**, SDL3 under cage on the GPU (`frame/ui`): the web dashboard's layout, words, colours, fonts and icons, generated from the same sources, drawn only when something changes. Every dashboard group, the summary strip at the top, a Tempo page, and the cats' devices' pages.
+- **A native app in Rust**, SDL3 straight on the GPU (`frame/ui`): the web dashboard's layout, words, colours, fonts and icons, generated from the same sources, drawn only when something changes. Every dashboard group, the summary strip at the top, a Tempo page, and the cats' devices' pages.
 - **A wall screen of the house**: paired once from an admin's phone, then in by its own cookie; it dims after two minutes without a finger, nearly dark at night, and the first touch only wakes it.
 - **Maintained over the network**: two slots with a way back, signed updates over the air, SSH by short-lived certificates, a journal that survives power cuts.
 
