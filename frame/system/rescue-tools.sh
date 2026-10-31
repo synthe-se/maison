@@ -4,7 +4,7 @@
 # its adbd never runs as root (a user build): bootimg.py `rescue` puts these in its ramdisk.
 # Sources pinned by version and SHA-256; nothing built is kept in the repo.
 # Needs zig (mksh) and Docker with ARMv7 emulation (toybox's build wants GNU tools: an Alpine).
-# Usage: frame/system/rescue-tools.sh <out dir>     → <out>/mksh, <out>/toybox, <out>/applets.txt
+# Usage: frame/system/rescue-tools.sh <out dir>     → <out>/mksh, <out>/toybox, <out>/applets.txt, <out>/maison-loader
 set -euo pipefail
 
 OUT="$(mkdir -p "$1" && cd "$1" && pwd)"
@@ -12,7 +12,7 @@ MKSH=R59c
 MKSH_SHA256=77ae1665a337f1c48c61d6b961db3e52119b38e58884d1c89684af31f87bc506
 TOYBOX=0.8.15
 TOYBOX_SHA256=44e2bab43dfe2c171743297631ce558c6d9ed38b87a66fd751cef617574b375e
-ALPINE=alpine:3.24
+ALPINE=alpine:3.24.3
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -32,6 +32,9 @@ docker run --rm --platform linux/arm/v7 -v "$TMP/toybox-$TOYBOX:/src" -w /src "$
 	'apk add -q build-base linux-headers bash >/dev/null && make defconfig >/dev/null &&
 	 CFLAGS="-Os -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" LDFLAGS=--static make toybox >/dev/null'
 cp "$TMP/toybox-$TOYBOX/toybox" "$OUT/toybox"
+# the boot's loader (frame/linux/loader.c, the mainline initramfs's): nothing to download
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+zig cc -target arm-linux-musleabihf -mcpu=cortex_a7 -O2 -s -static -o "$OUT/maison-loader" "$REPO/frame/linux/loader.c" -lm
 # what it can do, one name a line: each gets its link beside it in the rescue shell
 docker run --rm --platform linux/arm/v7 -v "$OUT:/t" "$ALPINE" /t/toybox | tr -s ' \n' '\n' | grep . >"$OUT/applets.txt"
 file "$OUT/mksh" "$OUT/toybox" | sed "s|$OUT/||"

@@ -1,0 +1,17 @@
+#!/bin/sh
+# The app's linker: the toolchain's, without the /usr/local/lib the sdl3 crate's build.rs always
+# adds (the build machine's libraries, which the toolchain refuses for a cross build, rightly).
+# Named -gcc: rustc reads the linker's kind in its name.
+n=$#
+while [ "$n" -gt 0 ]; do
+	a=$1
+	shift
+	n=$((n - 1))
+	if [ "$a" = -L ] && [ "$1" = /usr/local/lib ]; then
+		shift
+		n=$((n - 1))
+	elif [ "$a" != -L/usr/local/lib ]; then
+		set -- "$@" "$a"
+	fi
+done
+exec arm-buildroot-linux-gnueabihf-gcc "$@"

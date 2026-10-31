@@ -6,9 +6,10 @@
  * 0x51: nothing answers there). Pins come from the vendor's device
  * tree (Android 6, kernel 3.10; docs/frame.md).
  *
- * The CPU supply (PWM1, the vendor's own voltage table) is left as U-Boot set it: no cpu-supply,
- * and the kernel is built without CPU_FREQ, so the clock never rises above what that voltage
- * was set for. GPIO0_A0 holds the power on (the vendor's gpio-poweroff): never claimed here.
+ * Nothing drives the CPU's rail: the vendor's tree names a regulator on PWM1, but its kernel never
+ * got it (« can't get regulator(vdd_arm) », the PWM node disabled) and PWM1's registers read zero
+ * under U-Boot's state. So no cpu-supply: the OPPs below change the clock alone, their voltages
+ * are not applied. GPIO0_A0 holds the power on (the vendor's gpio-poweroff): never claimed here.
  */
 
 /dts-v1/;
@@ -108,6 +109,30 @@
 	};
 };
 
+/*
+ * The clock's steps on the fixed rail: 1008 MHz held under load on all four cores, errors checked
+ * (docs/frame.md); the dtsi's 1200 MHz stays out, unproven, as the vendor's table stops there too.
+ */
+&cpu_opp_table {
+	/delete-node/ opp-1200000000;
+};
+
+&cpu0 {
+	clock-frequency = <1008000000>;
+};
+
+&cpu1 {
+	clock-frequency = <1008000000>;
+};
+
+&cpu2 {
+	clock-frequency = <1008000000>;
+};
+
+&cpu3 {
+	clock-frequency = <1008000000>;
+};
+
 &display_subsystem {
 	status = "okay";
 };
@@ -124,6 +149,8 @@
 
 &dsi {
 	/delete-property/ power-domains;
+	#address-cells = <1>;
+	#size-cells = <0>;
 	status = "okay";
 
 	panel@0 {
@@ -169,6 +196,8 @@
 };
 
 &i2c2 {
+	/* the touch's firmware and each of its reports, four times faster */
+	clock-frequency = <400000>;
 	status = "okay";
 
 	touchscreen@40 {
@@ -176,6 +205,8 @@
 		reg = <0x40>;
 		interrupt-parent = <&gpio0>;
 		interrupts = <RK_PA2 IRQ_TYPE_LEVEL_HIGH>;
+		vddio-supply = <&vcc_io>;
+		avdd-supply = <&vcc_io>;
 		/* extracted from the vendor kernel (docs/frame.md) */
 		firmware-name = "gsl-amaboo-gbzk-y1000.fw";	/* the driver looks in silead/ */
 		/*
@@ -186,7 +217,7 @@
 		touchscreen-swapped-x-y;
 		touchscreen-size-x = <1024>;
 		touchscreen-size-y = <640>;
-		silead,max-fingers = <10>;
+		silead,max-fingers = <5>;
 	};
 };
 
@@ -210,7 +241,6 @@
 	status = "okay";
 };
 
-/* the USB-C port as a device: a console over USB (CDC ACM) while there is no UART */
 /*
  * The SDIO lines have the board's own pull-ups: the SoC's default pulls (down) are off, as the
  * vendor sets them; with them the AIC8800DC never answers CMD5 (seen on the frame).
@@ -230,8 +260,44 @@
 	rockchip,pins = <0 RK_PD6 1 &pcfg_pull_none>;
 };
 
+/*
+ * The architected timers do all the work, read in one instruction; these six, mainline's driver
+ * takes one and refuses the others, and it would make sched_clock a read across the APB bus.
+ */
+&timer0 {
+	status = "disabled";
+};
+
+&timer1 {
+	status = "disabled";
+};
+
+&timer2 {
+	status = "disabled";
+};
+
+&timer3 {
+	status = "disabled";
+};
+
+&timer4 {
+	status = "disabled";
+};
+
+&timer5 {
+	status = "disabled";
+};
+
+/* systemd feeds it (RuntimeWatchdogSec): a frozen frame restarts alone */
+&watchdog {
+	status = "okay";
+};
+
+/* the USB-C port as a device: a console over USB (CDC ACM) while there is no UART */
 &usb_otg {
 	dr_mode = "peripheral";
+	vusb_d-supply = <&vcc_io>;
+	vusb_a-supply = <&vcc_io>;
 	status = "okay";
 };
 

@@ -2,7 +2,8 @@
 # Runs a command on the frame as root and prints its output: over its USB console when the
 # USB-C is on this machine (the initramfs's mksh or the system's root bash, without the shell's echo
 # or colours; the end is a marker the command's own echo cannot match), else over SSH
-# (root@maison-frame.local, key only). No answer
+# (root@maison-frame.local, key only; FRAME_HOST=<address> when mDNS does not answer, the key still
+# checked as the frame's). No answer
 # before the deadline fails the script.
 # Usage: frame/linux/console.sh '<command>' [seconds, 30]
 set -euo pipefail
@@ -10,9 +11,12 @@ set -euo pipefail
 CMD="${1:?usage: frame/linux/console.sh '<command>' [seconds]}"
 SECS="${2:-30}"
 FRAME="${FRAME_HOST:-maison-frame.local}"
-if ! dev=$(compgen -G '/dev/cu.usbmodem*' | head -1); then
+# the frame's own port, by the name its gadget says (initramfs.py), never any other USB serial device
+dev=$(ioreg -r -c IOUSBHostDevice -l -w0 2>/dev/null |
+	LC_ALL=C awk -F'"' -v want='Maison frame' '/"USB Product Name"/ { product = $4 } /"IOCalloutDevice"/ && product == want { print $4; exit }')
+if [ -z "$dev" ]; then
 	# no cable: the system's SSH (the initramfs has none)
-	timeout "$SECS" ssh -o BatchMode=yes -o ConnectTimeout=5 "root@$FRAME" "$CMD" || {
+	timeout "$SECS" ssh -o BatchMode=yes -o ConnectTimeout=5 -o HostKeyAlias=maison-frame.local "root@$FRAME" "$CMD" || {
 		rc=$?
 		[ $rc = 124 ] && echo "timeout: no end from the frame after ${SECS}s" >&2 || echo "no frame console nor SSH (rc $rc)" >&2
 		exit 1

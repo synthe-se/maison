@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$REPO/frame/build/linux"
-SNAPSHOT=20261015T000000Z
+SNAPSHOT=20261031T082626Z
 MIRROR="http://snapshot.debian.org/archive/debian/$SNAPSHOT"
 PACKAGES=(
 	systemd systemd-sysv systemd-timesyncd systemd-resolved udev dbus kmod iproute2 # the system, its network, DNS, NTP
@@ -21,6 +21,7 @@ PACKAGES=(
 	cage libpam-systemd wlr-randr kbd                              # the native interface's spike (frame/ui): its compositor, its session, chvt
 	libwayland-client0 libwayland-egl1 libwayland-cursor0 libxkbcommon0 libegl1   # what its SDL opens at run time
 	openssh-server                                                 # SSH, key only
+	kexec-tools                                                    # a new kernel tried in RAM: the eMMC untouched (try.sh --ram)
 )
 # the key that opens root over SSH (key only)
 SSH_KEY="${FRAME_SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
@@ -58,7 +59,12 @@ docker run --rm --platform linux/arm/v7 -v "$REPO/frame/linux/rootfs:/overlay:ro
 		# root logs in on the bring-up console only (autologin, gated by a file: the getty drop-in), never by a password: none is set, the account is locked
 		passwd -l root
 		systemctl enable systemd-networkd systemd-resolved systemd-timesyncd wpa_supplicant@wlan0 maison-ui serial-getty@ttyGS0 ssh maison-mac
-		systemctl mask systemd-firstboot
+		# no use here: chattr on the link to the journal, a sysctl that only Debian kernels have
+		ln -s /dev/null /etc/tmpfiles.d/journal-nocow.conf
+		grep -rl unprivileged_userns_clone /usr/lib/sysctl.d /etc/sysctl.d 2>/dev/null | xargs -r rm -f
+		# a read-only image, made once: nothing to refresh at each boot (ldconfig alone took 6 s)
+		ldconfig
+		systemctl mask systemd-firstboot ldconfig.service apt-daily.timer apt-daily-upgrade.timer dpkg-db-backup.timer
 	"
 	rm -rf /tmp/root/var/cache/apt/* /tmp/root/var/lib/apt/lists/*
 	mksquashfs /tmp/root /out/rootfs.squashfs -comp zstd -noappend -quiet
