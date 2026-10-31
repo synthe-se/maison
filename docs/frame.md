@@ -150,8 +150,7 @@ What the bring-up taught, each point seen on the frame:
   command line, which has 1024 bytes, 700 of them U-Boot's).
 - The touch chip's axes are swapped, 1024 down by 640 across; `touchscreen-size-*` are the
   chip's axes, before the swap.
-- WebKit's sandbox needs user namespaces; cog's modeset renderer cannot rotate (gles does);
-  simpledrm left beside Rockchip's card is where cog would draw, unseen.
+- simpledrm left beside Rockchip's card is a second card, where a client would draw unseen.
 - `boot` holds 14 MiB: our image fits only without the vendor's 3 MB logo in its resource
   (`image.py --slot boot`, `bootimg.rsce_only`). U-Boot draws its first screen from the image it
   boots, not from the resource partition: the screen stays black until Linux lights it.
@@ -170,23 +169,19 @@ What the bring-up taught, each point seen on the frame:
   panel is up. The kernel has no console on the panel: no text at boot, the log stays in the
   journal. A ring turns under the mark (loader.c, a static binary started by the initramfs,
   outliving it) until `maison-ui` starts. A line appears only on failure (« Système introuvable… »).
-- SSH: OpenSSH, root by key only (the post-build installs `~/.ssh/id_ed25519.pub`,
-  `FRAME_SSH_KEY`), no password; the host key made once on the frame, kept on userdata. The
-  frame answers as `maison-frame.local` (mDNS); its Wi-Fi address comes from the eMMC's serial
-  (maison-mac.service): the AIC8800 has none, the driver drew one per boot (a new lease, a new IP).
-- Without a host on the USB-C (the frame on its own power), /dev/ttyGS0 never opens: the
-  console's getty must open it itself, non-blocking (`StandardInput=null`, `agetty -L`). With
-  systemd's `StandardInput=tty` the unit's child blocked opening it while holding the lock on
-  /dev/console, PID 1 waited on that lock for ever, and nothing else started: the app neither
-  (`chvt 7` waiting, cage waiting for its session). Found with the journal kept and SSH.
+- SSH: root by a certificate of the frames' CA only (`ssh-cert.sh`, 8 hours, the CA in
+  `~/maison-frame/keys`): no key on any frame, reachable from private networks only, the host key
+  made once on the frame and kept on userdata. The frame answers as `maison-frame.local` (mDNS); its
+  Wi-Fi address comes from the eMMC's serial (maison-mac.service): the AIC8800 has none, the driver
+  drew one per boot (a new lease, a new IP).
 - No cable, the tools go over SSH: console.sh takes the USB console when it is there, else
   `ssh root@maison-frame.local`; install, flash and journals work with the frame on the wall.
 - The panel dims after 2 minutes without a finger (a quarter of its level by day, 4 % at
   night, by the sun's side); the first touch only wakes it, the next acts. The app writes
   /sys/class/backlight itself: the video group may (70-maison-backlight.rules).
-- The journal is kept on userdata (`/var/log/journal`, written every 5 s): a boot that went wrong
-  reads at the next one. Each boot has its own machine id (the system lives in RAM): read one with
-  `journalctl -D /var/log/journal/<id>`.
+- The journal is kept on userdata (`/var/log/journal`, written every minute, at once for errors):
+  a boot that went wrong reads at the next one. The initramfs derives the machine id from the
+  eMMC's serial, so that it stays one directory, within its 64 MB.
 
 The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)) is in the
 system: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
@@ -221,7 +216,6 @@ ships behind), every program tuned for the Cortex-A7. What its build taught, eac
 - Its fstab mounts `/` read-only, which turns the overlay read-only: the line is removed.
 - xkbcommon's data are needed without a keyboard: no `xkeyboard-config`, no context, the app exits.
 - The app links through `buildroot/link-gcc`: the sdl3 crate always adds `/usr/local/lib`.
-- Debian's system stays as `rootfs-debian.squashfs`, and `rootfs.sh` still builds it.
 
 Updates go to one of two slots on userdata, `/android-data/maison/slots/{a,b}`, root's: a system,
 and with `--kernel` a kernel, its device tree and its initramfs. `boot` is written by none of them,
@@ -229,12 +223,26 @@ only by `try.sh --flash`: its kernel is what any failure comes back to. `state` 
 `pending` and `tries`. The initramfs counts a try before it starts one (2 at first: a power cut
 spends one), starts a slot's kernel by kexec, and watches from outside (`guard.c`: 240 s, then a
 restart, whatever became of PID 1; for a kernel, the SoC's watchdog left running, and
-`WATCHDOG_OPEN_TIMEOUT` if systemd never opens it). `maison-commit` makes the slot active once the
-interface runs without a restart, with the network and SSH, for 45 s, else restarts within 150 s.
-Tries spent, the slot goes to `slots/failed` and the frame stays on the one before. Seen on the
-frame: a trial that succeeds. Not yet: a failing system, a kernel that panics or hangs, a watchdog
-reset. A slot's kernel adds a kexec to each boot until it is flashed to `boot`. A flash that dies
+`WATCHDOG_OPEN_TIMEOUT` if systemd never opens it). `maison-commit` keeps an update once the interface
+has drawn (its heartbeat) without a restart, with the Wi-Fi and SSH, for 45 s, else restarts within
+150 s; a system already proved only has to draw, so that a router out of order is no failure.
+Tries spent, the slot goes to `slots/failed` and the frame stays on the one before. Each boot of
+the active slot is counted the same way: 4 without a proof and the frame moves to the other, 8 and
+it stops on the failure's line. All of a slot is checked against its `sums` at every boot. A slot's kernel adds a kexec to each boot until it is flashed to `boot`. A flash that dies
 midway still wants the reset pinhole.
+
+Over the air: a release is `manifest.json`, its Ed25519 signature `manifest.sig` and its files under
+`<version>/`, static files over HTTPS, made by `frame/linux/release.sh [--kernel]` (the key in
+`~/maison-frame/keys/release.pk8`, its public half in `frame/tools/release.pub`, in the image).
+`FRAME_UPDATE_URL` at build names where; unset, the frame has no updates over the air. Each night
+(`maison-update.timer`, 3 to 4 am) the frame reads the manifest, refuses what is not signed, not
+newer, or once failed, downloads to the free slot, resumed if cut, and restarts to try it.
+
+First setup: with no network or no address (`maison-wifi`), the frame is its own Wi-Fi, named and
+locked from its eMMC's serial; the interface shows both and the address of its page (`maison-setup`,
+http://192.168.4.1), which takes the house's network and Maison's address, writes them to
+`/android-data/maison` (0600) and restarts. An image's factory install: `rootfs.squashfs` left in
+`/data/local/tmp/maison`, adopted once into slot a while userdata holds no state.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.

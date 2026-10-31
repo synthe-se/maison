@@ -95,7 +95,7 @@ frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): 
                      rescue recovery from the vendor's backup; bootimg.py, rescue-tools.sh),
                      rkwrite.py (loader writes), flash.sh, provision.sh, rescue.sh,
                      bootanimation.sh/.ts, test_frame.py (docs/frame.md); linux/ (mainline
-                     from the recovery slot: build.sh, buildroot.sh (the system), rootfs.sh (Debian's, kept beside),
+                     from the recovery slot: build.sh, buildroot.sh (the system), release.sh, ssh-cert.sh,
                      loader.c, initramfs.py, image.py,
                      install.sh, try.sh, console.sh, the board's device tree, rootfs/: units and
                      launchers); ui/ (the native interface: SDL3 under cage, Rust 2024,
@@ -415,7 +415,7 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   system goes over the Wi-Fi from Linux (`try.sh --install`, its SHA-256 checked); a new kernel to
   `boot` from the loader (`try.sh --flash`, the reset pinhole). No battery: timesyncd's clock is
   kept on userdata, and the app never waits for NTP. `ssh root@maison-frame.local` (key
-  only); the journal kept on userdata (`journalctl -D /var/log/journal/<boot's machine id>`); the
+  only); the journal kept on userdata (`/var/log/journal`, one machine id from the eMMC's serial); the
   boot picture is the initramfs's (splash.py): the mark alone, a line only on failure. The kernel
   has no console on the panel: no text can reach it.
 - The kernel is `allnoconfig` + `maison.config`, every symbol said; a dropped symbol or any build
@@ -423,6 +423,9 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   got `vdd_arm`), its voltage is unknown and never written, no temperature sensor: the OPPs change
   the clock alone, up to 1008 MHz, the top held under checked load. `try.sh --ram` runs a new kernel
   by kexec, the slots untouched. The AIC driver forces Wi-Fi power save: `ps_on=0` at insmod.
+- SSH is by a certificate of the frames' CA (`ssh-cert.sh`, 8 h), no key on a frame. OTA: `release.sh`
+  signs a release (`frame/tools`: maison-sign, maison-update), `FRAME_UPDATE_URL` at build says where.
+  First setup: `maison-wifi` makes the frame an access point, `maison-setup` serves its page.
 - The system is Buildroot (`frame/linux/buildroot`). A unit is enabled in its preset (`preset-all` undoes
   an `enable`), kiosk keeps uid 988 (its cookie on userdata), its timesyncd has no servers of its own.
 - Without a host on the USB-C, /dev/ttyGS0 never opens: its getty opens it itself, non-blocking

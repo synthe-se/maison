@@ -1,12 +1,11 @@
-# An update on trial made the system, or sent back (usr/local/sbin/maison-commit). Nothing to do
-# when none is on trial.
+# What every boot proves (usr/local/sbin/maison-commit): not a oneshot, the boot does not wait.
 [Unit]
 Description=An update proving itself
 RequiresMountsFor=/android-data
 After=maison-ui.service sshd.service
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/usr/local/sbin/maison-commit
 
 [Install]

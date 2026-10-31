@@ -15,7 +15,6 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 IMG="$REPO/frame/build/buildroot/rootfs.squashfs"
 DIR=/data/local/tmp/maison
-DATA=/android-data/local/tmp/maison
 SERIAL="${ANDROID_SERIAL:-}"
 a() { adb ${SERIAL:+-s "$SERIAL"} "$@"; }
 
@@ -28,18 +27,21 @@ if "$REPO/frame/linux/console.sh" true 10 >/dev/null 2>&1; then
 	case "${1:-}" in "" | --kernel) ;; *) echo "$1: from Linux, only --kernel" >&2; exit 2 ;; esac
 	c() { "$REPO/frame/linux/console.sh" "$@"; }
 	slots=/android-data/maison/slots
-	# the first update makes the slots of what is installed
-	c "[ -s $slots/state ] || { mkdir -p $slots/a && chmod 700 $slots && mv $DATA/rootfs.squashfs $slots/a/ && printf 'active=a\npending=\ntries=0\n' >$slots/state; sync; }" 30
-	active=$(c "sed -n 's/^active=//p' $slots/state" 20)
-	case "$active" in a) slot=b ;; b) slot=a ;; *) echo "no slot active: $active" >&2; exit 1 ;; esac
+	slot=$(c 'maison-slot free' 20)
+	case "$slot" in a | b) ;; *) echo "no free slot: $slot" >&2; exit 1 ;; esac
 	c "rm -rf $slots/$slot; mkdir -p $slots/$slot; sync" 20
-	"$REPO/frame/linux/send.sh" "$IMG" "$slots/$slot/rootfs.squashfs"
+	# what the slot holds, and its sums made here: the frame checks them at every boot
+	dir=$(mktemp -d)
+	trap 'rm -rf "$dir"' EXIT
+	cp "$IMG" "$dir/rootfs.squashfs"
 	if [ "${1:-}" = --kernel ]; then
-		"$REPO/frame/linux/send.sh" "$REPO/frame/build/linux/zImage" "$slots/$slot/zImage"
-		"$REPO/frame/linux/send.sh" "$REPO/frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb" "$slots/$slot/board.dtb"
-		"$REPO/frame/linux/send.sh" "$REPO/frame/build/linux-initramfs.cpio.gz" "$slots/$slot/initramfs.cpio.gz"
+		cp "$REPO/frame/build/linux/zImage" "$dir/zImage"
+		cp "$REPO/frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb" "$dir/board.dtb"
+		cp "$REPO/frame/build/linux-initramfs.cpio.gz" "$dir/initramfs.cpio.gz"
 	fi
-	c "printf 'active=$active\npending=$slot\ntries=2\n' >$slots/state.new && sync && mv $slots/state.new $slots/state && sync" 20
+	(cd "$dir" && shasum -a 256 * >sums)
+	for f in "$dir"/*; do "$REPO/frame/linux/send.sh" "$f" "$slots/$slot/$(basename "$f")"; done
+	c "maison-slot offer $slot" 60
 	echo "system: slot $slot, tried at the next boot"
 	exit 0
 fi

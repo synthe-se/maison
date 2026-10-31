@@ -1,14 +1,13 @@
 # Maison's native interface (frame/ui): cage, a Wayland kiosk compositor on KMS, with the app as
 # its one client, in a logind session on tty7 (cage's own way: PAM opens the session, which
-# hands the panel and the touch to the kiosk user, no root). In place of maison-kiosk (cog), with
-# the same address (the credential `target`) and its own cookie, kept 0600 in
-# /android-data/maison/ui; it pairs from its own door. Enabled, in place of cog's kiosk.
+# hands the panel and the touch to the kiosk user, no root). Maison's address is the credential
+# `target`; its cookie is kept 0600 in /android-data/maison/ui; it pairs from its own door.
 # It never waits for NTP: after a power cut the clock starts from timesyncd's last one, kept on
 # userdata (systemd-timesyncd.service.d/maison.conf), and until the house answers (a clock too
 # wrong for TLS among the reasons) the app says so and asks again by itself.
 [Unit]
 Description=Maison's native interface
-Conflicts=maison-kiosk.service getty@tty7.service
+Conflicts=getty@tty7.service
 RequiresMountsFor=/android-data
 Wants=dbus.socket systemd-logind.service
 # never after the network: the interface shows the house as soon as it can, and retries
@@ -31,7 +30,21 @@ ExecStartPost=-+/bin/sh -c 'kill $$(pidof maison-loader)'
 # root's copy of the address (the initramfs adopts what install.sh left, Android's shell-writable
 # /data/local/tmp never read here)
 LoadCredential=target:/android-data/maison/target
-Environment=HOME=/home/kiosk LANG=C.UTF-8 MAISON_STATE=/android-data/maison/ui MAISON_TURN=180 MAISON_STATS=1
+# no address yet: empty, and the interface asks to set the frame up
+SetCredential=target:
+EnvironmentFile=-/run/maison-setup
+RuntimeDirectory=maison-ui
+# what it may reach
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/android-data/maison/ui
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+Environment=HOME=/home/kiosk LANG=C.UTF-8 MAISON_STATE=/android-data/maison/ui MAISON_TURN=180 MAISON_HEARTBEAT=/run/maison-ui/heartbeat
 ExecStart=/usr/bin/cage -- /usr/local/sbin/maison-ui
 Restart=always
 RestartSec=5

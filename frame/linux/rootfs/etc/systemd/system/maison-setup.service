@@ -1,0 +1,10 @@
+# The first setup's page, started by maison-wifi only on a frame not set up
+[Unit]
+Description=The frame's first setup
+RequiresMountsFor=/android-data
+After=wpa_supplicant@wlan0.service
+
+[Service]
+ExecStart=/usr/local/bin/maison-setup
+Restart=on-failure
+RestartSec=2

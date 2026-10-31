@@ -14,8 +14,11 @@ VERSION=2026.08.1
 SHA256=34fb7bea8a213ffde39cc02e61703391560f26e0850f03138c722d0b09880f2b
 RUST=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' "$REPO/frame/ui/Cargo.toml")
 TARGET=armv7-unknown-linux-gnueabihf
-SSH_KEY="${FRAME_SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
-[ -s "$SSH_KEY" ] || { echo "no $SSH_KEY: the frame's SSH key (FRAME_SSH_KEY)" >&2; exit 1; }
+SSH_CA="$HOME/maison-frame/keys/ssh_ca.pub"
+[ -s "$SSH_CA" ] || "$REPO/frame/linux/ssh-cert.sh"
+# an image number that only goes up, and where frames look for updates (none if unset)
+IMAGE_VERSION=$(date -u +%Y%m%d%H%M)
+UPDATE_URL="${FRAME_UPDATE_URL:-}"
 [ -n "$RUST" ] || { echo "frame/ui/Cargo.toml says no rust-version" >&2; exit 1; }
 
 tarball="$SRC/buildroot-$VERSION.tar.xz"
@@ -25,8 +28,8 @@ mkdir -p "$OUT"
 docker volume create maison-buildroot >/dev/null
 docker volume create maison-frame-ui >/dev/null
 docker run --rm --platform linux/arm64 -v maison-buildroot:/build -v maison-frame-ui:/cache -v "$SRC:/src:ro" \
-	-v "$REPO:/repo:ro" -v "$REPO/frame:/frame:ro" -v "$OUT:/out" -v "$SSH_KEY:/ssh.pub:ro" \
-	-e RUST="$RUST" -e TARGET="$TARGET" -e VERSION="$VERSION" debian:trixie sh -euc '
+	-v "$REPO:/repo:ro" -v "$REPO/frame:/frame:ro" -v "$OUT:/out" -v "$SSH_CA:/ssh-ca.pub:ro" \
+	-e RUST="$RUST" -e TARGET="$TARGET" -e VERSION="$VERSION" -e IMAGE_VERSION="$IMAGE_VERSION" -e UPDATE_URL="$UPDATE_URL" debian:trixie sh -euc '
 	export DEBIAN_FRONTEND=noninteractive FORCE_UNSAFE_CONFIGURE=1 BR2_DL_DIR=/build/dl
 	apt-get -qq update
 	apt-get -qq install -y --no-install-recommends build-essential file wget cpio unzip rsync bc python3 perl \
@@ -47,7 +50,7 @@ docker run --rm --platform linux/arm64 -v maison-buildroot:/build -v maison-fram
 	missing=$(grep -E "^BR2_[A-Za-z0-9_]+=" /frame/linux/buildroot/maison_defconfig | while read -r l; do grep -qx "$l" /build/out/.config || echo "$l"; done)
 	[ -z "$missing" ] || { echo "not taken by kconfig: $missing" >&2; exit 1; }
 	date; $m toolchain libdrm wayland libxkbcommon mesa3d systemd >/build/deps.log 2>&1 || { tail -30 /build/deps.log; exit 1; }
-	# the app, against what the frame runs (frame/ui/build.sh: the same crate, the same toolchain)
+	# the app and the tools, against what the frame runs
 	date
 	H=/build/out/host; S=$H/arm-buildroot-linux-gnueabihf/sysroot
 	export CARGO_HOME=/cache/cargo RUSTUP_HOME=/cache/rustup CARGO_TARGET_DIR=/cache/target-buildroot
@@ -61,9 +64,15 @@ docker run --rm --platform linux/arm64 -v maison-buildroot:/build -v maison-fram
 	cd /repo/frame/ui
 	cargo +$RUST build --locked --release --target $TARGET
 	cp /cache/target-buildroot/$TARGET/release/maison-frame-ui /tmp/
+	cd /repo/frame/tools
+	cargo +$RUST build --locked --release --target $TARGET --bin maison-update --bin maison-setup
+	cp /cache/target-buildroot/$TARGET/release/maison-update /cache/target-buildroot/$TARGET/release/maison-setup /tmp/
+	echo $IMAGE_VERSION >/tmp/maison-version
+	printf "%s" "$UPDATE_URL" >/tmp/maison-update-url
 	date; cd /build/buildroot-$VERSION
 	$m >/build/make.log 2>&1 || { tail -30 /build/make.log; exit 1; }
 	cp /build/out/images/rootfs.squashfs /out/
 	cp /build/out/.config /out/buildroot.config
+	cp /tmp/maison-version /out/version
 	date; du -sh /build/out/target; ls -la /out/rootfs.squashfs
 '

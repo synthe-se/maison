@@ -12,7 +12,7 @@ help:
 	@printf "  make backend             Run the Rust backend in foreground (cargo run)\n"
 	@printf "  make web                 Run the SvelteKit dev server (alias: make frontend)\n"
 	@printf "  make web-build           Build the web bundle into web/build (alias: make frontend-build)\n"
-	@printf "  make test                fmt, clippy and tests of the three crates (api, backend, frame/ui), web checks and tests\n"
+	@printf "  make test                fmt, clippy and tests of the four crates (api, backend, frame/ui), web checks and tests\n"
 	@printf "  make deny                cargo deny on the backend (licenses, bans, sources, advisories)\n"
 	@printf "\nRaspberry Pi 1 (uses PI_HOST, default from .env):\n"
 	@printf "  make build-pi            Cross-build the ARMv6 musl backend binary\n"
@@ -39,7 +39,7 @@ frontend-build: web-build
 
 # The three crates (each its own Cargo.lock): fmt, clippy (the backend with the Pi's features
 # too), tests (api's keeps web/src/lib/paces.ts and codes.ts in step), then the web app.
-CRATES := api backend frame/ui
+CRATES := api backend frame/ui frame/tools
 
 test:
 	for crate in $(CRATES); do cargo fmt --manifest-path $$crate/Cargo.toml --check || exit 1; done
