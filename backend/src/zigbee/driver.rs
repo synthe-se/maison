@@ -1,17 +1,18 @@
-//! The driver: one task owns the dongle (serial → ASH → EZSP) and serves the commands queued
+//! The driver: one task, on its own thread, owns the dongle (serial → ASH → EZSP) and serves the commands queued
 //! to it, and the callbacks as they come. It never dies: a panic is a restart after a pause,
 //! a failing link a rebuild, a missing dongle a retry with backoff. [`Driver`] is the handle
 //! the manager holds; it shares the devices through a watch channel, so the manager only
 //! syncs what changed.
 
 use std::{
+    future::Future,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 
 use tokio::{
+    runtime,
     sync::{mpsc, oneshot, watch, RwLock},
-    task::JoinHandle,
     time::{interval, timeout, Instant, MissedTickBehavior},
 };
 use tracing::{debug, error, info, warn};
@@ -125,7 +126,8 @@ pub struct Driver {
     shared: Arc<Shared>,
     command_tx: mpsc::Sender<DriverRequest>,
     command_rx: StdMutex<Option<mpsc::Receiver<DriverRequest>>>,
-    task: StdMutex<Option<JoinHandle<()>>>,
+    /// Held while the driver runs: it stops when this goes.
+    task: StdMutex<Option<oneshot::Sender<()>>>,
     config: ZigbeeConfig,
     known_devices: Vec<(u16, ZigbeeDeviceInfo)>,
 }
@@ -173,18 +175,18 @@ impl Driver {
             self.known_devices.clone(),
             Arc::clone(&self.shared),
         );
-        *task = Some(tokio::spawn(supervise_driver(
-            Arc::clone(&self.shared),
-            command_rx,
-            move |command_rx| {
-                Box::pin(run_driver(
-                    config.clone(),
-                    known.clone(),
-                    Arc::clone(&shared),
-                    command_rx,
-                ))
-            },
-        )));
+        let driver = supervise_driver(Arc::clone(&self.shared), command_rx, move |command_rx| {
+            Box::pin(run_driver(
+                config.clone(),
+                known.clone(),
+                Arc::clone(&shared),
+                command_rx,
+            ))
+        });
+        match on_own_thread(driver) {
+            Ok(stop) => *task = Some(stop),
+            Err(error) => error!(%error, "no thread for the Zigbee driver"),
+        }
     }
 
     /// Runs `command` on the radio. Refused, coded, while the radio is not ready
@@ -228,10 +230,35 @@ impl Driver {
     }
 
     pub fn shutdown(&self) {
-        if let Some(handle) = lock(&self.task).take() {
-            handle.abort();
-        }
+        lock(&self.task).take();
     }
+}
+
+/// `task` on a thread and a runtime of its own, until the sender goes. The serial port's calls can
+/// block in the kernel (a dongle that stopped taking bytes leaves a drain waiting for ever): on the
+/// Pi's one core, on the app's runtime, that would be every route of the house.
+fn on_own_thread(
+    task: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<oneshot::Sender<()>> {
+    let (stop, stopped) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("zigbee".into())
+        .spawn(move || {
+            let runtime = match runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    error!(%error, "no runtime for the Zigbee driver");
+                    return;
+                }
+            };
+            runtime.block_on(async {
+                tokio::select! {
+                    () = task => {}
+                    _ = stopped => {}
+                }
+            });
+        })?;
+    Ok(stop)
 }
 
 #[cfg(test)]
@@ -556,6 +583,47 @@ mod tests {
             errors.record(&corrupt).is_some(),
             "a broken frame rebuilds at once"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_serial_call_stuck_in_the_kernel_stops_only_the_driver() {
+        let (held, stuck) = std::sync::mpsc::channel::<()>();
+        let (entered_tx, entered) = oneshot::channel();
+        let _stop = on_own_thread(async move {
+            let _ = entered_tx.send(());
+            // not a yield: as a drain would, it holds the thread
+            let _ = stuck.recv();
+        })
+        .unwrap();
+        timeout(Duration::from_secs(5), entered)
+            .await
+            .unwrap()
+            .unwrap();
+        // this test has one thread, as the Pi has one worker: it still runs
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn the_driver_stops_when_told() {
+        struct Gone(Option<oneshot::Sender<()>>);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = self.0.take().map(|gone| gone.send(()));
+            }
+        }
+        let (gone_tx, gone) = oneshot::channel();
+        let guard = Gone(Some(gone_tx));
+        let stop = on_own_thread(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        })
+        .unwrap();
+        drop(stop);
+        timeout(Duration::from_secs(5), gone)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test(start_paused = true)]

@@ -285,7 +285,8 @@ cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the 
   parse is logged and its default used. The protocol version comes from
   `ZIGBEE_EZSP_PROTOCOL_VERSION` (default 13); on a mismatch the pipeline is rebuilt once
   with the NCP's version.
-- The driver never dies: one task owns serial → ASH → EZSP; bounded command channel and reply
+- The driver never dies: one task on its own thread and runtime owns serial → ASH → EZSP (a drain
+  stuck in the kernel froze the Pi's one worker, so every route); bounded command channel and reply
   waits; watchdog and per-step timeouts tear down and rebuild; reconnects forever with
   capped backoff (reported `Failed` past `MAX_RECONNECT_ATTEMPTS`, retries continue).
 - Errors are typed (`zigbee/error.rs`): only EZSP failures count toward a rebuild (5 in a
