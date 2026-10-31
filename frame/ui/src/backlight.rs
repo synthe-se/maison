@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How long without a finger before the panel dims.
-pub const DIM_AFTER: Duration = Duration::from_secs(120);
+pub const DIM_AFTER: Duration = Duration::from_secs(60);
 /// The dimmed level, a share of the awake one: by day, by night.
 const DAY: f32 = 0.25;
 const NIGHT: f32 = 0.04;
@@ -130,7 +130,7 @@ mod tests {
     fn idle_long_enough_it_dims_and_a_touch_brings_it_back() {
         let (file, mut b) = panel("128\n");
         let t0 = Instant::now();
-        assert!(!b.idle(t0 + Duration::from_secs(60), t0, false), "not yet");
+        assert!(!b.idle(t0 + DIM_AFTER / 2, t0, false), "not yet");
         assert!(b.idle(t0 + DIM_AFTER, t0, false));
         assert_eq!(level(&file), "32");
         assert!(b.asleep());

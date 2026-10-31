@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::Picture;
 
 /// How long a photo stays, from the start of its fade to the start of the next one's.
-pub const HOLD: Duration = Duration::from_secs(60);
+pub const HOLD: Duration = Duration::from_secs(20);
 /// The crossfade.
 pub const FADE: Duration = Duration::from_secs(1);
 /// The next photo is read this long before its turn, never more: at most one is decoded ahead,

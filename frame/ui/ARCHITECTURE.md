@@ -103,7 +103,7 @@ Maison silent, one band along the bottom says so for the whole house: no line pe
 reachable (`Over::gone`), everything back by itself at the first answer.
 
 Nobody at the frame for `DIM_AFTER`, its photos take the panel (`Screen::Photos`): random order, each
-photo once before any comes again, a minute each, a 1 s crossfade of two textures (the first one over
+photo once before any comes again, 20 s each, a 1 s crossfade of two textures (the first one over
 the ground), scaled to cover, the time small in a corner. The backlight goes on by day and night as
 it does. Paired or waiting for Maison, never at a door; with none kept, the house only dims. No band,
 toast or dialog over them, nothing to reach: the first finger only brings the house back. Between

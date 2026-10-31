@@ -9,7 +9,7 @@
 //! - `drag Y0 Y1`: a finger from Y0 to Y1 down the middle (the column scrolls)
 //! - `shot PATH`: the next drawing saved there as PNG
 //! - `keys`: every control's key, one line each
-//! - `idle`: as if nobody had touched the panel for `DIM_AFTER` (no two-minute wait in a run)
+//! - `idle`: as if nobody had touched the panel for `DIM_AFTER` (no wait in a run)
 //! - `turn`: the photo on the panel's time is up
 //! - `type TEXT`: TEXT in the keyboard's field, as keys would type it (`press kb:a`, one key)
 //!

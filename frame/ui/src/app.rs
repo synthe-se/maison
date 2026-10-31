@@ -45,7 +45,7 @@ pub const FRAME: Duration = Duration::from_millis(16);
 const MINUTE: i64 = 60;
 /// A page left open goes back to the house after this long without a finger: a wall screen
 /// shows the house to whoever passes by.
-pub const PAGE_IDLE: Duration = Duration::from_secs(120);
+pub const PAGE_IDLE: Duration = crate::backlight::DIM_AFTER;
 /// Every API call's whole wait (a device's own limit is shorter: `commands::limit`).
 const HTTP_WAIT: Duration = Duration::from_secs(15);
 
