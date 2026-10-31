@@ -75,7 +75,7 @@
 	"climate_no_order": "No command sent yet",
 	"climate_no_remote_description": "Make sure the RM4 Pro is powered on and on the same Wi-Fi network.",
 	"climate_no_remote_title": "No remote found on the network",
-	"climate_on_first": "Turn the air conditioner on to set it.",
+	"climate_choice_turns_on": "Choosing a setting turns the AC on.",
 	"climate_remote_connected": "RM4 Pro connected · {host}",
 	"climate_reset": "Reset",
 	"climate_search_remote": "Look for the RM4 Pro",

@@ -6,8 +6,8 @@
 //! backend's (`settings` in its answer, written into a command by it). Without a blaster on the
 //! network the buttons stay, out of reach. Its row opens its page (SettingsFields, ClimateForm):
 //! mode, fan, vane, econo, the sleep timer, each choice sent at once, as a remote's key sends
-//! the unit its whole state; the order keeps the running timer. Off, nothing there can be sent
-//! (the grammar's `state-off` carries no settings): out of reach, said why.
+//! the unit its whole state; the order keeps the running timer. Off, a choice does what the
+//! remote does: such a frame is the unit's whole state, so it starts with that setting.
 
 use chrono::DateTime;
 use maison_api::Tz;
@@ -200,13 +200,10 @@ fn choice(
     w: &Words,
     host: Option<&str>,
     (icon, label, now): (Icon, &str, String),
-    can: bool,
     options: impl Iterator<Item = (String, bool, Sent)>,
 ) -> Tile {
     let buttons = options
-        .map(|(word, chosen, sent)| {
-            button(w, host, None, word, can.then_some(sent)).primary(chosen)
-        })
+        .map(|(word, chosen, sent)| button(w, host, None, word, Some(sent)).primary(chosen))
         .collect();
     fact(icon, label, now, false, vec![Part::Flow(buttons)])
 }
@@ -215,7 +212,7 @@ fn choice(
 /// nothing yet to change.
 pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<Tile>> {
     let s = last.get("settings").filter(|s| s.is_object())?;
-    let can = last["power"].as_bool().unwrap_or(false);
+    let off = !last["power"].as_bool().unwrap_or(false);
     let word = |key: &str| s[key].as_str().unwrap_or_default().to_string();
     let (mode, fan, vane) = (word("mode"), word("fan"), word("vane"));
     let econo = s["econo"].as_bool().unwrap_or(false);
@@ -242,7 +239,7 @@ pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<
             host,
             Some(icon::LEAF),
             w.s(k::CLIMATE_ECONO_COOL),
-            (can && mode == "cool").then(|| changed(s, |s| s["econo"] = (!econo).into())),
+            (mode == "cool").then(|| changed(s, |s| s["econo"] = (!econo).into())),
         )
         .primary(econo),
     ])];
@@ -251,11 +248,11 @@ pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<
     }
     let on_off = w.s(if econo { k::STATE_ON } else { k::STATE_OFF });
     let mut tiles = Vec::new();
-    if !can {
+    if off {
         tiles.push(fact(
             icon::POWER,
             &w.s(k::CLIMATE_MODE),
-            w.s(k::CLIMATE_ON_FIRST),
+            w.s(k::CLIMATE_CHOICE_TURNS_ON),
             false,
             Vec::new(),
         ));
@@ -269,7 +266,6 @@ pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<
                 &w.s(k::CLIMATE_MODE),
                 mode_label(w, &mode),
             ),
-            can,
             MODES.iter().map(|m| {
                 let sent = changed(s, |s| {
                     s["mode"] = (*m).into();
@@ -283,7 +279,6 @@ pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<
             w,
             host,
             (icon::ACTIVITY, &w.s(k::CLIMATE_FAN), fan_label(w, &fan)),
-            can,
             FANS.iter().map(|f| {
                 let sent = changed(s, |s| s["fan"] = (*f).into());
                 (fan_label(w, f), *f == fan, sent)
@@ -297,7 +292,6 @@ pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<
                 &w.s(k::CLIMATE_VERTICAL_VANE),
                 vane_label(w, &vane),
             ),
-            can,
             VANES.iter().map(|v| {
                 let sent = changed(s, |s| s["vane"] = (*v).into());
                 (vane_label(w, v), *v == vane, sent)
@@ -314,7 +308,6 @@ pub fn setting_tiles(w: &Words, host: Option<&str>, last: &Value) -> Option<Vec<
             w,
             host,
             (icon::CLOCK, &w.s(k::CLIMATE_TIMER_MODE), timer_word(stop)),
-            can,
             timer,
         ),
     ]);
@@ -479,12 +472,15 @@ mod tests {
     }
 
     #[test]
-    fn off_nothing_can_be_set_and_it_says_why() {
+    fn off_a_choice_starts_it_with_that_setting_and_it_says_so() {
         let w = Words::new(Lang::Fr);
         let s = state(&ON.replace("\"power\":true", "\"power\":false"));
         let t = setting_tiles(&w, Some("h"), &s["state"]).unwrap();
-        assert_eq!(t[0].state, "Allume la clim pour la régler.");
-        assert!(flow(&t[1]).iter().all(|b| b.unavailable));
+        assert_eq!(t[0].state, "Choisir un réglage allume la clim.");
+        let modes = flow(&t[1]);
+        assert!(modes.iter().all(|b| !b.unavailable));
+        // settings, never the off command: a whole frame, which starts the unit
+        assert_eq!(posted(&modes[1])["settings"]["mode"], MODES[1]);
         let none = state(r#"{"success":true,"state":null,"message":"none"}"#);
         assert!(setting_tiles(&w, Some("h"), &none["state"]).is_none());
     }

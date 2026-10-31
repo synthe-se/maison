@@ -75,7 +75,7 @@
 	"climate_no_order": "Aucun ordre envoyé",
 	"climate_no_remote_description": "Vérifie que le RM4 Pro est allumé et sur le même réseau Wi-Fi.",
 	"climate_no_remote_title": "Aucune télécommande sur le réseau",
-	"climate_on_first": "Allume la clim pour la régler.",
+	"climate_choice_turns_on": "Choisir un réglage allume la clim.",
 	"climate_remote_connected": "RM4 Pro connecté · {host}",
 	"climate_reset": "Réinitialiser",
 	"climate_search_remote": "Rechercher le RM4 Pro",
