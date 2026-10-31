@@ -27,7 +27,7 @@ if "$REPO/frame/linux/console.sh" true 10 >/dev/null 2>&1; then
 	case "${1:-}" in "" | --kernel) ;; *) echo "$1: from Linux, only --kernel" >&2; exit 2 ;; esac
 	c() { "$REPO/frame/linux/console.sh" "$@"; }
 	slots=/android-data/maison/slots
-	slot=$(c 'maison-slot free' 20)
+	slot=$(c '/usr/local/sbin/maison-slot free' 20)
 	case "$slot" in a | b) ;; *) echo "no free slot: $slot" >&2; exit 1 ;; esac
 	c "rm -rf $slots/$slot; mkdir -p $slots/$slot; sync" 20
 	# what the slot holds, and its sums made here: the frame checks them at every boot
@@ -41,7 +41,7 @@ if "$REPO/frame/linux/console.sh" true 10 >/dev/null 2>&1; then
 	fi
 	(cd "$dir" && shasum -a 256 * >sums)
 	for f in "$dir"/*; do "$REPO/frame/linux/send.sh" "$f" "$slots/$slot/$(basename "$f")"; done
-	c "maison-slot offer $slot" 60
+	c "/usr/local/sbin/maison-slot offer $slot" 60
 	echo "system: slot $slot, tried at the next boot"
 	exit 0
 fi

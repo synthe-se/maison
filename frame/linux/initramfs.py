@@ -81,12 +81,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [ -b /dev/mmcblk0 ] && break; sleep 1; done
 {console}
 # 3. what came up, in the log
 {settle}
-# the boot picture (splash.py) as soon as the framebuffer is there: the mark alone, no text
+# the boot's first picture (splash.py) as soon as the framebuffer is there: Synthèse's mark, no text
 for _ in 1 2 3 4 5; do [ -c /dev/fb0 ] && break; sleep 1; done
 show() {{ [ -c /dev/fb0 ] && dd if=/splash/$1.raw of=/dev/fb0 bs={stride} seek={row} conv=notrunc 2>/dev/null; }}
 if [ -c /dev/fb0 ]; then
-	cat /splash/splash.raw >/dev/fb0 2>/dev/null
-	maison-loader {loader} &
+	cat /splash/synthese.raw >/dev/fb0 2>/dev/null
 fi
 # (echo $(…) joins the lines: toybox has no tr)
 say "display: $(echo $(cat /sys/class/drm/*/status 2>/dev/null))"
@@ -157,7 +156,6 @@ if [ -n "$data" ]; then
 				here=$slots/$slot
 				maison-guard arm
 				say "kernel of slot $slot"
-				pkill maison-loader
 				line=$(uboot_line)
 				if kexec -l $here/zImage --dtb=$here/board.dtb --initrd=$here/initramfs.cpio.gz --command-line="$line maison.slot=$slot"; then
 					umount /android-data
@@ -186,6 +184,11 @@ if [ -n "$slot" ] && loop=$(losetup -f) && losetup -r $loop $img && mount -t squ
 	mount -t tmpfs -o mode=755 tmpfs /rw &&
 	mkdir -p /rw/upper /rw/work && mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot; then
 	say "system: $img"
+	# the system is there: Maison's mark, its ring turning until the interface takes the panel
+	if [ -c /dev/fb0 ]; then
+		cat /splash/splash.raw >/dev/fb0 2>/dev/null
+		maison-loader {loader} &
+	fi
 	chown 0:0 /android-data
 	# Maison's address: root's, read by the units (LoadCredential); install.sh's copy, where
 	# Android's shell (any ADB key) writes, is adopted only while root keeps none, then removed
@@ -215,7 +218,7 @@ fi
 say "no system: slot $slot"
 # what cannot even start spends its count here, so that the next boot chooses again
 [ -z "$slot" ] || reboot -f
-pkill maison-loader
+cat /splash/splash.raw >/dev/fb0 2>/dev/null
 show missing
 while :; do sleep 3600; done
 """

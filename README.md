@@ -26,10 +26,10 @@ Controls Hue and Zigbee lamps (and the Hue dimmer), Matter roller shutters that 
 
 A Frameo photo frame (RK3126, four Cortex-A7, 1 GB, an 800×1280 touch panel) turned into the house's wall screen: no Android, no browser.
 
-- **Mainline Linux 7.2 and Debian trixie**, built here (`frame/linux`): our device tree, the panel, the touch, the Wi-Fi; the system a read-only squashfs on the eMMC. It boots by itself on its own power, a power cut included; the vendor's Android stays whole in the recovery slot.
+- **Mainline Linux 7.3 and Buildroot**, built here (`frame/linux`): our device tree, the panel, the touch, the Wi-Fi; the system a read-only squashfs on the eMMC. It boots by itself on its own power, a power cut included; the vendor's Android stays whole in the recovery slot.
 - **A native app in Rust**, SDL3 under cage on the GPU (`frame/ui`): the web dashboard's layout, words, colours, fonts and icons, generated from the same sources, drawn only when something changes. Every dashboard group, the summary strip at the top, a Tempo page, and the cats' devices' pages.
 - **A wall screen of the house**: paired once from an admin's phone, then in by its own cookie; it dims after two minutes without a finger, nearly dark at night, and the first touch only wakes it.
-- **Maintained over the network**: system and kernel updates over Wi-Fi (SHA-256 checked), SSH by key only, a journal that survives power cuts, boot steps on screen.
+- **Maintained over the network**: two slots with a way back, signed updates over the air, SSH by short-lived certificates, a journal that survives power cuts.
 
 Bring-up and maintenance: [docs/frame.md](docs/frame.md). The app: [frame/ui/ARCHITECTURE.md](frame/ui/ARCHITECTURE.md).
 
@@ -41,9 +41,9 @@ Needs Rust and Bun.
 cp .env.example .env                      # set JWT_SECRET: openssl rand -hex 32
 PUBLIC_URL=http://localhost:5173 make backend   # API on :3033
 make web                                  # http://localhost:5173
-make test                                 # fmt, clippy, tests (api, backend, frame/ui), web checks, Vitest
+make test                                 # fmt, clippy, tests (api, backend, frame/ui, frame/tools), web checks, Vitest
 cd e2e && bun install && bun run all      # Playwright + axe (the frame's app too), after cargo build and web build
-frame/ui/build.sh && frame/linux/rootfs.sh && frame/linux/try.sh --install   # wall screen: build, update over Wi-Fi
+frame/linux/buildroot.sh && frame/linux/try.sh --install   # wall screen: build the system, send it to the free slot
 ```
 
 Sign in with an invitation: `PUBLIC_URL=http://localhost:5173 cargo run --manifest-path backend/Cargo.toml -- invite me --name Me --admin`.

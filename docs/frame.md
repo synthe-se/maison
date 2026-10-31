@@ -106,8 +106,8 @@ The loader may drop halfway: do the reset again, `rkwrite.py` resumes where it s
 Maison on the frame without Android: Linux 7.3 (`frame/linux`) from the **boot** slot, what a
 power-up starts (a power cut included); the vendor's Android sits in the **recovery** slot
 (`mmcblk0p5.img` of the backup), kept whole. The system, Buildroot with the native interface on
-KMS, is a read-only squashfs in Android's userdata, a tmpfs
-over it. Linux updates itself: no Android, no ADB.
+KMS, is a read-only squashfs in Android's userdata, a tmpfs over it. Linux updates itself: no
+Android, no ADB.
 
 ```bash
 frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules (Docker)
@@ -118,25 +118,21 @@ frame/linux/try.sh --install [--kernel]   # an update to the free slot, tried, k
 frame/linux/try.sh --ram        # a new kernel and initramfs run from RAM (kexec): a power cut returns to boot's
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
 frame/linux/console.sh 'systemctl status maison-ui'   # a command over SSH (FRAME_HOST=<address> without mDNS)
-ssh root@maison-frame.local     # the same over Wi-Fi, key only
+frame/linux/release.sh [--kernel]   # a signed release to upload, for updates over the air
+frame/linux/ssh-cert.sh         # a certificate for 8 hours (console.sh and send.sh ask for it themselves)
 ```
 
 `--debug` is for bring-up: a root console on the USB-C, the backlight blinks five times as soon as
 init runs (a sign with no console at all) and the initramfs waits 8 s before saying what came up.
 
 Maison's address is root's: `/android-data/maison/target` (0600), loaded by the units as their
-`target` credential. `install.sh --target` can only write where Android's shell writes,
-`/data/local/tmp/maison/target`; the next mainline boot's initramfs adopts it, only while root
-keeps none, and removes it. The units never read the old place, so a system built since wants
-the recovery image built since (its initramfs adopts): flash both. To change the address,
-remove root's copy from the console (`frame/linux/console.sh 'rm /android-data/maison/target'`),
-then `--target` again and reboot.
+`target` credential, written by the first setup (below), or adopted once from where Android's
+shell writes, `/data/local/tmp/maison/target`, while root keeps none. The Wi-Fi takes the network
+of the first setup, else the ones Android knows (its own `wpa_supplicant.conf`).
 
 There is no console on a product's boot: no getty, no shell on the USB-C, root's password locked.
-`initramfs.py --debug` builds an image with a root shell on the USB-C, for bring-up only. SSH by
-key is the way in.
-
-The Wi-Fi takes the networks Android knows (its own `wpa_supplicant.conf`).
+`initramfs.py --debug` builds an image with a root shell on the USB-C, for bring-up only. A
+certificate over SSH is the way in.
 
 What the bring-up taught, each point seen on the frame:
 
@@ -155,8 +151,7 @@ What the bring-up taught, each point seen on the frame:
   (`image.py --slot boot`, `bootimg.rsce_only`). U-Boot draws its first screen from the image it
   boots, not from the resource partition: the screen stays black until Linux lights it.
 - Powered up with the USB-C on a computer, U-Boot still boots `boot` (Linux); `misc` is ignored
-  (a power cycle is the boot slot's). Linux has no way to ask U-Boot for another slot yet: the
-  loader comes from the reset pinhole.
+  (a power cycle is the boot slot's): the loader comes from the reset pinhole.
 - No battery and a system in RAM: the clock came back six months behind after a power cut, and
   the app waited minutes for NTP. timesyncd's clock file is kept on userdata
   (`systemd-timesyncd.service.d/maison.conf`), and the app never waits for NTP: it retries.
@@ -165,10 +160,11 @@ What the bring-up taught, each point seen on the frame:
   (try.sh --flash) go that way; boot is then written by Linux on /dev/mmcblk0 once the layout's
   addressing is proved (U-Boot's head where layout.txt says, boot's `ANDROID!` header), read back
   and compared. The loader stays the way back.
-- The boot picture (splash.py): the initramfs draws Maison's mark on /dev/fb0 as soon as the
-  panel is up. The kernel has no console on the panel: no text at boot, the log stays in the
-  journal. A ring turns under the mark (loader.c, a static binary started by the initramfs,
-  outliving it) until `maison-ui` starts. A line appears only on failure (« Système introuvable… »).
+- The boot pictures (splash.py): U-Boot draws nothing (the screen is black for about 2 s). As soon
+  as the panel is up the initramfs draws Synthèse's mark on /dev/fb0, then, the system mounted,
+  Maison's mark with a ring turning under it (loader.c, a static binary, outliving the initramfs)
+  until `maison-ui` starts. The kernel has no console on the panel: no text at boot, the log stays
+  in the journal. A line appears only on failure (« Système introuvable… »).
 - SSH: root by a certificate of the frames' CA only (`ssh-cert.sh`, 8 hours, the CA in
   `~/maison-frame/keys`): no key on any frame, reachable from private networks only, the host key
   made once on the frame and kept on userdata. The frame answers as `maison-frame.local` (mDNS); its
@@ -220,10 +216,10 @@ ships behind), every program tuned for the Cortex-A7. What its build taught, eac
 Updates go to one of two slots on userdata, `/android-data/maison/slots/{a,b}`, root's: a system,
 and with `--kernel` a kernel, its device tree and its initramfs. `boot` is written by none of them,
 only by `try.sh --flash`: its kernel is what any failure comes back to. `state` says `active`,
-`pending` and `tries`. The initramfs counts a try before it starts one (2 at first: a power cut
+`pending`, `tries` and `boots`. The initramfs counts a try before it starts one (2 at first: a power cut
 spends one), starts a slot's kernel by kexec, and watches from outside (`guard.c`: 240 s, then a
-restart, whatever became of PID 1; for a kernel, the SoC's watchdog left running, and
-`WATCHDOG_OPEN_TIMEOUT` if systemd never opens it). `maison-commit` keeps an update once the interface
+restart, whatever became of PID 1; for a kernel, the SoC's watchdog left running, 30 s to reach
+systemd, the kernel not feeding it before). `maison-commit` keeps an update once the interface
 has drawn (its heartbeat) without a restart, with the Wi-Fi and SSH, for 45 s, else restarts within
 150 s; a system already proved only has to draw, so that a router out of order is no failure.
 Tries spent, the slot goes to `slots/failed` and the frame stays on the one before. Each boot of
@@ -237,6 +233,12 @@ Over the air: a release is `manifest.json`, its Ed25519 signature `manifest.sig`
 `FRAME_UPDATE_URL` at build names where; unset, the frame has no updates over the air. Each night
 (`maison-update.timer`, 3 to 4 am) the frame reads the manifest, refuses what is not signed, not
 newer, or once failed, downloads to the free slot, resumed if cut, and restarts to try it.
+
+Failures provoked on the frame, each back on the good slot by itself: an image that fails its
+`sums` (27 s), an unreadable image with valid `sums` (39 s), a kernel that panics (49 s), a kernel
+that hangs (73 s, a real watchdog reset). A good `--kernel` slot boots by kexec under that watchdog.
+Not proved on the frame: an update over the air against a real server, the first setup's access
+point.
 
 First setup: with no network or no address (`maison-wifi`), the frame is its own Wi-Fi, named and
 locked from its eMMC's serial; the interface shows both and the address of its page (`maison-setup`,
