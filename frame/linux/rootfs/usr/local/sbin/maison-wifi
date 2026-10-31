@@ -44,5 +44,6 @@ printf 'MAISON_SETUP_SSID=%s\nMAISON_SETUP_PASSWORD=%s\nMAISON_SETUP_URL=http://
 chmod 644 /run/maison-setup
 mkdir -p /run/systemd/network
 printf '[Match]\nName=wlan0\n\n[Network]\nAddress=192.168.4.1/24\nDHCPServer=yes\n' >/run/systemd/network/40-maison-setup.network
+chmod 644 /run/systemd/network/40-maison-setup.network
 systemctl --no-block start maison-setup
 echo "maison-wifi: to be set up, as $ssid"

@@ -35,7 +35,8 @@ RuntimeDirectory=maison-ui
 # what it may reach
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/android-data/maison/ui
+# `-`: the first start's ExecStartPre makes it
+ReadWritePaths=-/android-data/maison/ui
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
