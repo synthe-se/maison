@@ -11,7 +11,7 @@ describe('SettingsFields', () => {
 	it('switching out of cooling turns econo off', async () => {
 		const onchange = vi.fn();
 		await render(SettingsFields, { settings: cool, onchange });
-		await page.getByRole('button', { name: new RegExp(`^${m.climate_mode()}`) }).click();
+		await page.getByRole('combobox', { name: new RegExp(`^${m.climate_mode()}`) }).click();
 		await page.getByRole('option', { name: MODE_LABEL.heat(), exact: true }).click();
 		expect(onchange).toHaveBeenLastCalledWith({ ...cool, mode: 'heat', econo: false });
 	});

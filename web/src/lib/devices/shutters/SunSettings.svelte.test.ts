@@ -102,6 +102,6 @@ describe('SunSettings', () => {
 		const next = '2026-10-02T18:28:00Z';
 		await rerender({ cover: shutter({ schedule: sent as never, nextClose: next }) });
 		await expect.element(page.getByText(new RegExp(m.shutters_next_close({ when: '' }).trim()))).toBeVisible();
-		await expect.element(page.getByRole('button', { name: new RegExp(m.shutters_offset()) })).toBeVisible();
+		await expect.element(page.getByRole('combobox', { name: new RegExp(m.shutters_offset()) })).toBeVisible();
 	});
 });
