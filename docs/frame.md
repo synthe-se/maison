@@ -118,7 +118,7 @@ frame/linux/try.sh --install [--kernel]   # an update to the free slot, tried, k
 frame/linux/try.sh --ram        # a new kernel and initramfs run from RAM (kexec): a power cut returns to boot's
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
 frame/linux/console.sh 'systemctl status maison-ui'   # a command over SSH (FRAME_HOST=<address> without mDNS)
-frame/linux/release.sh [--kernel]   # a signed release to upload, for updates over the air
+frame/linux/release.sh [--kernel] [--publish]   # a signed release, for updates over the air
 frame/linux/ssh-cert.sh         # a certificate for 8 hours (console.sh and send.sh ask for it themselves)
 ```
 
@@ -230,15 +230,16 @@ midway still wants the reset pinhole.
 Over the air: a release is `manifest.json`, its Ed25519 signature `manifest.sig` and its files under
 `<version>/`, static files over HTTPS, made by `frame/linux/release.sh [--kernel]` (the key in
 `~/maison-frame/keys/release.pk8`, its public half in `frame/tools/release.pub`, in the image).
-`FRAME_UPDATE_URL` at build names where; unset, the frame has no updates over the air. Each night
+`FRAME_UPDATE_URL` at build names where, by default `https://updates.synthe.se/frame`
+(mailing-infra's `updates` site, `release.sh --publish`); set empty, the frame has none. Each night
 (`maison-update.timer`, 3 to 4 am) the frame reads the manifest, refuses what is not signed, not
 newer, or once failed, downloads to the free slot, resumed if cut, and restarts to try it.
 
 Failures provoked on the frame, each back on the good slot by itself: an image that fails its
 `sums` (27 s), an unreadable image with valid `sums` (39 s), a kernel that panics (49 s), a kernel
 that hangs (73 s, a real watchdog reset). A good `--kernel` slot boots by kexec under that watchdog.
-Not proved on the frame: an update over the air against a real server, the first setup's access
-point.
+An update over the air, from updates.synthe.se to the frame: 80 s. Not proved on the frame: the
+first setup's access point.
 
 First setup: with no network or no address (`maison-wifi`), the frame is its own Wi-Fi, named and
 locked from its eMMC's serial; the interface shows both and the address of its page (`maison-setup`,

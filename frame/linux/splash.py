@@ -1,5 +1,5 @@
 """The frame's boot picture, drawn by the initramfs on /dev/fb0 as soon as the panel is up (U-Boot
-draws nothing from our boot image): Synthèse's mark, large, while the frame checks what it boots,
+draws nothing from our boot image): Synthèse's mark while the frame checks what it boots,
 then Maison's mark on the app's ground and nothing else; a line under it only when the boot fails (« Système introuvable… »), a strip of its own copied over the
 picture. Raw XRGB8888 as the framebuffer holds it (800×1280, 3200 bytes a row), turned 180° (the
 panel is mounted upside down: what the person sees is the framebuffer's last row first). The
@@ -21,7 +21,10 @@ import build  # noqa: E402
 W, H = 800, 1280
 STRIDE = W * 4
 MARK = 240
-SYNTHESE_MARK = 600
+# Synthèse's S fills 92 of its 128 units: scaled so that it stands exactly where Maison's mark
+# will replace it, as tall, on the same centre
+SYNTHESE_MARK = MARK * 128 / 92
+MARK_Y = (H - MARK) // 2 - 80
 # the failure's line, under the mark (in what the person sees)
 STRIP_Y, STRIP_H = 900, 64
 # the framebuffer's row where the strip starts once turned
@@ -69,14 +72,14 @@ def raw(rows: list[bytes]) -> bytes:
 
 
 def synthese(ground: str) -> str:
-    """Synthèse's mark, large, centred on the ground."""
+    """Synthèse's mark on the ground, where Maison's comes next."""
     mark = (Path(__file__).resolve().parent / "synthese-mark.svg").read_text()
     size = re.search(r'viewBox="0 0 ([0-9.]+) ', mark)
     if not size:
         raise SystemExit("synthese-mark.svg: no viewBox")
     head = mark.index(">", mark.index("<svg"))
     inner = mark[head + 1 : mark.rindex("</svg>")]
-    x, y = (W - SYNTHESE_MARK) / 2, (H - SYNTHESE_MARK) / 2
+    x, y = (W - SYNTHESE_MARK) / 2, MARK_Y + (MARK - SYNTHESE_MARK) / 2
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
         f'<rect width="{W}" height="{H}" fill="{ground}"/>'
@@ -90,7 +93,7 @@ def frames() -> dict[str, bytes]:
     mark = (REPO / "web/static/brand.svg").read_text()
     mark = mark[mark.index("<svg") :]
     inner = mark[mark.index(">") + 1 : mark.rindex("</svg>")]
-    x, y = (W - MARK) // 2, (H - MARK) // 2 - 80
+    x, y = (W - MARK) // 2, MARK_Y
     splash = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
         f'<rect width="{W}" height="{H}" fill="{ground}"/>'
