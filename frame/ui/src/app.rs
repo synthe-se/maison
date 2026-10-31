@@ -597,6 +597,7 @@ mod tests {
             rotate: false,
             scale: 1.0,
             window: None,
+            heartbeat: None,
         }
     }
 

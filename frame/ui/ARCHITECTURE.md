@@ -13,8 +13,9 @@ Cortex-A7, Mali-400 (Lima, GLES 2.0), 1 GB, 800×1280 portrait panel mounted ups
   libm, libgcc_s). SDL's GLES 2 renderer, vsync on.
 - Event-driven: the loop sleeps on SDL events (input, window, a user event posted by a worker
   thread). It wakes on its own only for time-based changes (a gesture going slow or late, a held
-  slider value, a value going stale, a toast, the page timeout, the dimming) and every frame
-  during a fling. Idle = no frame.
+  slider value, a value going stale, the minute of time-based words, a toast, the page timeout,
+  the dimming) and during a fling, paced by the present. A read identical to the last one draws
+  nothing; a scroll draws the last `Screen` again. Idle = no frame.
 
 ## Shared sources
 
@@ -40,14 +41,17 @@ and IPv6-only agents so the server records both of the screen's addresses. HTTPS
 
 ```
 src/main.rs      SDL, the loop, rotation, simulation shots, touch logging (MAISON_STATS=1)
-config.rs        address (credential `target`, else MAISON_TARGET), state dir, language, turn, scale
+config.rs        address (credential `target`, else MAISON_TARGET; none: the setup view, the frame's
+                 Wi-Fi from MAISON_SETUP_*), state dir, language, turn, scale
+heartbeat.rs     MAISON_HEARTBEAT: a file touched once a frame was presented, then every 10 s
 client.rs        ureq 3 + rustls; no redirects, no proxy, bounded waits; POST/PUT; per-family
                  IP agents; the event stream; failures: signed out, refused (Code), unreachable,
                  unreadable
 paths.rs         API paths
 live.rs          sources: one thread each at its pace while drawn, stale after STALE_CADENCES,
                  refresh(prefix), listen() for the event stream
-pairing.rs       POST /me, codes, claims, expiry, removal
+pairing.rs       POST /me, codes, claims, expiry, removal (a read's 401 has /me asked again; only
+                 its 401 forgets the cookie, Maison silent the screen waits)
 commands.rs      gestures: optimistic target, slow, late, settle until re-read; one order in
                  flight per key, the latest waits
 backlight.rs     dims after DIM_AFTER (2 min): 25 % of the awake level by day, 4 % at night (sun

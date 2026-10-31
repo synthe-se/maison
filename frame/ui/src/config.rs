@@ -14,7 +14,8 @@
 //! - `MAISON_ROTATE=180` (the app turns its picture, when the compositor does not; the touch
 //!   is already the person's way up on the frame), `MAISON_SCALE` (CSS pixels to the panel's, 1
 //!   as the kiosk drew), `MAISON_WINDOW` (`800x1280`: a window in place of the full screen, for
-//!   a simulation).
+//!   a simulation);
+//! - `MAISON_HEARTBEAT`: a file touched while the app runs, for the update system.
 
 use std::path::PathBuf;
 
@@ -34,6 +35,8 @@ pub struct Config {
     pub scale: f32,
     /// A window of this size, not the full screen.
     pub window: Option<(u32, u32)>,
+    /// Touched while the app runs.
+    pub heartbeat: Option<PathBuf>,
 }
 
 /// How a frame without an address is given one: its Wi-Fi and the page there, as far as told.
@@ -116,6 +119,7 @@ impl Config {
             rotate,
             scale,
             window,
+            heartbeat: env("MAISON_HEARTBEAT").map(PathBuf::from),
         })
     }
 }
@@ -196,9 +200,11 @@ mod tests {
                 ("MAISON_ROTATE", "180"),
                 ("MAISON_SCALE", "1.5"),
                 ("MAISON_WINDOW", "800x1280"),
+                ("MAISON_HEARTBEAT", "/run/maison/beat"),
             ]),
         )
         .unwrap();
+        assert_eq!(c.heartbeat, Some(PathBuf::from("/run/maison/beat")));
         assert_eq!(c.origin.as_deref(), Some("http://localhost:3999"));
         assert_eq!(c.lang, Lang::En);
         assert!(c.rotate);

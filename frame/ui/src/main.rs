@@ -7,7 +7,8 @@
 //! the turn (`MAISON_ROTATE=180`), the scale, a window for a simulation; `SDL_RENDER_DRIVER`
 //! (default `opengles2`) and `SDL_RENDER_VSYNC` (default 1) are SDL's own. `MAISON_STATS=1` says
 //! the frame times on stdout (the journal); `MAISON_FRAMES=n` quits after n drawings (a
-//! measured run); `MAISON_STDIN=1` takes a simulation's commands on stdin (sim.rs).
+//! measured run); `MAISON_STDIN=1` takes a simulation's commands on stdin (sim.rs);
+//! `MAISON_HEARTBEAT` names a file touched while it runs (heartbeat.rs).
 
 mod app;
 mod backlight;
@@ -15,6 +16,7 @@ mod client;
 mod commands;
 mod config;
 mod families;
+mod heartbeat;
 mod i18n;
 mod live;
 mod pairing;
@@ -37,6 +39,7 @@ use sdl3::video::{Window, WindowContext};
 
 use crate::app::App;
 use crate::config::{Config, PANEL};
+use crate::heartbeat::Heartbeat;
 use crate::i18n::k;
 use crate::ui::gfx::{Draw, Error, Gfx};
 use crate::ui::layout::{Ctx, Drawn};
@@ -222,9 +225,11 @@ fn run() -> Result<(), Error> {
     let mut retry: Option<Instant> = None;
     let mut stats = Stats::new();
     let mut shown: Option<Screen> = None;
+    let mut heart = config.heartbeat.clone().map(Heartbeat::new);
 
     loop {
-        let first = wait(&mut pump, &app, retry);
+        let beat = heart.as_ref().and_then(Heartbeat::next);
+        let first = wait(&mut pump, &app, [retry, beat]);
         let (w, h) = panel.canvas.output_size()?;
         for event in first.into_iter().chain(pump.poll_iter()) {
             match on_event(&mut app, event, (w as f32, h as f32), &pending) {
@@ -244,6 +249,9 @@ fn run() -> Result<(), Error> {
             app.dirty = true;
         }
         app.tick(now);
+        if let Some(h) = &mut heart {
+            h.idle(now);
+        }
         if !app.owed() {
             continue;
         }
@@ -276,6 +284,9 @@ fn run() -> Result<(), Error> {
             }
         };
         app.drawn(drawn.hits, drawn.content, h as f32);
+        if let Some(h) = &mut heart {
+            h.presented(Instant::now());
+        }
         drawings += 1;
         if drawings == 1 {
             println!(
@@ -293,13 +304,14 @@ fn run() -> Result<(), Error> {
 }
 
 /// The first event once there is one, or none when the app is due by itself (a drawing owed,
-/// something turning with time, a failed drawing's retry).
-fn wait(pump: &mut sdl3::EventPump, app: &App, retry: Option<Instant>) -> Option<Event> {
+/// something turning with time) or the loop is, at one of `also` (a failed drawing's retry, a
+/// heartbeat).
+fn wait(pump: &mut sdl3::EventPump, app: &App, also: [Option<Instant>; 2]) -> Option<Event> {
     if app.owed() {
         return None;
     }
     let now = Instant::now();
-    let next = [app.next_wake(now), retry].into_iter().flatten().min();
+    let next = also.into_iter().chain([app.next_wake(now)]).flatten().min();
     match next.map(|t| t.saturating_duration_since(now)) {
         Some(t) => pump.wait_event_timeout(t),
         None => Some(pump.wait_event()),
