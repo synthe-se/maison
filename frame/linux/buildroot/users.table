@@ -1,0 +1,2 @@
+kiosk 988 kiosk 988 * /home/kiosk /bin/false video,render,input Maison's interface
+- -1 clock -1 * - - - udev's rules name it

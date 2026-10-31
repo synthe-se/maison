@@ -15,4 +15,6 @@ Conflicts=shutdown.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/bin/install -d -o systemd-timesync -g systemd-timesync -m 0755 /android-data/maison/timesync
+# its clock file too: the user's number changes with the system
+ExecStart=/bin/chown -R systemd-timesync:systemd-timesync /android-data/maison/timesync
 ExecStart=/usr/bin/install -d -o root -g systemd-journal -m 2755 /android-data/maison/journal

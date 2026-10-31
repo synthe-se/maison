@@ -95,7 +95,8 @@ frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): 
                      rescue recovery from the vendor's backup; bootimg.py, rescue-tools.sh),
                      rkwrite.py (loader writes), flash.sh, provision.sh, rescue.sh,
                      bootanimation.sh/.ts, test_frame.py (docs/frame.md); linux/ (mainline
-                     from the recovery slot: build.sh, rootfs.sh, initramfs.py, image.py,
+                     from the recovery slot: build.sh, buildroot.sh (the system), rootfs.sh (Debian's, kept beside),
+                     loader.c, initramfs.py, image.py,
                      install.sh, try.sh, console.sh, the board's device tree, rootfs/: units and
                      launchers); ui/ (the native interface: SDL3 under cage, Rust 2024,
                      ARCHITECTURE.md; maison-api's types, codes, paces and events, `paths.rs`
@@ -423,7 +424,10 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   warning fails `build.sh`. Nothing drives the CPU's rail (PWM1 reads zero, the vendor's kernel never
   got `vdd_arm`), its voltage is unknown and never written, no temperature sensor: the OPPs change
   the clock alone, up to 1008 MHz, the top held under checked load. `try.sh --ram` runs a new kernel
-  by kexec, the slots untouched. The AIC driver forces Wi-Fi power save: `ps_on=0` at insmod.
+  by kexec, the slots untouched; `maison.system=<file>` picks a system beside the installed one. The
+  AIC driver forces Wi-Fi power save: `ps_on=0` at insmod.
+- The system is Buildroot (`frame/linux/buildroot`). A unit is enabled in its preset (`preset-all` undoes
+  an `enable`), kiosk keeps uid 988 (its cookie on userdata), its timesyncd has no servers of its own.
 - Without a host on the USB-C, /dev/ttyGS0 never opens: its getty opens it itself, non-blocking
   (systemd opening it held /dev/console's lock and froze PID 1: the app never started on the
   frame's own power). console.sh goes over SSH when no cable is there.

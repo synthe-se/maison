@@ -25,10 +25,12 @@ UtmpIdentifier=tty7
 UtmpMode=user
 ExecStartPre=+/usr/bin/install -d -o kiosk -g kiosk -m 0700 /android-data/maison/ui
 ExecStartPost=+/usr/bin/chvt 7
+# the boot's loader (frame/linux/loader.c) stops where the interface starts; `-`: it may be gone
+ExecStartPost=-+/bin/sh -c 'kill $$(pidof maison-loader)'
 # root's copy of the address (the initramfs adopts what install.sh left, Android's shell-writable
 # /data/local/tmp never read here)
 LoadCredential=target:/android-data/maison/target
-Environment=HOME=/home/kiosk LANG=fr_FR.UTF-8 MAISON_STATE=/android-data/maison/ui MAISON_TURN=180 MAISON_STATS=1
+Environment=HOME=/home/kiosk LANG=C.UTF-8 MAISON_STATE=/android-data/maison/ui MAISON_TURN=180 MAISON_STATS=1
 ExecStart=/usr/bin/cage -- /usr/local/sbin/maison-ui
 Restart=always
 RestartSec=5

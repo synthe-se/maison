@@ -1,0 +1,855 @@
+Mesa 26.2.6, wlroots 0.20.2, cage 0.3.1, systemd 258.12: what Buildroot 2026.08.1 ships behind
+them, from its master (15b0457158bbe24264ab241cbe87c52b4d659f4e), Mesa on to its last release.
+
+--- a/package/cage/cage.hash
++++ b/package/cage/cage.hash
+@@ -1,5 +1,5 @@
+ # Locally computed, after checking PGP signature
+-sha256  cd2510f83bef3e08e660d99492ca7761b218ecb53ee01cdbbeee3d6aabc7734e  cage-0.3.0.tar.gz
++sha256  edafc173b6f56a3e1564933e272a54aaa9fe158d330e6a415d57b44ab880fe2b  cage-0.3.1.tar.gz
+ 
+ # Hashes for license files:
+ sha256  e117104073335dbaf78596fb1bedf89dda63c71f60f0b665947b2d369c77ecee  LICENSE
+--- a/package/cage/cage.mk
++++ b/package/cage/cage.mk
+@@ -4,7 +4,7 @@
+ #
+ ################################################################################
+ 
+-CAGE_VERSION = 0.3.0
++CAGE_VERSION = 0.3.1
+ CAGE_SITE = https://github.com/cage-kiosk/cage/releases/download/v$(CAGE_VERSION)
+ CAGE_LICENSE = MIT
+ CAGE_LICENSE_FILES = LICENSE
+--- a/package/mesa3d/0005-nir-load_libclc-do-not-compare-sys_path-against-NULL.patch
++++ b/package/mesa3d/0005-nir-load_libclc-do-not-compare-sys_path-against-NULL.patch
+@@ -0,0 +1,129 @@
++From 1219dc3f7fe83b1f7f200190bf02a86ab57b3d4f Mon Sep 17 00:00:00 2001
++From: Karol Herbst <kherbst@redhat.com>
++Date: Tue, 22 Sep 2026 13:53:43 +0200
++Subject: [PATCH] nir/load_libclc: do not compare sys_path against NULL
++
++sys_path will become an array and the NULL checks were all a bit awkward
++because all the code was already guarded with DYNAMIC_LIBCLC_PATH anyway
++and most likely constant folded away.
++
++Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44624>
++
++Upstream: https://gitlab.freedesktop.org/mesa/mesa/-/commit/1219dc3f7fe83b1f7f200190bf02a86ab57b3d4f
++
++Signed-off-by: Bernd Kuhls <bernd@kuhls.net>
++---
++ src/compiler/clc/nir_load_libclc.c | 76 ++++++++++++++----------------
++ 1 file changed, 35 insertions(+), 41 deletions(-)
++
++diff --git a/src/compiler/clc/nir_load_libclc.c b/src/compiler/clc/nir_load_libclc.c
++index edcd13b3b26..913dd8ff7a7 100644
++--- a/src/compiler/clc/nir_load_libclc.c
+++++ b/src/compiler/clc/nir_load_libclc.c
++@@ -145,20 +145,18 @@ map_clc_data(struct clc_data *clc)
++    }
++ 
++ #ifdef DYNAMIC_LIBCLC_PATH
++-   if (clc->file->sys_path != NULL) {
++-      if (clc->size % SPIRV_WORD_SIZE != 0) {
++-         fprintf(stderr, "File length isn't a multiple of the word size\n");
++-         return false;
++-      }
++-
++-      clc->data = mmap(NULL, clc->size, PROT_READ, MAP_PRIVATE, clc->fd, 0);
++-      if (clc->data == MAP_FAILED) {
++-         fprintf(stderr, "Failed to mmap libclc SPIR-V: %m\n");
++-         return false;
++-      }
+++   if (clc->size % SPIRV_WORD_SIZE != 0) {
+++      fprintf(stderr, "File length isn't a multiple of the word size\n");
+++      return false;
+++   }
++ 
++-      return true;
+++   clc->data = mmap(NULL, clc->size, PROT_READ, MAP_PRIVATE, clc->fd, 0);
+++   if (clc->data == MAP_FAILED) {
+++      fprintf(stderr, "Failed to mmap libclc SPIR-V: %m\n");
+++      return false;
++    }
+++
+++   return true;
++ #endif
++ 
++    return true;
++@@ -175,12 +173,10 @@ close_clc_data(struct clc_data *clc)
++    }
++ 
++ #ifdef DYNAMIC_LIBCLC_PATH
++-   if (clc->file->sys_path != NULL) {
++-      if (clc->data)
++-         munmap((void *)clc->data, clc->size);
++-      clc->data = NULL;
++-      close(clc->fd);
++-   }
+++   if (clc->data)
+++      munmap((void *)clc->data, clc->size);
+++   clc->data = NULL;
+++   close(clc->fd);
++ #endif
++ }
++ 
++@@ -198,34 +194,32 @@ open_clc_data(struct clc_data *clc, unsigned ptr_bit_size)
++    }
++ 
++ #ifdef DYNAMIC_LIBCLC_PATH
++-   if (clc->file->sys_path != NULL) {
++-      int fd = open(clc->file->sys_path, O_RDONLY);
++-      if (fd < 0)
++-         return false;
+++   int fd = open(clc->file->sys_path, O_RDONLY);
+++   if (fd < 0)
+++      return false;
++ 
++-      struct stat stat;
++-      int ret = fstat(fd, &stat);
++-      if (ret < 0) {
++-         fprintf(stderr, "fstat failed on %s: %m\n", clc->file->sys_path);
++-         close(fd);
++-         return false;
++-      }
+++   struct stat stat;
+++   int ret = fstat(fd, &stat);
+++   if (ret < 0) {
+++      fprintf(stderr, "fstat failed on %s: %m\n", clc->file->sys_path);
+++      close(fd);
+++      return false;
+++   }
++ 
++-      clc->fd = fd;
++-      clc->size = stat.st_size;
+++   clc->fd = fd;
+++   clc->size = stat.st_size;
++ 
++-      if (!map_clc_data(clc)) {
++-         close_clc_data(clc);
++-         return false;
++-      }
+++   if (!map_clc_data(clc)) {
+++      close_clc_data(clc);
+++      return false;
+++   }
++ 
++-      blake3_hasher ctx;
++-      _mesa_blake3_init(&ctx);
++-      _mesa_blake3_update(&ctx, clc->data, clc->size);
++-      _mesa_blake3_final(&ctx, clc->cache_key);
+++   blake3_hasher ctx;
+++   _mesa_blake3_init(&ctx);
+++   _mesa_blake3_update(&ctx, clc->data, clc->size);
+++   _mesa_blake3_final(&ctx, clc->cache_key);
++ 
++-      return true;
++-   }
+++   return true;
++ #endif
++ 
++    return false;
++-- 
++2.47.3
++
+--- a/package/mesa3d/0005-src-intel-compiler-jay-jay_ir.h-do-not-used-typed-en.patch
++++ b/package/mesa3d/0005-src-intel-compiler-jay-jay_ir.h-do-not-used-typed-en.patch
+@@ -1,41 +0,0 @@
+-From 345ccf93e9d00dfd0f71085832a7df0170b74f74 Mon Sep 17 00:00:00 2001
+-From: Alexander Kanavin <alex@linutronix.de>
+-Date: Sun, 14 Jun 2026 17:42:19 +0200
+-Subject: [PATCH] src/intel/compiler/jay/jay_ir.h: do not used typed enum
+-
+-This is a C23 feature and not supported by gcc < 13, which
+-many host distros still have (e.g. Debian 12).
+-
+-Upstream-Status: Inappropriate [yocto host distro requirements]
+-Signed-off-by: Alexander Kanavin <alex@linutronix.de>
+-Upstream: N/A, code completely changed upstream
+-Signed-off-by: Thomas Petazzoni <thomas.petazzoni@bootlin.com>
+----
+- src/intel/compiler/jay/jay_ir.h | 4 ++--
+- 1 file changed, 2 insertions(+), 2 deletions(-)
+-
+-diff --git a/src/intel/compiler/jay/jay_ir.h b/src/intel/compiler/jay/jay_ir.h
+-index 8307044ef8a..abf175a71bf 100644
+---- a/src/intel/compiler/jay/jay_ir.h
+-+++ b/src/intel/compiler/jay/jay_ir.h
+-@@ -579,7 +579,7 @@ jay_type_is_any_float(enum jay_type t)
+-    return jay_base_type(t) == JAY_TYPE_F || jay_base_type(t) == JAY_TYPE_BF;
+- }
+- 
+--enum jay_predication : uint8_t {
+-+enum jay_predication {
+-    /** No predication. */
+-    JAY_NOT_PREDICATED = 0,
+- 
+-@@ -634,7 +634,7 @@ typedef struct jay_inst {
+-    bool decrement_dep:1;
+-    unsigned padding  :12;
+- 
+--   enum jay_predication predication;
+-+   uint8_t predication;
+-    enum jay_conditional_mod conditional_mod;
+- 
+-    jay_def cond_flag; /**< conditional flag */
+--- 
+-2.55.0
+-
+--- a/package/mesa3d/0006-nir-load_libclc-turn-sys_path-into-an-array.patch
++++ b/package/mesa3d/0006-nir-load_libclc-turn-sys_path-into-an-array.patch
+@@ -0,0 +1,109 @@
++From 62ee563fd398169005906245831db680f813b19f Mon Sep 17 00:00:00 2001
++From: Karol Herbst <kherbst@redhat.com>
++Date: Tue, 22 Sep 2026 14:11:09 +0200
++Subject: [PATCH] nir/load_libclc: turn sys_path into an array
++
++Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44624>
++
++Upstream: https://gitlab.freedesktop.org/mesa/mesa/-/commit/62ee563fd398169005906245831db680f813b19f
++
++Signed-off-by: Bernd Kuhls <bernd@kuhls.net>
++---
++ src/compiler/clc/nir_load_libclc.c | 55 +++++++++++++++++-------------
++ 1 file changed, 31 insertions(+), 24 deletions(-)
++
++diff --git a/src/compiler/clc/nir_load_libclc.c b/src/compiler/clc/nir_load_libclc.c
++index 913dd8ff7a7..17b901db47c 100644
++--- a/src/compiler/clc/nir_load_libclc.c
+++++ b/src/compiler/clc/nir_load_libclc.c
++@@ -52,7 +52,7 @@ struct clc_file {
++    unsigned bit_size;
++    const char *static_data;
++    size_t static_data_size;
++-   const char *sys_path;
+++   const char *sys_paths[1];
++ };
++ 
++ static const struct clc_file libclc_files[] = {
++@@ -63,7 +63,9 @@ static const struct clc_file libclc_files[] = {
++       .static_data_size = sizeof(libclc_spirv_mesa3d_spv),
++ #endif
++ #ifdef DYNAMIC_LIBCLC_PATH
++-      .sys_path = DYNAMIC_LIBCLC_PATH "spirv-mesa3d-.spv",
+++      .sys_paths = {
+++         DYNAMIC_LIBCLC_PATH "spirv-mesa3d-.spv",
+++      },
++ #endif
++    },
++    {
++@@ -73,7 +75,9 @@ static const struct clc_file libclc_files[] = {
++       .static_data_size = sizeof(libclc_spirv64_mesa3d_spv),
++ #endif
++ #ifdef DYNAMIC_LIBCLC_PATH
++-      .sys_path = DYNAMIC_LIBCLC_PATH "spirv64-mesa3d-.spv",
+++      .sys_paths = {
+++         DYNAMIC_LIBCLC_PATH "spirv64-mesa3d-.spv",
+++      },
++ #endif
++    },
++ };
++@@ -194,32 +198,35 @@ open_clc_data(struct clc_data *clc, unsigned ptr_bit_size)
++    }
++ 
++ #ifdef DYNAMIC_LIBCLC_PATH
++-   int fd = open(clc->file->sys_path, O_RDONLY);
++-   if (fd < 0)
++-      return false;
+++   for (unsigned i = 0; i < ARRAY_SIZE(clc->file->sys_paths); i++) {
+++      const char *sys_path = clc->file->sys_paths[i];
+++      int fd = open(sys_path, O_RDONLY);
+++      if (fd < 0)
+++         continue;
++ 
++-   struct stat stat;
++-   int ret = fstat(fd, &stat);
++-   if (ret < 0) {
++-      fprintf(stderr, "fstat failed on %s: %m\n", clc->file->sys_path);
++-      close(fd);
++-      return false;
++-   }
+++      struct stat stat;
+++      int ret = fstat(fd, &stat);
+++      if (ret < 0) {
+++         fprintf(stderr, "fstat failed on %s: %m\n", sys_path);
+++         close(fd);
+++         continue;
+++      }
++ 
++-   clc->fd = fd;
++-   clc->size = stat.st_size;
+++      clc->fd = fd;
+++      clc->size = stat.st_size;
++ 
++-   if (!map_clc_data(clc)) {
++-      close_clc_data(clc);
++-      return false;
++-   }
+++      if (!map_clc_data(clc)) {
+++         close_clc_data(clc);
+++         continue;
+++      }
++ 
++-   blake3_hasher ctx;
++-   _mesa_blake3_init(&ctx);
++-   _mesa_blake3_update(&ctx, clc->data, clc->size);
++-   _mesa_blake3_final(&ctx, clc->cache_key);
+++      blake3_hasher ctx;
+++      _mesa_blake3_init(&ctx);
+++      _mesa_blake3_update(&ctx, clc->data, clc->size);
+++      _mesa_blake3_final(&ctx, clc->cache_key);
++ 
++-   return true;
+++      return true;
+++   }
++ #endif
++ 
++    return false;
++-- 
++2.47.3
++
+--- a/package/mesa3d/0007-nir-load_libclc-add-llvm-23-libclc-paths.patch
++++ b/package/mesa3d/0007-nir-load_libclc-add-llvm-23-libclc-paths.patch
+@@ -0,0 +1,46 @@
++From 6b9cd5ab9cc3bfd0c79d9500a07a5e74351c72d1 Mon Sep 17 00:00:00 2001
++From: Karol Herbst <kherbst@redhat.com>
++Date: Tue, 22 Sep 2026 14:13:28 +0200
++Subject: [PATCH] nir/load_libclc: add llvm-23 libclc paths
++
++Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44624>
++
++Upstream: https://gitlab.freedesktop.org/mesa/mesa/-/commit/6b9cd5ab9cc3bfd0c79d9500a07a5e74351c72d1
++
++Signed-off-by: Bernd Kuhls <bernd@kuhls.net>
++---
++ src/compiler/clc/nir_load_libclc.c | 4 +++-
++ 1 file changed, 3 insertions(+), 1 deletion(-)
++
++diff --git a/src/compiler/clc/nir_load_libclc.c b/src/compiler/clc/nir_load_libclc.c
++index 17b901db47c..889bde610a3 100644
++--- a/src/compiler/clc/nir_load_libclc.c
+++++ b/src/compiler/clc/nir_load_libclc.c
++@@ -52,7 +52,7 @@ struct clc_file {
++    unsigned bit_size;
++    const char *static_data;
++    size_t static_data_size;
++-   const char *sys_paths[1];
+++   const char *sys_paths[2];
++ };
++ 
++ static const struct clc_file libclc_files[] = {
++@@ -65,6 +65,7 @@ static const struct clc_file libclc_files[] = {
++ #ifdef DYNAMIC_LIBCLC_PATH
++       .sys_paths = {
++          DYNAMIC_LIBCLC_PATH "spirv-mesa3d-.spv",
+++         DYNAMIC_LIBCLC_PATH "spirv32-unknown-unknown/libclc.spv",
++       },
++ #endif
++    },
++@@ -77,6 +78,7 @@ static const struct clc_file libclc_files[] = {
++ #ifdef DYNAMIC_LIBCLC_PATH
++       .sys_paths = {
++          DYNAMIC_LIBCLC_PATH "spirv64-mesa3d-.spv",
+++         DYNAMIC_LIBCLC_PATH "spirv64-unknown-unknown/libclc.spv",
++       },
++ #endif
++    },
++-- 
++2.47.3
++
+--- a/package/mesa3d/0008-nir-fix-build-of-floating-point-exception-flags-with.patch
++++ b/package/mesa3d/0008-nir-fix-build-of-floating-point-exception-flags-with.patch
+@@ -0,0 +1,84 @@
++From 0c567be6b8782b1fe3ed6f1e7499856bf6af9f6a Mon Sep 17 00:00:00 2001
++From: Bernd Kuhls <bernd@kuhls.net>
++Date: Fri, 23 Oct 2026 21:33:52 +0200
++Subject: [PATCH] nir: fix build of floating point exception flags with
++ toolchains lacking fenv support
++
++uClibc-ng supports C99 Floating-point on a restricted set of platforms:
++https://github.com/wbx-github/uclibc-ng/blob/v1.0.59/extra/Configs/Config.in.arch#L163
++
++causing build errors on the other supported platforms:
++
++src/compiler/nir/nir_constant_expressions.c:24:10: fatal error:
++ fenv.h: No such file or directory
++
++Check for fenv.h and guard the fenv code added by commit
++https://gitlab.freedesktop.org/mesa/mesa/-/commit/6351df29e2d99a982dbfed931b23a76defca0132
++with ifdef's.
++
++Upstream: https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/45569
++
++Signed-off-by: Bernd Kuhls <bernd@kuhls.net>
++---
++ meson.build                                  | 2 +-
++ src/compiler/nir/nir_constant_expressions.py | 6 ++++++
++ 2 files changed, 7 insertions(+), 1 deletion(-)
++
++diff --git a/meson.build b/meson.build
++index 5f19ef921a6..9c57445edb6 100644
++--- a/meson.build
+++++ b/meson.build
++@@ -1613,7 +1613,7 @@ endif
++ 
++ foreach h : ['xlocale.h', 'linux/futex.h', 'endian.h', 'dlfcn.h', 'sys/shm.h',
++              'cet.h', 'pthread_np.h', 'poll.h', 'sys/inotify.h',
++-             'linux/udmabuf.h']
+++             'linux/udmabuf.h', 'fenv.h']
++   if cc.check_header(h)
++     pre_args += '-DHAVE_@0@'.format(h.to_upper().underscorify())
++   endif
++diff --git a/src/compiler/nir/nir_constant_expressions.py b/src/compiler/nir/nir_constant_expressions.py
++index c4ae87db1a7..23f4aa6adbb 100644
++--- a/src/compiler/nir/nir_constant_expressions.py
+++++ b/src/compiler/nir/nir_constant_expressions.py
++@@ -55,7 +55,9 @@ template = """\
++  * IN THE SOFTWARE.
++  */
++ 
+++#ifdef HAVE_FENV_H
++ #include <fenv.h>
+++#endif
++ #include <math.h>
++ #include "util/rounding.h" /* for _mesa_roundeven */
++ #include "util/half_float.h"
++@@ -660,6 +662,7 @@ nir_eval_const_opcode(nir_op op, nir_const_value *dest, nir_component_mask_t *ou
++                       nir_const_value **src,
++                       unsigned float_controls_execution_mode)
++ {
+++#ifdef HAVE_FENV_H
++    /* Temporarily disable floating point exception flags while we
++     * evaluate shader constants. This avoids games unexpectedly crashing while
++     * we evalute shader math on the cpu if they have the exeption flags turn
++@@ -673,6 +676,7 @@ nir_eval_const_opcode(nir_op op, nir_const_value *dest, nir_component_mask_t *ou
++ #endif
++    if (unlikely(had_flags))
++       feholdexcept(&__nir_const_fenv);
+++#endif
++ 
++    nir_component_mask_t poison;
++ 
++@@ -689,9 +693,11 @@ nir_eval_const_opcode(nir_op op, nir_const_value *dest, nir_component_mask_t *ou
++    if (out_poison)
++       *out_poison = poison;
++ 
+++#ifdef HAVE_FENV_H
++    /* Restore floating point exception flags */
++    if (unlikely(had_flags))
++       fesetenv(&__nir_const_fenv);
+++#endif
++ }"""
++ 
++ from mako.template import Template
++-- 
++2.47.3
++
+--- a/package/mesa3d/Config.in
++++ b/package/mesa3d/Config.in
+@@ -23,9 +23,7 @@
+ 
+ config BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
+ 	bool
+-	select BR2_PACKAGE_MESA3D_OPENCL
+-	select BR2_PACKAGE_SPIRV_LLVM_TRANSLATOR
+-	select BR2_PACKAGE_SPIRV_TOOLS
++	select BR2_HOST_CMAKE_AT_LEAST_3_20 # host-llvm
+ 
+ config BR2_PACKAGE_MESA3D_LLVM
+ 	bool "llvm support"
+@@ -56,35 +54,21 @@
+ 	help
+ 	  Legacy Wayland EGL_WL_bind_wayland_display support.
+ 
+-menuconfig BR2_PACKAGE_MESA3D_OPENCL
+-	bool "OpenCL support"
+-	depends on BR2_PACKAGE_MESA3D_LLVM
+-	depends on BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_R600 || \
+-		BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_PANFROST || \
+-		BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_RADEONSI || \
+-		BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_IRIS || \
+-		BR2_PACKAGE_MESA3D_VULKAN_DRIVER_AMD || \
+-		BR2_PACKAGE_MESA3D_VULKAN_DRIVER_INTEL || \
+-		BR2_PACKAGE_MESA3D_VULKAN_DRIVER_IMAGINATION || \
+-		BR2_PACKAGE_MESA3D_VULKAN_DRIVER_PANFROST || \
+-		(BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS && \
+-		 BR2_PACKAGE_MESA3D_RUSTICL_SUPPORTED_DRIVER)
+-	select BR2_PACKAGE_LLVM_RTTI
+-	select BR2_PACKAGE_CLANG
+-	select BR2_PACKAGE_LIBCLC
+-	select BR2_PACKAGE_HAS_LIBOPENCL
+-if BR2_PACKAGE_MESA3D_OPENCL
+-# libclc dependency is satisfied by
+-# BR2_PACKAGE_MESA3D_LLVM
+ config BR2_PACKAGE_MESA3D_RUSTICL
+-	bool "RustiCL"
++	bool "RustiCL OpenCL support"
++	depends on BR2_PACKAGE_MESA3D_LLVM
+ 	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS
+ 	depends on BR2_PACKAGE_MESA3D_RUSTICL_SUPPORTED_DRIVER
+ 	select BR2_PACKAGE_HOST_RUSTC
+ 	select BR2_PACKAGE_LLVM_DUMP
++	select BR2_PACKAGE_LLVM_RTTI
++	select BR2_PACKAGE_CLANG
++	select BR2_PACKAGE_LIBCLC
++	select BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
+ 	select BR2_PACKAGE_SPIRV_TOOLS
+ 	select BR2_PACKAGE_SPIRV_LLVM_TRANSLATOR
+ 	select BR2_PACKAGE_OPENCL_ICD_LOADER
++	select BR2_PACKAGE_HAS_LIBOPENCL
+ 	help
+ 	  RustiCL is an OpenCL implementation written in Rust.
+ 	  By default, devices are disabled in RustiCL. If you want
+@@ -93,8 +77,6 @@
+ 
+ 	  https://docs.mesa3d.org/envvars.html#envvar-RUSTICL_ENABLE
+ 
+-endif # BR2_PACKAGE_MESA3D_OPENCL
+-
+ config BR2_PACKAGE_MESA3D_RUSTICL_SUPPORTED_DRIVER
+ 	bool
+ 
+@@ -129,10 +111,18 @@
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_CROCUS
+ 	bool "Gallium crocus driver"
+ 	depends on BR2_i386 || BR2_x86_64
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS # host-llvm
++	depends on BR2_HOST_GCC_AT_LEAST_7 # host-llvm
+ 	select BR2_PACKAGE_MESA3D_GALLIUM_DRIVER
++	select BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
++	select BR2_PACKAGE_MESA3D_RUSTICL_SUPPORTED_DRIVER
+ 	help
+ 	  Mesa driver for gen4-7 Intel GPUs.
+ 
++comment "crocus driver needs host gcc >= 7"
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS
++	depends on !BR2_HOST_GCC_AT_LEAST_7
++
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_ETNAVIV
+ 	bool "Gallium Etnaviv driver"
+ 	depends on BR2_TOOLCHAIN_HAS_SYNC_4 || !BR2_PACKAGE_XORG7 # libxshmfence
+@@ -158,22 +148,28 @@
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_I915
+ 	bool "Gallium i915 driver"
+ 	depends on BR2_i386 || BR2_x86_64
++	depends on BR2_PACKAGE_MESA3D_LLVM
+ 	select BR2_PACKAGE_MESA3D_GALLIUM_DRIVER
+ 	select BR2_PACKAGE_LIBDRM_INTEL
+ 	help
+ 	  Support for i915-based Intel GPUs.
+ 
++comment "i915 driver needs llvm"
++	depends on !BR2_PACKAGE_MESA3D_LLVM
++
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_IRIS
+ 	bool "Gallium iris driver"
+-	depends on BR2_PACKAGE_MESA3D_LLVM
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS # host-llvm
++	depends on BR2_HOST_GCC_AT_LEAST_7 # host-llvm
+ 	select BR2_PACKAGE_MESA3D_GALLIUM_DRIVER
+ 	select BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
+ 	select BR2_PACKAGE_MESA3D_RUSTICL_SUPPORTED_DRIVER
+ 	help
+ 	  Mesa driver for iris-based Intel GPUs.
+ 
+-comment "iris driver needs llvm"
+-	depends on !BR2_PACKAGE_MESA3D_LLVM
++comment "iris driver needs host gcc >= 7"
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS
++	depends on !BR2_HOST_GCC_AT_LEAST_7
+ 
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_LIMA
+ 	bool "Gallium lima driver"
+@@ -207,15 +203,17 @@
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_PANFROST
+ 	bool "Gallium panfrost driver"
+ 	depends on BR2_TOOLCHAIN_HAS_SYNC_4 || !BR2_PACKAGE_XORG7 # libxshmfence
+-	depends on BR2_PACKAGE_MESA3D_LLVM
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS # host-llvm
++	depends on BR2_HOST_GCC_AT_LEAST_7 # host-llvm
+ 	select BR2_PACKAGE_MESA3D_GALLIUM_DRIVER
+ 	select BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
+ 	select BR2_PACKAGE_MESA3D_RUSTICL_SUPPORTED_DRIVER
+ 	help
+ 	  Mesa driver for ARM Mali Midgard and Bifrost GPUs.
+ 
+-comment "panfrost driver needs llvm"
+-	depends on !BR2_PACKAGE_MESA3D_LLVM
++comment "panfrost driver needs host gcc >= 7"
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS
++	depends on !BR2_HOST_GCC_AT_LEAST_7
+ 
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_R300
+ 	bool "Gallium Radeon R300 driver"
+@@ -255,6 +253,7 @@
+ 	bool "Gallium Radeon SI driver"
+ 	depends on BR2_USE_MMU # libdrm
+ 	depends on BR2_i386 || BR2_x86_64
++	depends on BR2_USE_WCHAR # elfutils
+ 	select BR2_PACKAGE_MESA3D_GALLIUM_DRIVER
+ 	select BR2_PACKAGE_MESA3D_GALLIUM_VA_SUPPORTED_DRIVER
+ 	select BR2_PACKAGE_MESA3D_HOST_NATIVE_CONTEXT_SUPPORTED_DRIVER
+@@ -275,6 +274,11 @@
+ 
+ 	  https://docs.mesa3d.org/envvars.html#envvar-AMD_DEBUG
+ 
++comment "gallium radeon SI driver needs a toolchain w/ wchar"
++	depends on BR2_USE_MMU
++	depends on BR2_i386 || BR2_x86_64
++	depends on !BR2_USE_WCHAR
++
+ config BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SVGA
+ 	bool "Gallium vmware svga driver"
+ 	depends on BR2_i386 || BR2_x86_64
+@@ -378,46 +382,49 @@
+ 	bool "Vulkan imagination driver"
+ 	depends on BR2_arm || BR2_aarch64
+ 	depends on BR2_TOOLCHAIN_HAS_SYNC_4 || !BR2_PACKAGE_XORG7 # libxshmfence
+-	depends on BR2_PACKAGE_MESA3D_LLVM
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS # host-llvm
++	depends on BR2_HOST_GCC_AT_LEAST_7 # host-llvm
+ 	select BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
+ 	select BR2_PACKAGE_MESA3D_VULKAN_DRIVER
+ 	help
+ 	  Vulkan imagination driver.
+ 
+-comment "imagination vulkan needs llvm"
+-	depends on !BR2_PACKAGE_MESA3D_LLVM
++comment "imagination vulkan driver needs host gcc >= 7"
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS
++	depends on !BR2_HOST_GCC_AT_LEAST_7
+ 
+ config BR2_PACKAGE_MESA3D_VULKAN_DRIVER_INTEL
+ 	bool "Vulkan Intel driver"
+ 	depends on BR2_TOOLCHAIN_HAS_SYNC_4 || !BR2_PACKAGE_XORG7 # libxshmfence
+ 	depends on BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_17 # memfd.h
+ 	depends on BR2_TOOLCHAIN_USES_GLIBC # ifunc, static_assert
+-	depends on BR2_PACKAGE_MESA3D_LLVM
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS # host-llvm
++	depends on BR2_HOST_GCC_AT_LEAST_7 # host-llvm
+ 	select BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
+ 	select BR2_PACKAGE_MESA3D_VULKAN_DRIVER
+ 	help
+ 	  Vulkan driver for Intel hardware from Ivy Bridge onward.
+ 
+-comment "intel vulkan needs llvm"
+-	depends on !BR2_PACKAGE_MESA3D_LLVM
+-
+-comment "intel vulkan needs a glibc toolchain w/ headers >= 3.17"
++comment "intel vulkan driver needs a glibc toolchain w/ headers >= 3.17, host gcc >= 7"
+ 	depends on BR2_TOOLCHAIN_HAS_SYNC_4 || !BR2_PACKAGE_XORG7
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS
+ 	depends on !BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_17 || \
+-		!BR2_TOOLCHAIN_USES_GLIBC
++		!BR2_TOOLCHAIN_USES_GLIBC || !BR2_HOST_GCC_AT_LEAST_7
+ 
+ config BR2_PACKAGE_MESA3D_VULKAN_DRIVER_PANFROST
+ 	bool "Vulkan panfrost driver"
+ 	depends on BR2_TOOLCHAIN_HAS_SYNC_4 || !BR2_PACKAGE_XORG7 # libxshmfence
+-	depends on BR2_PACKAGE_MESA3D_LLVM
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS # host-llvm
++	depends on BR2_HOST_GCC_AT_LEAST_7 # host-llvm
+ 	select BR2_PACKAGE_LLVM_RTTI if BR2_PACKAGE_MESA3D_LLVM
+ 	select BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER
+ 	select BR2_PACKAGE_MESA3D_VULKAN_DRIVER
+ 	help
+ 	  Vulkan panfrost driver.
+ 
+-comment "panfrost vulkan needs llvm"
+-	depends on !BR2_PACKAGE_MESA3D_LLVM
++comment "panfrost vulkan driver needs host gcc >= 7"
++	depends on BR2_PACKAGE_LLVM_ARCH_SUPPORTS
++	depends on !BR2_HOST_GCC_AT_LEAST_7
+ 
+ config BR2_PACKAGE_MESA3D_VULKAN_DRIVER_SWRAST
+ 	bool "Vulkan swrast driver"
+@@ -554,7 +561,7 @@
+ 	default "mesa3d" if BR2_PACKAGE_MESA3D_OPENGL_ES && !BR2_PACKAGE_LIBGLVND
+ 
+ config BR2_PACKAGE_PROVIDES_LIBOPENCL
+-	default "mesa3d" if BR2_PACKAGE_MESA3D_OPENCL
++	default "mesa3d" if BR2_PACKAGE_MESA3D_RUSTICL
+ 
+ endif # BR2_PACKAGE_MESA3D
+ 
+--- a/package/mesa3d/mesa3d.hash
++++ b/package/mesa3d/mesa3d.hash
+@@ -1,6 +1,5 @@
+-# From https://lists.freedesktop.org/archives/mesa-announce/2026-August/000865.html
+-sha256  b320f65874fd9653ac6c0bd1616605387344e1247411a50c797b5f3fb9dc0b55  mesa-26.1.8.tar.xz
+-sha512  eb3d46ae9aaba70fdd908486cef24041fec9264ddf586eaebbba65ce55e716d306ef9e91be83e742dfaec4dfc94105a5cd3a36b29bf56614febcbcf6c1f8b516  mesa-26.1.8.tar.xz
++# archive.mesa3d.org, sum of the tarball itself
++sha256  b9436b3e1a8be76fbd4823dc884f90596ab7c6ac5e1867a305e66ffccfb31a92  mesa-26.2.6.tar.xz
+ # License
+ sha256  0d1a0472ecc81830e75c20d59b0ea02841e3db21255e0ebad97ab682c54d6615  docs/license.rst
+ sha256  323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f  licenses/MIT
+--- a/package/mesa3d/mesa3d.mk
++++ b/package/mesa3d/mesa3d.mk
+@@ -5,7 +5,7 @@
+ ################################################################################
+ 
+ # When updating the version, please also update mesa3d-headers
+-MESA3D_VERSION = 26.1.8
++MESA3D_VERSION = 26.2.6
+ MESA3D_SOURCE = mesa-$(MESA3D_VERSION).tar.xz
+ MESA3D_SITE = https://archive.mesa3d.org
+ MESA3D_LICENSE = MIT, SGI, Khronos
+@@ -50,13 +50,11 @@
+ MESA3D_CONF_OPTS += -Dllvm=disabled
+ endif
+ 
+-ifeq ($(BR2_PACKAGE_MESA3D_OPENCL),y)
+-MESA3D_PROVIDES += libopencl
+-MESA3D_DEPENDENCIES += clang libclc
+-endif
+-
+ ifeq ($(BR2_PACKAGE_MESA3D_RUSTICL),y)
++MESA3D_PROVIDES += libopencl
+ MESA3D_DEPENDENCIES += \
++	clang \
++	libclc \
+ 	host-rustc \
+ 	host-rust-bindgen \
+ 	spirv-tools \
+@@ -180,7 +178,7 @@
+ 
+ ifeq ($(BR2_PACKAGE_MESA3D_NEEDS_PRECOMP_COMPILER),y)
+ MESA3D_CONF_OPTS += -Dmesa-clc=system -Dprecomp-compiler=system
+-MESA3D_DEPENDENCIES += host-mesa3d spirv-llvm-translator spirv-tools
++MESA3D_DEPENDENCIES += host-mesa3d
+ endif
+ 
+ ifeq ($(BR2_PACKAGE_MESA3D_VULKAN_DRIVER),)
+@@ -348,6 +346,12 @@
+ 	-Dprecomp-compiler=enabled \
+ 	-Dglx=disabled \
+ 	-Dvulkan-drivers=""
++
++ifeq ($(BR2_PACKAGE_LLVM_RTTI),y)
++HOST_MESA3D_CONF_OPTS += -Dcpp_rtti=true
++else
++HOST_MESA3D_CONF_OPTS += -Dcpp_rtti=false
++endif
+ 
+ HOST_MESA3D_DEPENDENCIES = \
+ 	host-libclc \
+--- a/package/systemd/Config.in.host
++++ b/package/systemd/Config.in.host
+@@ -1,4 +1,17 @@
+-# Select this if you need host systemd tools (e.g. systemctl)
+ config BR2_PACKAGE_HOST_SYSTEMD
+-	bool
++	bool "host systemd"
+ 	depends on BR2_HOST_GCC_AT_LEAST_8
++	help
++	  Select this if you need host systemd tools (e.g. systemctl)
++
++if BR2_PACKAGE_HOST_SYSTEMD
++
++config BR2_PACKAGE_HOST_SYSTEMD_MEASURE
++	bool "systemd-measure"
++	help
++	  Build host-systemd with the systemd-measure tool. The
++	  host-systemd package installs ukify, systemd-measure is
++	  required if you want ukify to calculate, sign, or show
++	  expected PCR values.
++
++endif # BR2_PACKAGE_HOST_SYSTEMD
+--- a/package/systemd/systemd.hash
++++ b/package/systemd/systemd.hash
+@@ -1,5 +1,5 @@
+ # sha256 locally computed
+-sha256  6bd311c25f00d634ae3b4544d582e27df0d4166e6ba3d403b18b3129d7f44cae  systemd-258.7.tar.gz
++sha256  5062da9c9b0b6fd3ed0efaa2c6ec37be2e634c6e516abd6275ee42f85282c891  systemd-258.12.tar.gz
+ sha256  ac4985facb553559981f507982444d779115e3e3a4c8b7847ae956198490c1b3  LICENSE.GPL2
+ sha256  6d9bb3b7fc818a8facc4cc296060a0883fef8710d6498f86165335846e82ee9d  LICENSE.LGPL2.1
+ sha256  c9e7bf5b7c243c719b8b43c36158effb9b54c5e80abc9d82e4b2d4b2a4aa64ad  LICENSES/alg-sha1-public-domain.txt
+--- a/package/systemd/systemd.mk
++++ b/package/systemd/systemd.mk
+@@ -19,7 +19,7 @@
+ # - Diff sysusers.d with the previous version
+ # - Diff factory/etc/nsswitch.conf with the previous version
+ #   (details are often sprinkled around in README and manpages)
+-SYSTEMD_VERSION = 258.7
++SYSTEMD_VERSION = 258.12
+ SYSTEMD_SITE = $(call github,systemd,systemd,v$(SYSTEMD_VERSION))
+ SYSTEMD_LICENSE = \
+ 	LGPL-2.1+, \
+@@ -699,7 +699,7 @@
+ 
+ define SYSTEMD_USERS
+ 	# udev user groups
+-	- - render -1 * - - - DRI rendering nodes
++	- - clock -1 * - - - PTP and RTC device group
+ 	# systemd user groups
+ 	- - systemd-journal -1 * - - - Journal
+ 	$(SYSTEMD_REMOTE_USER)
+@@ -902,7 +902,6 @@
+ 	-Dmode=release \
+ 	-Dutmp=false \
+ 	-Dhibernate=false \
+-	-Dtpm2=disabled \
+ 	-Dldconfig=false \
+ 	-Dresolve=false \
+ 	-Dbootloader=disabled \
+@@ -953,7 +952,6 @@
+ 	-Dhtml=disabled \
+ 	-Dsmack=false \
+ 	-Dpolkit=disabled \
+-	-Dblkid=disabled \
+ 	-Didn=false \
+ 	-Dadm-group=false \
+ 	-Dwheel-group=false \
+@@ -1000,7 +998,6 @@
+ 	-Dlibcurl=disabled \
+ 	-Dgcrypt=disabled \
+ 	-Dgnutls=disabled \
+-	-Dopenssl=disabled \
+ 	-Dp11kit=disabled \
+ 	-Dlibfido2=disabled \
+ 	-Dpcre2=disabled \
+@@ -1017,6 +1014,20 @@
+ 	host-gperf \
+ 	host-python-jinja2 \
+ 	host-python-pefile
++
++ifeq ($(BR2_PACKAGE_HOST_SYSTEMD_MEASURE),y)
++# host-util-linux (for blkid) is an unconditional dependency
++HOST_SYSTEMD_CONF_OPTS += \
++	-Dtpm2=enabled \
++	-Dblkid=enabled \
++	-Dopenssl=enabled
++HOST_SYSTEMD_DEPENDENCIES += host-openssl host-tpm2-tss
++else
++HOST_SYSTEMD_CONF_OPTS += \
++	-Dtpm2=disabled \
++	-Dblkid=disabled \
++	-Dopenssl=disabled
++endif
+ 
+ HOST_SYSTEMD_NINJA_ENV = DESTDIR=$(HOST_DIR)
+ 
+--- a/package/wlroots/wlroots.hash
++++ b/package/wlroots/wlroots.hash
+@@ -1,7 +1,7 @@
+ # Locally calculated after checking pgp signature
+-# https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.20.0/downloads/wlroots-0.20.0.tar.gz.sig
++# https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.20.2/downloads/wlroots-0.20.2.tar.gz.sig
+ # with key 34FF9526CFEF0E97A340E2E40FDE7BE0E88F5E48 "emersion <contact@emersion.fr>"
+-sha256  33f52414e1b280839aeb70786f0ae2c9f54e27ad4873108d86270a2f89c4934b  wlroots-0.20.0.tar.gz
++sha256  80c567d2ed4efb2cfa6b077f22c7a710d9c78ba4e185a75e8694001114af0733  wlroots-0.20.2.tar.gz
+ 
+ # Hashes for license files:
+ sha256  35d427c043dcafe8893b9e7247348f599847c81d9a067703587c80707f3d58df  LICENSE
+--- a/package/wlroots/wlroots.mk
++++ b/package/wlroots/wlroots.mk
+@@ -4,7 +4,7 @@
+ #
+ ################################################################################
+ 
+-WLROOTS_VERSION = 0.20.0
++WLROOTS_VERSION = 0.20.2
+ WLROOTS_SITE = https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/$(WLROOTS_VERSION)/downloads
+ WLROOTS_LICENSE = MIT
+ WLROOTS_LICENSE_FILES = LICENSE

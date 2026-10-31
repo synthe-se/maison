@@ -105,13 +105,13 @@ The loader may drop halfway: do the reset again, `rkwrite.py` resumes where it s
 
 Maison on the frame without Android: Linux 7.3 (`frame/linux`) from the **boot** slot, what a
 power-up starts (a power cut included); the vendor's Android sits in the **recovery** slot
-(`mmcblk0p5.img` of the backup), kept whole. The system, Debian trixie armhf with the native
-interface (and cog, disabled) on KMS, is a read-only squashfs in Android's userdata, a tmpfs
+(`mmcblk0p5.img` of the backup), kept whole. The system, Buildroot with the native interface on
+KMS, is a read-only squashfs in Android's userdata, a tmpfs
 over it. Linux updates itself: no Android, no ADB.
 
 ```bash
 frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules (Docker)
-frame/linux/rootfs.sh           # the system: rootfs.squashfs (Docker, armhf emulated, ~20 min)
+frame/linux/buildroot.sh        # the system: frame/build/buildroot/rootfs.squashfs (Docker, ~25 min from nothing)
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
 python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
 frame/linux/try.sh --install    # a new system over Wi-Fi from Linux, then a reboot
@@ -164,16 +164,16 @@ What the bring-up taught, each point seen on the frame:
 - No battery and a system in RAM: the clock came back six months behind after a power cut, and
   the app waited minutes for NTP. timesyncd's clock file is kept on userdata
   (`systemd-timesyncd.service.d/maison.conf`), and the app never waits for NTP: it retries.
-- A file goes over the Wi-Fi (send.sh, from Linux): the frame listens once
-  (`systemd-socket-activate --accept`: without it the reader gets the listening socket), the host
-  sends, the frame checks the SHA-256 said over the console before it renames the file. A new
-  system (install.sh) and a new boot image (try.sh --flash) go that way; boot is then written by
-  Linux on /dev/mmcblk0 once the layout's addressing is proved (U-Boot's head where layout.txt
-  says, boot's `ANDROID!` header), read back and compared. The loader stays the way back.
+- A file goes over the Wi-Fi by send.sh, from Linux: scp, then the frame checks the SHA-256 said
+  over the console before it renames the file. A new system (install.sh) and a new boot image
+  (try.sh --flash) go that way; boot is then written by Linux on /dev/mmcblk0 once the layout's
+  addressing is proved (U-Boot's head where layout.txt says, boot's `ANDROID!` header), read back
+  and compared. The loader stays the way back.
 - The boot picture (splash.py): the initramfs draws Maison's mark on /dev/fb0 as soon as the
   panel is up. The kernel has no console on the panel: no text at boot, the log stays in the
-  journal. A line appears only on failure (« Système introuvable… »).
-- SSH: `openssh-server`, root by key only (`rootfs.sh` installs `~/.ssh/id_ed25519.pub`,
+  journal. A ring turns under the mark (loader.c, a static binary started by the initramfs,
+  outliving it) until `maison-ui` starts. A line appears only on failure (« Système introuvable… »).
+- SSH: OpenSSH, root by key only (the post-build installs `~/.ssh/id_ed25519.pub`,
   `FRAME_SSH_KEY`), no password; the host key made once on the frame, kept on userdata. The
   frame answers as `maison-frame.local` (mDNS); its Wi-Fi address comes from the eMMC's serial
   (maison-mac.service): the AIC8800 has none, the driver drew one per boot (a new lease, a new IP).
@@ -192,10 +192,10 @@ What the bring-up taught, each point seen on the frame:
   `journalctl -D /var/log/journal/<id>`.
 
 The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)) is in the
-system beside cog: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
+system: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
 client, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`;
 its launcher (`/usr/local/sbin/maison-ui`) turns the output with `wlr-randr` (`MAISON_TURN`, 0
-or 180, else the app turns its own picture). Enabled; cog's `maison-kiosk` stays installed, disabled: `systemctl stop maison-ui; systemctl start maison-kiosk` brings it back.
+or 180, else the app turns its own picture).
 
 A wall screen's theme follows the sun at the house when nothing is chosen (« Soleil », which
 anyone may choose too): dark from sunset to sunrise, from the house's place (set with the
@@ -210,6 +210,22 @@ stays out, and the OPPs change the clock alone. There is no temperature sensor e
 frequency enters the device tree only after holding under load on the frame, each result checked
 against a reference: 1008 MHz, the vendor's own top, held 8 minutes on all four cores. Above it
 is unproven.
+
+The system is Buildroot (`buildroot/maison_defconfig`, a pinned release, `0001-*.patch` for what it
+ships behind), every program tuned for the Cortex-A7. What its build taught, each point seen:
+
+- Buildroot's `preset-all` runs after the post-build, on the image's copy: an `enable` there is
+  undone. What runs is said in the preset the post-build writes.
+- Its timesyncd has no servers: they are named in `timesyncd.conf.d/maison.conf`. The clock comes
+  back from the file on userdata before any network, then NTP about 50 s later; `clock-epoch` is
+  the floor if that file is lost.
+- A system shares userdata with the one before it: `kiosk` stays uid 988 (its `screen-cookie`), and
+  `maison-timesync` gives the clock file to this system's user.
+- Its fstab mounts `/` read-only, which turns the overlay read-only: the line is removed.
+- xkbcommon's data are needed without a keyboard: no `xkeyboard-config`, no context, the app exits.
+- The app links through `buildroot/link-gcc`: the sdl3 crate always adds `/usr/local/lib`.
+- `maison.system=<file>` on kexec's command line starts a system beside the installed one. Debian's
+  stays as `rootfs-debian.squashfs`, and `rootfs.sh` still builds it.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.

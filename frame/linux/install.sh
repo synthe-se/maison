@@ -12,15 +12,15 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-IMG="$REPO/frame/build/linux/rootfs.squashfs"
+IMG="$REPO/frame/build/buildroot/rootfs.squashfs"
 DIR=/data/local/tmp/maison
 SERIAL="${ANDROID_SERIAL:-}"
 a() { adb ${SERIAL:+-s "$SERIAL"} "$@"; }
 
-[ -f "$IMG" ] || { echo "no $IMG: frame/linux/rootfs.sh first" >&2; exit 1; }
+[ -f "$IMG" ] || { echo "no $IMG: frame/linux/buildroot.sh first" >&2; exit 1; }
 
-# Linux up (its USB console there): the frame takes the image itself, over the Wi-Fi (send.sh:
-# one connection, the SHA-256 checked over the console before the rename); Android is not needed
+# Linux up: the frame takes the image itself, over the Wi-Fi (send.sh: the SHA-256 checked over
+# the console before the rename); Android is not needed
 # (it sits in the recovery slot since Linux boots by default).
 if "$REPO/frame/linux/console.sh" true 10 >/dev/null 2>&1; then
 	[ -z "${1:-}" ] || { echo "--target: from Linux, write root's /android-data/maison/target over the console" >&2; exit 2; }

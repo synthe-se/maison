@@ -25,8 +25,15 @@ MARK = 240
 STRIP_Y, STRIP_H = 900, 64
 # the framebuffer's row where the strip starts once turned
 STRIP_ROW = H - (STRIP_Y + STRIP_H)
+# the loader's centre in the framebuffer: on the strip's line, once turned
+LOADER_X, LOADER_Y = W // 2, STRIP_ROW + STRIP_H // 2
 # the failure's words, by key (the initramfs shows them by the key's last word)
 STEPS = ("frame_boot_missing",)
+
+
+def colours() -> tuple[int, int]:
+    """The ground and the loader's ring, as 0xRRGGBB."""
+    return tuple(int(token(name)[1:], 16) for name in ("cloud", "petrol"))
 
 
 def token(name: str) -> str:

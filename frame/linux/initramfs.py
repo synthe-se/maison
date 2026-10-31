@@ -79,6 +79,7 @@ for _ in 1 2 3 4 5; do [ -c /dev/fb0 ] && break; sleep 1; done
 show() {{ [ -c /dev/fb0 ] && dd if=/splash/$1.raw of=/dev/fb0 bs={stride} seek={row} conv=notrunc 2>/dev/null; }}
 if [ -c /dev/fb0 ]; then
 	cat /splash/splash.raw >/dev/fb0 2>/dev/null
+	maison-loader {loader} &
 fi
 # (echo $(…) joins the lines: toybox has no tr)
 say "display: $(echo $(cat /sys/class/drm/*/status 2>/dev/null))"
@@ -98,6 +99,9 @@ say "net: $(echo $(ls /sys/class/net))"
 #    cookies, its cache); else this shell stays
 data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
 img=/android-data/local/tmp/maison/rootfs.squashfs
+# a system tried beside the installed one: kexec's maison.system=<file>, U-Boot never says it
+tried=$(sed -n 's/.*maison\\.system=\\([^ ]*\\).*/\\1/p' /proc/cmdline)
+[ -z "$tried" ] || img=/android-data/local/tmp/maison/$tried
 mkdir -p /android-data /lower /rw /newroot
 if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data && [ -f $img ] &&
 	loop=$(losetup -f) && losetup -r $loop $img && mount -t squashfs -o ro $loop /lower && mount -t tmpfs -o mode=755 tmpfs /rw &&
@@ -130,6 +134,7 @@ if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data |
 	exec switch_root /newroot /sbin/init
 fi
 say "no system on userdata: the bring-up shell stays"
+pkill maison-loader
 show missing
 while :; do sleep 3600; done
 """
@@ -137,11 +142,13 @@ while :; do sleep 3600; done
 
 def init(debug: bool) -> str:
     """The /init script; `debug` adds the blinks and the fixed wait of the bring-up."""
+    ground, ink = splash.colours()
     return INIT.format(
         blink=BLINK if debug else "",
         settle=SETTLE_DEBUG if debug else SETTLE,
         stride=splash.STRIDE,
         row=splash.STRIP_ROW,
+        loader=f"{splash.LOADER_X} {splash.LOADER_Y} {ground:#x} {ink:#x} 120",
     )
 
 
@@ -160,6 +167,7 @@ def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
     add("init", init(debug).encode(), 0o100755)
     add("bin/mksh", (tools / "mksh").read_bytes(), 0o100755)
     add("bin/toybox", (tools / "toybox").read_bytes(), 0o100755)
+    add("bin/maison-loader", (tools / "maison-loader").read_bytes(), 0o100755)
     for applet in (tools / "applets.txt").read_text().split():
         if applet not in ("mksh", "toybox", "sh"):
             add(f"bin/{applet}", b"toybox", 0o120777)
