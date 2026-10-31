@@ -12,6 +12,8 @@ MKSH=R59c
 MKSH_SHA256=77ae1665a337f1c48c61d6b961db3e52119b38e58884d1c89684af31f87bc506
 TOYBOX=0.8.15
 TOYBOX_SHA256=44e2bab43dfe2c171743297631ce558c6d9ed38b87a66fd751cef617574b375e
+E2FSPROGS=1.47.4
+E2FSPROGS_SHA256=fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b
 KEXEC=2.0.32
 KEXEC_SHA256=8f81422a5fd2362cf6cb001b511e535565ed0f32c2f4451fb5eb68fed6710a5d
 ALPINE=alpine:3.24.3
@@ -44,8 +46,10 @@ docker run --rm --platform linux/arm/v7 -v "$TMP/kexec-tools-$KEXEC:/src" -w /sr
 	'apk add -q build-base linux-headers >/dev/null && LDFLAGS=-static ./configure --without-zlib --without-lzma >/dev/null && make -j8 build/sbin/kexec >/dev/null 2>&1 && strip build/sbin/kexec'
 cp "$TMP/kexec-tools-$KEXEC/build/sbin/kexec" "$OUT/kexec"
 # e2fsck, static: a power cut's userdata looked at before the system mounts it
-docker run --rm --platform linux/arm/v7 -v "$OUT:/t" "$ALPINE" sh -c \
-	'apk add -q e2fsprogs-static binutils >/dev/null && cp /sbin/e2fsck.static /t/e2fsck 2>/dev/null || cp /usr/sbin/e2fsck.static /t/e2fsck; strip /t/e2fsck'
+fetch "https://cdn.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$E2FSPROGS/e2fsprogs-$E2FSPROGS.tar.xz" "$E2FSPROGS_SHA256"
+docker run --rm --platform linux/arm/v7 -v "$TMP/e2fsprogs-$E2FSPROGS:/src" -w /src "$ALPINE" sh -c \
+	'apk add -q build-base linux-headers >/dev/null && ./configure --disable-nls --disable-fuse2fs --disable-defrag LDFLAGS=-static >/dev/null && make -j8 libs >/dev/null 2>&1 && make -j8 -C e2fsck e2fsck LDFLAGS=-static >/dev/null 2>&1 && strip e2fsck/e2fsck'
+cp -f "$TMP/e2fsprogs-$E2FSPROGS/e2fsck/e2fsck" "$OUT/e2fsck"
 # what it can do, one name a line: each gets its link beside it in the rescue shell
 docker run --rm --platform linux/arm/v7 -v "$OUT:/t" "$ALPINE" /t/toybox | tr -s ' \n' '\n' | grep . >"$OUT/applets.txt"
 file "$OUT/mksh" "$OUT/toybox" | sed "s|$OUT/||"
