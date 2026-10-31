@@ -1,5 +1,6 @@
-"""The frame's boot picture, drawn by the initramfs on /dev/fb0 as soon as the panel is up (U-Boot
-draws nothing from our boot image): Synthèse's mark while the frame checks what it boots,
+"""The frame's boot pictures. U-Boot draws Synthèse's mark from the first second (`logo()`, in the
+boot image); the initramfs draws the same on /dev/fb0 as soon as Linux has the panel, while the
+frame checks what it boots,
 then Maison's mark on the app's ground and nothing else; a line under it only when the boot fails (« Système introuvable… »), a strip of its own copied over the
 picture. Raw XRGB8888 as the framebuffer holds it (800×1280, 3200 bytes a row), turned 180° (the
 panel is mounted upside down: what the person sees is the framebuffer's last row first). The
@@ -85,6 +86,14 @@ def synthese(ground: str) -> str:
         f'<rect width="{W}" height="{H}" fill="{ground}"/>'
         f'<g fill="none" transform="translate({x} {y}) scale({SYNTHESE_MARK / float(size[1])})">{inner}</g></svg>'
     )
+
+
+def logo() -> bytes:
+    """What U-Boot draws, the same picture as the initramfs's first: `logo.bmp`, turned as the
+    panel is mounted."""
+    rows = render(synthese(token("cloud")), W, H)
+    turned = [b"".join(row[i : i + 3] for i in range(len(row) - 3, -1, -3)) for row in reversed(rows)]
+    return build.bmp24(W, H, turned)
 
 
 def frames() -> dict[str, bytes]:

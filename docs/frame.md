@@ -113,7 +113,7 @@ Android, no ADB.
 frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules (Docker)
 frame/linux/buildroot.sh        # the system: frame/build/buildroot/rootfs.squashfs (Docker, ~25 min from nothing)
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
-python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
+python3 -I frame/linux/image.py frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
 frame/linux/try.sh --install [--kernel]   # an update to the free slot, tried, kept or rolled back
 frame/linux/try.sh --ram        # a new kernel and initramfs run from RAM (kexec): a power cut returns to boot's
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
@@ -147,9 +147,9 @@ What the bring-up taught, each point seen on the frame:
 - The touch chip's axes are swapped, 1024 down by 640 across; `touchscreen-size-*` are the
   chip's axes, before the swap.
 - simpledrm left beside Rockchip's card is a second card, where a client would draw unseen.
-- `boot` holds 14 MiB: our image fits only without the vendor's 3 MB logo in its resource
-  (`image.py --slot boot`, `bootimg.rsce_only`). U-Boot draws its first screen from the image it
-  boots, not from the resource partition: the screen stays black until Linux lights it.
+- `boot` holds 14 MiB. U-Boot needs the vendor's device tree to draw its logo: it stays in the image's
+  resource with our `logo.bmp`, and our device tree follows the zImage (`ARM_APPENDED_DTB`), its
+  `chosen` saying the 3 MiB initramfs, none of U-Boot's command line reaching the kernel.
 - Powered up with the USB-C on a computer, U-Boot still boots `boot` (Linux); `misc` is ignored
   (a power cycle is the boot slot's): the loader comes from the reset pinhole.
 - No battery and a system in RAM: the clock came back six months behind after a power cut, and
@@ -160,8 +160,8 @@ What the bring-up taught, each point seen on the frame:
   (try.sh --flash) go that way; boot is then written by Linux on /dev/mmcblk0 once the layout's
   addressing is proved (U-Boot's head where layout.txt says, boot's `ANDROID!` header), read back
   and compared. The loader stays the way back.
-- The boot pictures (splash.py): U-Boot draws nothing (the screen is black for about 2 s). As soon
-  as the panel is up the initramfs draws Synthèse's mark on /dev/fb0, then, the system mounted,
+- The boot pictures (splash.py): U-Boot draws Synthèse's mark, and the initramfs the same on
+  /dev/fb0 as soon as Linux has the panel, then, the system mounted,
   Maison's mark with a ring turning under it (loader.c, a static binary, outliving the initramfs)
   until `maison-ui` starts. The kernel has no console on the panel: no text at boot, the log stays
   in the journal. A line appears only on failure (« Système introuvable… »).

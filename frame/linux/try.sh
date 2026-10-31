@@ -2,7 +2,7 @@
 # The frame's mainline system, updated: Linux boots by default (the `boot` slot; the vendor's
 # Android sits in `recovery`, for the record). With --install the system (rootfs.squashfs) goes to
 # userdata from Linux itself over the Wi-Fi (install.sh: its SHA-256 checked over the USB
-# console); with --flash the kernel image (frame/build/boot-linux.img: image.py --slot boot) is
+# console); with --flash the kernel image (frame/build/boot-linux.img: image.py) is
 # written to `boot`: from Linux itself when it is up (sent over the Wi-Fi, the eMMC's addressing
 # proved first by reading U-Boot's head where layout.txt says and finding boot's header, then
 # written, read back and compared), else from the loader (rkwrite.py; the reset pinhole, as
@@ -64,7 +64,7 @@ if $ram; then
 	c 'systemctl kexec' 10 || true
 	wait_for "the console to go" 60 no_console
 elif $flash && console; then
-	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
+	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py first" >&2; exit 1; }
 	boot=$(start_of mmcblk0p5) uboot=$(start_of mmcblk0p1)
 	sectors=$(($(wc -c <"$IMG") / 512))
 	[ "$sectors" -le "$(size_of mmcblk0p5)" ] || { echo "$IMG: $sectors sectors, boot holds $(size_of mmcblk0p5)" >&2; exit 1; }
@@ -85,7 +85,7 @@ elif $flash && console; then
 	c 'rm -f /tmp/boot-linux.img; systemctl reboot' 10 || true
 	wait_for "the console to go" 60 no_console
 elif $flash; then
-	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
+	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py first" >&2; exit 1; }
 	step "the loader: power off, hold the reset pinhole, power on with the USB-C on this machine"
 	wait_for "the loader" 300 loader
 	step "writing $(basename "$IMG") to boot (about 1 min)"

@@ -408,8 +408,8 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 - Mainline: Maison's address is root's, `/android-data/maison/target` (0600), what the units
   load as their `target` credential, from the first setup or adopted once from Android's
   shell-writable `/data/local/tmp/maison/target`. To change it, remove root's copy first.
-- Linux boots by default from `boot` (14 MiB: our image without the vendor's logo, `image.py
-  --slot boot`; the screen stays black until Linux lights it); Android sits in `recovery`. A new
+- Linux boots by default from `boot` (14 MiB, `image.py`: the vendor's resource with our logo for
+  U-Boot, our device tree appended to the zImage); Android sits in `recovery`. A new
   system goes to a slot over the Wi-Fi (`try.sh --install`, checked and tried); a new kernel to
   `boot` from Linux, else the loader (`try.sh --flash`). No battery: timesyncd's clock is
   kept on userdata, and the app never waits for NTP. SSH by certificate; the journal kept on userdata (`/var/log/journal`, one machine id from the eMMC's serial); the
