@@ -8,29 +8,39 @@
 # /data/maison/target (what the units read) and removes it, but only while root keeps none: to
 # change it later, remove root's first from the mainline console
 # (`frame/linux/console.sh 'rm /android-data/maison/target'`), then --target again and reboot.
-# Usage: frame/linux/install.sh [--target https://home.example]
+# Usage: frame/linux/install.sh [--kernel]       from Linux, an update
+#        frame/linux/install.sh [--target https://home.example]   from Android, the first install
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 IMG="$REPO/frame/build/buildroot/rootfs.squashfs"
 DIR=/data/local/tmp/maison
+DATA=/android-data/local/tmp/maison
 SERIAL="${ANDROID_SERIAL:-}"
 a() { adb ${SERIAL:+-s "$SERIAL"} "$@"; }
 
 [ -f "$IMG" ] || { echo "no $IMG: frame/linux/buildroot.sh first" >&2; exit 1; }
 
-# Linux up: the frame takes the image itself, over the Wi-Fi (send.sh: the SHA-256 checked over
-# the console before the rename); Android is not needed
-# (it sits in the recovery slot since Linux boots by default).
+# Linux up: the update goes to the slot not in use, over the Wi-Fi (send.sh: the SHA-256 checked
+# before the rename), to be tried at the next boot (initramfs.py, maison-commit). --kernel sends
+# this build's kernel with it; without it, the slot runs on what boots it. Android is not needed.
 if "$REPO/frame/linux/console.sh" true 10 >/dev/null 2>&1; then
-	[ -z "${1:-}" ] || { echo "--target: from Linux, write root's /android-data/maison/target over the console" >&2; exit 2; }
-	there=/android-data${DIR#/data}/rootfs.squashfs
-	if [ "$("$REPO/frame/linux/console.sh" "sha256sum $there 2>/dev/null | cut -c1-64" 120)" = "$(shasum -a 256 "$IMG" | cut -c1-64)" ]; then
-		echo "system: $there already this one"
-		exit 0
+	case "${1:-}" in "" | --kernel) ;; *) echo "$1: from Linux, only --kernel" >&2; exit 2 ;; esac
+	c() { "$REPO/frame/linux/console.sh" "$@"; }
+	slots=/android-data/maison/slots
+	# the first update makes the slots of what is installed
+	c "[ -s $slots/state ] || { mkdir -p $slots/a && chmod 700 $slots && mv $DATA/rootfs.squashfs $slots/a/ && printf 'active=a\npending=\ntries=0\n' >$slots/state; sync; }" 30
+	active=$(c "sed -n 's/^active=//p' $slots/state" 20)
+	case "$active" in a) slot=b ;; b) slot=a ;; *) echo "no slot active: $active" >&2; exit 1 ;; esac
+	c "rm -rf $slots/$slot; mkdir -p $slots/$slot; sync" 20
+	"$REPO/frame/linux/send.sh" "$IMG" "$slots/$slot/rootfs.squashfs"
+	if [ "${1:-}" = --kernel ]; then
+		"$REPO/frame/linux/send.sh" "$REPO/frame/build/linux/zImage" "$slots/$slot/zImage"
+		"$REPO/frame/linux/send.sh" "$REPO/frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb" "$slots/$slot/board.dtb"
+		"$REPO/frame/linux/send.sh" "$REPO/frame/build/linux-initramfs.cpio.gz" "$slots/$slot/initramfs.cpio.gz"
 	fi
-	"$REPO/frame/linux/send.sh" "$IMG" "$there"
-	echo "system: $there, at the next boot"
+	c "printf 'active=$active\npending=$slot\ntries=2\n' >$slots/state.new && sync && mv $slots/state.new $slots/state && sync" 20
+	echo "system: slot $slot, tried at the next boot"
 	exit 0
 fi
 

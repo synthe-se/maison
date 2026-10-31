@@ -3,11 +3,9 @@
 // small proxy, everything else goes to the backend. The app pairs as a wall screen (its code
 // given from an admin's phone), shows the house, and a finger acts on it: a lamp toggled, its
 // brightness slid, a plug turned off, a shutter closed, the column scrolled. Its own window is
-// nowhere (SDL's dummy driver, software rendering). `FRAME_SIM=armv7` runs the frame's own
-// binary instead, on the frame's system emulated, under cage, its GLES 2 from Mesa
-// (frame/ui/simulate.sh): slower, the waits are longer. Pictures land in SHOTS.
+// nowhere (SDL's dummy driver, software rendering). Pictures land in SHOTS.
 //
-// Needs: `cargo build --manifest-path frame/ui/Cargo.toml` (or `frame/ui/build.sh` for armv7).
+// Needs: `cargo build --manifest-path frame/ui/Cargo.toml`.
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -19,10 +17,8 @@ import { LAMP_LIMIT_MS } from '../web/src/lib/paces.ts';
 import { PAIRING_CODE, SHOTS, BASE, check, done, fr, launch, open, pairScreen, removeScreen, signIn, until } from './lib.ts';
 import { house } from './house.ts';
 
-const ARMV7 = process.env.FRAME_SIM === 'armv7';
-const APP = new URL(ARMV7 ? '../frame/ui/simulate.sh' : '../frame/ui/target/debug/maison-frame-ui', import.meta.url).pathname;
+const APP = new URL('../frame/ui/target/debug/maison-frame-ui', import.meta.url).pathname;
 /** Emulated, every wait is this many times longer. */
-const SLOW = ARMV7 ? 4 : 1;
 const { state, answer } = house();
 
 /** Every read the house answered for the app, when it was asked and once it was answered: what
@@ -34,7 +30,7 @@ const readSince = (path: string, since: number, times = 1) =>
 /** Waits for the app to read `path` again: answered once more after now. */
 const readAgain = (path: string, timeout = 15_000) => {
 	const now = Date.now();
-	return until(() => readSince(path, now), timeout * SLOW);
+	return until(() => readSince(path, now), timeout);
 };
 
 /** How many event streams the backend opened for the app (a 200 on GET /api/events). */
@@ -93,8 +89,7 @@ const stateDir = mkdtempSync(join(tmpdir(), 'maison-frame-'));
 const app = spawn(APP, [], {
 	env: {
 		...process.env,
-		// from the container, the host is host.docker.internal
-		MAISON_TARGET: `http://${ARMV7 ? 'host.docker.internal' : 'localhost'}:${port}`,
+		MAISON_TARGET: `http://localhost:${port}`,
 		MAISON_STATE: stateDir,
 		MAISON_LANG: 'fr',
 		MAISON_WINDOW: '800x1280',
@@ -122,14 +117,14 @@ process.on('exit', end);
 async function tell(command: string, answered = (l: string) => l === `ok ${command}` || l.startsWith(`error ${command}`)) {
 	const from = said.length;
 	app.stdin!.write(command + '\n');
-	await until(() => said.slice(from).some(answered) || gone, 10_000 * SLOW);
+	await until(() => said.slice(from).some(answered) || gone, 10_000);
 	const line = said.slice(from).find(answered);
 	if (!line || line.startsWith('error')) throw new Error(`${command}: ${line ?? 'no answer'}`);
 }
 /** Tells `command` once its control is drawn: a read answered is not yet a drawing (emulated, the
  * app takes its time), so a « no control » or « no slider » is asked again, within tell's wait. */
 async function shown(command: string) {
-	const deadline = Date.now() + 10_000 * SLOW;
+	const deadline = Date.now() + 10_000;
 	for (;;) {
 		try {
 			return await tell(command);
@@ -140,13 +135,13 @@ async function shown(command: string) {
 	}
 }
 async function saidLine(pred: (l: string) => boolean, timeout = 10_000) {
-	await until(() => said.some(pred) || gone, timeout * SLOW);
+	await until(() => said.some(pred) || gone, timeout);
 	return said.some(pred);
 }
 let shots = 0;
 async function picture(name: string) {
 	if (!SHOTS) return;
-	const path = `${process.cwd()}/${SHOTS}/frame${ARMV7 ? '-armv7' : ''}-${++shots}-${name}.png`;
+	const path = `${process.cwd()}/${SHOTS}/frame-${++shots}-${name}.png`;
 	await tell(`shot ${path}`, (l) => l === `shot ${path}`);
 }
 
@@ -165,16 +160,16 @@ await pairScreen(phone, code, 'Cadre natif');
 
 // it opens by itself, and reads the house
 check('paired, the app shows the house', await saidLine((l) => l === 'screen house', 15_000));
-check('paired, it follows the server’s changes at once', await until(() => streamsOpened === 1, 3_000 * SLOW), `${streamsOpened} opened`);
+check('paired, it follows the server’s changes at once', await until(() => streamsOpened === 1, 3_000), `${streamsOpened} opened`);
 check(
 	'it reads the lamps, the plugs, the shutters and Tempo',
-	await until(() => ['/api/hue-lamps', '/api/meross', '/api/matter/covers'].every((p) => state.asked.includes(p)), 10_000 * SLOW),
+	await until(() => ['/api/hue-lamps', '/api/meross', '/api/matter/covers'].every((p) => state.asked.includes(p)), 10_000),
 	state.asked.join(' ')
 );
 // the plug's power answered, and the app on to its next read: what it read is on screen
-await until(() => readSince('/api/meross/plug-1/electricity', 0), 10_000 * SLOW);
+await until(() => readSince('/api/meross/plug-1/electricity', 0), 10_000);
 const after = reads.length;
-await until(() => reads.slice(after).some((r) => r.answered), 10_000 * SLOW);
+await until(() => reads.slice(after).some((r) => r.answered), 10_000);
 await picture('house');
 
 // Tempo's page, from its tile, and back
@@ -191,20 +186,20 @@ await picture('litter-box');
 await tell('press tuya:litter-1:connection');
 check(
 	'its connection switch reconnects it',
-	await until(() => state.sent.some((s) => s.startsWith('POST /api/devices/litter-1/connect')), 5_000 * SLOW),
+	await until(() => state.sent.some((s) => s.startsWith('POST /api/devices/litter-1/connect')), 5_000),
 	state.sent.join(' | ')
 );
 const houses = said.filter((l) => l === 'screen house').length;
 await tell('press open:house');
-check('and back to the house', await until(() => said.filter((l) => l === 'screen house').length > houses, 10_000 * SLOW));
+check('and back to the house', await until(() => said.filter((l) => l === 'screen house').length > houses, 10_000));
 
 // a finger: the lamp off, its brightness, the plug, the shutter
-const sent = (want: string) => until(() => state.sent.some((s) => s.startsWith(want)), 5_000 * SLOW);
+const sent = (want: string) => until(() => state.sent.some((s) => s.startsWith(want)), 5_000);
 await tell('press hue-lamp:hue-01:power');
 check('a tap on the lamp’s icon turns it off', await sent('POST /api/hue-lamps/hue-01/power {"enabled":false}'), state.sent.join(' | '));
 await tell('press hue-lamp:hue-01:power');
 check('and on again', await sent('POST /api/hue-lamps/hue-01/power {"enabled":true}'));
-await until(() => state.hue[0].state.isOn, 5_000 * SLOW);
+await until(() => state.hue[0].state.isOn, 5_000);
 // the next read of the lamps shows it on, with its slider
 check('the app reads the lamp on again', await readAgain('/api/hue-lamps'));
 await shown('slide hue-lamp:hue-01:brightness 0.25');
@@ -230,7 +225,7 @@ await tell('press hue-lamp:hue-01:power');
 // past the lamps' limit the app gives up on its own: its next read of them after the limit has
 // it drawn « Pas de réponse » (the same limit as the web app's, paces.ts)
 const pressed = Date.now();
-await until(() => readSince('/api/hue-lamps', pressed + LAMP_LIMIT_MS * SLOW), 15_000 * SLOW);
+await until(() => readSince('/api/hue-lamps', pressed + LAMP_LIMIT_MS), 15_000);
 await picture('no-answer');
 state.silent.delete('hue');
 

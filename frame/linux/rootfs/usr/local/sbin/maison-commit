@@ -1,0 +1,35 @@
+#!/bin/sh
+# An update on trial (frame/linux/initramfs.py) becomes the system once the frame proves itself:
+# the interface up without a restart, the network, SSH, held 45 s. Else, after 150 s, a restart:
+# its tries spent, the initramfs goes back to the system before it.
+set -eu
+state=/android-data/maison/slots/state
+[ -s "$state" ] || exit 0
+value() { sed -n "s/^$1=//p" "$state"; }
+pending=$(value pending)
+[ -n "$pending" ] || exit 0
+
+healthy() {
+	[ "$(systemctl is-active maison-ui)" = active ] &&
+		[ "$(systemctl show -p NRestarts --value maison-ui)" = 0 ] &&
+		[ "$(systemctl is-active sshd)" = active ] &&
+		ip route | grep -q '^default'
+}
+
+held=0 waited=0
+while [ "$waited" -lt 150 ]; do
+	if healthy; then held=$((held + 5)); else held=0; fi
+	if [ "$held" -ge 45 ]; then
+		printf 'active=%s\npending=\ntries=0\n' "$pending" >"$state.new"
+		sync
+		mv "$state.new" "$state"
+		sync
+		kill "$(pidof maison-guard)" 2>/dev/null || true
+		echo "update: slot $pending is the system"
+		exit 0
+	fi
+	sleep 5
+	waited=$((waited + 5))
+done
+echo "update: slot $pending not healthy: restarting" >&2
+systemctl reboot

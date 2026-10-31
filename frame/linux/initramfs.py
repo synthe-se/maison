@@ -1,11 +1,12 @@
-"""The mainline boot's initramfs: its /init (mksh) makes the USB-C port a serial console (CDC ACM:
-/dev/cu.usbmodem* on macOS), draws the boot picture, says in the kernel's log what came up (the
-display, the touch, the eMMC, the SDIO card, the Wi-Fi interface), then starts the system from
-Android's userdata. It writes to the eMMC only there: the top directory made root's (Android's
+"""The mainline boot's initramfs: its /init (mksh) draws the boot picture, says in the kernel's log
+what came up (the display, the touch, the eMMC, the SDIO card, the Wi-Fi interface), chooses a slot
+(an update on trial, a rollback, its kernel by kexec) and starts its system from Android's
+userdata. It writes to the eMMC only there: the top directory made root's (Android's
 init gives it back at its own boots; a directory another owner holds above the journal, systemd
 refuses to fix), and Maison's address, adopted once from where install.sh can leave it (Android's
-shell-writable /data/local/tmp) into root's /data/maison (the units' `target` credential). With --debug (bring-up), it first blinks the backlight five times (a
-sign with no console at all, ~10 s) and waits 8 s before saying what came up. Tools:
+shell-writable /data/local/tmp) into root's /data/maison (the units' `target` credential). With --debug (bring-up), it makes the USB-C port a root serial console
+(CDC ACM: /dev/cu.usbmodem* on macOS), blinks the backlight five times (a sign with no console at
+all, ~10 s) and waits 8 s before saying what came up. Tools:
 rescue-tools.sh's static mksh and toybox; the touch firmware extracted from the vendor kernel
 (~/maison-frame/recon, never in the repo).
 
@@ -40,6 +41,26 @@ done
 # --debug: what came up is said once everything had its time; else once the display says its
 # state (bounded: a panel that never probes is said as such)
 SETTLE_DEBUG = "sleep 8"
+# --debug: a root shell on the USB-C port (CDC ACM). Never in a product's boot: whoever holds a cable
+# would have root
+CONSOLE = """# 2. a serial console on the USB-C port
+g=/sys/kernel/config/usb_gadget/maison
+mkdir -p $g/strings/0x409 $g/configs/c.1/strings/0x409 $g/functions/acm.usb0
+echo 0x1d6b >$g/idVendor
+echo 0x0104 >$g/idProduct
+echo maison-frame >$g/strings/0x409/serialnumber
+echo "Maison frame" >$g/strings/0x409/product
+echo console >$g/configs/c.1/strings/0x409/configuration
+ln -s $g/functions/acm.usb0 $g/configs/c.1/
+udc=$(ls /sys/class/udc | head -1)
+[ -n "$udc" ] && echo $udc >$g/UDC && say "USB console on $udc"
+(while [ ! -e /tmp/stop-console ]; do [ -c /dev/ttyGS0 ] && mksh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done) &
+console=$!
+"""
+HANDOVER = """	touch /tmp/stop-console
+	pkill -P $console
+	pkill -f "mksh -i"
+"""
 SETTLE = 'for _ in 1 2 3 4 5 6 7 8 9 10; do ls /sys/class/drm/*/status >/dev/null 2>&1 && break; sleep 1; done'
 
 INIT = """#!/bin/mksh
@@ -52,26 +73,12 @@ mkdir -p /tmp
 say() {{ echo "maison: $*" >/dev/kmsg; }}
 say "init up, $(uname -r)"
 {blink}
-# 1. nothing is written to the eMMC but Maison's address (5.): only read, to say what is there (the vendor's U-Boot
-#    does not resume a recovery from misc: a power cycle is Android's boot, proved on the frame)
+# 1. what is there (the vendor's U-Boot does not resume a recovery from misc: a power cycle is
+#    the boot slot's, proved on the frame)
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -b /dev/mmcblk0 ] && break; sleep 1; done
 [ -b /dev/mmcblk0 ] && say "eMMC: $(cat /sys/block/mmcblk0/size) sectors" || say "no eMMC"
 
-# 2. a serial console on the USB-C port
-g=/sys/kernel/config/usb_gadget/maison
-mkdir -p $g/strings/0x409 $g/configs/c.1/strings/0x409 $g/functions/acm.usb0
-echo 0x1d6b >$g/idVendor
-echo 0x0104 >$g/idProduct
-echo maison-frame >$g/strings/0x409/serialnumber
-echo "Maison frame" >$g/strings/0x409/product
-echo console >$g/configs/c.1/strings/0x409/configuration
-ln -s $g/functions/acm.usb0 $g/configs/c.1/
-udc=$(ls /sys/class/udc | head -1)
-[ -n "$udc" ] && echo $udc >$g/UDC && say "USB console on $udc"
-# (until /tmp/stop-console says the system's own getty takes it over)
-(while [ ! -e /tmp/stop-console ]; do [ -c /dev/ttyGS0 ] && mksh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done) &
-console=$!
-
+{console}
 # 3. what came up, in the log
 {settle}
 # the boot picture (splash.py) as soon as the framebuffer is there: the mark alone, no text
@@ -88,23 +95,65 @@ say "input: $(echo $(cat /sys/class/input/*/name 2>/dev/null))"
 say "mmc: $(echo $(ls /sys/bus/mmc/devices 2>/dev/null))"
 say "sdio: $(echo $(cat /sys/bus/sdio/devices/*/vendor /sys/bus/sdio/devices/*/device 2>/dev/null))"
 
-# 4. the Wi-Fi driver: its board support, then the driver itself, without its power save (the frame
+# 4. userdata, and which system: two slots, a and b, each a system and perhaps a kernel. An update
+#    goes to the other slot and is tried for its tries (each counted before it starts: a power cut
+#    or a crash spends one), until maison-commit says it works; tries spent, back on the slot before.
+#    A slot's kernel starts by kexec, here, before anything holds the hardware; `boot` is never
+#    written by an update, so that its kernel is what any failure comes back to
+data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
+legacy=/android-data/local/tmp/maison/rootfs.squashfs
+slots=/android-data/maison/slots
+state=$slots/state
+mkdir -p /android-data /lower /rw /newroot
+key() {{ sed -n "s/^$1=//p" $state; }}
+remember() {{ printf 'active=%s\\npending=%s\\ntries=%s\\n' "$1" "$2" "$3" >$state.new && sync && mv $state.new $state && sync; }}
+mounted=
+img=$legacy
+trial=
+if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data; then
+	mounted=1
+	# after a kexec, the first kernel chose
+	slot=$(sed -n 's/.*maison\\.slot=\\([ab]\\).*/\\1/p' /proc/cmdline)
+	if [ -n "$slot" ]; then
+		[ "$(key pending)" = "$slot" ] && trial=1
+	elif [ -s $state ]; then
+		slot=$(key active) pending=$(key pending) tries=$(key tries)
+		if [ -n "$pending" ]; then
+			if [ "${{tries:-0}}" -gt 0 ]; then
+				remember "$slot" "$pending" $((tries - 1))
+				slot=$pending
+				trial=1
+				say "update: trying slot $slot"
+			else
+				say "update: slot $pending failed, back on $slot"
+				remember "$slot" "" 0
+				echo "$pending" >$slots/failed
+			fi
+		fi
+		here=$slots/$slot
+		if [ -s $here/zImage ]; then
+			[ -z "$trial" ] || maison-guard arm
+			say "kernel of slot $slot"
+			pkill maison-loader
+			line=$(sed "s/ console=tty0 .*//" /proc/cmdline)
+			sync
+			kexec -l $here/zImage --dtb=$here/board.dtb --initrd=$here/initramfs.cpio.gz --command-line="$line maison.slot=$slot" && kexec -e
+			say "kexec of slot $slot failed: its system on this kernel"
+		fi
+	fi
+	[ -z "$slot" ] || img=$slots/$slot/rootfs.squashfs
+fi
+
+# 5. the Wi-Fi driver: its board support, then the driver itself, without its power save (the frame
 #    lives on the mains; the driver sets it whatever cfg80211's default)
 insmod /lib/modules/aic8800_bsp.ko && insmod /lib/modules/aic8800_fdrv.ko ps_on=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d /sys/class/net/wlan0 ] && break; sleep 1; done
 say "net: $(echo $(ls /sys/class/net))"
 
-# 5. the system, when Android's userdata holds one: its squashfs, read-only, a tmpfs over it, and
-#    userdata at /android-data, read-write for the kiosk's own state (/android-data/maison: its
-#    cookies, its cache); else this shell stays
-data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
-img=/android-data/local/tmp/maison/rootfs.squashfs
-# a system tried beside the installed one: kexec's maison.system=<file>, U-Boot never says it
-tried=$(sed -n 's/.*maison\\.system=\\([^ ]*\\).*/\\1/p' /proc/cmdline)
-[ -z "$tried" ] || img=/android-data/local/tmp/maison/$tried
-mkdir -p /android-data /lower /rw /newroot
-if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data && [ -f $img ] &&
-	loop=$(losetup -f) && losetup -r $loop $img && mount -t squashfs -o ro $loop /lower && mount -t tmpfs -o mode=755 tmpfs /rw &&
+# 6. the system: its squashfs, read-only, a tmpfs over it, and userdata at /android-data, read-write
+#    for what the system keeps (/android-data/maison); else the failure's line stays
+if [ -n "$mounted" ] && [ -f $img ] && loop=$(losetup -f) && losetup -r $loop $img && mount -t squashfs -o ro $loop /lower &&
+	mount -t tmpfs -o mode=755 tmpfs /rw &&
 	mkdir -p /rw/upper /rw/work && mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot; then
 	say "system: $img"
 	chown 0:0 /android-data
@@ -124,16 +173,13 @@ if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data |
 	[ -s $kept ] || say "address: none yet (install.sh --target)"
 	mkdir -p /newroot/android-data
 	mount --move /android-data /newroot/android-data
-	# the system's own getty takes the USB console: the loop is told first, so the shell it runs,
-	# ended now, is not started again
-	# (never waited for: whatever happens to it, the system starts)
-	touch /tmp/stop-console
-	pkill -P $console
-	pkill -f "mksh -i"
-	for m in dev proc sys; do mount --move /$m /newroot/$m; done
+	[ -z "$trial" ] || maison-guard 240 &
+{handover}	for m in dev proc sys; do mount --move /$m /newroot/$m; done
 	exec switch_root /newroot /sbin/init
 fi
-say "no system on userdata: the bring-up shell stays"
+say "no system: $img"
+# an update that cannot even start spends its try here
+[ -z "$trial" ] || reboot -f
 pkill maison-loader
 show missing
 while :; do sleep 3600; done
@@ -145,6 +191,8 @@ def init(debug: bool) -> str:
     ground, ink = splash.colours()
     return INIT.format(
         blink=BLINK if debug else "",
+        console=CONSOLE if debug else "",
+        handover=HANDOVER if debug else "",
         settle=SETTLE_DEBUG if debug else SETTLE,
         stride=splash.STRIDE,
         row=splash.STRIP_ROW,
@@ -167,7 +215,8 @@ def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
     add("init", init(debug).encode(), 0o100755)
     add("bin/mksh", (tools / "mksh").read_bytes(), 0o100755)
     add("bin/toybox", (tools / "toybox").read_bytes(), 0o100755)
-    add("bin/maison-loader", (tools / "maison-loader").read_bytes(), 0o100755)
+    for tool in ("maison-loader", "maison-guard", "kexec"):
+        add(f"bin/{tool}", (tools / tool).read_bytes(), 0o100755)
     for applet in (tools / "applets.txt").read_text().split():
         if applet not in ("mksh", "toybox", "sh"):
             add(f"bin/{applet}", b"toybox", 0o120777)

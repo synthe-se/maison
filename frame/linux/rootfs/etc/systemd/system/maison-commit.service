@@ -1,0 +1,13 @@
+# An update on trial made the system, or sent back (usr/local/sbin/maison-commit). Nothing to do
+# when none is on trial.
+[Unit]
+Description=An update proving itself
+RequiresMountsFor=/android-data
+After=maison-ui.service sshd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/maison-commit
+
+[Install]
+WantedBy=multi-user.target

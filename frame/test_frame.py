@@ -242,10 +242,33 @@ class Initramfs(unittest.TestCase):
         # before the system starts
         self.assertLess(boot.index("rm -f $left"), boot.index("switch_root"))
         units = HERE / "linux/rootfs/etc/systemd/system"
-        for unit in ("maison-ui.service", "maison-kiosk.service"):
-            text = (units / unit).read_text()
-            self.assertIn("LoadCredential=target:/android-data/maison/target\n", text)
-            self.assertNotIn("local/tmp", text.split("LoadCredential=")[1])
+        text = (units / "maison-ui.service").read_text()
+        self.assertIn("LoadCredential=target:/android-data/maison/target\n", text)
+        self.assertNotIn("local/tmp", text.split("LoadCredential=")[1])
+
+    def test_no_root_console_but_in_a_bring_up_image(self):
+        boot, debug = initramfs.init(False), initramfs.init(True)
+        for shell in ("ttyGS0", "usb_gadget", "mksh -i"):
+            self.assertNotIn(shell, boot)
+            self.assertIn(shell, debug)
+
+    def test_a_try_is_counted_before_it_starts_and_a_spent_update_goes_back(self):
+        boot = initramfs.init(False)
+        # the shell gets its escapes: two arguments to printf and sed read as written
+        self.assertIn("printf 'active=%s\\npending=%s\\ntries=%s\\n'", boot)
+        self.assertIn(r"sed -n 's/.*maison\.slot=\([ab]\).*/\1/p' /proc/cmdline", boot)
+        # counted, then chosen; an update out of tries leaves the active slot
+        self.assertLess(boot.index('remember "$slot" "$pending" $((tries - 1))'), boot.index("slot=$pending"))
+        self.assertIn('remember "$slot" "" 0', boot)
+        self.assertIn('echo "$pending" >$slots/failed', boot)
+        # the state written whole: to a new file, synced, renamed
+        self.assertIn("mv $state.new $state && sync", boot)
+        # a slot's kernel before the Wi-Fi holds its hardware; watched on trial, and a system that
+        # cannot start spends its try
+        self.assertLess(boot.index("kexec -l"), boot.index("insmod"))
+        self.assertLess(boot.index("maison-guard arm"), boot.index("kexec -l"))
+        self.assertLess(boot.index("maison-guard 240"), boot.index("switch_root"))
+        self.assertLess(boot.index("switch_root"), boot.index("reboot -f"))
 
 
 if __name__ == "__main__":

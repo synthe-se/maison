@@ -60,7 +60,6 @@ families/        now, scenes, tempo, lamps (Hue + Zigbee), cats, climate, shutte
 ui/              gfx, icon, model, layout (dashboard measures, measuring pass, column balance,
                  strip folding), bricks, screens, slider, touch
 sim.rs           stdin driver for simulations (MAISON_STDIN=1)
-simulate.sh sim/ the armv7 binary on the frame's userland under qemu
 ```
 
 Home layout = the web dashboard's `.dashboard`: groups in balanced columns ≥ 22rem (two on the
@@ -85,5 +84,3 @@ the keymap.
 - `e2e/frame.ts` (in `bun run all`): real backend, simulated house behind a proxy, paired from a
   browser, then driven (lamp, slider, AC, plug, shutter, Tempo page, the litter box's page, a lamp that never answers,
   removal); checks the event stream opens once at pairing and stays open. Shots in `e2e/shots`.
-- `FRAME_SIM=armv7`: the same scenario on the armv7 binary in Debian trixie armhf under qemu,
-  headless cage, llvmpipe.

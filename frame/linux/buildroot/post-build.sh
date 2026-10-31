@@ -17,8 +17,6 @@ sed -i '\|^/dev/root|d' "$root/etc/fstab"
 sed -i '/kernel.sysrq/d' "$root/usr/lib/sysctl.d/50-default.conf"
 # systemd already starts dbus-daemon as its user: asked again, it fails to drop groups and warns
 sed -i '/<user>dbus<\/user>/d' "$root/usr/share/dbus-1/system.conf"
-# cog's kiosk is not in this system
-rm -f "$root/etc/systemd/system/maison-kiosk.service" "$root/usr/local/sbin/maison-kiosk"
 # the journal on userdata, kept across power cuts (maison-timesync.service makes the directory)
 mkdir -p "$root/var/log"
 rm -rf "$root/var/log/journal"
@@ -42,10 +40,11 @@ enable sshd.service
 enable maison-ui.service
 enable maison-mac.service
 enable wpa_supplicant@.service wlan0
-enable serial-getty@.service ttyGS0
+enable maison-commit.service
 disable wpa_supplicant.service
 # no login prompt on a product, no network file systems, no firmware crash store on this board
 disable getty@.service
+disable serial-getty@.service
 disable remote-fs.target
 disable systemd-pstore.service
 PRESET
