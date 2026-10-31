@@ -1,15 +1,16 @@
 //! What the app is told at start, from its environment (the service's, or a simulation's):
 //!
-//! - Maison's address: the systemd credential `target` (`$CREDENTIALS_DIRECTORY/target`, root's
-//!   `/android-data/maison/target`: `maison-target` adopts what `install.sh --target` left),
-//!   else `MAISON_TARGET`; its fragment and path are dropped (the kiosk's `#lang=…`, an older
+//! - Maison's address: the systemd credential `target` (`$CREDENTIALS_DIRECTORY/target`,
+//!   `maison-wifi`'s `/run/maison-target`: root's `/android-data/maison/target`, set over SSH, else
+//!   the image's `/etc/maison-target`), else `MAISON_TARGET`; never typed on the frame. Its fragment and path are dropped (the kiosk's `#lang=…`, an older
 //!   target's token). HTTPS only, but for this computer (`localhost`, a loopback address) and a
 //!   simulation that says `MAISON_ALLOW_HTTP=1` (the host seen from a container): the screen's
 //!   cookie never crosses the Wi-Fi in clear;
-//! - no address at all, or `MAISON_SETUP_SSID` said (the frame lost its network and is its own
-//!   Wi-Fi; the unit's file, read as the app starts: `maison-wifi-watch` restarts it): the app
-//!   starts on its setup view, with what `MAISON_SETUP_SSID`, `MAISON_SETUP_PASSWORD` and
+//! - no address at all: the app says so. `MAISON_SETUP_SSID` said (the power key was held and the
+//!   frame is its own Wi-Fi; the unit's file, read as the app starts: `maison-hotspot` restarts it):
+//!   the app starts on its setup view, with what `MAISON_SETUP_SSID`, `MAISON_SETUP_PASSWORD` and
 //!   `MAISON_SETUP_URL` say of that Wi-Fi and its page;
+//! - `MAISON_WIFI_SOCKET`: `maison-wifid`'s socket, a simulation's fake;
 //! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
 //!   `$XDG_DATA_HOME/maison-ui`;
 //! - its language: `MAISON_LANG`, else `LANG` (`fr_FR.UTF-8`);
@@ -21,6 +22,8 @@
 
 use std::path::PathBuf;
 
+use maison_frame_tools::wifi::SOCKET;
+
 use crate::i18n::Lang;
 
 /// The frame's panel, portrait, in its pixels (the full screen's size before SDL says it).
@@ -28,9 +31,10 @@ pub const PANEL: (u32, u32) = (800, 1280);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    /// `https://maison.example` (no trailing slash); none: the setup view.
+    /// `https://maison.example` (no trailing slash); none: it says so, or the setup view.
     pub origin: Option<String>,
     pub setup: Setup,
+    pub wifi_socket: PathBuf,
     pub state_dir: PathBuf,
     pub lang: Lang,
     pub rotate: bool,
@@ -41,7 +45,7 @@ pub struct Config {
     pub heartbeat: Option<PathBuf>,
 }
 
-/// How a frame without an address is given one: its Wi-Fi and the page there, as far as told.
+/// The frame as its own Wi-Fi: that Wi-Fi and the page there, as far as told.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Setup {
     pub ssid: Option<String>,
@@ -117,6 +121,7 @@ impl Config {
         Ok(Self {
             origin,
             setup,
+            wifi_socket: env("MAISON_WIFI_SOCKET").map_or_else(|| SOCKET.into(), PathBuf::from),
             state_dir,
             lang,
             rotate,
@@ -220,6 +225,10 @@ mod tests {
         let state = ("MAISON_STATE", "/tmp/s");
         let c = Config::from(None, vars(&[state])).unwrap();
         assert_eq!((c.origin, c.setup), (None, Setup::default()));
+        assert_eq!(c.wifi_socket, PathBuf::from(SOCKET));
+        let fake = ("MAISON_WIFI_SOCKET", "/tmp/w");
+        let c = Config::from(None, vars(&[state, fake])).unwrap();
+        assert_eq!(c.wifi_socket, PathBuf::from("/tmp/w"));
         let c = Config::from(
             Some(" \n".into()),
             vars(&[

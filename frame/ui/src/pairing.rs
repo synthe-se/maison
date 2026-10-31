@@ -35,8 +35,10 @@ pub enum Screen {
     Checking,
     /// Holding its cookie, Maison silent: said calmly, asked again by itself.
     Waiting,
-    /// No Maison configured: the way to give it one.
+    /// The frame is its own Wi-Fi (the power key held): how to reach its page.
     Setup(Setup),
+    /// No Maison configured: said, it is set over SSH.
+    NoAddress,
     /// The code to give from a phone, for how many minutes it was given.
     Code { code: String, minutes: u64 },
     /// The code's time is over: a new one on a tap.

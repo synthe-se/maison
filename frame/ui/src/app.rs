@@ -25,6 +25,7 @@ use crate::ui::layout::{Hit, Over, REACH, Rect, Target};
 use crate::ui::model::{Act, Asked, Button, Screen, View};
 use crate::ui::slider::{Sliders, value_at};
 use crate::ui::touch::{Finger, Meaning, Tracked, Under};
+use crate::wifi::Wifi;
 
 /// How long a toast stays (`paces::TOAST_MS`, the web app's). A warning stays until dismissed
 /// on a page; on a wall, which nobody dismisses, `WALL_WARNING_MS`.
@@ -94,6 +95,10 @@ pub struct App {
     waking: bool,
     /// The family's photos, shown while the panel sleeps.
     photos: Photos,
+    /// The frame's network, and the screens that choose it.
+    wifi: Wifi,
+    /// The way to them, for what offers it.
+    wifi_entry: Option<Button>,
     /// The column's height and the panel's, from the last drawing.
     content: f32,
     height: f32,
@@ -118,13 +123,18 @@ impl App {
             |origin| Client::new(origin, &config.state_dir, HTTP_WAIT),
         );
         let photos = Photos::new(&client, &config.state_dir, wake.clone());
+        let wifi = Wifi::new(config.wifi_socket.clone(), wake.clone());
         let mut live = Live::new(client.clone(), wake.clone());
         let session = if config.origin.is_some() {
             // what the server says changed: read again at once, the polls a safety net
             live.listen();
             Session::start(client.clone(), wake.clone())
         } else {
-            Session::idle(Who::Setup(config.setup.clone()))
+            Session::idle(if config.setup.ssid.is_some() {
+                Who::Setup(config.setup.clone())
+            } else {
+                Who::NoAddress
+            })
         };
         Self {
             words: Words::new(config.lang),
@@ -149,6 +159,8 @@ impl App {
             backlight: Backlight::open(std::path::Path::new("/sys/class/backlight")),
             waking: false,
             photos,
+            wifi,
+            wifi_entry: None,
             content: 0.0,
             height: 0.0,
             hits: Vec::new(),
@@ -189,6 +201,9 @@ impl App {
             self.open(View::House, now);
         }
         self.photos.take();
+        let shown = self.wifi.shown();
+        changed |= self.wifi.take(now);
+        self.wifi_turned(shown, now);
         let came = self.live.take();
         changed |= came.changed;
         for (key, asked) in &came.read {
@@ -207,6 +222,18 @@ impl App {
             self.session.recheck();
         }
         self.dirty |= changed;
+    }
+
+    /// The Wi-Fi's screens came or went: what the finger held, and any question, went with what was
+    /// under them.
+    fn wifi_turned(&mut self, shown: bool, now: Instant) {
+        self.wifi_entry = self.wifi.entry(&self.words);
+        if shown != self.wifi.shown() {
+            self.scroll = 0.0;
+            self.asking = None;
+            self.end_gesture(now);
+            self.dirty = true;
+        }
     }
 
     /// A toast, until its time is over; the same words again replace it (the web app's), and
@@ -233,6 +260,12 @@ impl App {
                 self.open(View::House, now);
             }
             self.dirty |= self.asking.take().is_some() || std::mem::take(&mut self.unfolded);
+            if self.wifi.opened() {
+                let shown = self.wifi.shown();
+                self.wifi.leave(now);
+                self.wifi_turned(shown, now);
+                self.dirty = true;
+            }
         }
         if self.pressed.is_none() && self.look.is_some_and(|(_, until)| now >= until) {
             self.look = None;
@@ -299,8 +332,11 @@ impl App {
         [
             self.next_look(),
             self.toasts.iter().map(|(_, until)| *until).min(),
-            (self.view != View::House || self.asking.is_some() || self.unfolded)
-                .then(|| self.touched + PAGE_IDLE),
+            (self.view != View::House
+                || self.asking.is_some()
+                || self.unfolded
+                || self.wifi.opened())
+            .then(|| self.touched + PAGE_IDLE),
             self.backlight.next(self.touched),
             self.photos.next(now),
             self.look
@@ -373,10 +409,11 @@ impl App {
                 .look
                 .filter(|(_, until)| self.pressed.is_some() || now < *until)
                 .map(|(r, _)| r),
-            gone: self.session.screen == Who::Paired && self.live.gone(now),
+            gone: self.session.screen == Who::Paired && self.live.gone(now) && !self.wifi.shown(),
             asking: self.asking.as_ref(),
             unfolded: self.unfolded,
             flash: self.flash.map(|(id, _)| id),
+            wifi: self.wifi_entry.as_ref(),
         }
     }
 
@@ -408,8 +445,9 @@ impl App {
         };
         // the cache follows Maison's list, photos shown or not
         let list = paired.then(|| cx.live.want(&cx.sources.photos).data);
-        let (side, screen) = match (&self.session.screen, photo) {
-            (Who::Paired | Who::Waiting, Some(photo)) => {
+        let wifi = self.wifi.screen(&self.words);
+        let (side, mut screen) = match (&self.session.screen, photo, wifi) {
+            (Who::Paired | Who::Waiting, Some(photo), _) => {
                 let side = if paired {
                     families::sun_signed_in(&mut cx)
                 } else {
@@ -418,7 +456,9 @@ impl App {
                 let time = self.words.clock(cx.house_now().time());
                 (side, Screen::Photos { time, photo })
             }
-            (Who::Paired, None) => (
+            // whoever the frame is: nothing behind it can be reached without a network
+            (_, None, Some(wifi)) => (None, wifi),
+            (Who::Paired, None, None) => (
                 families::sun_signed_in(&mut cx),
                 match &self.view {
                     View::House => {
@@ -439,9 +479,12 @@ impl App {
                     View::Plug(id) => families::plugs::page(&mut cx, id),
                 },
             ),
-            (who @ Who::Setup(_), _) => (None, door(&self.words, who)),
-            (who, _) => (families::sun_signed_out(&mut cx), door(&self.words, who)),
+            (who @ (Who::Setup(_) | Who::NoAddress), ..) => (None, door(&self.words, who)),
+            (who, ..) => (families::sun_signed_out(&mut cx), door(&self.words, who)),
         };
+        if let Screen::Door { link, .. } = &mut screen {
+            *link = self.wifi_entry.clone().map(Box::new);
+        }
         self.photos.list(list.flatten());
         if side.is_some() {
             self.side = side;
@@ -525,8 +568,10 @@ impl App {
             self.photos.stop();
             self.waking = true;
             self.dirty = true;
+            self.wifi.touched(now);
             return;
         }
+        self.wifi.touched(now);
         let under = self.under(x, y);
         self.pressed = match under {
             Under::Hit(i) | Under::Slider(i) => self.hits.get(i).map(|h| (under, h.clone())),
@@ -590,6 +635,10 @@ impl App {
     /// What a finger at (x, y) would land on, by its key (a log's words).
     pub fn key_under(&self, x: f32, y: f32) -> String {
         match self.under(x, y) {
+            // what a finger types stays out of the log
+            Under::Hit(i) if matches!(self.hits[i].what, Target::Act(Act::Keyboard(_))) => {
+                "a key".to_string()
+            }
             Under::Hit(i) | Under::Slider(i) => self.hits[i]
                 .what
                 .key()
@@ -671,8 +720,19 @@ impl App {
             }
             Act::Pairing(ask) => self.session.ask(ask),
             Act::Open(view) => self.open(view, now),
+            Act::Wifi(act) => {
+                let shown = self.wifi.shown();
+                self.wifi.act(&act, now);
+                self.wifi_turned(shown, now);
+            }
+            Act::Keyboard(key) => self.wifi.key(key),
         }
         self.dirty = true;
+    }
+
+    /// A simulation's fingers on the keyboard.
+    pub fn type_text(&mut self, text: &str) {
+        self.wifi.type_text(text);
     }
 
     /// Shows `view`, from its top; a finger held on the last one holds nothing here.
@@ -714,6 +774,14 @@ fn door(w: &Words, who: &Who) -> Screen {
         Who::Setup(s) => (
             k::SCREEN_SETUP_TITLE,
             setup_lead(w, s),
+            None,
+            None,
+            None,
+            false,
+        ),
+        Who::NoAddress => (
+            k::SCREEN_NO_ADDRESS_TITLE,
+            vec![w.s(k::SCREEN_NO_ADDRESS_BODY)],
             None,
             None,
             None,
@@ -762,6 +830,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         hint,
         button,
         warn,
+        link: None,
     }
 }
 
@@ -790,7 +859,10 @@ mod tests {
     use crate::photos::decode::tests::RED;
     use crate::photos::show::FADE;
     use crate::testing::{temp_dir, wait_until};
-    use crate::ui::model::Slider;
+    use crate::ui::keyboard::Key;
+    use crate::ui::model::{Slider, WifiAct};
+    use crate::wifi::tests::fake;
+    use maison_frame_tools::wifi::Status;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -798,6 +870,7 @@ mod tests {
         Config {
             origin: Some(origin.into()),
             setup: Setup::default(),
+            wifi_socket: "/nowhere/socket".into(),
             state_dir,
             lang: Lang::Fr,
             rotate: false,
@@ -1510,6 +1583,7 @@ mod tests {
             Who::Checking,
             Who::Waiting,
             Who::Setup(Setup::default()),
+            Who::NoAddress,
             Who::Code {
                 code: "ABCD-2345".into(),
                 minutes: 10,
@@ -1543,8 +1617,184 @@ mod tests {
         assert!(button.is_none() && !warn, "calm, and nothing to do");
     }
 
+    /// An app whose `maison-wifid` is `f`, once it heard that the frame is `status`.
+    fn with_wifi(name: &str, f: &crate::wifi::tests::Fake, status: Status) -> App {
+        *f.status.lock().unwrap() = status;
+        let mut c = config("http://127.0.0.1:9", temp_dir(name));
+        c.wifi_socket = f.socket.clone();
+        let mut app = App::new(&c, Arc::new(|| {}));
+        wait_until(|| {
+            app.take();
+            app.wifi_entry.is_some()
+        });
+        app
+    }
+
+    fn lost() -> Status {
+        Status {
+            configured: true,
+            lost: true,
+            ..Status::default()
+        }
+    }
+
+    fn on_a_network() -> Status {
+        Status {
+            connected: Some("Ma Box".into()),
+            configured: true,
+            ..Status::default()
+        }
+    }
+
     #[test]
-    fn without_a_target_the_app_starts_on_its_setup_view() {
+    fn a_frame_that_lost_its_network_shows_its_wifi_whoever_it_is_and_nothing_over_it() {
+        let f = fake();
+        let mut app = with_wifi("app-wifi", &f, lost());
+        app.session = Session::idle(Who::Paired);
+        let t0 = Instant::now();
+        assert!(matches!(app.screen(t0), Screen::Wifi { .. }));
+        assert!(!app.over(t0).gone, "no band over the keyboard");
+        app.session = Session::idle(Who::Expired);
+        assert!(matches!(app.screen(t0), Screen::Wifi { .. }));
+        // the network is back: the house, by itself
+        *f.status.lock().unwrap() = on_a_network();
+        app.session = Session::idle(Who::Paired);
+        wait_until_status(&mut app);
+        assert!(matches!(app.screen(t0), Screen::House { .. }));
+    }
+
+    /// The thread's next word, at its own 15 s pace: a rescan asks it at once.
+    fn wait_until_status(app: &mut App) {
+        let now = Instant::now();
+        app.act(Act::Wifi(WifiAct::Rescan), now);
+        wait_until(|| {
+            app.take();
+            !app.wifi.shown()
+        });
+    }
+
+    #[test]
+    fn every_door_offers_the_wifi_but_the_frames_own_and_a_house_that_answers_does_not() {
+        let f = fake();
+        let mut app = with_wifi("app-wifi-door", &f, on_a_network());
+        app.session = Session::idle(Who::Waiting);
+        let t0 = Instant::now();
+        let link = |s: Screen| match s {
+            Screen::Door { link, .. } => link.map(|b| b.act),
+            _ => panic!("a door"),
+        };
+        let open = link(app.screen(t0)).unwrap();
+        app.session = Session::idle(Who::NoAddress);
+        assert!(link(app.screen(t0)).is_some());
+        assert!(app.over(t0).wifi.is_some());
+        app.act(open, t0);
+        assert!(matches!(app.screen(t0), Screen::Wifi { .. }));
+        // the way back, to the door it left
+        app.act(Act::Wifi(WifiAct::Back), t0);
+        assert!(matches!(app.screen(t0), Screen::Door { .. }));
+        // without a service, nothing to offer
+        let mut plain = alone();
+        plain.session = Session::idle(Who::Waiting);
+        assert!(link(plain.screen(t0)).is_none());
+    }
+
+    #[test]
+    fn a_hand_on_the_wifi_is_let_go_after_a_pages_time_with_what_it_typed() {
+        let f = fake();
+        let mut app = with_wifi("app-wifi-idle", &f, on_a_network());
+        app.session = Session::idle(Who::Waiting);
+        let t0 = app.touched;
+        app.act(Act::Wifi(WifiAct::Open), t0);
+        let choose = WifiAct::Choose {
+            ssid: "Autre".into(),
+            locked: true,
+        };
+        app.act(Act::Wifi(choose), t0);
+        app.type_text("sel de mer");
+        assert!(matches!(app.screen(t0), Screen::Password(_)));
+        assert_eq!(app.next_wake(t0), Some(t0 + PAGE_IDLE));
+        app.tick(t0 + PAGE_IDLE);
+        assert!(app.dirty);
+        assert!(matches!(app.screen(t0), Screen::Door { .. }));
+        assert!(!app.wifi.opened(), "nothing else to wait for");
+    }
+
+    #[test]
+    fn the_keys_a_finger_presses_are_typed_and_never_logged() {
+        let f = fake();
+        let mut app = with_wifi("app-wifi-key", &f, on_a_network());
+        let t0 = app.touched;
+        app.act(Act::Wifi(WifiAct::Open), t0);
+        let choose = WifiAct::Choose {
+            ssid: "Autre".into(),
+            locked: true,
+        };
+        app.act(Act::Wifi(choose), t0);
+        let key = Key::Char('a');
+        app.drawn(
+            drawing(vec![hit_of(Target::Act(Act::Keyboard(key)))], 1280.0),
+            1280.0,
+        );
+        assert_eq!(app.key_under(150.0, 120.0), "a key");
+        assert_eq!(
+            app.center_of("kb:a"),
+            Some((250.0, 130.0)),
+            "a simulation's"
+        );
+        let t1 = t0 + Duration::from_millis(1);
+        app.finger_down(150.0, 120.0, t1);
+        app.finger_up(150.0, 120.0, t1 + FRAME);
+        let Screen::Password(p) = app.screen(t1) else {
+            panic!("the password")
+        };
+        assert_eq!(p.field, "•");
+    }
+
+    #[test]
+    fn nobody_there_the_photos_go_on_over_a_lost_network_and_a_finger_finds_the_wifi() {
+        let f = fake();
+        let dir = temp_dir("app-wifi-photos");
+        Cache::new(&dir).save(&photo_id(1), RED).unwrap();
+        *f.status.lock().unwrap() = lost();
+        let mut c = config("http://127.0.0.1:9", dir);
+        c.wifi_socket = f.socket.clone();
+        let mut app = App::new(&c, Arc::new(|| {}));
+        wait_until(|| {
+            app.take();
+            app.wifi.shown()
+        });
+        app.session = Session::idle(Who::Waiting);
+        let asleep = app.touched + crate::backlight::DIM_AFTER;
+        photos_on(&mut app, asleep);
+        assert!(matches!(app.screen(asleep), Screen::Photos { .. }));
+        app.drawn(drawing(Vec::new(), 0.0), 1280.0);
+        let touch = asleep + Duration::from_secs(5);
+        app.finger_down(400.0, 600.0, touch);
+        app.finger_up(400.0, 600.0, touch + FRAME);
+        assert!(matches!(app.screen(touch), Screen::Wifi { .. }));
+    }
+
+    #[test]
+    fn without_a_target_and_its_own_wifi_the_app_says_so_and_never_asks_for_it() {
+        let mut c = config("", temp_dir("app-no-address"));
+        c.origin = None;
+        let mut app = App::new(&c, Arc::new(|| {}));
+        let Screen::Door {
+            title,
+            lead,
+            button,
+            ..
+        } = app.screen(Instant::now())
+        else {
+            panic!("a door")
+        };
+        assert_eq!(title, app.words.s(k::SCREEN_NO_ADDRESS_TITLE));
+        assert_eq!(lead, [app.words.s(k::SCREEN_NO_ADDRESS_BODY)]);
+        assert!(button.is_none());
+    }
+
+    #[test]
+    fn its_own_wifi_shows_the_setup_view_and_offers_no_other() {
         let mut c = config("", temp_dir("app-setup"));
         c.origin = None;
         c.setup = Setup {

@@ -4,6 +4,7 @@
 pub mod bricks;
 pub mod gfx;
 pub mod icon;
+pub mod keyboard;
 pub mod layout;
 pub mod model;
 pub mod screens;

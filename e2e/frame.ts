@@ -3,13 +3,15 @@
 // small proxy, everything else goes to the backend. The app pairs as a wall screen (its code
 // given from an admin's phone), shows the house, and a finger acts on it: a lamp toggled, its
 // brightness slid, a plug turned off, a shutter closed, the column scrolled, every device's page,
-// the remotes' keys, a reset asked first, Maison gone and back, the family's photos taking over
-// when nobody is there. Its own window is nowhere (SDL's
+// the remotes' keys, a reset asked first, Maison gone and back, the Wi-Fi lost and joined again from
+// the panel (a fake maison-wifid, the protocol of frame/tools/src/wifi.rs), the family's photos
+// taking over when nobody is there. Its own window is nowhere (SDL's
 // dummy driver, software rendering). Pictures land in SHOTS.
 //
 // Needs: `cargo build --manifest-path frame/ui/Cargo.toml`.
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import { createServer as createSocket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -160,6 +162,33 @@ const proxy = createServer(async (req, res) => {
 await new Promise<void>((r) => proxy.listen(0, r));
 const port = (proxy.address() as AddressInfo).port;
 
+// maison-wifid, faked: what the app reads over its socket, what it asked
+type Join = { state: 'idle' } | { state: 'joining' | 'joined'; ssid: string } | { state: 'failed'; ssid: string; why: 'password' };
+const wifi = {
+	status: { connected: 'Salon' as string | null, configured: true, lost: false, hotspot: false, join: { state: 'idle' } as Join },
+	networks: [
+		{ ssid: 'Salon', signal: -48, locked: true, current: false },
+		{ ssid: 'Voisin', signal: -82, locked: false, current: false }
+	],
+	joins: [] as { ssid: string; password: string | null }[]
+};
+const wifiDir = mkdtempSync(join(tmpdir(), 'mw-'));
+const wifiSocket = join(wifiDir, 's');
+const wifiService = createSocket((c) => {
+	c.once('data', (line) => {
+		const asked = JSON.parse(line.toString());
+		if (asked.op === 'connect') wifi.joins.push({ ssid: asked.ssid, password: asked.password });
+		const reply =
+			asked.op === 'status'
+				? { answer: 'status', value: wifi.status }
+				: asked.op === 'list'
+					? { answer: 'networks', value: wifi.networks }
+					: { answer: 'done' };
+		c.end(`${JSON.stringify(reply)}\n`);
+	});
+});
+await new Promise<void>((r) => wifiService.listen(wifiSocket, r));
+
 // the app, its cookie in a throwaway directory, driven over stdin (sim.rs)
 const stateDir = mkdtempSync(join(tmpdir(), 'maison-frame-'));
 const app = spawn(APP, [], {
@@ -167,6 +196,7 @@ const app = spawn(APP, [], {
 		...process.env,
 		MAISON_TARGET: `http://localhost:${port}`,
 		MAISON_STATE: stateDir,
+		MAISON_WIFI_SOCKET: wifiSocket,
 		MAISON_LANG: 'fr',
 		MAISON_WINDOW: '800x1280',
 		MAISON_STDIN: '1',
@@ -185,7 +215,9 @@ app.on('exit', (code) => {
 const end = () => {
 	app.kill();
 	proxy.close();
+	wifiService.close();
 	rmSync(stateDir, { recursive: true, force: true });
+	rmSync(wifiDir, { recursive: true, force: true });
 };
 process.on('exit', end);
 
@@ -238,6 +270,12 @@ check('with a code', await saidLine((l) => l.startsWith('code ')));
 const code = said.find((l) => l.startsWith('code '))!.slice(5);
 check('the code is the backend’s kind', PAIRING_CODE.test(code), code);
 await picture('pairing');
+const keys = async () => {
+	const from = said.length;
+	await tell('keys');
+	return said.slice(from);
+};
+check('a door offers the frame’s Wi-Fi', await until(async () => (await keys()).some((l) => l.startsWith('key wifi:open ')), 20_000));
 
 // the admin pairs it from their phone, in « Mon compte »
 const browser = await launch();
@@ -391,6 +429,44 @@ await picture('gone');
 down = false;
 await tell('drag 300 1100');
 check('it comes back by itself', await until(async () => !(await noGesture()), 40_000));
+
+// the frame's Wi-Fi: 10 minutes without its network, the screen comes by itself, and a password is
+// typed on the panel
+const since = (from: number, line: string) => until(() => said.slice(from).includes(line) || gone, 20_000);
+let from = said.length;
+wifi.status = { ...wifi.status, connected: null, lost: true };
+check('the network lost, the Wi-Fi screen comes by itself', await since(from, `screen wifi ${fr.wifi_lost()}`));
+await until(async () => (await keys()).some((l) => l.startsWith('key wifi:network:Salon ')), 10_000);
+await picture('wifi-list');
+await tell('press wifi:network:Salon');
+check('a locked network asks its password', await since(from, 'screen password Salon'));
+await shown('press kb:s');
+await shown('press kb:digits');
+await shown('press kb:7');
+await shown('press kb:back');
+await picture('wifi-keyboard');
+await tell('type sel-de-mer');
+await tell('press wifi:show');
+await picture('wifi-password');
+await shown('press wifi:join');
+await until(() => wifi.joins.length === 1, 5_000);
+check('it goes as typed', wifi.joins[0]?.ssid === 'Salon' && wifi.joins[0]?.password === 'sel-de-mer', JSON.stringify(wifi.joins));
+from = said.length;
+wifi.status = { ...wifi.status, join: { state: 'failed', ssid: 'Salon', why: 'password' } };
+await shown('press wifi:rescan');
+check('a refused password is said', await since(from, `screen wifi ${fr.wifi_failed_password()}`));
+await picture('wifi-refused');
+await shown('press wifi:retry');
+check('and tried again', await since(from, 'screen password Salon'));
+await tell('type sel-de-mer-2');
+await shown('press wifi:join');
+await until(() => wifi.joins.length === 2, 5_000);
+from = said.length;
+wifi.status = { ...wifi.status, connected: 'Salon', lost: false, join: { state: 'joined', ssid: 'Salon' } };
+await until(async () => (await keys()).some((l) => l.startsWith('key wifi:back ')), 20_000);
+check('joined, it says so', said.slice(from).includes(`screen wifi ${fr.wifi_connected()}`));
+await tell('press wifi:back');
+check('and the house is back', await since(from, 'screen house'));
 
 /** What only time can show: nothing happening, a fade running. */
 const pause = (ms: number) => until(() => false, ms);

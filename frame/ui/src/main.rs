@@ -27,6 +27,7 @@ mod sim;
 mod testing;
 mod theme;
 mod ui;
+mod wifi;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -416,6 +417,8 @@ fn say_screen(screen: &Screen, said: &mut String) {
         Screen::House { .. } => "screen house".to_string(),
         Screen::Photos { photo, .. } => format!("screen photos {photo}"),
         Screen::Page { title, .. } => format!("screen page {title}"),
+        Screen::Wifi { word, .. } => format!("screen wifi {word}"),
+        Screen::Password(p) => format!("screen password {}", p.title),
         Screen::Door { title, code, .. } => match code {
             Some(c) => format!("screen door {title}\ncode {c}"),
             None => format!("screen door {title}"),

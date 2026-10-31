@@ -12,7 +12,7 @@ use crate::i18n::Words;
 use crate::theme::{self, Face, Palette, Rgba, Type, coarse, px, ty, wide};
 use crate::ui::gfx::{Draw, Error, Pen};
 use crate::ui::icon::Icon;
-use crate::ui::model::{Act, Asked, Slider};
+use crate::ui::model::{Act, Asked, Button, Slider};
 use crate::ui::slider::Sliders;
 
 /// What a finger can land on, in the panel's pixels as drawn (scroll applied).
@@ -68,6 +68,8 @@ impl Target {
             Self::Act(Act::Unfold) => Some("now:more".into()),
             Self::Slider { slider, .. } => Some(slider.key.as_str().into()),
             Self::Act(Act::Open(v)) => Some(v.key()),
+            Self::Act(Act::Wifi(w)) => Some(w.key()),
+            Self::Act(Act::Keyboard(key)) => Some(key.name().into()),
             _ => None,
         }
     }
@@ -89,6 +91,8 @@ pub struct Over<'a> {
     pub unfolded: bool,
     /// The group a chip just led to.
     pub flash: Option<&'static str>,
+    /// The way to the Wi-Fi: what Maison's silence offers.
+    pub wifi: Option<&'a Button>,
 }
 
 /// What the painter reads besides the screen.
@@ -148,6 +152,8 @@ pub const FACT_H: f32 = ty::SECONDARY.line + px::S_2;
 pub const DIALOG_W: f32 = 520.0;
 /// Icon.svelte's default size (a button's icon).
 pub const ICON: f32 = 18.0;
+/// The password's field (a door's one action's height).
+pub const FIELD_H: f32 = px::CONTROL_H_L;
 /// DeviceTile's gesture icon.
 pub const GLYPH_ICON: f32 = 22.0;
 /// The ring of a gesture's disc (DeviceTile `.gesture`: 1.5 px).
