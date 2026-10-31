@@ -1,8 +1,8 @@
 //! What changed, said to every open page and wall screen (`GET /api/events`, server-sent
 //! events; the names are `maison_api::events`): each family's own watch (the Zigbee driver's
 //! lamps, the shutters' subscriptions, Tempo's answer, each cat device's pushes, the plugs'
-//! reader, the last climate order, the remote's keys, the box's power) is followed by one task,
-//! which says the family's name on one broadcast. The data is a name, never the value: a client
+//! reader, the last climate order, the remote's keys, the box's power, the frame's photos) is
+//! followed by one task, which says the family's name on one broadcast. The data is a name, never the value: a client
 //! reads the value again through its usual route (one answer, one serialisation).
 
 use std::convert::Infallible;
@@ -62,6 +62,7 @@ impl Events {
         );
         self.follow("events: tempo", state.tempo.subscribe(), names::TEMPO);
         self.follow("events: meross", state.meross.subscribe(), names::MEROSS);
+        self.follow("events: photos", state.photos.subscribe(), names::PHOTOS);
         self.follow(
             "events: climate",
             state.broadlink.subscribe_climate(),

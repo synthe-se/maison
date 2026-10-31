@@ -42,7 +42,9 @@ const CODE_WORDS: Record<Code, () => string> = {
 	use_public_address: m.code_use_public_address,
 	cross_site: m.code_cross_site,
 	lan_only: m.code_lan_only,
-	too_large: m.code_too_large
+	too_large: m.code_too_large,
+	not_a_photo: m.code_not_a_photo,
+	too_many_photos: m.code_too_many_photos
 };
 
 /** The browser's WebAuthn refusals (DOMException names), and a renewal that got no answer. */

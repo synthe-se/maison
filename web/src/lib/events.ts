@@ -14,7 +14,8 @@ export const EVENTS = {
 	MEROSS: 'meross',
 	CLIMATE: 'broadlink:climate-state',
 	IR_KEYS: 'ir:recent',
-	ANDROID_TV: 'androidtv'
+	ANDROID_TV: 'androidtv',
+	PHOTOS: 'photos'
 } as const;
 
 /** The prefix a pushed source's key starts with. */

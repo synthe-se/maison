@@ -77,6 +77,9 @@ paces! {
     /// The scenes change only from their editor, which reads them again (the web app never
     /// polls them); a wall screen has no editor: it reads them again this often.
     SCENES_MS = 60 * 60_000;
+    /// The frame's photos: the server says when they change; a frame reads the list this often
+    /// all the same (the web app reads it from its page alone).
+    PHOTOS_MS = 10 * 60_000;
     /// A gesture with no answer after this says it is slow (« Allumage… »).
     COMMAND_SLOW_MS = 1_000;
     /// How long a lamp may take to answer before « Pas de réponse ».

@@ -35,6 +35,8 @@ events! {
     IR_KEYS = "ir:recent";
     /// The Android TV box (its power).
     ANDROID_TV = "androidtv";
+    /// The frame's photos (one added, one removed).
+    PHOTOS = "photos";
 }
 
 /// What every cats' device's event (and `live()` key) starts with.

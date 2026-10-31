@@ -9,6 +9,7 @@ pub mod matter;
 pub mod meross;
 pub mod nabaztag;
 pub mod passkeys;
+pub mod photos;
 pub mod root;
 pub mod scenes;
 pub mod screens;

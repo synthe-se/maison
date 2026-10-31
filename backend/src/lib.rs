@@ -24,6 +24,7 @@ pub mod net;
 pub mod passkey;
 pub mod people;
 pub mod philips_ir;
+pub mod photos;
 pub mod routes;
 pub mod scenes;
 pub mod screens;
@@ -55,6 +56,7 @@ use meross::MerossManager;
 use nabaztag::NabaztagManager;
 use passkey::{Limiter, PasskeyState};
 use people::People;
+use photos::PhotosManager;
 use scenes::ScenesManager;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
@@ -82,6 +84,7 @@ pub struct AppState {
     pub(crate) matter: MatterManager,
     pub(crate) meross: MerossManager,
     pub(crate) nabaztag: NabaztagManager,
+    pub(crate) photos: PhotosManager,
     pub(crate) tempo: TempoService,
     pub(crate) tuya: TuyaManager,
     pub(crate) tv: TvManager,
@@ -112,6 +115,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         &config.nabaztag_config_path,
         config.nabaztag_host.as_deref(),
     )?;
+    let photos = PhotosManager::new(&config.photos_dir);
     let tempo = TempoService::from_config(&config)?;
     let tuya = TuyaManager::new(&config.devices_path, &config.device_cache_path)?;
     let tv = TvManager::new(&config.tv_config_path, broadlink.clone())?;
@@ -139,6 +143,7 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         matter,
         meross,
         nabaztag,
+        photos,
         tempo,
         tuya,
         tv,
@@ -282,7 +287,7 @@ const AUTH_FAILURES_PER_MINUTE: u32 = 10;
 /// service token (`auth::DeviceClient`: an app's from the LAN too when allowed, a wall
 /// screen's through the tunnel). Admin-only routes inside add `AdminUser`, which a service
 /// token never is; settings add `SettingsClient`, which a wall screen never is.
-const DEVICE_ROUTES: [(&str, DeviceRouter); 12] = [
+const DEVICE_ROUTES: [(&str, DeviceRouter); 13] = [
     ("/events", events::router),
     ("/broadlink", routes::broadlink::router),
     ("/devices", routes::devices::router),
@@ -290,6 +295,7 @@ const DEVICE_ROUTES: [(&str, DeviceRouter); 12] = [
     ("/matter", routes::matter::router),
     ("/meross", routes::meross::router),
     ("/nabaztag", routes::nabaztag::router),
+    ("/photos", routes::photos::router),
     ("/scenes", routes::scenes::router),
     ("/tempo", routes::tempo::router),
     ("/tv", routes::tv::router),
@@ -544,9 +550,12 @@ async fn coded_rejections(request: axum::extract::Request, next: Next) -> Respon
 /// stays invisible that long after a deploy.
 /// - `/api/`: answers about the house and its people, never kept;
 /// - `/_app/immutable/`: SvelteKit's hashed build files, a new name for every change: a year;
+/// - a photo read (`/api/photos/<sha-256>`): its name is its content, kept by this browser alone;
 /// - everything else (the page, the logo, icons, the manifest): kept but revalidated each time.
-fn cache_policy(path: &str) -> &'static str {
-    if path.starts_with("/api/") {
+fn cache_policy(path: &str, success: bool) -> &'static str {
+    if success && path.starts_with("/api/photos/") {
+        "private, max-age=31536000, immutable"
+    } else if path.starts_with("/api/") {
         "no-store"
     } else if path.starts_with("/_app/immutable/") {
         "public, max-age=31536000, immutable"
@@ -575,8 +584,9 @@ async fn security_headers(
     next: Next,
     csp: header::HeaderValue,
 ) -> Response {
-    let cache = cache_policy(request.uri().path());
+    let path = request.uri().path().to_string();
     let mut response = next.run(request).await;
+    let cache = cache_policy(&path, response.status().is_success());
     let headers = response.headers_mut();
     headers.insert(
         header::CACHE_CONTROL,
@@ -895,17 +905,27 @@ mod guard_tests {
 
     #[test]
     fn every_path_says_how_long_it_may_be_kept() {
-        assert_eq!(cache_policy("/api/tempo"), "no-store");
+        assert_eq!(cache_policy("/api/tempo", true), "no-store");
         assert_eq!(
-            cache_policy("/_app/immutable/chunks/app.4f2a.js"),
+            cache_policy("/api/photos/ab", true),
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_policy("/api/photos/ab", false),
+            "no-store",
+            "a refusal is never kept"
+        );
+        assert_eq!(cache_policy("/api/photos", true), "no-store");
+        assert_eq!(
+            cache_policy("/_app/immutable/chunks/app.4f2a.js", true),
             "public, max-age=31536000, immutable"
         );
         assert_eq!(
-            cache_policy("/brand.svg"),
+            cache_policy("/brand.svg", true),
             "no-cache",
             "a new logo shows at the next visit"
         );
-        assert_eq!(cache_policy("/"), "no-cache");
+        assert_eq!(cache_policy("/", true), "no-cache");
     }
 
     #[test]
