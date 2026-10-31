@@ -1,0 +1,24 @@
+A compositor asks every client's buffer whether it can scan it out directly; without an IOMMU (the
+RK3126's VOP has none) a buffer Lima scattered answers no, and the compositor draws it itself.
+An expected answer, not an error: it filled the log for ever.
+
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_gem.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_gem.c
+@@ -471,7 +471,7 @@
+ 		return err;
+ 
+ 	if (drm_prime_get_contiguous_size(sg) < attach->dmabuf->size) {
+-		DRM_ERROR("failed to map sg_table to contiguous linear address.\n");
++		drm_dbg_prime(drm, "not contiguous: no scanout without an IOMMU\n");
+ 		dma_unmap_sgtable(drm->dev, sg, DMA_BIDIRECTIONAL, 0);
+ 		return -EINVAL;
+ 	}
+@@ -500,7 +500,7 @@
+ 		ret = rockchip_gem_dma_map_sg(drm, attach, sg, rk_obj);
+ 
+ 	if (ret < 0) {
+-		DRM_ERROR("failed to import sg table: %d\n", ret);
++		drm_dbg_prime(drm, "failed to import sg table: %d\n", ret);
+ 		goto err_free_rk_obj;
+ 	}
+ 

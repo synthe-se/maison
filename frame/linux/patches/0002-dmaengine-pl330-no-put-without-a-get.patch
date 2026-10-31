@@ -1,0 +1,16 @@
+The tasklet drops the channel's runtime PM reference whenever the work list is empty, even when
+pl330_terminate_all() has emptied it and dropped that reference already: « Runtime PM usage count
+underflow! ». The controller is shared (eMMC, SDIO): its count can reach zero under the other
+channel's transfer. `active` says that a reference is held.
+
+--- a/drivers/dma/pl330.c
++++ b/drivers/dma/pl330.c
+@@ -2090,7 +2090,7 @@
+ 		spin_lock(&pch->thread->dmac->lock);
+ 		_stop(pch->thread);
+ 		spin_unlock(&pch->thread->dmac->lock);
+-		power_down = true;
++		power_down = pch->active;
+ 		pch->active = false;
+ 	} else {
+ 		/* Make sure the PL330 Channel thread is active */

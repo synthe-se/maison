@@ -6,8 +6,11 @@
 # written to `boot`: from Linux itself when it is up (sent over the Wi-Fi, the eMMC's addressing
 # proved first by reading U-Boot's head where layout.txt says and finding boot's header, then
 # written, read back and compared), else from the loader (rkwrite.py; the reset pinhole, as
-# docs/frame.md says). Then the frame is rebooted and its app waited for. Every wait has a deadline and fails the script, loudly; each step is timed.
-# Usage: frame/linux/try.sh [--install] [--flash]
+# docs/frame.md says). With --ram the new kernel only runs: sent to /tmp and started by kexec, the
+# eMMC's slots untouched, so that cutting the power comes back to what is flashed. Then the frame
+# is rebooted and its app waited for. Every wait has a deadline and fails the script, loudly; each
+# step is timed.
+# Usage: frame/linux/try.sh [--install] [--flash | --ram]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -33,10 +36,11 @@ wait_for() {
 c() { "$REPO/frame/linux/console.sh" "$@"; }
 ui_active() { [ "$(c 'systemctl is-active maison-ui' 20 2>/dev/null)" = active ]; }
 
-install=false flash=false
+install=false flash=false ram=false
 for a in "$@"; do
-	case "$a" in --install) install=true ;; --flash) flash=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
+	case "$a" in --install) install=true ;; --flash) flash=true ;; --ram) ram=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
 done
+if $flash && $ram; then echo "--flash or --ram" >&2; exit 2; fi
 
 if $install; then
 	wait_for "the frame (USB console or SSH, Linux up)" 120 console
@@ -48,7 +52,18 @@ BACKUP="$HOME/maison-frame/backup"
 start_of() { awk -v p="$1" -F'[ =]' '$1==p {print $3}' "$BACKUP/layout.txt"; }
 size_of() { awk -v p="$1" -F'[ =]' '$1==p {print $5}' "$BACKUP/layout.txt"; }
 
-if $flash && console; then
+if $ram; then
+	BUILD="$REPO/frame/build"
+	for f in linux/zImage linux/rk3126-amaboo-gbzk-y1000.dtb linux-initramfs.cpio.gz; do
+		step "sending $f"
+		"$REPO/frame/linux/send.sh" "$BUILD/$f" "/tmp/ram-$(basename "$f")"
+	done
+	# U-Boot's part of the command line: the new kernel adds its own (CONFIG_CMDLINE_EXTEND)
+	step "loading the kernel"
+	c 'kexec -l /tmp/ram-zImage --dtb=/tmp/ram-rk3126-amaboo-gbzk-y1000.dtb --initrd=/tmp/ram-linux-initramfs.cpio.gz --command-line="$(sed "s/ console=tty0 .*//" /proc/cmdline)"' 60
+	c 'systemctl kexec' 10 || true
+	wait_for "the console to go" 60 no_console
+elif $flash && console; then
 	[ -f "$IMG" ] || { echo "no $IMG: frame/linux/image.py --slot boot first" >&2; exit 1; }
 	boot=$(start_of mmcblk0p5) uboot=$(start_of mmcblk0p1)
 	sectors=$(($(wc -c <"$IMG") / 512))

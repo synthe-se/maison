@@ -417,7 +417,13 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   `boot` from the loader (`try.sh --flash`, the reset pinhole). No battery: timesyncd's clock is
   kept on userdata, and the app never waits for NTP. `ssh root@maison-frame.local` (key
   only); the journal kept on userdata (`journalctl -D /var/log/journal/<boot's machine id>`); the
-  boot picture is the initramfs's (splash.py), each step said under the mark.
+  boot picture is the initramfs's (splash.py): the mark alone, a line only on failure. The kernel
+  has no console on the panel: no text can reach it.
+- The kernel is `allnoconfig` + `maison.config`, every symbol said; a dropped symbol or any build
+  warning fails `build.sh`. Nothing drives the CPU's rail (PWM1 reads zero, the vendor's kernel never
+  got `vdd_arm`), its voltage is unknown and never written, no temperature sensor: the OPPs change
+  the clock alone, up to 1008 MHz, the top held under checked load. `try.sh --ram` runs a new kernel
+  by kexec, the slots untouched. The AIC driver forces Wi-Fi power save: `ps_on=0` at insmod.
 - Without a host on the USB-C, /dev/ttyGS0 never opens: its getty opens it itself, non-blocking
   (systemd opening it held /dev/console's lock and froze PID 1: the app never started on the
   frame's own power). console.sh goes over SSH when no cable is there.

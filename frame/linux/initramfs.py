@@ -1,9 +1,10 @@
 """The mainline boot's initramfs: its /init (mksh) makes the USB-C port a serial console (CDC ACM:
-/dev/cu.usbmodem* on macOS), prints on the panel (the kernel's console, fbcon) what came up (the
+/dev/cu.usbmodem* on macOS), draws the boot picture, says in the kernel's log what came up (the
 display, the touch, the eMMC, the SDIO card, the Wi-Fi interface), then starts the system from
-Android's userdata. It writes to the eMMC only there: Maison's address, adopted once from where
-install.sh can leave it (Android's shell-writable /data/local/tmp) into root's /data/maison (the
-units' `target` credential). With --debug (bring-up), it first blinks the backlight five times (a
+Android's userdata. It writes to the eMMC only there: the top directory made root's (Android's
+init gives it back at its own boots; a directory another owner holds above the journal, systemd
+refuses to fix), and Maison's address, adopted once from where install.sh can leave it (Android's
+shell-writable /data/local/tmp) into root's /data/maison (the units' `target` credential). With --debug (bring-up), it first blinks the backlight five times (a
 sign with no console at all, ~10 s) and waits 8 s before saying what came up. Tools:
 rescue-tools.sh's static mksh and toybox; the touch firmware extracted from the vendor kernel
 (~/maison-frame/recon, never in the repo).
@@ -25,6 +26,8 @@ FIRMWARE = "lib/firmware/silead/gsl-amaboo-gbzk-y1000.fw"  # the DT's firmware-n
 # build.sh's Wi-Fi driver: its modules, and its firmware where the patched driver reads it
 AIC8800 = Path(__file__).resolve().parents[1] / "build/linux/aic8800"
 AIC8800_FIRMWARE = "lib/firmware/aic8800_fw/SDIO/aic8800DC"
+# build.sh's wireless-regdb: cfg80211 reads it as it starts, before any system
+REGDB = AIC8800.parent
 
 # --debug only: a sign without any console, the backlight blinking 5 times as soon as init runs
 BLINK = """
@@ -69,16 +72,13 @@ udc=$(ls /sys/class/udc | head -1)
 (while [ ! -e /tmp/stop-console ]; do [ -c /dev/ttyGS0 ] && mksh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1; sleep 1; done) &
 console=$!
 
-# 3. what came up, on the panel
+# 3. what came up, in the log
 {settle}
-# the boot picture (splash.py) as soon as the framebuffer is there, the kernel's text off the
-# panel (fbcon unbound: the steps say what happens), each step's line under the mark
+# the boot picture (splash.py) as soon as the framebuffer is there: the mark alone, no text
 for _ in 1 2 3 4 5; do [ -c /dev/fb0 ] && break; sleep 1; done
 show() {{ [ -c /dev/fb0 ] && dd if=/splash/$1.raw of=/dev/fb0 bs={stride} seek={row} conv=notrunc 2>/dev/null; }}
 if [ -c /dev/fb0 ]; then
-	for v in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" $v/name && echo 0 >$v/bind; done
 	cat /splash/splash.raw >/dev/fb0 2>/dev/null
-	show starting
 fi
 # (echo $(…) joins the lines: toybox has no tr)
 say "display: $(echo $(cat /sys/class/drm/*/status 2>/dev/null))"
@@ -87,22 +87,23 @@ say "input: $(echo $(cat /sys/class/input/*/name 2>/dev/null))"
 say "mmc: $(echo $(ls /sys/bus/mmc/devices 2>/dev/null))"
 say "sdio: $(echo $(cat /sys/bus/sdio/devices/*/vendor /sys/bus/sdio/devices/*/device 2>/dev/null))"
 
-# 4. the Wi-Fi driver: its board support, then the driver itself
-insmod /lib/modules/aic8800_bsp.ko && insmod /lib/modules/aic8800_fdrv.ko
+# 4. the Wi-Fi driver: its board support, then the driver itself, without its power save (the frame
+#    lives on the mains; the driver sets it whatever cfg80211's default)
+insmod /lib/modules/aic8800_bsp.ko && insmod /lib/modules/aic8800_fdrv.ko ps_on=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d /sys/class/net/wlan0 ] && break; sleep 1; done
 say "net: $(echo $(ls /sys/class/net))"
 
 # 5. the system, when Android's userdata holds one: its squashfs, read-only, a tmpfs over it, and
 #    userdata at /android-data, read-write for the kiosk's own state (/android-data/maison: its
 #    cookies, its cache); else this shell stays
-show system
 data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
 img=/android-data/local/tmp/maison/rootfs.squashfs
 mkdir -p /android-data /lower /rw /newroot
 if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data && [ -f $img ] &&
-	mount -t squashfs -o ro,loop $img /lower && mount -t tmpfs -o mode=755 tmpfs /rw &&
+	loop=$(losetup -f) && losetup -r $loop $img && mount -t squashfs -o ro $loop /lower && mount -t tmpfs -o mode=755 tmpfs /rw &&
 	mkdir -p /rw/upper /rw/work && mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot; then
 	say "system: $img"
+	chown 0:0 /android-data
 	# Maison's address: root's, read by the units (LoadCredential); install.sh's copy, where
 	# Android's shell (any ADB key) writes, is adopted only while root keeps none, then removed
 	kept=/android-data/maison/target
@@ -125,7 +126,6 @@ if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data |
 	touch /tmp/stop-console
 	pkill -P $console
 	pkill -f "mksh -i"
-	show launching
 	for m in dev proc sys; do mount --move /$m /newroot/$m; done
 	exec switch_root /newroot /sbin/init
 fi
@@ -165,6 +165,8 @@ def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
             add(f"bin/{applet}", b"toybox", 0o120777)
     add("bin/sh", b"mksh", 0o120777)
     add(FIRMWARE, firmware.read_bytes())
+    for name in ("regulatory.db", "regulatory.db.p7s"):
+        add(f"lib/firmware/{name}", (REGDB / name).read_bytes())
     for name, data in splash.frames().items():
         add(f"splash/{name}.raw", data)
     for ko in ("aic8800_bsp.ko", "aic8800_fdrv.ko"):

@@ -103,7 +103,7 @@ The loader may drop halfway: do the reset again, `rkwrite.py` resumes where it s
 
 ## Mainline Linux
 
-Maison on the frame without Android: Linux 7.2 (`frame/linux`) from the **boot** slot, what a
+Maison on the frame without Android: Linux 7.3 (`frame/linux`) from the **boot** slot, what a
 power-up starts (a power cut included); the vendor's Android sits in the **recovery** slot
 (`mmcblk0p5.img` of the backup), kept whole. The system, Debian trixie armhf with the native
 interface (and cog, disabled) on KMS, is a read-only squashfs in Android's userdata, a tmpfs
@@ -115,6 +115,7 @@ frame/linux/rootfs.sh           # the system: rootfs.squashfs (Docker, armhf emu
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
 python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
 frame/linux/try.sh --install    # a new system over Wi-Fi from Linux, then a reboot
+frame/linux/try.sh --ram        # a new kernel and initramfs run from RAM (kexec): a power cut returns to boot's
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
 frame/linux/console.sh 'systemctl status maison-ui'   # a root shell over the USB-C
 ssh root@maison-frame.local     # the same over Wi-Fi, key only
@@ -170,8 +171,8 @@ What the bring-up taught, each point seen on the frame:
   Linux on /dev/mmcblk0 once the layout's addressing is proved (U-Boot's head where layout.txt
   says, boot's `ANDROID!` header), read back and compared. The loader stays the way back.
 - The boot picture (splash.py): the initramfs draws Maison's mark on /dev/fb0 as soon as the
-  panel is up, unbinds fbcon (no kernel text over it) and says each step under the mark
-  (« Ouverture du système… », « Système introuvable… »): visible without any cable.
+  panel is up. The kernel has no console on the panel: no text at boot, the log stays in the
+  journal. A line appears only on failure (« Système introuvable… »).
 - SSH: `openssh-server`, root by key only (`rootfs.sh` installs `~/.ssh/id_ed25519.pub`,
   `FRAME_SSH_KEY`), no password; the host key made once on the frame, kept on userdata. The
   frame answers as `maison-frame.local` (mDNS); its Wi-Fi address comes from the eMMC's serial
@@ -200,4 +201,15 @@ A wall screen's theme follows the sun at the house when nothing is chosen (« So
 anyone may choose too): dark from sunset to sunrise, from the house's place (set with the
 shutters' sun schedule), read again just after each sunrise and sunset.
 
-Still to do: the CPU above U-Boot's 600 MHz (its voltage), the boot's speed.
+The kernel is `allnoconfig` + `maison.config`: every symbol is said there, a dropped one and any
+warning of the build fail `build.sh`. `VMSPLIT_2G`: all of the 1 GB directly mapped, no highmem.
+
+Nothing drives the CPU's rail: the vendor's tree names a regulator on PWM1, its kernel never got
+it, and PWM1's registers read zero. Its voltage is unknown, so it is never written: `cpu-supply`
+stays out, and the OPPs change the clock alone. There is no temperature sensor either. A
+frequency enters the device tree only after holding under load on the frame, each result checked
+against a reference: 1008 MHz, the vendor's own top, held 8 minutes on all four cores. Above it
+is unproven.
+
+A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
+panics, a panic reboots after 5 s.
