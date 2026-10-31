@@ -114,15 +114,15 @@ frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules
 frame/linux/buildroot.sh        # the system: frame/build/buildroot/rootfs.squashfs (Docker, ~25 min from nothing)
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
 python3 -I frame/linux/image.py --slot boot frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
-frame/linux/try.sh --install    # a new system over Wi-Fi from Linux, then a reboot
+frame/linux/try.sh --install [--kernel]   # an update to the free slot, tried, kept or rolled back
 frame/linux/try.sh --ram        # a new kernel and initramfs run from RAM (kexec): a power cut returns to boot's
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
-frame/linux/console.sh 'systemctl status maison-ui'   # a root shell over the USB-C
+frame/linux/console.sh 'systemctl status maison-ui'   # a command over SSH (FRAME_HOST=<address> without mDNS)
 ssh root@maison-frame.local     # the same over Wi-Fi, key only
 ```
 
-`--debug` is for bring-up: the backlight blinks five times as soon as init runs (a sign with
-no console at all) and the initramfs waits 8 s before saying what came up.
+`--debug` is for bring-up: a root console on the USB-C, the backlight blinks five times as soon as
+init runs (a sign with no console at all) and the initramfs waits 8 s before saying what came up.
 
 Maison's address is root's: `/android-data/maison/target` (0600), loaded by the units as their
 `target` credential. `install.sh --target` can only write where Android's shell writes,
@@ -132,14 +132,11 @@ the recovery image built since (its initramfs adopts): flash both. To change the
 remove root's copy from the console (`frame/linux/console.sh 'rm /android-data/maison/target'`),
 then `--target` again and reboot.
 
-The USB-C console is root's, logged in at once, for bring-up only: the system's getty runs
-only while `/android-data/maison/debug-console` exists (root's password is locked). Remove the
-file once the frame is on the wall: whoever holds the frame and a cable then gets nothing.
+There is no console on a product's boot: no getty, no shell on the USB-C, root's password locked.
+`initramfs.py --debug` builds an image with a root shell on the USB-C, for bring-up only. SSH by
+key is the way in.
 
-The kiosk opens Maison's address with `#lang=fr` (WPE says `en-US` whatever its system), and is
-paired as a wall screen like the Android one; its cookies, WebKit's storage and cache persist in
-userdata's `/data/maison/kiosk` (mounted read-write; the system itself is read-only). The Wi-Fi
-takes the networks Android knows (its own `wpa_supplicant.conf`).
+The Wi-Fi takes the networks Android knows (its own `wpa_supplicant.conf`).
 
 What the bring-up taught, each point seen on the frame:
 
@@ -224,8 +221,20 @@ ships behind), every program tuned for the Cortex-A7. What its build taught, eac
 - Its fstab mounts `/` read-only, which turns the overlay read-only: the line is removed.
 - xkbcommon's data are needed without a keyboard: no `xkeyboard-config`, no context, the app exits.
 - The app links through `buildroot/link-gcc`: the sdl3 crate always adds `/usr/local/lib`.
-- `maison.system=<file>` on kexec's command line starts a system beside the installed one. Debian's
-  stays as `rootfs-debian.squashfs`, and `rootfs.sh` still builds it.
+- Debian's system stays as `rootfs-debian.squashfs`, and `rootfs.sh` still builds it.
+
+Updates go to one of two slots on userdata, `/android-data/maison/slots/{a,b}`, root's: a system,
+and with `--kernel` a kernel, its device tree and its initramfs. `boot` is written by none of them,
+only by `try.sh --flash`: its kernel is what any failure comes back to. `state` says `active`,
+`pending` and `tries`. The initramfs counts a try before it starts one (2 at first: a power cut
+spends one), starts a slot's kernel by kexec, and watches from outside (`guard.c`: 240 s, then a
+restart, whatever became of PID 1; for a kernel, the SoC's watchdog left running, and
+`WATCHDOG_OPEN_TIMEOUT` if systemd never opens it). `maison-commit` makes the slot active once the
+interface runs without a restart, with the network and SSH, for 45 s, else restarts within 150 s.
+Tries spent, the slot goes to `slots/failed` and the frame stays on the one before. Seen on the
+frame: a trial that succeeds. Not yet: a failing system, a kernel that panics or hangs, a watchdog
+reset. A slot's kernel adds a kexec to each boot until it is flashed to `boot`. A flash that dies
+midway still wants the reset pinhole.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.

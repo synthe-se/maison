@@ -10,8 +10,9 @@
 Description=Maison's native interface
 Conflicts=maison-kiosk.service getty@tty7.service
 RequiresMountsFor=/android-data
-Wants=network-online.target dbus.socket systemd-logind.service
-After=network-online.target systemd-user-sessions.service dbus.socket systemd-logind.service
+Wants=dbus.socket systemd-logind.service
+# never after the network: the interface shows the house as soon as it can, and retries
+After=systemd-user-sessions.service dbus.socket systemd-logind.service
 ConditionPathExists=/dev/tty0
 
 [Service]

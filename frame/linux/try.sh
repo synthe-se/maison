@@ -10,7 +10,7 @@
 # eMMC's slots untouched, so that cutting the power comes back to what is flashed. Then the frame
 # is rebooted and its app waited for. Every wait has a deadline and fails the script, loudly; each
 # step is timed.
-# Usage: frame/linux/try.sh [--install] [--flash | --ram]
+# Usage: frame/linux/try.sh [--install [--kernel]] [--flash | --ram]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -36,16 +36,16 @@ wait_for() {
 c() { "$REPO/frame/linux/console.sh" "$@"; }
 ui_active() { [ "$(c 'systemctl is-active maison-ui' 20 2>/dev/null)" = active ]; }
 
-install=false flash=false ram=false
+install=false flash=false ram=false kernel=
 for a in "$@"; do
-	case "$a" in --install) install=true ;; --flash) flash=true ;; --ram) ram=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
+	case "$a" in --install) install=true ;; --kernel) kernel=--kernel ;; --flash) flash=true ;; --ram) ram=true ;; *) echo "unknown: $a" >&2; exit 2 ;; esac
 done
 if $flash && $ram; then echo "--flash or --ram" >&2; exit 2; fi
 
 if $install; then
 	wait_for "the frame (USB console or SSH, Linux up)" 120 console
-	step "installing the system on userdata over the Wi-Fi (about 1 min when it changed)"
-	"$REPO/frame/linux/install.sh"
+	step "sending the update to the free slot over the Wi-Fi (about 30 s)"
+	"$REPO/frame/linux/install.sh" $kernel
 fi
 
 BACKUP="$HOME/maison-frame/backup"
@@ -101,3 +101,13 @@ wait_for "Linux's console after the boot" 240 console
 step "Linux up: waiting for the native app"
 wait_for "maison-ui active" 180 ui_active
 step "maison-ui up"
+if $install; then
+	settled() { [ -z "$(c "sed -n 's/^pending=//p' /android-data/maison/slots/state" 20 2>/dev/null)" ]; }
+	step "the update proving itself (about 1 min)"
+	wait_for "the trial to end" 300 settled
+	if [ -n "$(c "cat /android-data/maison/slots/failed 2>/dev/null; rm -f /android-data/maison/slots/failed" 20)" ]; then
+		echo "the update failed: the frame went back to the system before it" >&2
+		exit 1
+	fi
+	step "the update is the system: slot $(c "sed -n 's/^active=//p' /android-data/maison/slots/state" 20)"
+fi

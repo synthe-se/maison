@@ -100,8 +100,7 @@ frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): 
                      install.sh, try.sh, console.sh, the board's device tree, rootfs/: units and
                      launchers); ui/ (the native interface: SDL3 under cage, Rust 2024,
                      ARCHITECTURE.md; maison-api's types, codes, paces and events, `paths.rs`
-                     for every path it asks; build.sh cross-builds armv7, simulate.sh runs that
-                     binary on the frame's system emulated)
+                     for every path it asks; frame/linux/buildroot.sh cross-builds it for the system)
 box/launcher/        the box's home: Compose for TV, for any Android TV (docs/box.md)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
@@ -215,7 +214,6 @@ cargo fmt --manifest-path backend/Cargo.toml --check                    # rustfm
 MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_live -- --nocapture
 python3 -m unittest discover -s frame -p 'test_*.py'   # the frame's tooling
 cd frame/ui && cargo test && cargo clippy --all-targets -- -D warnings && cargo deny check   # the native app
-frame/ui/build.sh && FRAME_SIM=armv7 sh e2e/run.sh frame.ts   # its armv7 binary, emulated, under cage
 cargo run --manifest-path api/Cargo.toml --bin shared-ts paces > web/src/lib/paces.ts   # codes, events alike
 cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the kiosk APK
 cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the box's home
@@ -424,16 +422,16 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   warning fails `build.sh`. Nothing drives the CPU's rail (PWM1 reads zero, the vendor's kernel never
   got `vdd_arm`), its voltage is unknown and never written, no temperature sensor: the OPPs change
   the clock alone, up to 1008 MHz, the top held under checked load. `try.sh --ram` runs a new kernel
-  by kexec, the slots untouched; `maison.system=<file>` picks a system beside the installed one. The
-  AIC driver forces Wi-Fi power save: `ps_on=0` at insmod.
+  by kexec, the slots untouched. The AIC driver forces Wi-Fi power save: `ps_on=0` at insmod.
 - The system is Buildroot (`frame/linux/buildroot`). A unit is enabled in its preset (`preset-all` undoes
   an `enable`), kiosk keeps uid 988 (its cookie on userdata), its timesyncd has no servers of its own.
 - Without a host on the USB-C, /dev/ttyGS0 never opens: its getty opens it itself, non-blocking
   (systemd opening it held /dev/console's lock and froze PID 1: the app never started on the
   frame's own power). console.sh goes over SSH when no cable is there.
-- The mainline USB-C root console exists only while `/android-data/maison/debug-console`
-  does (root's password is locked): remove the file once the frame is on the wall.
-  `initramfs.py --debug` adds the bring-up's backlight blinks and 8 s pause.
+- No console on a product's boot; root's password is locked, SSH by key is the way in.
+  `initramfs.py --debug` adds a root shell on the USB-C, the backlight blinks and an 8 s pause.
+- Updates go to a slot on userdata (`/android-data/maison/slots`, `try.sh --install [--kernel]`),
+  tried, then kept by `maison-commit` or rolled back by the initramfs; `boot` only by `try.sh --flash`.
 
 ### Cat devices, plugs, blaster, Hue
 
