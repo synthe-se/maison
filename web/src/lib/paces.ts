@@ -100,6 +100,12 @@ export const STALE_CADENCES = 3;
  */
 export const SCENES_MS = 3600000;
 
+/**
+ * The frame's photos: the server says when they change; a frame reads the list this often
+ * all the same (the web app reads it from its page alone).
+ */
+export const PHOTOS_MS = 600000;
+
 /** A gesture with no answer after this says it is slow (« Allumage… »). */
 export const COMMAND_SLOW_MS = 1000;
 

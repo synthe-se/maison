@@ -55,6 +55,7 @@
 	"cats_water_low": "Eau basse",
 	"climate_auto": "Auto",
 	"climate_brand_name": "Clim Mitsubishi",
+	"climate_choice_turns_on": "Choisir un réglage allume la clim.",
 	"climate_command_sent": "Ordre envoyé à la clim",
 	"climate_dashboard_title": "Climatisation",
 	"climate_degrees": "{degrees} °C",
@@ -75,7 +76,6 @@
 	"climate_no_order": "Aucun ordre envoyé",
 	"climate_no_remote_description": "Vérifie que le RM4 Pro est allumé et sur le même réseau Wi-Fi.",
 	"climate_no_remote_title": "Aucune télécommande sur le réseau",
-	"climate_choice_turns_on": "Choisir un réglage allume la clim.",
 	"climate_remote_connected": "RM4 Pro connecté · {host}",
 	"climate_reset": "Réinitialiser",
 	"climate_search_remote": "Rechercher le RM4 Pro",
@@ -108,6 +108,7 @@
 	"code_last_passkey": "C’est ta dernière clé : ajoutes-en une autre avant de la retirer.",
 	"code_nested_scene": "Une scène ne peut pas en lancer une autre.",
 	"code_not_a_device": "Ce n’est pas l’adresse d’un appareil du réseau de la maison.",
+	"code_not_a_photo": "Ce fichier n’est pas une photo lisible.",
 	"code_not_configured": "Pas encore réglé : un administrateur doit le configurer.",
 	"code_not_for_screens": "Un écran mural ne peut pas changer les réglages : fais-le depuis ton téléphone.",
 	"code_not_found": "Introuvable : il a peut-être été retiré entre-temps.",
@@ -125,6 +126,7 @@
 	"code_too_large": "C’est trop lourd pour être envoyé.",
 	"code_too_many_actions": "Trop d’actions : retires-en quelques-unes.",
 	"code_too_many_attempts": "Trop d’essais. Attends une minute.",
+	"code_too_many_photos": "Le cadre est plein : retire des photos avant d’en ajouter.",
 	"code_unknown_passkey": "Cette clé n’est plus reconnue ici. Choisis-en une autre, ou demande une invitation.",
 	"code_unsupported": "Cet appareil ne sait pas faire ça.",
 	"code_use_public_address": "Depuis le réseau de la maison, passe par l’adresse publique.",
@@ -668,6 +670,50 @@
 	"people_sessions_ended": "Les sessions de {name} sont fermées.",
 	"people_title": "Qui peut entrer",
 	"people_you": "C’est toi",
+	"photos_add": "Ajouter des photos",
+	"photos_added": [
+		{
+			"declarations": [
+				"input count",
+				"local p = count: plural"
+			],
+			"selectors": [
+				"p"
+			],
+			"match": {
+				"p=one": "{count} photo ajoutée",
+				"p=*": "{count} photos ajoutées"
+			}
+		}
+	],
+	"photos_alt": "Photo {number}",
+	"photos_count": [
+		{
+			"declarations": [
+				"input count",
+				"local p = count: plural"
+			],
+			"selectors": [
+				"p"
+			],
+			"match": {
+				"p=one": "{count} photo",
+				"p=*": "{count} photos"
+			}
+		}
+	],
+	"photos_drop": "Dépose tes photos ici, ou choisis-les. Elles sont réduites à la taille du cadre avant l’envoi.",
+	"photos_list_title": "Photos",
+	"photos_none": "Aucune photo pour l’instant.",
+	"photos_none_hint": "Sans photo, le cadre reste sur la maison et s’assombrit.",
+	"photos_not_added": "Pas ajouté, {names} : {why}",
+	"photos_progress": "{done} sur {total}",
+	"photos_remove_action": "Retirer la photo",
+	"photos_remove_consequence": "Elle disparaît de tous les cadres.",
+	"photos_remove_title": "Retirer cette photo ?",
+	"photos_removed": "Photo retirée",
+	"photos_subtitle": "Ce que le cadre montre quand personne ne le touche.",
+	"photos_title": "Cadre photo",
 	"pk_button": "Se connecter avec ma clé d’accès",
 	"pk_cancelled": "Rien n’a été fait. Tu peux réessayer.",
 	"pk_handshake": "Ton appareil va te demander de confirmer que c’est bien toi.",

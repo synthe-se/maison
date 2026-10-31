@@ -65,6 +65,8 @@ pub struct Config {
     pub geocoding_url: String,
     /// The scenes (`scenes.rs`).
     pub scenes_path: PathBuf,
+    /// The wall frame's photos (`photos.rs`): a directory of its own, 0700.
+    pub photos_dir: PathBuf,
     /// The Zigbee radio (`ZIGBEE_*`, `zigbee/config.rs`).
     pub zigbee: crate::zigbee::ZigbeeConfig,
 }
@@ -181,6 +183,7 @@ impl Config {
             tempo_dir: path("TEMPO_CACHE_DIR", "cache/tempo"),
             geocoding_url: url("GEOCODING_URL", "https://geocoding-api.open-meteo.com"),
             scenes_path: path("SCENES_JSON_PATH", "scenes.json"),
+            photos_dir: path("PHOTOS_DIR", "photos"),
             zigbee: crate::zigbee::ZigbeeConfig::load(&var),
             source_root,
         }

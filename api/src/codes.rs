@@ -105,6 +105,10 @@ codes! {
     LanOnly = ("lan_only", 403, "From the house's network only");
     /// A request body too large for its route.
     TooLarge = ("too_large", 413, "Too large");
+    /// An upload that is not a whole JPEG.
+    NotAPhoto = ("not_a_photo", 415, "Not a JPEG");
+    /// The house keeps `photos::MAX_PHOTOS`: one goes before another comes.
+    TooManyPhotos = ("too_many_photos", 409, "Too many photos");
 }
 
 /// The web app's module, as `web/src/lib/codes.ts` holds it.

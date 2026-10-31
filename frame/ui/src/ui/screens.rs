@@ -451,6 +451,21 @@ impl P<'_, '_, '_, '_> {
     }
 
     /// The toasts, at the bottom, above everything (app.css `.toasts`, `.toast`, `.toast.warn`).
+    /// The photos, and the time small in a corner, on what keeps it legible over any picture.
+    /// Nothing else: no band, no toast, no target.
+    fn photos(&mut self, time: &str, wcss: f32) -> Result<(), Error> {
+        let (pal, fade) = (self.c.pal, self.c.fade);
+        self.d.photos(fade, self.c.width, self.c.height)?;
+        self.dy = 0.0;
+        let w = self.width(time, ty::META)?;
+        let h = ty::META.line + 2.0 * px::S_1;
+        let x = wcss - px::S_4 - w - 2.0 * px::S_2;
+        let y = self.c.height / self.s() - px::S_4 - h;
+        self.rounded(x, y, w + 2.0 * px::S_2, h, px::RADIUS, pal.overlay)?;
+        self.line(time, ty::META, pal.on_brand, x + px::S_2, y + px::S_1, w)?;
+        Ok(())
+    }
+
     fn toasts(&mut self, toasts: &[Toast], wcss: f32, band: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         self.dy = 0.0;
@@ -526,6 +541,14 @@ pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result
                 *warn,
             )?;
             0.0
+        }
+        Screen::Photos { time, .. } => {
+            p.photos(time, wcss)?;
+            return Ok(Drawn {
+                hits: Vec::new(),
+                content: 0.0,
+                anchors: Vec::new(),
+            });
         }
     };
     let band = if c.over.gone && !matches!(screen, Screen::Door { .. }) {
@@ -668,6 +691,7 @@ mod tests {
             height: 1280.0,
             scroll: 0.0,
             over: Over::default(),
+            fade: 1.0,
         };
         let toasts = [Toast {
             text: "Pas de réponse".into(),
@@ -740,6 +764,7 @@ mod tests {
 
         // scrolled: nothing left to press under the header
         let scrolled = Ctx {
+            fade: 1.0,
             scroll: 70.0,
             pal: &LIGHT,
             words: &words,
@@ -887,6 +912,7 @@ mod tests {
             height: 1280.0,
             scroll: 0.0,
             over,
+            fade: 1.0,
         };
         let drawn = paint(&mut d, &ctx_with(&busy, Over::default()), &page, &[]).unwrap();
         let on = |hits: &[Hit], what: &str| {
@@ -1113,6 +1139,55 @@ mod tests {
             drawn.hits.as_slice(),
             [h] if matches!(h.what, Target::Act(Act::Pairing(_)))
         ));
+
+        // the photos: the new one comes in over the last, the time in a corner, nothing else
+        let colour = |id: &str, rgb: [u8; 4]| crate::photos::Picture {
+            id: id.into(),
+            width: 8,
+            height: 12,
+            rgba: rgb.repeat(8 * 12),
+        };
+        d.gfx.stage(colour("a", [0, 0, 200, 255])).unwrap();
+        d.gfx.stage(colour("b", [200, 0, 0, 255])).unwrap();
+        let photos = Screen::Photos {
+            time: "12:34".into(),
+            photo: "b".into(),
+        };
+        let at_fade = |fade: f32, d: &mut Draw| {
+            let over = Over {
+                gone: true,
+                ..Over::default()
+            };
+            let c = Ctx {
+                fade,
+                ..ctx_with(&commands, over)
+            };
+            let drawn = paint(d, &c, &photos, &toasts).unwrap();
+            assert!(drawn.hits.is_empty(), "no target, no band, no toast");
+            let s = d
+                .canvas
+                .read_pixels(None)
+                .unwrap()
+                .convert_format(sdl3::pixels::PixelFormat::RGBA32)
+                .unwrap();
+            let pitch = s.pitch() as usize;
+            let pixel = |x: usize, y: usize| s.with_lock(|px| px[y * pitch + x * 4]);
+            let middle = s.with_lock(|px| [px[640 * pitch + 1600], px[640 * pitch + 1602]]);
+            (middle, pixel(790, 1270))
+        };
+        assert_eq!(at_fade(0.0, &mut d).0, [0, 200], "the last one, whole");
+        let [r, b] = at_fade(0.5, &mut d).0;
+        assert!((90..110).contains(&r) && (90..110).contains(&b), "{r} {b}");
+        assert_eq!(at_fade(1.0, &mut d).0, [200, 0], "the new one, whole");
+        d.gfx.settle();
+        assert_eq!(at_fade(1.0, &mut d).0, [200, 0], "the last one is gone");
+        d.gfx.clear_stage();
+        let (middle, _) = at_fade(1.0, &mut d);
+        assert_eq!(middle, [LIGHT.ground.0, LIGHT.ground.2], "nothing left");
+        // a first photo comes in over what was cleared
+        d.gfx.stage(colour("c", [200, 0, 0, 255])).unwrap();
+        let [r, _] = at_fade(0.5, &mut d).0;
+        assert!(r > 200, "{r}");
 
         // the late gesture's post found nobody: its answer comes back
         let mut said = Vec::new();

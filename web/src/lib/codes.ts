@@ -35,7 +35,9 @@ export const CODES = [
 	'use_public_address',
 	'cross_site',
 	'lan_only',
-	'too_large'
+	'too_large',
+	'not_a_photo',
+	'too_many_photos'
 ] as const;
 
 /** A refusal's name. */

@@ -19,6 +19,7 @@ use sdl3::render::{BlendMode, Canvas, FRect, ScaleMode, Texture, TextureCreator}
 use sdl3::ttf::{Font, Sdl3TtfContext, Text, TextEngine};
 use sdl3::video::{Window, WindowContext};
 
+use crate::photos::Picture;
 use crate::theme::{Face, Rgba, Style};
 use crate::ui::icon::Icon;
 
@@ -144,6 +145,10 @@ pub struct Gfx<'t> {
     pub(super) pictures: HashMap<(u32, u32), HashMap<String, Texture<'t>>>,
     /// Pictures made from a small key (a Tempo mark): nothing is written to find one.
     marks: HashMap<(u32, u32), Texture<'t>>,
+    /// The photo on the panel, and the one it fades in over: never cached, freed as soon as
+    /// their time is over.
+    photo: Option<Texture<'t>>,
+    under: Option<Texture<'t>>,
     creator: &'t TextureCreator<WindowContext>,
     ttf: Sdl3TtfContext,
     frame: u64,
@@ -163,10 +168,30 @@ impl<'t> Gfx<'t> {
             icons: HashMap::new(),
             pictures: HashMap::new(),
             marks: HashMap::new(),
+            photo: None,
+            under: None,
             creator,
             ttf,
             frame: 0,
         })
+    }
+
+    /// `picture` goes on the panel, over the photo there, its pixels gone from memory.
+    pub fn stage(&mut self, picture: Picture) -> Result<(), Error> {
+        let t = texture(self.creator, &picture.rgba, picture.width, picture.height)?;
+        self.under = self.photo.replace(t);
+        Ok(())
+    }
+
+    /// The fade is over: the photo under it goes.
+    pub fn settle(&mut self) {
+        self.under = None;
+    }
+
+    /// The house is back: both go.
+    pub fn clear_stage(&mut self) {
+        self.under = None;
+        self.photo = None;
     }
 
     /// A frame starts; lines not drawn for long go when there are too many, the kept sizes all at
@@ -474,6 +499,14 @@ pub fn rasterise_icon(markup: &str, size: u32) -> Result<Pixmap, Error> {
     Ok(pm)
 }
 
+/// What of a `w` × `h` picture covers a `pw` × `ph` panel: the largest box of the panel's shape,
+/// centred.
+pub fn cover(w: f32, h: f32, pw: f32, ph: f32) -> FRect {
+    let scale = (pw / w).max(ph / h);
+    let (sw, sh) = (pw / scale, ph / scale);
+    FRect::new((w - sw) / 2.0, (h - sh) / 2.0, sw, sh)
+}
+
 /// What draws: the canvas and the caches, together.
 pub struct Draw<'a, 't> {
     pub canvas: &'a mut Canvas<Window>,
@@ -484,6 +517,30 @@ pub struct Draw<'a, 't> {
 pub type Area = (i32, i32, i32, i32);
 
 impl Draw<'_, '_> {
+    /// The photo on the panel over the one under it, `fade` (0 to 1) of the way, covering `w` ×
+    /// `h`. The first one comes in over what was cleared.
+    pub fn photos(&mut self, fade: f32, w: f32, h: f32) -> Result<(), Error> {
+        let to = FRect::new(0.0, 0.0, w, h);
+        let alpha = (fade.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let layers = [
+            (self.gfx.under.as_mut(), 255),
+            (self.gfx.photo.as_mut(), alpha),
+        ];
+        for (texture, alpha) in layers {
+            let Some(t) = texture else { continue };
+            let opaque = alpha == 255;
+            t.set_blend_mode(if opaque {
+                BlendMode::None
+            } else {
+                BlendMode::Blend
+            });
+            t.set_alpha_mod(alpha);
+            let (tw, th) = (t.width() as f32, t.height() as f32);
+            self.canvas.copy(t, cover(tw, th, w, h), to)?;
+        }
+        Ok(())
+    }
+
     /// The whole picture in `color`, nothing blended.
     pub fn clear(&mut self, color: Rgba) {
         self.canvas.set_draw_color(color);
@@ -643,6 +700,27 @@ impl Draw<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_photo_is_scaled_to_cover_centred() {
+        let (x, y, w, h) = {
+            let r = cover(1600.0, 2560.0, 800.0, 1280.0);
+            (r.x, r.y, r.w, r.h)
+        };
+        assert_eq!((x, y, w, h), (0.0, 0.0, 1600.0, 2560.0), "its shape: whole");
+        let r = cover(1000.0, 500.0, 800.0, 1280.0);
+        assert_eq!((r.w, r.h), (312.5, 500.0), "a landscape: its middle");
+        assert_eq!((r.x, r.y), ((1000.0 - 312.5) / 2.0, 0.0));
+        let r = cover(800.0, 2000.0, 800.0, 1280.0);
+        assert_eq!((r.w, r.h), (800.0, 1280.0), "taller: its top and bottom go");
+        assert_eq!((r.x, r.y), (0.0, 360.0));
+        let r = cover(400.0, 640.0, 800.0, 1280.0);
+        assert_eq!(
+            (r.x, r.y, r.w, r.h),
+            (0.0, 0.0, 400.0, 640.0),
+            "small: scaled up"
+        );
+    }
 
     #[test]
     fn every_icon_of_the_web_app_draws() {

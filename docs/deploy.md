@@ -69,6 +69,7 @@ dev-only goes in it (pass `PUBLIC_URL=http://localhost:5173` in the shell when d
 | `NABAZTAG_HOST` | the rabbit's address, optional |
 | `RTE_CLIENT_ID`, `RTE_CLIENT_SECRET` | optional: RTE's official Tempo API (free account on data.rte-france.com), else open data |
 | `SCENES_JSON_PATH` | optional: where the scenes are kept (default `scenes.json`); every state file has such a `*_JSON_PATH` |
+| `PHOTOS_DIR` | optional: where the wall frame's photos are kept (default `photos/`, 0700, made by the first one) |
 | `PORT` | optional, default 3033 (`API_PORT` is read too); a value that does not parse is logged and the default used, like every numeric setting |
 
 Device addresses live in their own files: `devices.json` (Tuya, with local keys) and

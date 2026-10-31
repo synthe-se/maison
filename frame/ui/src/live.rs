@@ -157,12 +157,19 @@ struct Entry {
     poke: Option<Sender<()>>,
     /// The drawing that last wanted it.
     wanted: u64,
+    /// When its worker started again: a value kept while nothing read it is no late answer.
+    resumed: Option<Instant>,
 }
 
 impl Entry {
+    /// Since when it has been up to date, or read anew.
+    fn fresh(&self) -> Option<Instant> {
+        self.at.max(self.resumed.filter(|_| self.at.is_some()))
+    }
+
     /// Its value is older than `STALE_CADENCES` paces.
     fn old(&self) -> bool {
-        self.at
+        self.fresh()
             .is_some_and(|at| at.elapsed() > self.pace.saturating_mul(STALE_CADENCES))
     }
 }
@@ -227,10 +234,12 @@ impl Live {
                 failure: None,
                 poke: None,
                 wanted: drawing,
+                resumed: None,
             });
         e.wanted = drawing;
         if poke.is_some() {
             e.poke = poke;
+            e.resumed = Some(Instant::now());
         }
         let data = e.value.clone().and_then(|v| v.downcast::<T>().ok());
         // no answer at all is Maison's silence, said once for the house (`gone`), not per value
@@ -249,6 +258,13 @@ impl Live {
     #[cfg(test)]
     pub fn peek<T: Send + Sync + 'static>(&self, key: &str) -> Option<Arc<T>> {
         self.entries.get(key)?.value.clone()?.downcast().ok()
+    }
+
+    /// The sources being read now.
+    #[cfg(test)]
+    pub fn reading(&self) -> Vec<&str> {
+        let running = self.entries.iter().filter(|(_, e)| e.poke.is_some());
+        running.map(|(k, _)| k.as_str()).collect()
     }
 
     /// A drawing ended: the sources it did not want stop (their values kept for a return).
@@ -367,7 +383,10 @@ impl Live {
         self.entries
             .values()
             .filter(|e| e.poke.is_some() && e.failure.is_none())
-            .filter_map(|e| e.at?.checked_add(e.pace.saturating_mul(STALE_CADENCES)))
+            .filter_map(|e| {
+                e.fresh()?
+                    .checked_add(e.pace.saturating_mul(STALE_CADENCES))
+            })
             .filter(|t| *t > after)
             .min()
     }
@@ -577,6 +596,33 @@ mod tests {
             c.get::<serde_json::Value>("/n")
                 .map(|v| v["n"].as_u64().unwrap_or(0) as u32)
         })
+    }
+
+    #[test]
+    fn a_value_kept_while_nothing_read_it_is_not_said_old_when_it_is_wanted_again() {
+        let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
+        let (mut live, _) = live(&stub.origin);
+        let source = Source::every("n:count", Duration::from_millis(5), |c: &Client| {
+            c.get::<serde_json::Value>("/n")
+                .map(|v| v["n"].as_u64().unwrap_or(0) as u32)
+        });
+        live.begin();
+        live.want(&source);
+        wait_until(|| {
+            live.take();
+            live.peek::<u32>("n:count").is_some()
+        });
+        // no view wants it: its worker ends, its value stays
+        live.begin();
+        live.sweep();
+        assert!(live.reading().is_empty());
+        std::thread::sleep(Duration::from_millis(40));
+        live.take();
+        live.begin();
+        let v = live.want(&source);
+        assert_eq!(v.data.as_deref(), Some(&1));
+        assert!(!v.stale, "its reader only just started");
+        assert_eq!(live.reading(), ["n:count"]);
     }
 
     #[test]

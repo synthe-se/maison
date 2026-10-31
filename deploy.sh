@@ -51,6 +51,7 @@ STATE_DIRS=(
   'cache|'
   'matter|700'
   'auth|700'
+  'photos|700'
 )
 
 # Remote layout, relative to PI_APP_DIR.

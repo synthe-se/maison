@@ -55,6 +55,7 @@
 	"cats_water_low": "Water low",
 	"climate_auto": "Auto",
 	"climate_brand_name": "Mitsubishi air conditioner",
+	"climate_choice_turns_on": "Choosing a setting turns the AC on.",
 	"climate_command_sent": "Command sent to the air conditioner",
 	"climate_dashboard_title": "Climate",
 	"climate_degrees": "{degrees} °C",
@@ -75,7 +76,6 @@
 	"climate_no_order": "No command sent yet",
 	"climate_no_remote_description": "Make sure the RM4 Pro is powered on and on the same Wi-Fi network.",
 	"climate_no_remote_title": "No remote found on the network",
-	"climate_choice_turns_on": "Choosing a setting turns the AC on.",
 	"climate_remote_connected": "RM4 Pro connected · {host}",
 	"climate_reset": "Reset",
 	"climate_search_remote": "Look for the RM4 Pro",
@@ -108,6 +108,7 @@
 	"code_last_passkey": "This is your last passkey: add another before removing it.",
 	"code_nested_scene": "A scene cannot run another scene.",
 	"code_not_a_device": "This is not the address of a device on the house’s network.",
+	"code_not_a_photo": "This file is not a readable photo.",
 	"code_not_configured": "Not set up yet: an admin has to configure it.",
 	"code_not_for_screens": "A wall screen cannot change settings: do it from your phone.",
 	"code_not_found": "Not found: it may have been removed meanwhile.",
@@ -125,6 +126,7 @@
 	"code_too_large": "This is too large to send.",
 	"code_too_many_actions": "Too many actions: remove a few.",
 	"code_too_many_attempts": "Too many attempts. Wait a minute.",
+	"code_too_many_photos": "The frame is full: remove some photos before adding more.",
 	"code_unknown_passkey": "This passkey is no longer known here. Choose another, or ask for an invitation.",
 	"code_unsupported": "This device cannot do that.",
 	"code_use_public_address": "From the house’s network, use the public address.",
@@ -668,6 +670,50 @@
 	"people_sessions_ended": "{name}’s sessions are ended.",
 	"people_title": "Who may come in",
 	"people_you": "That is you",
+	"photos_add": "Add photos",
+	"photos_added": [
+		{
+			"declarations": [
+				"input count",
+				"local p = count: plural"
+			],
+			"selectors": [
+				"p"
+			],
+			"match": {
+				"p=one": "{count} photo added",
+				"p=*": "{count} photos added"
+			}
+		}
+	],
+	"photos_alt": "Photo {number}",
+	"photos_count": [
+		{
+			"declarations": [
+				"input count",
+				"local p = count: plural"
+			],
+			"selectors": [
+				"p"
+			],
+			"match": {
+				"p=one": "{count} photo",
+				"p=*": "{count} photos"
+			}
+		}
+	],
+	"photos_drop": "Drop your photos here, or pick them. They are reduced to the size of the frame before they are sent.",
+	"photos_list_title": "Photos",
+	"photos_none": "No photos yet.",
+	"photos_none_hint": "Without photos, the frame stays on the house and dims.",
+	"photos_not_added": "Not added, {names}: {why}",
+	"photos_progress": "{done} of {total}",
+	"photos_remove_action": "Remove the photo",
+	"photos_remove_consequence": "It leaves every frame.",
+	"photos_remove_title": "Remove this photo?",
+	"photos_removed": "Photo removed",
+	"photos_subtitle": "What the frame shows while nobody touches it.",
+	"photos_title": "Photo frame",
 	"pk_button": "Sign in with my passkey",
 	"pk_cancelled": "Nothing was done. You can try again.",
 	"pk_handshake": "Your device will ask you to confirm it’s really you.",

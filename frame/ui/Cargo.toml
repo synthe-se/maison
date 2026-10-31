@@ -26,6 +26,10 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 # the web app's icons (lucide SVG) and the anti-aliased shapes, rasterised once into textures
 resvg = { version = "0.49.0", default-features = false }
 
+# the family's photos read off the drawing thread: JPEG in pure Rust, nothing of the system's
+zune-jpeg = "0.5.15"
+zune-core = "0.5.3"
+
 [build-dependencies]
 # the web app's WOFF2 fonts into TrueType, its variable faces instanced at the weights the type
 # scale draws (SDL_ttf has no variation API); pure Rust, no zlib

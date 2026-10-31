@@ -178,6 +178,8 @@ What the bring-up taught, each point seen on the frame:
 - The panel dims after 2 minutes without a finger (a quarter of its level by day, 4 % at
   night, by the sun's side); the first touch only wakes it, the next acts. The app writes
   /sys/class/backlight itself: the video group may (70-maison-backlight.rules).
+- With photos added from « Cadre photo », the dimmed panel shows them, a minute each, from its own
+  copy (`/android-data/maison/ui/photos`, 256 MiB at most); the unit's `ReadWritePaths` covers it.
 - The journal is kept on userdata (`/var/log/journal`, written every minute, at once for errors):
   a boot that went wrong reads at the next one. The initramfs derives the machine id from the
   eMMC's serial, so that it stays one directory, within its 64 MB.

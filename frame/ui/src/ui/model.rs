@@ -404,4 +404,7 @@ pub enum Screen {
         button: Option<Box<Button>>,
         warn: bool,
     },
+    /// Nobody at the frame: the family's photos and the time. Its pictures are the renderer's
+    /// (`Gfx::stage`); `photo` names the one on top.
+    Photos { time: String, photo: String },
 }

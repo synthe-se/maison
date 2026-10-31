@@ -161,7 +161,8 @@ export const SCREENS: [path: string, name: string][] = [
 	['/meross/plug-1', 'plug'],
 	['/tv', 'tv'],
 	['/androidtv', 'box'],
-	['/account', 'account']
+	['/account', 'account'],
+	['/photos', 'photos']
 ];
 
 /** Opens `path` and waits for it: its title, then a still page (`settled`). */
@@ -169,6 +170,22 @@ export async function visit(page: Page, path: string) {
 	await page.goto(BASE + path);
 	await page.locator('main h1').first().waitFor();
 	await settled(page);
+}
+
+// ---- photos
+
+/** A real picture, as `setInputFiles` takes it: larger than the frame, one `color` all over. */
+export async function photoFile(page: Page, name: string, color: string) {
+	const data = await page.evaluate((fill) => {
+		const canvas = document.createElement('canvas');
+		canvas.width = 2400;
+		canvas.height = 1800;
+		const context = canvas.getContext('2d')!;
+		context.fillStyle = fill;
+		context.fillRect(0, 0, 2400, 1800);
+		return canvas.toDataURL('image/png');
+	}, color);
+	return { name, mimeType: 'image/png', buffer: Buffer.from(data.split(',')[1], 'base64') };
 }
 
 // ---- wall screens

@@ -36,6 +36,8 @@ node_modules/
 /auth/
 /nabaztag.json
 /scenes.json
+# The wall frame's photos
+/photos/
 # A torn state file kept aside, and the cross-process lock files
 *.corrupt
 *.json.lock

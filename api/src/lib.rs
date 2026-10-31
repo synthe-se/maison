@@ -13,6 +13,7 @@ pub mod matter;
 pub mod meross;
 pub mod nabaztag;
 pub mod paces;
+pub mod photos;
 pub mod remote;
 pub mod scenes;
 pub mod screens;
