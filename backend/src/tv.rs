@@ -515,6 +515,16 @@ impl TvManager {
         .await
     }
 
+    /// Back to following the picture, whatever style was left on the set (a color style holds
+    /// one color whatever plays). Verified on the set: this one style, this body.
+    pub async fn ambilight_follow_video(&self) -> Result<(), AppError> {
+        self.post(
+            Endpoint::AmbilightCurrentConfiguration,
+            json!({ "styleName": "FOLLOW_VIDEO", "isExpert": false, "menuSetting": "STANDARD" }),
+        )
+        .await
+    }
+
     /// Powers the set on, whatever depth it is sleeping at. Routing it to the box's
     /// input is the caller's next step (`power_on_and_route`), over CEC first.
     ///

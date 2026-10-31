@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<string name="app_name">Home</string>
+	<string name="tab_home">Home</string>
+	<string name="tab_apps">Apps</string>
+	<string name="add_app">Add an app to Home</string>
+	<string name="hint_hold">Hold OK</string>
+	<string name="hint_options">Options</string>
+	<string name="hint_move">Left, right: move. OK: drop</string>
+	<string name="sheet_open">Open</string>
+	<string name="sheet_add">Add to Home</string>
+	<string name="sheet_move">Move</string>
+	<string name="sheet_remove">Remove from Home</string>
+	<string name="sheet_info">App info</string>
+	<string name="sheet_uninstall">Uninstall</string>
+	<string name="sunrise">Sunrise %1$s</string>
+	<string name="sunset">Sunset %1$s</string>
+	<string name="tempo_today">Tempo %1$s</string>
+	<string name="tempo_tomorrow">Tomorrow %1$s</string>
+	<string name="tempo_blue">blue</string>
+	<string name="tempo_white">white</string>
+	<string name="tempo_red">red</string>
+</resources>

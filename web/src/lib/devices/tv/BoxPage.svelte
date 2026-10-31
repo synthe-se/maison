@@ -16,6 +16,7 @@
 	import PairedChip from './PairedChip.svelte';
 	import ApkInstall from './ApkInstall.svelte';
 	import Apps from './Apps.svelte';
+	import BoxCleanup from './BoxCleanup.svelte';
 	import BoxPairing from './BoxPairing.svelte';
 	import Key from './Key.svelte';
 	import Pad from './Pad.svelte';
@@ -62,7 +63,10 @@
 		{:else if b.configured}
 			<BoxPairing onpaired={closeSettings} />
 		{/if}
-		{#if b.configured}<ApkInstall oninstalled={reread} />{/if}
+		{#if b.configured}
+			<ApkInstall oninstalled={reread} />
+			<BoxCleanup />
+		{/if}
 	</Settings>
 {/snippet}
 

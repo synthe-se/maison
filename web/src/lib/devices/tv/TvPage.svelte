@@ -41,6 +41,14 @@
 			'box'
 		);
 	}
+	function followVideo() {
+		haptic(CONFIRM);
+		return g.run(
+			() => tvApi.ambilightFollowVideo(),
+			(r) => tv.patch({ ambilight: r.ambilight }),
+			'follow'
+		);
+	}
 	function ambilight() {
 		haptic(CONFIRM);
 		return g.run(
@@ -127,6 +135,11 @@
 						<button class="btn" aria-pressed={status.ambilight?.power ?? false} {...pending(g.is('ambilight'))} onclick={ambilight}>
 							<Icon name="sparkles" busy={g.is('ambilight')} />{m.tv_ambilight()}
 						</button>
+						{#if status.ambilight?.power && status.ambilight.style !== 'FOLLOW_VIDEO'}
+							<button class="btn" {...pending(g.is('follow'))} onclick={followVideo}>
+								<Icon name="sparkles" busy={g.is('follow')} />{m.tv_ambilight_follow_video()}
+							</button>
+						{/if}
 					{/if}
 				</div>
 			{/if}

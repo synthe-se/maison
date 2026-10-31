@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<string name="app_name">Accueil</string>
+	<string name="tab_home">Accueil</string>
+	<string name="tab_apps">Applications</string>
+	<string name="add_app">Ajouter une app à l’accueil</string>
+	<string name="hint_hold">Maintenir OK</string>
+	<string name="hint_options">Options</string>
+	<string name="hint_move">Gauche, droite : déplacer. OK : poser</string>
+	<string name="sheet_open">Ouvrir</string>
+	<string name="sheet_add">Ajouter à l’accueil</string>
+	<string name="sheet_move">Déplacer</string>
+	<string name="sheet_remove">Retirer de l’accueil</string>
+	<string name="sheet_info">Infos de l’app</string>
+	<string name="sheet_uninstall">Désinstaller</string>
+	<string name="sunrise">Lever %1$s</string>
+	<string name="sunset">Coucher %1$s</string>
+	<string name="tempo_today">Tempo %1$s</string>
+	<string name="tempo_tomorrow">Demain %1$s</string>
+	<string name="tempo_blue">bleu</string>
+	<string name="tempo_white">blanc</string>
+	<string name="tempo_red">rouge</string>
+</resources>

@@ -2,6 +2,7 @@ pub mod adb;
 pub mod androidtv;
 pub mod atvremote;
 pub mod auth;
+pub mod box_clean;
 pub mod broadlink;
 pub mod broadlink_ir;
 pub mod config;
@@ -186,6 +187,14 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
             }
         },
     );
+
+    // What the box's home shows of the house: said often enough that its silence means Maison
+    // is away (`HOUSE_FRESH_MS`, box/launcher).
+    let house = state.clone();
+    every("box home", box_clean::HOUSE_EVERY, move || {
+        let house = house.clone();
+        async move { box_clean::push_house(&house).await }
+    });
 
     // The shutters' sun schedule: a look every 30 s sends what fell due since the last one.
     let schedule = state.matter.clone();

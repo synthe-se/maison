@@ -14,3 +14,5 @@ export const BOX = 'androidtv';
 export const tv = source(`${TV}:status`, tvApi.status, TV_MS);
 // polled as slowly as the TV: waking the box drives the TV over CEC
 export const box = source(`${BOX}:status`, androidTvApi.status, TV_MS);
+// an admin's, in the box's settings
+export const boxCleanup = source(`${BOX}:cleanup`, androidTvApi.cleanup, TV_MS);

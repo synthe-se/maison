@@ -4,12 +4,13 @@ use axum::{
     Json, Router,
 };
 use futures::TryStreamExt;
-use maison_api::Message;
+use maison_api::{androidtv::Cleanup, Message};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     androidtv::{self, AndroidKey, AndroidTvConfig, AndroidTvStatus},
     auth::AdminUser,
+    box_clean,
     error::{AppError, Refusal},
     routes::{Answer, Reply},
     util::refused,
@@ -58,6 +59,19 @@ struct LaunchRequest {
     ensure_tv_on: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CleanAction {
+    Clean,
+    Restore,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanRequest {
+    action: CleanAction,
+}
+
 /// 96 MB covers any sideloaded app worth the name while staying survivable
 /// on a 512 MB Pi.
 const APK_SIZE_LIMIT: usize = 96 * 1024 * 1024;
@@ -71,6 +85,7 @@ pub fn router() -> Router<AppState> {
         .route("/apps", get(apps))
         .route("/pair/start", post(pair_start))
         .route("/pair/finish", post(pair_finish))
+        .route("/cleanup", get(cleanup).post(clean))
         .route("/wake", post(wake))
         .route("/sleep", post(sleep))
         .route(
@@ -116,6 +131,26 @@ async fn launch(
 async fn apps(State(state): State<AppState>) -> Result<Json<Answer<Apps>>, AppError> {
     Ok(Answer::ok(Apps {
         packages: state.androidtv.apps().await?,
+    }))
+}
+
+async fn cleanup(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<Answer<Cleanup>>, AppError> {
+    Ok(Answer::ok(box_clean::read(&state.androidtv).await?))
+}
+
+/// Cuts what the table names, or gives it all back: reversible both ways, an admin's.
+async fn clean(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Json(body): Json<CleanRequest>,
+) -> Result<Json<Answer<Cleanup>>, AppError> {
+    let box_ = &state.androidtv;
+    Ok(Answer::ok(match body.action {
+        CleanAction::Clean => box_clean::clean(box_).await?,
+        CleanAction::Restore => box_clean::restore(box_).await?,
     }))
 }
 

@@ -34,6 +34,12 @@ async fn configuring_devices_is_admin_only() {
             Some(json!({"code": "abcdef"})),
         ),
         (Method::POST, "/api/androidtv/apk", None),
+        (Method::GET, "/api/androidtv/cleanup", None),
+        (
+            Method::POST,
+            "/api/androidtv/cleanup",
+            Some(json!({"action": "clean"})),
+        ),
         (
             Method::PUT,
             "/api/nabaztag/config",
