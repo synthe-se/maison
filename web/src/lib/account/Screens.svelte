@@ -80,7 +80,10 @@
 
 <Group id="screens-title" title={m.screens_title()} bind:heading={title}>
 	<p class="hint">{m.screens_intro()}</p>
-	<div><button class="btn primary" aria-haspopup="dialog" onclick={() => (pairing = true)}>{m.screens_pair()}</button></div>
+	<div class="actions">
+		<button class="btn primary" aria-haspopup="dialog" onclick={() => (pairing = true)}>{m.screens_pair()}</button>
+		<a class="btn" href="/photos">{m.photos_title()}</a>
+	</div>
 	<Sheet open={pairing} title={m.screens_pair()} onclose={close} {draft}>
 		<form class="pair" onsubmit={(e) => (e.preventDefault(), void pair())} novalidate>
 			<TextField

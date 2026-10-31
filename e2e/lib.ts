@@ -161,7 +161,8 @@ export const SCREENS: [path: string, name: string][] = [
 	['/meross/plug-1', 'plug'],
 	['/tv', 'tv'],
 	['/androidtv', 'box'],
-	['/account', 'account']
+	['/account', 'account'],
+	['/photos', 'photos']
 ];
 
 /** Opens `path` and waits for it: its title, then a still page (`settled`). */

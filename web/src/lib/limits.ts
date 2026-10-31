@@ -24,6 +24,10 @@ export const MAX_MEALS = 10;
 /** Actions in one scene (backend scenes.rs `MAX_ACTIONS`). */
 export const MAX_ACTIONS = 20;
 
+/** The wall frame's panel, portrait: what a photo is made to cover before it is sent (frame/ui
+ * config.rs `PANEL`). */
+export const PHOTO_SIZE = { width: 800, height: 1280 };
+
 /** The air conditioner's model, whose learnt codes the backend looks up first (the living
  * room's unit; backend broadlink.rs `send_mitsubishi_command`): `maison_api::climate::MODEL`. */
 export const CLIMATE_MODEL = 'msz-hj5va';
