@@ -259,8 +259,8 @@ in `/data/local/tmp/maison`, adopted once into slot a while userdata holds no st
 
 The interface stays `kiosk`: `maison-wifid`, root, answers it over `/run/maison-wifi/socket` (the
 directory 0750 root:kiosk), one JSON line each way: scan, list, connect, status, nothing else
-(`frame/tools/src/wifi.rs`). It is the boundary: a name goes in hex, a password with a quote, a
-backslash or a control character is refused, a request is at most 1 KiB, unknown fields are refused.
+(`frame/tools/src/wifi.rs`). It is the boundary: a name goes in hex, a password only as its 802.11i
+key (`psk`, also what `wifi.conf` holds: never the password), a request is at most 1 KiB, unknown fields are refused.
 It speaks to wpa_supplicant's control socket directly (no wpa_cli). A network is joined live and
 written to `wifi.conf` (0600, atomic, as `maison-setup` writes it) only once associated: a wrong
 password loses nothing, the others are enabled again.

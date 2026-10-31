@@ -311,7 +311,7 @@
 	"fountain_water_level": "Water level",
 	"fountain_water_level_ok": "Enough",
 	"frame_boot_missing": "No system found: connect the frame to a computer to reinstall it.",
-	"frame_setup_page_bad_password": "That password will not do: 8 to 63 characters, no quote.",
+	"frame_setup_page_bad_password": "That password will not do: 8 to 63 characters.",
 	"frame_setup_page_bad_ssid": "Enter the Wi-Fi’s name.",
 	"frame_setup_page_bad_target": "The address must start with https://.",
 	"frame_setup_page_done": "Saved. The frame restarts and joins your Wi-Fi.",

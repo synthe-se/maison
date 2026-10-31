@@ -311,7 +311,7 @@
 	"fountain_water_level": "Niveau d’eau",
 	"fountain_water_level_ok": "Suffisant",
 	"frame_boot_missing": "Système introuvable : branche le cadre à un ordinateur pour le réinstaller.",
-	"frame_setup_page_bad_password": "Ce mot de passe ne convient pas : 8 à 63 caractères, sans guillemet.",
+	"frame_setup_page_bad_password": "Ce mot de passe ne convient pas : 8 à 63 caractères.",
 	"frame_setup_page_bad_ssid": "Indique le nom du Wi-Fi.",
 	"frame_setup_page_bad_target": "L’adresse doit commencer par https://.",
 	"frame_setup_page_done": "C’est noté. Le cadre redémarre et rejoint ton Wi-Fi.",

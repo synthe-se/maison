@@ -5,9 +5,11 @@
 
 use std::fs;
 use std::io::Write;
+use std::num::NonZeroU32;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 
 use crate::hex;
@@ -24,21 +26,34 @@ pub fn ssid_fits(ssid: &str) -> bool {
     !ssid.is_empty() && ssid.len() <= 32
 }
 
-/// What WPA takes, only if it can go into the files as it is: a line break or a quote there would
-/// write configuration of its own.
+/// What WPA takes. Any character will do: only `psk` leaves here.
 pub fn password_fits(password: &str) -> bool {
     (8..=63).contains(&password.len())
-        && !password
-            .chars()
-            .any(|c| matches!(c, '"' | '\\') || c.is_control())
+}
+
+/// The key a passphrase makes on a network (IEEE 802.11i): what wpa_supplicant keeps, in hex and
+/// unquoted, so that no password is ever written down or has anything to escape.
+pub fn psk(ssid: &str, password: &str) -> String {
+    let mut key = [0; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA1,
+        NonZeroU32::new(4096).expect("not zero"),
+        ssid.as_bytes(),
+        password.as_bytes(),
+        &mut key,
+    );
+    hex(&key)
 }
 
 /// The file's text for one network; no password: an open one.
 pub fn network(ssid: &str, password: Option<&str>) -> String {
-    let ssid = hex(ssid.as_bytes());
+    let name = hex(ssid.as_bytes());
     match password {
-        Some(password) => format!("network={{\n\tssid={ssid}\n\tpsk=\"{password}\"\n}}\n"),
-        None => format!("network={{\n\tssid={ssid}\n\tkey_mgmt=NONE\n}}\n"),
+        Some(password) => format!(
+            "network={{\n\tssid={name}\n\tpsk={}\n}}\n",
+            psk(ssid, password)
+        ),
+        None => format!("network={{\n\tssid={name}\n\tkey_mgmt=NONE\n}}\n"),
     }
 }
 
@@ -156,10 +171,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_name_goes_in_hex_whatever_it_holds() {
+    fn the_key_is_ieee_80211i_s_own_test_vector() {
         assert_eq!(
-            network("a\"b", Some("abcdefgh")),
-            "network={\n\tssid=612262\n\tpsk=\"abcdefgh\"\n}\n"
+            psk("IEEE", "password"),
+            "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"
+        );
+    }
+
+    #[test]
+    fn a_name_goes_in_hex_and_a_password_never_goes_at_all() {
+        let key = psk("a\"b", "abc\"d\\gh");
+        assert_eq!(
+            network("a\"b", Some("abc\"d\\gh")),
+            format!("network={{\n\tssid=612262\n\tpsk={key}\n}}\n")
         );
         assert_eq!(
             network("a\nb", None),
@@ -167,6 +191,8 @@ mod tests {
         );
         assert!(ssid_fits("x") && ssid_fits(&"x".repeat(32)));
         assert!(!ssid_fits("") && !ssid_fits(&"x".repeat(33)));
+        assert!(password_fits("abc\"d\\gh") && !password_fits("short"));
+        assert!(!password_fits(&"x".repeat(64)));
     }
 
     #[test]

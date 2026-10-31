@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use maison_frame_tools::hex;
 use maison_frame_tools::wifi::{
     Answer, CONF, Join, MAX_REQUEST, Network, Refusal, Request, SOCKET, Status, Why, network,
-    password_fits, private, ssid_fits,
+    password_fits, private, psk, ssid_fits,
 };
 use maison_frame_tools::wpa::{Wpa, associated, known, networks};
 
@@ -106,7 +106,7 @@ impl Service {
         let set = |what: String| self.wpa.ask(&format!("SET_NETWORK {id} {what}"));
         let selected = set(format!("ssid {}", hex(ssid.as_bytes())))
             .and_then(|_| match password {
-                Some(p) => set(format!("psk \"{p}\"")),
+                Some(p) => set(format!("psk {}", psk(ssid, p))),
                 None => set("key_mgmt NONE".into()),
             })
             .and_then(|_| self.wpa.ask(&format!("SELECT_NETWORK {id}")));
@@ -360,7 +360,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(d.join("wifi.conf")).unwrap(),
-            "network={\n\tssid=4d6120426f78\n\tpsk=\"sel de mer\"\n}\n"
+            network("Ma Box", Some("sel de mer"))
         );
         let mode = fs::metadata(d.join("wifi.conf"))
             .unwrap()
@@ -370,7 +370,7 @@ mod tests {
         let log = log.lock().unwrap();
         for said in [
             "SET_NETWORK 4 ssid 4d6120426f78",
-            "SET_NETWORK 4 psk \"sel de mer\"",
+            &*format!("SET_NETWORK 4 psk {}", psk("Ma Box", "sel de mer")),
             "SELECT_NETWORK 4",
             "REMOVE_NETWORK 1",
         ] {
@@ -482,11 +482,7 @@ mod tests {
             (connect("", Some("abcdefgh")), Refusal::BadSsid),
             (connect(&"x".repeat(33), None), Refusal::BadSsid),
             (connect("x", Some("short")), Refusal::BadPassword),
-            (
-                connect("x", Some("abc\"defgh\nnetwork={")),
-                Refusal::BadPassword,
-            ),
-            (connect("x", Some("abcdefgh\\")), Refusal::BadPassword),
+            (connect("x", Some(&"x".repeat(64))), Refusal::BadPassword),
         ] {
             assert_eq!(s.answer(request), Answer::Refused(why));
         }
