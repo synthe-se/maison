@@ -9,7 +9,8 @@ use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
 use crate::ui::layout::{
     BRAND_NUDGE, CHIP_ICON, CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP,
-    HEADER_MARK, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH, balance, columns, fold, margin,
+    HEADER_MARK, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH, balance, clip_above, columns,
+    fold, margin,
 };
 use crate::ui::model::{Body, Button, Chip, Group, Screen};
 
@@ -36,14 +37,14 @@ impl P<'_, '_, '_, '_> {
     fn group_head(&mut self, g: &Group, x: f32, y: f32, w: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         let mut end = x + w;
-        let mut actions_w = 0.0;
-        for b in g.actions.iter().rev() {
-            actions_w += self.button_width(b)? + if actions_w > 0.0 { px::S_2 } else { 0.0 };
+        let mut widths = Vec::with_capacity(g.actions.len());
+        for b in &g.actions {
+            widths.push(self.button_width(b)?);
         }
-        if actions_w > 0.0 {
+        if !widths.is_empty() {
+            let actions_w = widths.iter().sum::<f32>() + px::S_2 * (widths.len() - 1) as f32;
             let mut bx = end - actions_w;
-            for b in &g.actions {
-                let bw = self.button_width(b)?;
+            for (b, bw) in g.actions.iter().zip(widths) {
                 self.button(b, bx, y, bw, TOUCH)?;
                 bx += bw + px::S_2;
             }
@@ -233,8 +234,12 @@ impl P<'_, '_, '_, '_> {
             bottom = bottom.max(y - GROUP_GAP);
         }
         let content = (bottom + px::S_5) * self.s();
-        // the header stays, a line under it: the brand, or a page's way back and its title
+        // the header stays, a line under it: the brand, or a page's way back and its title; what
+        // scrolled under it is hidden from the finger too
         self.dy = 0.0;
+        let edge = px::HEADER_H * self.s();
+        clip_above(&mut self.hits, edge);
+        self.cover(0.0, 0.0, wcss, px::HEADER_H);
         self.rounded(0.0, 0.0, wcss, px::HEADER_H, 0.0, pal.ground)?;
         let hair = 1.0 / self.s();
         self.rounded(0.0, px::HEADER_H - hair, wcss, hair, 0.0, pal.line)?;
@@ -368,6 +373,7 @@ impl P<'_, '_, '_, '_> {
                 y + (th - text_h) / 2.0,
                 text_w,
             )?;
+            self.cover(x, y, tw, th);
             y -= px::S_2;
         }
         Ok(())
@@ -376,8 +382,7 @@ impl P<'_, '_, '_, '_> {
 
 /// Draws the screen; what a finger can land on, and the column's height.
 pub fn paint(d: &mut Draw, c: &Ctx, screen: &Screen, toasts: &[Toast]) -> Result<Drawn, Error> {
-    let (w, h) = (c.width.round() as i32, c.height.round() as i32);
-    d.fill(0, 0, w, h, c.pal.ground)?;
+    d.clear(c.pal.ground);
     let mut p = P {
         d,
         c,
@@ -435,9 +440,9 @@ mod tests {
     use crate::i18n::{Lang, Words};
     use crate::live::View;
     use crate::testing::{temp_dir, wait_until};
-    use crate::theme::{Face, LIGHT, Style};
-    use crate::ui::gfx::Gfx;
-    use crate::ui::layout::Target;
+    use crate::theme::{Face, LIGHT, Rgba, Style};
+    use crate::ui::gfx::{Gfx, Pen};
+    use crate::ui::layout::{Hit, Target};
     use crate::ui::model::{Act, Lead};
     use crate::ui::slider::Sliders;
     use maison_api::HOUSE_TZ;
@@ -465,12 +470,40 @@ mod tests {
         let mut gfx = Gfx::new(sdl3::ttf::init().unwrap(), &creator).unwrap();
         let words = Words::new(Lang::Fr);
 
-        // fit: cut with an ellipsis within its room; a NUL dropped, never cutting words short
         let style = Style {
             face: Face::Text,
             weight: 400,
         };
         let long = "Une lampe au nom bien trop long pour sa tuile";
+
+        // a size asked of SDL_ttf is the drawn line's, in one line or wrapped, and makes no line
+        let one = gfx.measure(style, 16, 0, long).unwrap();
+        let wrapped = gfx.measure(style, 16, 120, long).unwrap();
+        assert!(wrapped.1 > one.1 && wrapped.0 <= 120, "{wrapped:?}");
+        assert_eq!(gfx.measure(style, 16, 0, "").unwrap(), (0, 0));
+        assert_eq!(gfx.measure(style, 16, 0, "\0").unwrap(), (0, 0));
+        assert!(gfx.lines.is_empty(), "measuring draws nothing");
+        for (wrap, size) in [(0, one), (120, wrapped)] {
+            let pen = Pen {
+                style,
+                size: 16,
+                color: LIGHT.ink,
+                wrap,
+            };
+            assert_eq!(gfx.line(pen, long).unwrap().size, size);
+        }
+
+        // a picture is rasterised per size, not minified from the first one
+        for side in [28, 88, 28] {
+            gfx.picture(MARK_SVG, side, side).unwrap();
+        }
+        assert_eq!(gfx.pictures.len(), 2);
+        assert_eq!(gfx.pictures[&(88, 88)].len(), 1);
+
+        // fit: cut with an ellipsis within its room; a NUL dropped, never cutting words short
+        assert_eq!(gfx.fit(style, 16, long, 0).unwrap(), "…", "no room at all");
+        let ellipsis = gfx.measure(style, 16, 0, "…").unwrap().0;
+        assert_eq!(gfx.fit(style, 16, long, ellipsis).unwrap(), "…");
         let fitted = gfx.fit(style, 16, long, 120).unwrap();
         assert!(
             fitted.ends_with('…') && fitted.len() < long.len(),
@@ -560,6 +593,39 @@ mod tests {
             assert!(h.h >= TOUCH.min(px::TILE_ICON), "{h:?}");
         }
         assert!(drawn.content > px::HEADER_H);
+        // the header and the toast cover what lies under them
+        let covers: Vec<&Hit> = drawn
+            .hits
+            .iter()
+            .filter(|h| matches!(h.what, Target::Cover))
+            .collect();
+        assert_eq!(covers.len(), 2);
+        assert!(covers[0].contains(400.0, 10.0));
+        assert!(covers[1].contains(400.0, 1280.0 - 2.0 * px::S_4));
+        assert!(matches!(drawn.hits.last().unwrap().what, Target::Cover));
+
+        // scrolled: nothing left to press under the header
+        let scrolled = Ctx {
+            scroll: 70.0,
+            pal: &LIGHT,
+            words: &words,
+            commands: &commands,
+            sliders: &sliders,
+            now: ctx.now,
+            scale: 1.0,
+            width: 800.0,
+            height: 1280.0,
+        };
+        let moved = paint(&mut d, &scrolled, &house, &[]).unwrap();
+        assert!(
+            moved
+                .hits
+                .iter()
+                .filter(|h| !matches!(h.what, Target::Cover))
+                .all(|h| h.y >= px::HEADER_H),
+            "{:?}",
+            moved.hits
+        );
 
         // the state lines, as each gesture says it
         {
@@ -581,6 +647,58 @@ mod tests {
             assert_eq!(said, tiles[0].state);
             assert!(!warn && retry.is_none());
         }
+
+        // a ringed box is the box and its inset one, whatever is drawn or skipped under it
+        let pixels = |d: &mut Draw, draw: &dyn Fn(&mut Draw)| {
+            d.clear(LIGHT.ground);
+            draw(d);
+            let s = d.canvas.read_pixels(None).unwrap();
+            s.with_lock(<[u8]>::to_vec)
+        };
+        let area = (40, 40, 200, 60);
+        let (x, y, w, h) = area;
+        let (ring, opaque, wash) = (LIGHT.line, LIGHT.surface, LIGHT.surface.faded(0.5));
+        for (r, t, fill) in [
+            (16, 1, opaque),
+            (30, 1, opaque),
+            (6, 3, opaque),
+            (16, 1, wash),
+        ] {
+            let two = pixels(&mut d, &|d| {
+                d.rounded(x, y, w, h, r, ring).unwrap();
+                d.rounded(x + t, y + t, w - 2 * t, h - 2 * t, r - t, fill)
+                    .unwrap();
+            });
+            let one = pixels(&mut d, &|d| d.ringed(area, r, t, fill, ring).unwrap());
+            assert!(two == one, "radius {r}, ring {t}");
+        }
+        // a box's pieces leave no seam: its straight sides solid, its corners' edge not
+        let pixels_of_box = pixels(&mut d, &|d| {
+            d.rounded(0, 0, 100, 40, 12, Rgba(255, 0, 0, 255)).unwrap();
+        });
+        let stride = pixels_of_box.len() / 1280;
+        let at = |x: usize, y: usize| &pixels_of_box[y * stride + x * 4..][..4];
+        let red = at(50, 20).to_vec();
+        for (px, py) in [
+            (12, 0),
+            (50, 0),
+            (87, 39),
+            (0, 12),
+            (99, 27),
+            (12, 12),
+            (87, 27),
+        ] {
+            assert_eq!(at(px, py), red, "({px}, {py})");
+        }
+        assert_ne!(at(0, 0), red, "a round corner");
+
+        // the picture starts as the ground, cleared: nothing else drawn
+        let bare = pixels(&mut d, &|_| {});
+        assert!(
+            bare.chunks(stride)
+                .flat_map(|r| r[..2400].chunks(4))
+                .all(|p| p == &bare[..4])
+        );
 
         // the door: its one button found
         let door = Screen::Door {

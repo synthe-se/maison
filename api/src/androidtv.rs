@@ -10,6 +10,17 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("studio.kahn.iris.tv", "Iris"),
 ];
 
+/// `POST /api/androidtv/launch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRequest {
+    pub package: String,
+    /// Power the television on and route it to the box first: launching an app on a set that
+    /// is off or on another input is rarely what is meant.
+    #[serde(default = "crate::remote::default_true")]
+    pub ensure_tv_on: bool,
+}
+
 /// Why a package of the box is cut: what `backend/src/box_clean.rs`'s table says of each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

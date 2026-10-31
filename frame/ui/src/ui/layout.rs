@@ -52,6 +52,8 @@ pub enum Target {
         x0: f32,
         x1: f32,
     },
+    /// Nothing to press, but what lies under it is out of a finger's reach: the header, a toast.
+    Cover,
 }
 
 impl Target {
@@ -194,6 +196,17 @@ pub const HEADER_MARK: f32 = 28.0;
 /// in its row, brings the name half of it down (in ems of the brand's size).
 pub const BRAND_NUDGE: f32 = 0.15;
 
+/// `hits` scrolled up under a band that stays, ending at `edge`: each cut there, gone when wholly
+/// under it.
+pub fn clip_above(hits: &mut Vec<Hit>, edge: f32) {
+    hits.retain_mut(|h| {
+        let under = (edge - h.y).max(0.0);
+        h.y += under;
+        h.h -= under;
+        h.h > 0.0
+    });
+}
+
 /// The page margin for the panel's width in CSS pixels (tokens.css `--page-margin` and its
 /// media queries).
 pub fn margin(width_css: f32) -> f32 {
@@ -309,15 +322,7 @@ impl P<'_, '_, '_, '_> {
         let (x0, y0, x1, y1) = (self.d(x), self.y(y), self.d(x + w), self.y(y + h));
         let r = self.d(r);
         let t = (self.s().round() as i32).max(1);
-        self.d.rounded(x0, y0, x1 - x0, y1 - y0, r, line)?;
-        self.d.rounded(
-            x0 + t,
-            y0 + t,
-            x1 - x0 - 2 * t,
-            y1 - y0 - 2 * t,
-            (r - t).max(0),
-            fill,
-        )
+        self.d.ringed((x0, y0, x1 - x0, y1 - y0), r, t, fill, line)
     }
 
     /// A disc of diameter `d` at (x, y); with `ring`, a ring of that width in `ring.1` around.
@@ -336,15 +341,8 @@ impl P<'_, '_, '_, '_> {
         match ring {
             Some((w, color)) => {
                 let t = ((w * self.s()).round() as i32).max(1);
-                self.d.rounded(x0, y0, size, size, size / 2, color)?;
-                self.d.rounded(
-                    x0 + t,
-                    y0 + t,
-                    size - 2 * t,
-                    size - 2 * t,
-                    size / 2 - t,
-                    fill,
-                )
+                self.d
+                    .ringed((x0, y0, size, size), size / 2, t, fill, color)
             }
             None => self.d.rounded(x0, y0, size, size, size / 2, fill),
         }
@@ -376,21 +374,26 @@ impl P<'_, '_, '_, '_> {
         y: f32,
         max: f32,
     ) -> Result<f32, Error> {
-        let size = self.size(t);
-        let max_px = (max * self.s()).max(0.0) as u32;
-        let fitted = self.d.gfx.fit(t.style(), size, text, max_px)?;
-        let (w, h) = self.d.gfx.measure(t.style(), size, 0, &fitted)?;
-        if self.visible(y, t.line) {
-            let top = y * self.s() + self.dy + (t.line * self.s() - h as f32) / 2.0;
-            let pen = Pen {
-                style: t.style(),
-                size,
-                color,
-                wrap: 0,
-            };
-            self.d.text(pen, &fitted, x * self.s(), top)?;
+        let (size, style, s) = (self.size(t), t.style(), self.s());
+        let max_px = (max * s).max(0.0) as u32;
+        let (whole, _) = self.d.gfx.measure(style, size, 0, text)?;
+        if !self.visible(y, t.line) {
+            return Ok(whole.min(max_px) as f32 / s);
         }
-        Ok(w as f32 / self.s())
+        let fitted = if whole <= max_px {
+            Cow::Borrowed(text)
+        } else {
+            Cow::Owned(self.d.gfx.fit(style, size, text, max_px)?)
+        };
+        let pen = Pen {
+            style,
+            size,
+            color,
+            wrap: 0,
+        };
+        let top = y * s + self.dy;
+        let (w, _) = self.d.gfx.text_in(pen, &fitted, x * s, top, t.line * s)?;
+        Ok(w as f32 / s)
     }
 
     /// A line's width in CSS px, uncut.
@@ -449,6 +452,11 @@ impl P<'_, '_, '_, '_> {
         }
     }
 
+    /// What is drawn here hides what lies under it from the finger.
+    pub fn cover(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.hit(x, y, w, h, Target::Cover);
+    }
+
     /// Words, then « · » and a link (underlined, `ink`), on one secondary line at (x, y) in `w`
     /// CSS px (Stale's « Dernière lecture 14:02 · Réessayer », a tile's « Pas de réponse ·
     /// Réessayer », a shutter's « Fermeture 20:24 · Ne pas fermer ce soir »). The link is a 44 px
@@ -465,8 +473,11 @@ impl P<'_, '_, '_, '_> {
         act: Option<Act>,
     ) -> Result<(), Error> {
         let t = ty::SECONDARY;
-        let used = self.line(said, t, said_color, x, y, w)?;
-        let sep_w = self.line(" · ", t, said_color, x + used, y, w - used)?;
+        const SEP: &str = " · ";
+        // the link keeps its width: the words give way, never the only control on the line
+        let reserved = self.width(link, t)? + self.width(SEP, t)?;
+        let used = self.line(said, t, said_color, x, y, (w - reserved).max(0.0))?;
+        let sep_w = self.line(SEP, t, said_color, x + used, y, w - used)?;
         let lx = x + used + sep_w;
         let lw = self.line(link, t, ink, lx, y, w - used - sep_w)?;
         // app.css: `text-underline-offset: var(--s-half)`
@@ -548,6 +559,21 @@ mod tests {
         assert_eq!(balance(&[], 2, 12.0), vec![0]);
         // never more columns than groups need
         assert_eq!(balance(&[10.0, 10.0], 6, 12.0), vec![0, 1]);
+    }
+
+    #[test]
+    fn what_scrolled_under_the_header_is_out_of_reach() {
+        let band = |y: f32, h: f32| Hit {
+            x: 0.0,
+            y,
+            w: 100.0,
+            h,
+            what: Target::Cover,
+        };
+        let mut hits = vec![band(-50.0, 60.0), band(30.0, 60.0), band(100.0, 60.0)];
+        clip_above(&mut hits, 64.0);
+        let left: Vec<(f32, f32)> = hits.iter().map(|h| (h.y, h.h)).collect();
+        assert_eq!(left, [(64.0, 26.0), (100.0, 60.0)]);
     }
 
     #[test]

@@ -31,8 +31,26 @@ pub mod limit {
 /// Without an answer this long, the gesture says it is slow.
 pub const SLOW: Duration = Duration::from_millis(paces::COMMAND_SLOW_MS);
 
-/// What an answer says once it came: a toast's words, warning or not.
-pub type Say = fn(&Words, &Outcome) -> Option<Toast>;
+/// What an answer says once it came.
+#[derive(Debug, Clone, Copy)]
+pub enum Say {
+    /// A toast from how it went, warning or not.
+    With(fn(&Words, &Outcome) -> Option<Toast>),
+    /// These words once it went through; if not, the tile says so.
+    Done(&'static str),
+}
+
+impl Say {
+    pub fn toast(self, w: &Words, o: &Outcome) -> Option<Toast> {
+        match self {
+            Self::With(say) => say(w, o),
+            Self::Done(key) => o.failed.is_empty().then(|| Toast {
+                text: w.s(key),
+                warn: false,
+            }),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
@@ -324,7 +342,9 @@ impl Commands {
     pub fn state(&self, key: &str) -> State {
         match self.running.get(key) {
             None => State::Idle,
-            Some(r) if r.late || r.started.elapsed() >= r.limit => State::Late,
+            Some(r) if r.late => State::Late,
+            // answered: travelling until its families are read, whatever the time it took
+            Some(r) if r.settling.is_none() && r.started.elapsed() >= r.limit => State::Late,
             Some(r) => State::Pending {
                 target: r.target,
                 slow: r.started.elapsed() >= SLOW,
@@ -367,21 +387,20 @@ impl Commands {
             if r.generation != done.generation {
                 continue;
             }
-            let ok = done.outcome.failed.is_empty();
-            let past = r.started.elapsed() >= r.limit;
-            if ok && !past {
+            if done.outcome.failed.is_empty() {
+                // a success settles, past its limit too: the tile said « Pas de réponse », the
+                // device has answered since
                 if done.refresh.is_empty() {
                     self.running.remove(&done.key);
                 } else {
                     r.settling = Some((done.refresh.clone(), Instant::now()));
                 }
             } else {
-                // refused, or the answer came past its limit (the tile already said so)
                 r.late = true;
                 r.target = None;
             }
             if let Some(say) = done.say
-                && let Some(t) = say(words, &done.outcome)
+                && let Some(t) = say.toast(words, &done.outcome)
             {
                 toasts.push(t);
             }
@@ -390,23 +409,41 @@ impl Commands {
     }
 
     /// A family's value came, asked at `asked`: the gestures answered before that are done.
-    pub fn read(&mut self, key: &str, asked: Instant) {
+    /// True when one was.
+    pub fn read(&mut self, key: &str, asked: Instant) -> bool {
+        let before = self.running.len();
         self.running.retain(|_, r| match &r.settling {
             Some((families, answered)) => {
                 !(asked >= *answered && families.iter().any(|f| key.starts_with(f)))
             }
             None => true,
         });
+        self.running.len() != before
     }
 
-    /// The next moment a gesture's look changes by itself (slow, then late): the screen is
-    /// drawn again then.
-    pub fn next_change(&self) -> Option<Instant> {
+    /// Answered gestures whose read never came (their family no longer on screen) end, a limit
+    /// after the answer. True when one did.
+    pub fn sweep(&mut self, now: Instant) -> bool {
+        let before = self.running.len();
+        self.running.retain(|_, r| {
+            r.settling
+                .as_ref()
+                .is_none_or(|(_, answered)| now < *answered + r.limit)
+        });
+        self.running.len() != before
+    }
+
+    /// The first moment after `after` a gesture's look changes by itself (slow, late, its
+    /// settling over): the screen is drawn again then.
+    pub fn next_change(&self, after: Instant) -> Option<Instant> {
         self.running
             .values()
             .filter(|r| !r.late)
-            .flat_map(|r| [r.started + SLOW, r.started + r.limit])
-            .filter(|t| *t > Instant::now())
+            .flat_map(|r| {
+                let from = r.settling.as_ref().map_or(r.started, |(_, at)| *at);
+                [r.started + SLOW, from + r.limit]
+            })
+            .filter(|t| *t > after)
             .min()
     }
 
@@ -458,7 +495,7 @@ mod tests {
                 slow: false
             }
         );
-        assert!(c.next_change().is_some());
+        assert!(c.next_change(Instant::now()).is_some());
         let (refreshed, toasts) = settle(&mut c, &words);
         assert_eq!(refreshed, ["hue-lamp"]);
         assert!(toasts.is_empty());
@@ -499,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn past_its_limit_a_gesture_is_late() {
+    fn past_its_limit_a_gesture_is_late_until_its_answer_ends_it() {
         let stub = serve(|_| {
             std::thread::sleep(Duration::from_millis(400));
             (200, vec![], "{}".into())
@@ -514,8 +551,51 @@ mod tests {
         wait_until(|| c.state("k") == State::Late);
         let words = Words::new(Lang::Fr);
         settle(&mut c, &words);
-        // the answer past its limit does not clear what the tile said
-        assert_eq!(c.state("k"), State::Late);
+        // no family to read: a success ends it, late or not
+        assert_eq!(c.state("k"), State::Idle);
+    }
+
+    #[test]
+    fn a_success_past_its_limit_settles_like_any_other() {
+        let stub = serve(|_| {
+            std::thread::sleep(Duration::from_millis(300));
+            (200, vec![], "{}".into())
+        });
+        let words = Words::new(Lang::Fr);
+        let mut c = commands(&stub.origin);
+        c.run(
+            Order::one("k", "x", Post::empty("/x"))
+                .toggle(true)
+                .within(Duration::from_millis(50))
+                .then_refresh(&["hue-lamp"]),
+        );
+        wait_until(|| c.state("k") == State::Late);
+        settle(&mut c, &words);
+        assert!(c.shown("k", false), "its target, until the read");
+        assert!(c.read("hue-lamp:list", Instant::now()));
+        assert_eq!(c.state("k"), State::Idle);
+    }
+
+    #[test]
+    fn a_settling_gesture_whose_read_never_comes_ends() {
+        let stub = serve(|_| (200, vec![], "{}".into()));
+        let words = Words::new(Lang::Fr);
+        let mut c = commands(&stub.origin);
+        let limit = SLOW * 2;
+        c.run(
+            Order::one("k", "x", Post::empty("/x"))
+                .toggle(true)
+                .within(limit)
+                .then_refresh(&["hue-lamp"]),
+        );
+        settle(&mut c, &words);
+        let now = Instant::now();
+        assert!(!c.sweep(now), "not yet");
+        let end = c.next_change(now + SLOW).expect("its settling's end");
+        assert!(end > now);
+        assert!(c.sweep(end));
+        assert_eq!(c.state("k"), State::Idle);
+        assert!(!c.read("hue-lamp:list", Instant::now()), "nothing left");
     }
 
     #[test]
@@ -555,6 +635,26 @@ mod tests {
     }
 
     #[test]
+    fn done_words_are_said_only_once_it_went_through() {
+        let words = Words::new(Lang::Fr);
+        let say = Say::Done(crate::i18n::k::COMMON_RETRY);
+        let mut o = Outcome {
+            done: vec!["x".into()],
+            failed: Vec::new(),
+            answer: None,
+        };
+        assert_eq!(
+            say.toast(&words, &o),
+            Some(Toast {
+                text: "Réessayer".into(),
+                warn: false
+            })
+        );
+        o.failed.push("y".into());
+        assert_eq!(say.toast(&words, &o), None);
+    }
+
+    #[test]
     fn everyone_at_once_and_the_outcome_said_once() {
         let stub = serve(|line| {
             if line.contains("/2/") {
@@ -588,7 +688,7 @@ mod tests {
             )
             .within(limit::LAMP)
             .then_refresh(&["hue-lamp", "zigbee-lamp"])
-            .said(say),
+            .said(Say::With(say)),
         );
         let (refreshed, toasts) = settle(&mut c, &words);
         assert_eq!(refreshed, ["hue-lamp", "zigbee-lamp"]);

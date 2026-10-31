@@ -5,7 +5,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use maison_api::{Message, OfDevice};
+use maison_api::{
+    cats::{FeedRequest, FountainUvSettingsRequest, LitterBoxSettingsRequest},
+    lamps::PowerRequest,
+    Message, OfDevice,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -116,69 +120,14 @@ struct FountainPowerUpdate {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FeedRequest {
-    #[serde(default = "default_feeder_portion")]
-    portion: u8,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct MealPlanRequest {
     meal_plan: Vec<MealPlanEntry>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LitterBoxSettingsRequest {
-    clean_delay: Option<u64>,
-    sleep_mode: Option<LitterSleepModeSettings>,
-    preferences: Option<LitterPreferences>,
-    actions: Option<LitterActions>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LitterSleepModeSettings {
-    enabled: Option<bool>,
-    start_time: Option<String>,
-    end_time: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LitterPreferences {
-    child_lock: Option<bool>,
-    kitten_mode: Option<bool>,
-    lighting: Option<bool>,
-    prompt_sound: Option<bool>,
-    automatic_homing: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LitterActions {
-    reset_sand_level: Option<bool>,
-    /// An admin's, through `POST …/litter-box/factory-reset`: refused here.
-    reset_factory_settings: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FountainUvSettingsRequest {
-    enabled: Option<bool>,
-    runtime: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct FountainEcoModeRequest {
     mode: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FountainPowerRequest {
-    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -683,7 +632,7 @@ async fn update_fountain_eco_mode(
 async fn update_fountain_power(
     State(state): State<AppState>,
     Path(device_id): DeviceId,
-    Json(body): Json<FountainPowerRequest>,
+    Json(body): Json<PowerRequest>,
 ) -> Result<Said<FountainPowerUpdate>, AppError> {
     let device = state
         .tuya
@@ -711,10 +660,6 @@ async fn update_fountain_power(
             power: body.enabled,
         },
     ))
-}
-
-fn default_feeder_portion() -> u8 {
-    1
 }
 
 fn describe_fountain_uv_updates(settings: &FountainUvAppliedSettings) -> String {

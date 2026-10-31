@@ -4,11 +4,13 @@
 //! « Éteindre » instead. The box's icon wakes it or puts it to sleep (the TV follows over CEC),
 //! its app chips launch an app, the TV turned on first. Both read as slowly as the TV allows.
 
-use maison_api::androidtv::SHORTCUTS;
-use serde_json::{Value, json};
+use maison_api::androidtv::{LaunchRequest, SHORTCUTS};
+use maison_api::remote::SwitchState;
+use maison_api::tv::{PowerRequest, VolumeRequest};
+use serde_json::Value;
 
 use super::{BOX, Cx, TV, loaded, stale};
-use crate::commands::{Order, Outcome, Post, Toast, limit};
+use crate::commands::{Order, Outcome, Post, Say, Toast, limit};
 use crate::i18n::{Words, k};
 use crate::paths;
 use crate::ui::icon;
@@ -26,7 +28,14 @@ fn power(name: &str, on: bool) -> Order {
         name,
         Post::json(
             paths::TV_POWER,
-            &json!({ "state": if on { "on" } else { "off" }, "switchToBox": true }),
+            &PowerRequest {
+                state: if on {
+                    SwitchState::On
+                } else {
+                    SwitchState::Off
+                },
+                switch_to_box: true,
+            },
         ),
     )
     .toggle(on)
@@ -43,11 +52,22 @@ fn volume_steps(w: &Words, name: &str, volume: &Value) -> Option<Part> {
         volume["max"].as_i64().unwrap_or(i64::MAX),
     );
     let step = |delta: i64, icon| {
-        let to = (level + delta).clamp(min, max);
+        // never `clamp`: a server's bounds, even crossed, are no reason to panic while drawing
+        let to = level
+            .saturating_add(delta)
+            .min(max)
+            .max(min)
+            .clamp(0, i64::from(u8::MAX));
         let order = Order::one(
             format!("{TV}:volume"),
             name,
-            Post::put(paths::TV_VOLUME, &json!({ "level": to })),
+            Post::put(
+                paths::TV_VOLUME,
+                &VolumeRequest {
+                    level: Some(to as u8),
+                    muted: None,
+                },
+            ),
         )
         .then_refresh(&[TV]);
         Button::new(
@@ -131,15 +151,10 @@ pub fn tv_tile(w: &Words, data: &Value) -> Tile {
             parts,
         )
     };
-    Tile {
-        name,
-        state,
-        warn: assumed,
-        lead,
-        fact,
-        parts,
-        open: None,
-    }
+    Tile::new(name, state, lead)
+        .warn(assumed)
+        .fact(fact)
+        .parts(parts)
 }
 
 fn launched_said(w: &Words, o: &Outcome) -> Option<Toast> {
@@ -212,43 +227,39 @@ pub fn box_tile(w: &Words, data: &Value) -> Tile {
                 label.clone(),
                 Post::json(
                     paths::BOX_LAUNCH,
-                    &json!({ "package": package, "ensureTvOn": true }),
+                    &LaunchRequest {
+                        package: package.clone(),
+                        ensure_tv_on: true,
+                    },
                 ),
             )
             .within(limit::TV)
             .then_refresh(&[BOX, TV])
-            .said(launched_said);
+            .said(Say::With(launched_said));
             Button::new(None, label, Act::Order(launch))
                 .primary(current == Some(package.as_str()))
                 .unavailable(!reachable)
         })
         .collect();
-    Tile {
-        name: name.clone(),
-        state,
-        warn: false,
-        lead: if configured {
-            Lead::Toggle {
-                icon: icon::PLAY,
-                on: awake,
-                offline: !reachable,
-                turn_on: Box::new(wake(true)),
-                turn_off: Box::new(wake(false)),
-            }
-        } else {
-            Lead::Glyph {
-                icon: icon::PLAY,
-                on: false,
-            }
-        },
-        fact: None,
-        parts: if configured {
-            vec![Part::Row(apps)]
-        } else {
-            Vec::new()
-        },
-        open: None,
-    }
+    let lead = if configured {
+        Lead::Toggle {
+            icon: icon::PLAY,
+            on: awake,
+            offline: !reachable,
+            turn_on: Box::new(wake(true)),
+            turn_off: Box::new(wake(false)),
+        }
+    } else {
+        Lead::Glyph {
+            icon: icon::PLAY,
+            on: false,
+        }
+    };
+    Tile::new(name.clone(), state, lead).parts(if configured {
+        vec![Part::Row(apps)]
+    } else {
+        Vec::new()
+    })
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
@@ -268,13 +279,10 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
     } else {
         Body::Tiles(tiles)
     };
-    Some(Group {
-        title: w.s(k::TV_GROUP_TITLE),
-        fact: None,
-        actions: Vec::new(),
-        stale: stale(cx, &tv, &[TV, BOX]).or_else(|| stale(cx, &boxed, &[TV, BOX])),
-        body,
-    })
+    Some(
+        Group::new(w.s(k::TV_GROUP_TITLE), body)
+            .stale(stale(cx, &tv, &[TV, BOX]).or_else(|| stale(cx, &boxed, &[TV, BOX]))),
+    )
 }
 
 #[cfg(test)]
@@ -316,6 +324,21 @@ mod tests {
         assert!(up.posts[0].1.put);
         assert_eq!(up.posts[0].1.path, "/tv/volume");
         assert_eq!(up.posts[0].1.body.as_ref().unwrap()["level"], 13);
+    }
+
+    #[test]
+    fn crossed_bounds_from_the_server_are_survived() {
+        let w = Words::new(Lang::Fr);
+        let t = tv_tile(
+            &w,
+            &body(
+                r#"{"success":true,"config":{},"status":{"configured":true,"power":"on","name":"","volume":{"current":12,"min":60,"max":0,"muted":false}}}"#,
+            ),
+        );
+        let [Part::Row(v)] = &t.parts[..] else {
+            panic!("{:?}", t.parts)
+        };
+        assert_eq!(v.len(), 2);
     }
 
     #[test]

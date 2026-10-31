@@ -8,7 +8,7 @@ use maison_api::Tz;
 use maison_api::lamps::{BrightnessRequest, HueLamp, LampList, PowerRequest, ZigbeeLamp};
 
 use super::{Cx, HUE, ZIGBEE, loaded, stale};
-use crate::commands::{Order, Outcome, Post, Toast, json, limit};
+use crate::commands::{Order, Outcome, Post, Say, Toast, json, limit};
 use crate::i18n::{Arg, Words, k};
 use crate::live::View;
 use crate::paths;
@@ -137,12 +137,10 @@ pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Tile {
             name: l.name.clone(),
         }));
     }
-    Tile {
-        open: None,
-        name: l.name.clone(),
-        state: state(w, l, now),
-        warn: !l.reachable && !l.connecting,
-        lead: Lead::Toggle {
+    Tile::new(
+        l.name.clone(),
+        state(w, l, now),
+        Lead::Toggle {
             icon: if l.reachable {
                 icon::LIGHTBULB
             } else {
@@ -153,9 +151,9 @@ pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Tile {
             turn_on: Box::new(power(d, l, true)),
             turn_off: Box::new(power(d, l, false)),
         },
-        fact: None,
-        parts,
-    }
+    )
+    .warn(!l.reachable && !l.connecting)
+    .parts(parts)
 }
 
 fn all_off_said(w: &Words, o: &Outcome) -> Option<Toast> {
@@ -201,7 +199,7 @@ pub fn lamps_group(
                 Order::many("lamps:all-off", posts)
                     .within(limit::LAMP)
                     .then_refresh(LAMPS)
-                    .said(all_off_said),
+                    .said(Say::With(all_off_said)),
             ),
         ));
     }
@@ -230,13 +228,11 @@ pub fn lamps_group(
                 .then(|| Body::Tiles(rows.iter().map(|(d, l)| tile(w, *d, l, now)).collect()))
         },
     );
-    Some(Group {
-        title: w.s(k::ZIGBEE_LAMPS_TITLE),
-        fact: None,
-        actions,
-        stale,
-        body,
-    })
+    Some(
+        Group::new(w.s(k::ZIGBEE_LAMPS_TITLE), body)
+            .actions(actions)
+            .stale(stale),
+    )
 }
 
 /// A list's lamps, its read state kept.

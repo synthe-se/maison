@@ -13,16 +13,29 @@ use crate::ui::layout::{
 use crate::ui::model::{Act, Button, Lead, Part, Slider, Tile};
 use maison_api::tempo::Color;
 
+/// A tile's head, for a tile of one width: the fact's width, the name's column and height, its
+/// height whole.
+struct HeadBox {
+    fact_w: f32,
+    name_w: f32,
+    name_h: f32,
+    h: f32,
+}
+
+/// A button's icon and the gap after it (none before no words).
+fn icon_room(icon: bool, label: &str) -> (f32, f32) {
+    match (icon, label.is_empty()) {
+        (false, _) => (0.0, 0.0),
+        (true, true) => (ICON, 0.0),
+        (true, false) => (ICON, px::S_2),
+    }
+}
+
 impl P<'_, '_, '_, '_> {
     /// A button's width for its content.
     pub fn button_width(&mut self, b: &Button) -> Result<f32, Error> {
-        let label = self.width(&b.label, ty::LABEL)?;
-        let icon = if b.icon.is_some() {
-            ICON + if b.label.is_empty() { 0.0 } else { px::S_2 }
-        } else {
-            0.0
-        };
-        Ok(px::S_3 * 2.0 + icon + label)
+        let (icon, gap) = icon_room(b.icon.is_some(), &b.label);
+        Ok(px::S_3 * 2.0 + icon + gap + self.width(&b.label, ty::LABEL)?)
     }
 
     pub fn busy(&self, b: &Button) -> bool {
@@ -53,12 +66,7 @@ impl P<'_, '_, '_, '_> {
             b.icon
         };
         let label_w = self.width(&b.label, ty::LABEL)?;
-        let icon_w = if icon.is_some() { ICON } else { 0.0 };
-        let gap = if icon.is_some() && !b.label.is_empty() {
-            px::S_2
-        } else {
-            0.0
-        };
+        let (icon_w, gap) = icon_room(icon.is_some(), &b.label);
         let words =
             !b.label.is_empty() && icon_w + gap + label_w <= w - px::S_3 * 2.0 || icon.is_none();
         let content = icon_w
@@ -180,30 +188,30 @@ impl P<'_, '_, '_, '_> {
         })
     }
 
-    /// The fact's width and the title's column, for a tile `w` wide.
-    fn head_columns(&mut self, t: &Tile, w: f32) -> Result<(f32, f32), Error> {
+    /// The head of a tile `w` wide: the glyph's height, or the name (wrapping, `.tile-title`) and
+    /// its state line.
+    fn head_box(&mut self, t: &Tile, w: f32) -> Result<HeadBox, Error> {
         let inner = w - 2.0 * ROW_PAD_X;
         let fact_w = match &t.fact {
             // at most two fifths of the row: « 47 utilisés sur 300 » whole
             Some(f) => self.width(f, ty::META)?.min(inner * 0.4),
             None => 0.0,
         };
-        let tw =
+        let name_w =
             inner - px::TILE_ICON - px::S_3 - if fact_w > 0.0 { fact_w + px::S_3 } else { 0.0 };
-        Ok((fact_w, tw))
-    }
-
-    /// The head's height: the glyph's, or the name (wrapping, `.tile-title`) and its state line.
-    fn head_height(&mut self, t: &Tile, w: f32) -> Result<f32, Error> {
-        let (_, tw) = self.head_columns(t, w)?;
-        let name_h = self.para_height(&t.name, TITLE, tw)?;
-        Ok(px::TILE_ICON.max(name_h + ty::SECONDARY.line))
+        let name_h = self.para_height(&t.name, TITLE, name_w)?;
+        Ok(HeadBox {
+            fact_w,
+            name_w,
+            name_h,
+            h: px::TILE_ICON.max(name_h + ty::SECONDARY.line),
+        })
     }
 
     /// A row's height (the dashboard's `.tile`): its head, each control under it, its padding.
     pub fn tile_height(&mut self, t: &Tile, w: f32) -> Result<f32, Error> {
         let inner = w - 2.0 * ROW_PAD_X;
-        let mut h = ROW_PAD_Y + self.head_height(t, w)?;
+        let mut h = ROW_PAD_Y + self.head_box(t, w)?.h;
         for p in &t.parts {
             h += PART_GAP + self.part_height(p, inner)?;
         }
@@ -408,16 +416,16 @@ impl P<'_, '_, '_, '_> {
             // the whole row leads there (DeviceTile's link); a gesture drawn over it wins
             self.hit(x, y, w, h, Target::Act(open.clone()));
         }
+        let head = self.head_box(t, w)?;
         if let Some(order) = self.toggle(&t.lead) {
             // a toggle's row leads nowhere on the frame: its head is its on/off, a big
             // target for a finger on the wall (the controls under it keep theirs)
-            let head_h = self.head_height(t, w)?;
-            self.hit(x, y, w, ROW_PAD_Y + head_h, Target::Act(Act::Order(order)));
+            self.hit(x, y, w, ROW_PAD_Y + head.h, Target::Act(Act::Order(order)));
         }
         let (ix, iy) = (x + ROW_PAD_X, y + ROW_PAD_Y);
         let inner = w - 2.0 * ROW_PAD_X;
-        let head_h = self.tile_head(t, ix, iy, w)?;
-        let mut py = iy + head_h;
+        self.tile_head(t, &head, ix, iy, inner)?;
+        let mut py = iy + head.h;
         for p in &t.parts {
             py += PART_GAP;
             let ph = self.part_height(p, inner)?;
@@ -430,22 +438,26 @@ impl P<'_, '_, '_, '_> {
         Ok(())
     }
 
-    /// The tile's head at (ix, iy) inside a tile `w` wide: the lead, the name and the state
-    /// line (with « Réessayer » once late), the fact; its height.
-    fn tile_head(&mut self, t: &Tile, ix: f32, iy: f32, w: f32) -> Result<f32, Error> {
+    /// The tile's head at (ix, iy), `inner` wide: the lead, the name and the state line (with
+    /// « Réessayer » once late), the fact.
+    fn tile_head(
+        &mut self,
+        t: &Tile,
+        head: &HeadBox,
+        ix: f32,
+        iy: f32,
+        inner: f32,
+    ) -> Result<(), Error> {
         let pal = self.c.pal;
-        let inner = w - 2.0 * ROW_PAD_X;
-        let (fact_w, tw) = self.head_columns(t, w)?;
-        let head_h = self.head_height(t, w)?;
+        let tw = head.name_w;
         // the head's row centres its items (`.tile-head`: align-items center)
-        self.lead(&t.lead, ix, iy + (head_h - px::TILE_ICON) / 2.0)?;
+        self.lead(&t.lead, ix, iy + (head.h - px::TILE_ICON) / 2.0)?;
         let tx = ix + px::TILE_ICON + px::S_3;
-        let name_h = self.para_height(&t.name, TITLE, tw)?;
-        let text_h = name_h + ty::SECONDARY.line;
-        let ty0 = iy + (head_h - text_h) / 2.0;
+        let text_h = head.name_h + ty::SECONDARY.line;
+        let ty0 = iy + (head.h - text_h) / 2.0;
         self.para(&t.name, TITLE, pal.ink, tx, ty0, tw)?;
         let (state, warn, retry) = self.state_line(t);
-        let sy = ty0 + name_h;
+        let sy = ty0 + head.name_h;
         let color = if warn { pal.warn_text } else { pal.ink_muted };
         match retry {
             Some(order) => {
@@ -467,17 +479,17 @@ impl P<'_, '_, '_, '_> {
             }
         }
         if let Some(f) = &t.fact {
-            let fx = ix + inner - fact_w;
+            let fx = ix + inner - head.fact_w;
             self.line(
                 f,
                 ty::META,
                 pal.ink_muted,
                 fx,
-                iy + (head_h - ty::META.line) / 2.0,
-                fact_w,
+                iy + (head.h - ty::META.line) / 2.0,
+                head.fact_w,
             )?;
         }
-        Ok(head_h)
+        Ok(())
     }
 
     /// One part under a tile's head at (ix, py), `inner` wide.

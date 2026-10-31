@@ -9,7 +9,7 @@ use maison_api::scenes::Scene;
 
 use super::{Cx, HUE, MEROSS, SCENES, SHUTTERS, ZIGBEE};
 use crate::client::Failure;
-use crate::commands::{Order, Outcome, Post, Toast, limit};
+use crate::commands::{Order, Outcome, Post, Say, Toast, limit};
 use crate::i18n::{Arg, Words, k};
 use crate::paths;
 use crate::ui::icon::{self, Icon};
@@ -84,7 +84,7 @@ pub fn button(s: &Scene) -> Button {
     .within(limit::DEVICE)
     // what a scene may have changed (the web app reads these again)
     .then_refresh(&[HUE, ZIGBEE, MEROSS, SHUTTERS])
-    .said(run_said);
+    .said(Say::With(run_said));
     Button::new(Some(icon_of(s)), s.name.clone(), Act::Order(order))
 }
 
@@ -92,13 +92,10 @@ pub fn scenes_group(w: &Words, scenes: &[Scene]) -> Option<Group> {
     if scenes.is_empty() {
         return None;
     }
-    Some(Group {
-        title: w.s(k::SCENES_TITLE),
-        fact: None,
-        actions: Vec::new(),
-        stale: None,
-        body: Body::Buttons(scenes.iter().map(button).collect()),
-    })
+    Some(Group::new(
+        w.s(k::SCENES_TITLE),
+        Body::Buttons(scenes.iter().map(button).collect()),
+    ))
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {

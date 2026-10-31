@@ -141,19 +141,16 @@ pub fn next_line(
 pub fn tile(w: &Words, data: &Today, forecast: Option<&Forecast>, now: &DateTime<Tz>) -> Tile {
     let current = price_now(now, data);
     let next = next_line(w, data, current.as_ref(), forecast, now);
-    Tile {
-        open: Some(Act::Open(View::Tempo)),
-        name: now_line(w, data, current.as_ref()),
-        state: if next.is_empty() {
+    Tile::new(
+        now_line(w, data, current.as_ref()),
+        if next.is_empty() {
             w.s(k::TEMPO_OPEN)
         } else {
             next
         },
-        warn: false,
-        lead: Lead::Swatch(current.as_ref().map(|c| c.color).or(data.today.color)),
-        fact: None,
-        parts: Vec::new(),
-    }
+        Lead::Swatch(current.as_ref().map(|c| c.color).or(data.today.color)),
+    )
+    .open(Some(Act::Open(View::Tempo)))
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
@@ -169,13 +166,7 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
             &now,
         )]))
     });
-    Some(Group {
-        title: w.s(k::NAV_TEMPO),
-        fact: None,
-        actions: Vec::new(),
-        stale: stale(cx, &today, &[TEMPO]),
-        body,
-    })
+    Some(Group::new(w.s(k::NAV_TEMPO), body).stale(stale(cx, &today, &[TEMPO])))
 }
 
 // ── the Tempo page (routes/tempo-predictions: the week, the prices, the season) ──
@@ -231,15 +222,13 @@ pub fn day_tile(w: &Words, d: &ForecastDay, today: NaiveDate) -> Tile {
         }
         parts
     };
-    Tile {
-        name: w.day_label(d.date, today),
-        state: day_words(w, Some(d.color), !d.official, Some(d.confidence)),
-        warn: false,
-        lead: Lead::Swatch(Some(d.color)),
-        fact: Some(w.short_day(d.date)),
-        parts,
-        open: None,
-    }
+    Tile::new(
+        w.day_label(d.date, today),
+        day_words(w, Some(d.color), !d.official, Some(d.confidence)),
+        Lead::Swatch(Some(d.color)),
+    )
+    .fact(Some(w.short_day(d.date)))
+    .parts(parts)
 }
 
 /// The season's days of colour `c` (the page's stock): used of the quota, as a bar, and left.
@@ -263,18 +252,16 @@ pub fn stock_tile(w: &Words, s: &SeasonStock, c: Color) -> Tile {
     } else {
         0.0
     };
-    Tile {
-        name: name(w, c),
-        state: of(k::TEMPO_LEFT, n.remaining),
-        warn: false,
-        lead: Lead::Swatch(Some(c)),
-        fact: Some(of(k::TEMPO_DAYS_USED, n.used)),
-        parts: vec![Part::Bar {
-            shares: vec![(c, share)],
-            thin: true,
-        }],
-        open: None,
-    }
+    Tile::new(
+        name(w, c),
+        of(k::TEMPO_LEFT, n.remaining),
+        Lead::Swatch(Some(c)),
+    )
+    .fact(Some(of(k::TEMPO_DAYS_USED, n.used)))
+    .parts(vec![Part::Bar {
+        shares: vec![(c, share)],
+        thin: true,
+    }])
 }
 
 /// TempoPrices: the price in force until when, the other period's, tomorrow's once published;
@@ -304,38 +291,34 @@ pub fn price_tiles(w: &Words, data: &Today, now: &DateTime<Tz>) -> Vec<Tile> {
                 ],
             )));
         }
-        tiles.push(Tile {
-            name: format!(
-                "{} · {}",
-                period_color(w, c.period, c.color),
-                price(w, c.price)
-            ),
-            state: w.t(k::TEMPO_UNTIL, &[("time", w.hhmm(&c.until).into())]),
-            warn: false,
-            lead: Lead::Swatch(Some(c.color)),
-            fact: Some(w.s(k::TEMPO_NOW)),
-            parts,
-            open: None,
-        });
+        tiles.push(
+            Tile::new(
+                format!(
+                    "{} · {}",
+                    period_color(w, c.period, c.color),
+                    price(w, c.price)
+                ),
+                w.t(k::TEMPO_UNTIL, &[("time", w.hhmm(&c.until).into())]),
+                Lead::Swatch(Some(c.color)),
+            )
+            .fact(Some(w.s(k::TEMPO_NOW)))
+            .parts(parts),
+        );
     }
     if let Some(t) = &data.tariffs {
         for c in COLORS {
             let r = t.of(c);
-            tiles.push(Tile {
-                name: name(w, c),
-                state: format!(
+            tiles.push(Tile::new(
+                name(w, c),
+                format!(
                     "{} {} · {} {}",
                     w.s(k::TEMPO_HC),
                     price(w, r.off_peak),
                     w.s(k::TEMPO_HP),
                     price(w, r.peak)
                 ),
-                warn: false,
-                lead: Lead::Swatch(Some(c)),
-                fact: None,
-                parts: Vec::new(),
-                open: None,
-            });
+                Lead::Swatch(Some(c)),
+            ));
         }
     }
     tiles
@@ -348,43 +331,36 @@ pub fn page(cx: &mut Cx) -> Screen {
     let now = cx.house_now();
     let w = cx.words;
     let day = now.date_naive();
-    let week = Group {
-        title: w.s(k::TEMPO_PREDICTION_WEEK_FORECAST),
-        fact: None,
-        actions: Vec::new(),
-        stale: stale(cx, &forecast, &[TEMPO]),
-        body: loaded(w, &forecast, &[TEMPO], ("", ""), |f| {
+    let week = Group::new(
+        w.s(k::TEMPO_PREDICTION_WEEK_FORECAST),
+        loaded(w, &forecast, &[TEMPO], ("", ""), |f| {
             (!f.days.is_empty())
                 .then(|| Body::Tiles(f.days.iter().map(|d| day_tile(w, d, day)).collect()))
         }),
-    };
-    let prices = Group {
-        title: w.s(k::TEMPO_PRICES_TITLE),
-        fact: None,
-        actions: Vec::new(),
-        stale: stale(cx, &today, &[TEMPO]),
-        body: loaded(w, &today, &[TEMPO], ("", ""), |t| {
+    )
+    .stale(stale(cx, &forecast, &[TEMPO]));
+    let prices = Group::new(
+        w.s(k::TEMPO_PRICES_TITLE),
+        loaded(w, &today, &[TEMPO], ("", ""), |t| {
             let tiles = price_tiles(w, t, &now);
             (!tiles.is_empty()).then_some(Body::Tiles(tiles))
         }),
-    };
-    let season = Group {
-        title: match today.data.as_deref() {
+    )
+    .stale(stale(cx, &today, &[TEMPO]));
+    let season = Group::new(
+        match today.data.as_deref() {
             Some(t) => w.t(
                 k::TEMPO_SEASON,
                 &[("season", t.stock.season.as_str().into())],
             ),
             None => w.s(k::NAV_TEMPO),
         },
-        fact: None,
-        actions: Vec::new(),
-        stale: None,
-        body: loaded(w, &today, &[TEMPO], ("", ""), |t| {
+        loaded(w, &today, &[TEMPO], ("", ""), |t| {
             Some(Body::Tiles(
                 COLORS.iter().map(|c| stock_tile(w, &t.stock, *c)).collect(),
             ))
         }),
-    };
+    );
     Screen::Page {
         title: w.s(k::NAV_TEMPO),
         back: Box::new(Button::new(

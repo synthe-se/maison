@@ -3,7 +3,10 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use maison_api::Message;
+use maison_api::{
+    tv::{PowerRequest, VolumeRequest},
+    Message,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -22,29 +25,10 @@ struct Status {
     status: TvStatus,
 }
 
-/// The set powered as `IrAction::TvPower` powers it, with the same defaults.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PowerRequest {
-    #[serde(default)]
-    state: SwitchState,
-    /// Also route the set to the box's HDMI input, which is almost always what
-    /// is wanted: the TV otherwise comes back on whatever source it was left on.
-    #[serde(default = "maison_api::remote::default_true")]
-    switch_to_box: bool,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct KeyRequest {
     key: TvKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VolumeRequest {
-    level: Option<u8>,
-    muted: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

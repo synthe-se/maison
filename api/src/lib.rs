@@ -3,6 +3,7 @@
 //! them. JSON keys are camelCase English (`rename_all`), values keep their own spelling.
 
 pub mod androidtv;
+pub mod cats;
 pub mod climate;
 pub mod codes;
 pub mod envelope;
@@ -17,6 +18,7 @@ pub mod scenes;
 pub mod screens;
 pub mod sun;
 pub mod tempo;
+pub mod tv;
 
 /// The house's time zone's type (`HOUSE_TZ`'s): readers need no chrono-tz of their own.
 pub use chrono_tz::Tz;

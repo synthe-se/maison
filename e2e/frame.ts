@@ -222,8 +222,8 @@ await picture('scrolled');
 state.silent.add('hue');
 await tell('drag 300 1100');
 await tell('press hue-lamp:hue-01:power');
-// past the lamps' limit the app gives up on its own: its next read of them after the limit has
-// it drawn « Pas de réponse » (the same limit as the web app's, paces.ts)
+// past the lamps' limit the app gives up on its own and draws « Pas de réponse » (the same limit
+// as the web app's, paces.ts)
 const pressed = Date.now();
 await until(() => readSince('/api/hue-lamps', pressed + LAMP_LIMIT_MS), 15_000);
 await picture('no-answer');

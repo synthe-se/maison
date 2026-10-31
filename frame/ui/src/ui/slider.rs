@@ -65,7 +65,7 @@ impl Sliders {
         }
     }
 
-    /// A finger on the slider at `value` (a touch on the band places the thumb).
+    /// A finger took the slider at `value`.
     pub fn start(&mut self, s: &Slider, value: f64, now: Instant) -> Option<Order> {
         self.held.insert(
             s.key.clone(),
@@ -127,18 +127,29 @@ impl Sliders {
             .collect()
     }
 
-    /// When the look changes by itself: a held send due, a hold ending.
-    pub fn next_change(&self, now: Instant) -> Option<Instant> {
+    /// When the look changes by itself after `after`: a held send due, a hold ending.
+    pub fn next_change(&self, after: Instant) -> Option<Instant> {
         self.held
             .values()
             .filter_map(|h| {
                 if h.dragging && h.slider.live && h.sent != Some(h.value) {
-                    Some(h.sent_at.map_or(now, |t| t + THROTTLE))
+                    Some(h.sent_at.map_or(after, |t| t + THROTTLE))
                 } else {
-                    h.until.filter(|u| *u > now)
+                    h.until.filter(|u| *u > after)
                 }
             })
             .min()
+    }
+
+    /// The finger went without letting go (a cancel, another screen): nothing more is sent, what
+    /// was already sent held as usual.
+    pub fn cancel(&mut self, now: Instant) {
+        for h in self.held.values_mut().filter(|h| h.dragging) {
+            h.dragging = false;
+            h.until = h.sent.map(|_| now + HOLD);
+            h.value = h.sent.unwrap_or(h.value);
+        }
+        self.sweep(now);
     }
 
     /// Holds that ended are forgotten.
@@ -214,6 +225,28 @@ mod tests {
         assert_eq!(owed[0].posts[0].1.body, Some(json!({"brightness": 65})));
         // let go where it was last sent: nothing more
         assert!(sl.end(&s, 65.0, t0 + Duration::from_millis(400)).is_none());
+    }
+
+    #[test]
+    fn a_cancelled_finger_sends_nothing_more_and_holds_only_what_went() {
+        let t0 = Instant::now();
+        let s = lamp(50.0);
+        let mut sl = Sliders::default();
+        sl.start(&s, 60.0, t0).unwrap();
+        sl.moved(&s, 80.0, t0 + Duration::from_millis(100));
+        sl.cancel(t0 + Duration::from_millis(100));
+        assert_eq!(sl.shown(&s, t0 + Duration::from_millis(100)), 60.0);
+        assert!(sl.due(t0 + THROTTLE * 2).is_empty(), "not owed any more");
+        assert_eq!(sl.shown(&s, t0 + HOLD * 2), 50.0);
+        // nothing went: the device's reading at once
+        let shutter = Slider {
+            live: false,
+            ..lamp(20.0)
+        };
+        sl.start(&shutter, 40.0, t0);
+        sl.cancel(t0);
+        assert_eq!(sl.shown(&shutter, t0), 20.0);
+        assert!(sl.held.is_empty());
     }
 
     #[test]

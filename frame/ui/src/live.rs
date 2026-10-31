@@ -42,7 +42,7 @@ impl<T> Clone for Source<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Source<T> {
+impl<T: PartialEq + Send + Sync + 'static> Source<T> {
     /// Read every `every`.
     pub fn every(
         key: impl Into<String>,
@@ -74,7 +74,8 @@ impl<T: Send + Sync + 'static> Source<T> {
 pub enum Read {
     Value {
         key: String,
-        value: Arc<dyn Any + Send + Sync>,
+        /// `None`: the same as its last read.
+        value: Option<Arc<dyn Any + Send + Sync>>,
         pace: Duration,
         /// When it was asked (a gesture settles on a read asked after its answer).
         asked: Instant,
@@ -86,6 +87,15 @@ pub enum Read {
     },
     /// The server said what changed (its event stream): those sources read again now.
     Changed(String),
+}
+
+/// What `Live::take` found.
+#[derive(Debug, Default)]
+pub struct Came {
+    /// The reads: each value's key and when it was asked.
+    pub read: Vec<(String, Instant)>,
+    /// One of them changes what a view shows.
+    pub changed: bool,
 }
 
 /// A value as a view sees it (shared: a view reads several at once).
@@ -142,6 +152,14 @@ struct Entry {
     wanted: u64,
 }
 
+impl Entry {
+    /// Its value is older than `STALE_CADENCES` paces.
+    fn old(&self) -> bool {
+        self.at
+            .is_some_and(|at| at.elapsed() > self.pace.saturating_mul(STALE_CADENCES))
+    }
+}
+
 pub struct Live {
     client: Client,
     /// The server's event stream is open: pushed sources are read only as a safety net.
@@ -180,7 +198,7 @@ impl Live {
     }
 
     /// The source's value now; its worker started on the first ask.
-    pub fn want<T: Send + Sync + 'static>(&mut self, source: &Source<T>) -> View<T> {
+    pub fn want<T: PartialEq + Send + Sync + 'static>(&mut self, source: &Source<T>) -> View<T> {
         let drawing = self.drawing;
         // its worker started on the first ask, or again when wanted after a sweep (its last
         // value shown while it reads again)
@@ -205,9 +223,7 @@ impl Live {
             e.poke = poke;
         }
         let data = e.value.clone().and_then(|v| v.downcast::<T>().ok());
-        let old =
-            e.at.is_some_and(|at| at.elapsed() > e.pace.saturating_mul(STALE_CADENCES));
-        let stale = data.is_some() && (old || e.failure.is_some());
+        let stale = data.is_some() && (e.old() || e.failure.is_some());
         View {
             data,
             loading: e.at.is_none() && e.failure.is_none(),
@@ -244,9 +260,10 @@ impl Live {
         }
     }
 
-    /// The reads that came in: each value's key and when it was asked (empty: nothing changed).
-    pub fn take(&mut self) -> Vec<(String, Instant)> {
-        let mut read_now = Vec::new();
+    /// The reads that came in. An answer identical to the last changes nothing shown, unless it
+    /// ends a failure or an old value.
+    pub fn take(&mut self) -> Came {
+        let mut came = Came::default();
         while let Ok(read) = self.rx.try_recv() {
             match read {
                 Read::Value {
@@ -255,9 +272,12 @@ impl Live {
                     pace,
                     asked,
                 } => {
-                    read_now.push((key.clone(), asked));
+                    came.read.push((key.clone(), asked));
                     if let Some(e) = self.entries.get_mut(&key) {
-                        e.value = Some(value);
+                        came.changed |= value.is_some() || e.failure.is_some() || e.old();
+                        if value.is_some() {
+                            e.value = value;
+                        }
                         e.at = Some(Instant::now());
                         e.pace = pace;
                         e.failure = None;
@@ -266,25 +286,26 @@ impl Live {
                 }
                 Read::Changed(prefix) => self.refresh(&prefix),
                 Read::Failed { key, failure, pace } => {
-                    read_now.push((key.clone(), Instant::now()));
+                    came.read.push((key.clone(), Instant::now()));
                     if failure == Failure::SignedOut {
                         self.signed_out = true;
                     } else {
                         eprintln!("{key}: {failure}");
                     }
                     if let Some(e) = self.entries.get_mut(&key) {
+                        came.changed |= e.failure.as_ref() != Some(&failure);
                         e.failure = Some(failure);
                         e.pace = pace;
                     }
                 }
             }
         }
-        read_now
+        came
     }
 
-    /// A read said 401: the screen was removed (or never paired).
-    pub fn signed_out(&self) -> bool {
-        self.signed_out
+    /// A read said 401 since the last asked: the screen may have been removed, or never paired.
+    pub fn signed_out(&mut self) -> bool {
+        std::mem::take(&mut self.signed_out)
     }
 
     /// Everything stops and is forgotten (signed out: the house is no longer shown).
@@ -293,17 +314,17 @@ impl Live {
         self.signed_out = false;
     }
 
-    /// When the soonest value turns stale: the screen is drawn again then, to say so.
-    pub fn next_stale(&self) -> Option<Instant> {
+    /// When the first value turns stale after `after`: the screen is drawn again then, to say so.
+    pub fn next_stale(&self, after: Instant) -> Option<Instant> {
         self.entries
             .values()
             .filter(|e| e.poke.is_some() && e.failure.is_none())
             .filter_map(|e| e.at?.checked_add(e.pace.saturating_mul(STALE_CADENCES)))
-            .filter(|t| *t > Instant::now())
+            .filter(|t| *t > after)
             .min()
     }
 
-    fn spawn<T: Send + Sync + 'static>(&self, source: Source<T>) -> Sender<()> {
+    fn spawn<T: PartialEq + Send + Sync + 'static>(&self, source: Source<T>) -> Sender<()> {
         spawn(
             &self.client,
             source,
@@ -390,7 +411,7 @@ fn is_pushed(key: &str) -> bool {
     maison_api::events::ALL
         .iter()
         .any(|(_, name)| key.starts_with(name))
-        || key.starts_with("tuya:")
+        || key.starts_with(maison_api::events::TUYA)
 }
 
 /// A source's pace, given whether the event stream is open.
@@ -403,7 +424,7 @@ fn effective(key: &str, pace: Duration, pushed: bool) -> Duration {
 }
 
 /// The worker: read, say it, wait the pace (or a poke), again; ends when its ear is dropped.
-fn spawn<T: Send + Sync + 'static>(
+fn spawn<T: PartialEq + Send + Sync + 'static>(
     client: &Client,
     source: Source<T>,
     tx: Sender<Read>,
@@ -414,6 +435,8 @@ fn spawn<T: Send + Sync + 'static>(
     let client = client.clone();
     let name = format!("live {}", source.key);
     let spawned = std::thread::Builder::new().name(name).spawn(move || {
+        // compared here, off the drawing thread: an identical answer draws nothing
+        let mut last: Option<Arc<T>> = None;
         loop {
             let asked = Instant::now();
             let read = match (source.fetch)(&client) {
@@ -423,10 +446,14 @@ fn spawn<T: Send + Sync + 'static>(
                         (source.pace)(Some(&v)),
                         pushed.load(Ordering::Acquire),
                     );
+                    let value = (last.as_deref() != Some(&v)).then(|| Arc::new(v));
+                    if value.is_some() {
+                        last.clone_from(&value);
+                    }
                     (
                         Read::Value {
                             key: source.key.clone(),
-                            value: Arc::new(v),
+                            value: value.map(|v| v as Arc<dyn Any + Send + Sync>),
                             pace,
                             asked,
                         },
@@ -536,7 +563,7 @@ mod tests {
         let first = live.want(&source);
         assert!(first.loading && first.data.is_none());
         wait_until(|| wakes.load(Ordering::SeqCst) == 1);
-        assert!(!live.take().is_empty());
+        assert!(live.take().changed);
         let v = live.want(&source);
         assert_eq!(v.data.as_deref(), Some(&1));
         assert!(!v.stale && !v.loading);
@@ -546,6 +573,40 @@ mod tests {
         live.take();
         assert_eq!(live.want(&source).data.as_deref(), Some(&2));
         assert_eq!(live.peek::<u32>("n:count").as_deref(), Some(&2));
+    }
+
+    #[test]
+    fn an_identical_answer_changes_nothing_shown_but_still_counts_as_read() {
+        let n = Arc::new(AtomicUsize::new(0));
+        let served = n.clone();
+        let stub = serve(move |_| match served.fetch_add(1, Ordering::SeqCst) {
+            0 | 1 => (200, vec![], r#"{"n":1}"#.into()),
+            2 => (500, vec![], "{}".into()),
+            3 => (200, vec![], r#"{"n":1}"#.into()),
+            _ => (200, vec![], r#"{"n":2}"#.into()),
+        });
+        let (mut live, wakes) = live(&stub.origin);
+        let source = counter();
+        live.begin();
+        live.want(&source);
+        let turn = |live: &mut Live, wanted: usize| {
+            if wanted > 1 {
+                live.refresh("n:");
+            }
+            wait_until(|| wakes.load(Ordering::SeqCst) == wanted);
+            live.take()
+        };
+        assert!(turn(&mut live, 1).changed, "the first answer");
+        let same = turn(&mut live, 2);
+        assert!(!same.changed, "the same again");
+        assert_eq!(same.read.len(), 1, "a gesture settles on it all the same");
+        assert!(turn(&mut live, 3).changed, "a failure is said");
+        assert!(
+            turn(&mut live, 4).changed,
+            "the same again ends the failure"
+        );
+        assert!(turn(&mut live, 5).changed, "another value");
+        assert_eq!(live.want(&source).data.as_deref(), Some(&2));
     }
 
     #[test]
@@ -629,6 +690,6 @@ mod tests {
         // read every 50 ms once it said 5
         wait_until(|| wakes.load(Ordering::SeqCst) >= 3);
         live.take();
-        assert!(live.next_stale().is_some());
+        assert!(live.next_stale(Instant::now()).is_some());
     }
 }
