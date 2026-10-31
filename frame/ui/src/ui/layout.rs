@@ -124,13 +124,13 @@ pub const TOUCH: f32 = coarse::CONTROL_H_S;
 pub const TITLE: Type = ty::BODY.weight(600);
 
 // The components' own measures, written in their Svelte (not tokens yet): said here once.
-/// The home's head: the brand, the time and the date, read across the room.
-pub const HOUSE_HEAD: f32 = 96.0;
-/// The time on the wall (no Svelte: a phone has its own clock).
+/// The home's head: the brand, then the date and the time, quiet, in the page head's height.
+pub const HOUSE_HEAD: f32 = px::HEADER_H;
+/// The time on the wall (no Svelte: a phone has its own clock): a head's word, not a poster.
 pub const CLOCK: Type = Type {
-    weight: 600,
-    size: 72.0,
-    line: 80.0,
+    weight: 400,
+    size: 34.0,
+    line: 40.0,
     face: Face::Display,
 };
 /// A chip's words, read from a metre (the web's `--t-tiny` is for a phone in a hand).

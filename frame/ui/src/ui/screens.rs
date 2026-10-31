@@ -317,14 +317,14 @@ impl P<'_, '_, '_, '_> {
             (head_h - ty::BRAND.line) / 2.0 + BRAND_NUDGE * ty::BRAND.size,
             wcss - bx - m,
         )?;
-        // the time at the end, the date before it: from across the room
+        // the time at the end, the date before it
         let tw = self.width(time, CLOCK)?;
         let tx = wcss - m - tw;
         self.line(time, CLOCK, pal.ink, tx, (head_h - CLOCK.line) / 2.0, tw)?;
         let room = tx - px::S_4 - (bx + brand_w + px::S_4);
-        let dw = self.width(date, ty::PAGE)?.min(room);
-        let dy = (head_h - ty::PAGE.line) / 2.0;
-        self.line(date, ty::PAGE, pal.ink_muted, tx - px::S_4 - dw, dy, dw)?;
+        let dw = self.width(date, ty::BODY)?.min(room);
+        let dy = (head_h - ty::BODY.line) / 2.0;
+        self.line(date, ty::BODY, pal.ink_muted, tx - px::S_4 - dw, dy, dw)?;
         Ok(content)
     }
 
