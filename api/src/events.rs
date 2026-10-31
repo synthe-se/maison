@@ -37,9 +37,12 @@ events! {
     ANDROID_TV = "androidtv";
 }
 
+/// What every cats' device's event (and `live()` key) starts with.
+pub const TUYA: &str = "tuya:";
+
 /// The cats' device `id` (Tuya): its status.
 pub fn tuya(id: &str) -> String {
-    format!("tuya:{id}:")
+    format!("{TUYA}{id}:")
 }
 
 /// How long the stream stays quiet before a comment keeps it open (Cloudflare closes an idle
@@ -67,7 +70,9 @@ pub fn typescript() -> String {
     );
     let rows: Vec<String> = ALL.iter().map(|(n, k)| format!("\t{n}: '{k}'")).collect();
     ts.push_str(&rows.join(",\n"));
-    ts.push_str("\n} as const;\n\n/** The prefix a pushed source's key starts with. */\nexport const PUSHED: readonly string[] = [...Object.values(EVENTS), 'tuya:'];\n");
+    ts.push_str(&format!(
+        "\n}} as const;\n\n/** The prefix a pushed source's key starts with. */\nexport const PUSHED: readonly string[] = [...Object.values(EVENTS), '{TUYA}'];\n"
+    ));
     ts
 }
 

@@ -21,7 +21,7 @@ use crate::{
 /// The most portions one meal may serve.
 pub const MAX_PORTIONS: u8 = 10;
 /// The most portions one manual feed may serve.
-pub const MAX_FEED_PORTIONS: u8 = 12;
+pub use maison_api::cats::MAX_FEED_PORTIONS;
 /// The most meals a plan holds.
 pub const MAX_MEALS: usize = 10;
 

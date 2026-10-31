@@ -1,35 +1,37 @@
 #!/bin/sh
-# An update on trial (frame/linux/initramfs.py) becomes the system once the frame proves itself:
-# the interface up without a restart, the network, SSH, held 45 s. Else, after 150 s, a restart:
-# its tries spent, the initramfs goes back to the system before it.
+# What every boot must prove, for 45 s: the interface drawing (its heartbeat fresh), without a
+# restart. Then the system counts as good: an update on trial is kept, the active slot's boots go
+# back to zero. Else, after 150 s, a restart: the initramfs counts it, and comes back to the slot
+# before. A frame still to be set up has nothing to prove.
 set -eu
-state=/android-data/maison/slots/state
+. /usr/local/lib/maison-slots
 [ -s "$state" ] || exit 0
-value() { sed -n "s/^$1=//p" "$state"; }
-pending=$(value pending)
-[ -n "$pending" ] || exit 0
+[ ! -e /run/maison-setup ] || exit 0
 
+heartbeat=/run/maison-ui/heartbeat
+pending=$(key pending)
+drawing() {
+	[ -e "$heartbeat" ] && [ $(($(date +%s) - $(date -r "$heartbeat" +%s))) -lt 30 ] &&
+		[ "$(systemctl show -p NRestarts --value maison-ui)" = 0 ]
+}
+# an update must be reachable to be kept (a frame that lost the Wi-Fi could never be updated
+# again); a system already proved only draws, or a router out of order would turn it into a loop
 healthy() {
-	[ "$(systemctl is-active maison-ui)" = active ] &&
-		[ "$(systemctl show -p NRestarts --value maison-ui)" = 0 ] &&
-		[ "$(systemctl is-active sshd)" = active ] &&
-		ip route | grep -q '^default'
+	drawing || return 1
+	[ -z "$pending" ] || { [ "$(systemctl is-active sshd)" = active ] && ip link show wlan0 | grep -q LOWER_UP; }
 }
 
 held=0 waited=0
 while [ "$waited" -lt 150 ]; do
 	if healthy; then held=$((held + 5)); else held=0; fi
 	if [ "$held" -ge 45 ]; then
-		printf 'active=%s\npending=\ntries=0\n' "$pending" >"$state.new"
-		sync
-		mv "$state.new" "$state"
-		sync
+		maison-slot good
 		kill "$(pidof maison-guard)" 2>/dev/null || true
-		echo "update: slot $pending is the system"
+		echo "good: slot $(key active)${pending:+, an update kept}"
 		exit 0
 	fi
 	sleep 5
 	waited=$((waited + 5))
 done
-echo "update: slot $pending not healthy: restarting" >&2
+echo "not healthy after ${waited}s: restarting" >&2
 systemctl reboot

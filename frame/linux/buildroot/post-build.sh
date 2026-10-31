@@ -1,13 +1,19 @@
 #!/bin/sh
-# What the overlay cannot say: the app, the key that opens SSH, the journal kept on userdata, the
-# names that differ from Debian's, the units enabled. $1 is the target's root; /ui and /ssh.pub are
-# mounted by frame/linux/buildroot.sh.
+# What the overlay cannot say: the programs, who may come in, the journal kept on userdata, the
+# names OpenSSH uses, the units enabled. $1 is the target's root; buildroot.sh leaves what it built
+# in /tmp and mounts the CA's public key.
 set -eu
 root=$1
 install -D -m 0755 /tmp/maison-frame-ui "$root/usr/local/bin/maison-frame-ui"
 "$HOST_DIR/bin/arm-buildroot-linux-gnueabihf-strip" "$root/usr/local/bin/maison-frame-ui"
-install -d -m 0700 "$root/root/.ssh"
-install -m 0600 /ssh.pub "$root/root/.ssh/authorized_keys"
+install -D -m 0755 /tmp/maison-update "$root/usr/local/bin/maison-update"
+install -D -m 0755 /tmp/maison-setup "$root/usr/local/bin/maison-setup"
+"$HOST_DIR/bin/arm-buildroot-linux-gnueabihf-strip" "$root/usr/local/bin/maison-update" "$root/usr/local/bin/maison-setup"
+# who may come in: the CA's certificates, no key on the frame (frame/linux/ssh-cert.sh)
+install -m 0644 /ssh-ca.pub "$root/etc/ssh/maison-ca.pub"
+# what this image is, and where its updates live (none without FRAME_UPDATE_URL)
+cp /tmp/maison-version "$root/etc/maison-version"
+if [ -s /tmp/maison-update-url ]; then cp /tmp/maison-update-url "$root/etc/maison-update"; fi
 # one known board: no table of the world's hardware (the option alone leaves what systemd installed)
 rm -f "$root/usr/lib/udev/hwdb.bin"
 rm -rf "$root/usr/lib/udev/hwdb.d"
@@ -41,6 +47,7 @@ enable maison-ui.service
 enable maison-mac.service
 enable wpa_supplicant@.service wlan0
 enable maison-commit.service
+enable maison-update.timer
 disable wpa_supplicant.service
 # no login prompt on a product, no network file systems, no firmware crash store on this board
 disable getty@.service

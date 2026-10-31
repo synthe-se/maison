@@ -1,7 +1,9 @@
 //! One finger on the screen, as a phone reads it: a tap acts where it went down and came up
 //! (within a little slop), a drag past the slop scrolls the column and lets go with its speed
-//! (a fling that slows down), a finger down on a slider holds it until it lifts. Pure: fed the
-//! finger's points with their times, it says what they mean; the app draws and acts.
+//! (a fling that slows down). A slider is `touch-action: pan-y` (docs/ux.md § 3): it moves only
+//! once the finger left the slop sideways and then holds it until it lifts; a tap sends nothing,
+//! a vertical swipe scrolls. Pure: fed the finger's points with their times, it says what they
+//! mean; the app draws and acts.
 
 use std::time::{Duration, Instant};
 
@@ -33,7 +35,7 @@ pub enum Meaning {
     Scrolled(f32),
     /// Tapped: the hit it went down and came up on.
     Tap(usize),
-    /// A slider held, at this x (start, move); let go at this x (end).
+    /// A slider taken sideways, at this x (start, move); let go at this x (end).
     SlideStart(usize, f32),
     Slide(usize, f32),
     SlideEnd(usize, f32),
@@ -46,6 +48,8 @@ struct Down {
     under: Under,
     scroll: f32,
     dragging: bool,
+    /// It left the slop sideways, from a slider: the slider's until it lifts.
+    sliding: bool,
     /// Where the drag last put the column: still `scroll` when nothing could move.
     scrolled: f32,
 }
@@ -61,7 +65,7 @@ pub struct Finger {
 
 impl Finger {
     /// Down at (x, y) on `under`, the column at `scroll`. A fling running stops (as a phone's).
-    pub fn down(&mut self, x: f32, y: f32, under: Under, scroll: f32, at: Instant) -> Meaning {
+    pub fn down(&mut self, x: f32, y: f32, under: Under, scroll: f32, at: Instant) {
         self.fling = None;
         self.trail.clear();
         self.trail.push((at, y));
@@ -71,12 +75,9 @@ impl Finger {
             under,
             scroll,
             dragging: false,
+            sliding: false,
             scrolled: scroll,
         });
-        match under {
-            Under::Slider(i) => Meaning::SlideStart(i, x),
-            _ => Meaning::None,
-        }
     }
 
     /// Moved to (x, y); `max` the furthest the column scrolls.
@@ -84,10 +85,15 @@ impl Finger {
         let Some(d) = self.down.as_mut() else {
             return Meaning::None;
         };
-        if let Under::Slider(i) = d.under {
+        if let (Under::Slider(i), true) = (d.under, d.sliding) {
             return Meaning::Slide(i, x);
         }
-        if !d.dragging && ((x - d.x).powi(2) + (y - d.y).powi(2)).sqrt() > SLOP {
+        let (dx, dy) = (x - d.x, y - d.y);
+        if !d.dragging && dx.hypot(dy) > SLOP {
+            if let (Under::Slider(i), true) = (d.under, dx.abs() > dy.abs()) {
+                d.sliding = true;
+                return Meaning::SlideStart(i, x);
+            }
             d.dragging = true;
         }
         self.trail.push((at, y));
@@ -108,7 +114,7 @@ impl Finger {
             return Meaning::None;
         };
         match d.under {
-            Under::Slider(i) => Meaning::SlideEnd(i, x),
+            Under::Slider(i) if d.sliding => Meaning::SlideEnd(i, x),
             // a finger that wandered past the slop but moved nothing (a column that does not
             // scroll, a touch panel's jitter) still tapped what it pressed
             Under::Hit(i) if still_under == d.under && (!d.dragging || d.scrolled == d.scroll) => {
@@ -160,6 +166,31 @@ impl Finger {
     }
 }
 
+/// The one finger followed, by SDL's id: another that lands meanwhile is ignored whole.
+#[derive(Debug, Default)]
+pub struct Tracked(Option<u64>);
+
+impl Tracked {
+    /// A finger landed: true when it is the one followed from now on.
+    pub fn down(&mut self, id: u64) -> bool {
+        *self.0.get_or_insert(id) == id
+    }
+
+    /// Whether this finger is the one followed.
+    pub fn is(&self, id: u64) -> bool {
+        self.0 == Some(id)
+    }
+
+    /// A finger lifted or was cancelled: true when it was the one followed.
+    pub fn lifted(&mut self, id: u64) -> bool {
+        let was = self.is(id);
+        if was {
+            self.0 = None;
+        }
+        was
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,7 +223,7 @@ mod tests {
     fn a_tap_acts_on_what_it_went_down_and_came_up_on() {
         let t0 = Instant::now();
         let mut f = Finger::default();
-        assert_eq!(f.down(100.0, 200.0, Under::Hit(3), 0.0, t0), Meaning::None);
+        f.down(100.0, 200.0, Under::Hit(3), 0.0, t0);
         // a small wobble is still a tap
         assert_eq!(f.motion(104.0, 205.0, 1000.0, ms(t0, 30)), Meaning::None);
         assert_eq!(
@@ -270,16 +301,19 @@ mod tests {
     }
 
     #[test]
-    fn a_slider_holds_the_finger() {
+    fn a_slider_taken_sideways_holds_the_finger() {
         let t0 = Instant::now();
         let mut f = Finger::default();
+        f.down(10.0, 10.0, Under::Slider(2), 0.0, t0);
+        // within the slop: nothing yet
+        assert_eq!(f.motion(15.0, 12.0, 1000.0, ms(t0, 5)), Meaning::None);
         assert_eq!(
-            f.down(10.0, 10.0, Under::Slider(2), 0.0, t0),
-            Meaning::SlideStart(2, 10.0)
+            f.motion(40.0, 15.0, 1000.0, ms(t0, 10)),
+            Meaning::SlideStart(2, 40.0)
         );
-        // a vertical drag on a slider never scrolls
+        // taken: wherever it goes after, it never scrolls
         assert_eq!(
-            f.motion(60.0, 300.0, 1000.0, ms(t0, 10)),
+            f.motion(60.0, 300.0, 1000.0, ms(t0, 15)),
             Meaning::Slide(2, 60.0)
         );
         assert_eq!(
@@ -287,5 +321,49 @@ mod tests {
             Meaning::SlideEnd(2, 70.0)
         );
         assert!(!f.held());
+    }
+
+    #[test]
+    fn a_tap_on_a_slider_means_nothing() {
+        let t0 = Instant::now();
+        let mut f = Finger::default();
+        f.down(100.0, 10.0, Under::Slider(2), 0.0, t0);
+        assert_eq!(
+            f.up(100.0, 10.0, Under::Slider(2), ms(t0, 60)),
+            Meaning::None
+        );
+    }
+
+    #[test]
+    fn a_vertical_swipe_from_a_slider_scrolls_and_flings() {
+        let t0 = Instant::now();
+        let mut f = Finger::default();
+        f.down(100.0, 500.0, Under::Slider(2), 300.0, t0);
+        assert_eq!(
+            f.motion(104.0, 450.0, 1000.0, ms(t0, 20)),
+            Meaning::Scrolled(350.0)
+        );
+        // sideways afterwards: still the column's
+        assert_eq!(
+            f.motion(300.0, 440.0, 1000.0, ms(t0, 40)),
+            Meaning::Scrolled(360.0)
+        );
+        assert_eq!(
+            f.up(300.0, 400.0, Under::Nothing, ms(t0, 60)),
+            Meaning::None
+        );
+        assert!(f.flinging());
+    }
+
+    #[test]
+    fn one_finger_is_followed_until_it_lifts() {
+        let mut t = Tracked::default();
+        assert!(t.down(7));
+        assert!(t.down(7), "the same again, were its lift ever lost");
+        assert!(!t.down(8), "a second finger");
+        assert!(t.is(7) && !t.is(8));
+        assert!(!t.lifted(8));
+        assert!(t.lifted(7));
+        assert!(t.down(8), "free again");
     }
 }

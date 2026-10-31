@@ -1,0 +1,12 @@
+# A newer signed release, if there is one (frame/tools: maison-update). /etc/maison-update names
+# where: a system built without it has no updates over the air.
+[Unit]
+Description=The frame's update
+ConditionPathExists=/etc/maison-update
+RequiresMountsFor=/android-data
+Wants=network-online.target
+After=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/maison-update

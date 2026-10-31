@@ -4,11 +4,14 @@ use axum::{
     Json, Router,
 };
 use futures::TryStreamExt;
-use maison_api::{androidtv::Cleanup, Message};
+use maison_api::{
+    androidtv::{Cleanup, KeyRequest, LaunchRequest},
+    Message,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    androidtv::{self, AndroidKey, AndroidTvConfig, AndroidTvStatus},
+    androidtv::{self, AndroidTvConfig, AndroidTvStatus},
     auth::AdminUser,
     box_clean,
     error::{AppError, Refusal},
@@ -41,22 +44,6 @@ struct Status {
 #[serde(rename_all = "camelCase")]
 struct PairFinishRequest {
     code: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct KeyRequest {
-    key: AndroidKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LaunchRequest {
-    package: String,
-    /// Power the television on and route it to the box first — launching an
-    /// app on a set that is off or on another input is rarely what is meant.
-    #[serde(default = "maison_api::remote::default_true")]
-    ensure_tv_on: bool,
 }
 
 #[derive(Debug, Deserialize)]

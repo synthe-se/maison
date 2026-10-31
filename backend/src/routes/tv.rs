@@ -3,15 +3,18 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use maison_api::Message;
-use serde::{Deserialize, Serialize};
+use maison_api::{
+    tv::{AmbilightRequest, KeyRequest, PowerRequest, VolumeRequest},
+    Message,
+};
+use serde::Serialize;
 
 use crate::{
     auth::AdminUser,
     error::AppError,
-    ir::{Resolve, SwitchState},
+    ir::Resolve,
     routes::{Answer, Reply},
-    tv::{self, TvAmbilight, TvConfig, TvKey, TvPower, TvStatus, TvVolume},
+    tv::{self, TvAmbilight, TvConfig, TvPower, TvStatus, TvVolume},
     AppState,
 };
 
@@ -20,38 +23,6 @@ use crate::{
 struct Status {
     config: TvConfig,
     status: TvStatus,
-}
-
-/// The set powered as `IrAction::TvPower` powers it, with the same defaults.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PowerRequest {
-    #[serde(default)]
-    state: SwitchState,
-    /// Also route the set to the box's HDMI input, which is almost always what
-    /// is wanted: the TV otherwise comes back on whatever source it was left on.
-    #[serde(default = "maison_api::remote::default_true")]
-    switch_to_box: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct KeyRequest {
-    key: TvKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VolumeRequest {
-    level: Option<u8>,
-    muted: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AmbilightRequest {
-    #[serde(default)]
-    state: SwitchState,
 }
 
 #[derive(Debug, Serialize)]

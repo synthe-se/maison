@@ -81,12 +81,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [ -b /dev/mmcblk0 ] && break; sleep 1; done
 {console}
 # 3. what came up, in the log
 {settle}
-# the boot picture (splash.py) as soon as the framebuffer is there: the mark alone, no text
+# the boot's first picture (splash.py) as soon as the framebuffer is there: Synthèse's mark, no text
 for _ in 1 2 3 4 5; do [ -c /dev/fb0 ] && break; sleep 1; done
 show() {{ [ -c /dev/fb0 ] && dd if=/splash/$1.raw of=/dev/fb0 bs={stride} seek={row} conv=notrunc 2>/dev/null; }}
 if [ -c /dev/fb0 ]; then
-	cat /splash/splash.raw >/dev/fb0 2>/dev/null
-	maison-loader {loader} &
+	cat /splash/synthese.raw >/dev/fb0 2>/dev/null
 fi
 # (echo $(…) joins the lines: toybox has no tr)
 say "display: $(echo $(cat /sys/class/drm/*/status 2>/dev/null))"
@@ -95,53 +94,81 @@ say "input: $(echo $(cat /sys/class/input/*/name 2>/dev/null))"
 say "mmc: $(echo $(ls /sys/bus/mmc/devices 2>/dev/null))"
 say "sdio: $(echo $(cat /sys/bus/sdio/devices/*/vendor /sys/bus/sdio/devices/*/device 2>/dev/null))"
 
-# 4. userdata, and which system: two slots, a and b, each a system and perhaps a kernel. An update
-#    goes to the other slot and is tried for its tries (each counted before it starts: a power cut
-#    or a crash spends one), until maison-commit says it works; tries spent, back on the slot before.
-#    A slot's kernel starts by kexec, here, before anything holds the hardware; `boot` is never
-#    written by an update, so that its kernel is what any failure comes back to
+# 4. userdata, and which system: two slots, a and b, each a system and perhaps a kernel, all of it
+#    checked against its `sums`. An update goes to the free slot and is tried for its tries, the
+#    active slot's boots counted the same way, each before it starts (a power cut or a crash spends
+#    one), until maison-commit says the frame works. Tries spent, 4 boots without a proof, or a
+#    slot not whole: the other one; 8 boots and neither, the failure's line stays. A slot's kernel starts by kexec, here, before anything holds the hardware; no update
+#    writes `boot`, so that its kernel is what any failure comes back to
 data=$(grep -l "^PARTNAME=userdata$" /sys/class/block/*/uevent | head -1)
-legacy=/android-data/local/tmp/maison/rootfs.squashfs
-slots=/android-data/maison/slots
-state=$slots/state
+{slots}
 mkdir -p /android-data /lower /rw /newroot
-key() {{ sed -n "s/^$1=//p" $state; }}
-remember() {{ printf 'active=%s\\npending=%s\\ntries=%s\\n' "$1" "$2" "$3" >$state.new && sync && mv $state.new $state && sync; }}
-mounted=
-img=$legacy
+slot=
 trial=
-if [ -n "$data" ] && mount -t ext4 -o rw,noatime /dev/$(grep "^DEVNAME=" $data | cut -d= -f2) /android-data; then
-	mounted=1
-	# after a kexec, the first kernel chose
-	slot=$(sed -n 's/.*maison\\.slot=\\([ab]\\).*/\\1/p' /proc/cmdline)
-	if [ -n "$slot" ]; then
-		[ "$(key pending)" = "$slot" ] && trial=1
-	elif [ -s $state ]; then
-		slot=$(key active) pending=$(key pending) tries=$(key tries)
-		if [ -n "$pending" ]; then
-			if [ "${{tries:-0}}" -gt 0 ]; then
-				remember "$slot" "$pending" $((tries - 1))
-				slot=$pending
-				trial=1
-				say "update: trying slot $slot"
-			else
-				say "update: slot $pending failed, back on $slot"
-				remember "$slot" "" 0
-				echo "$pending" >$slots/failed
+# the factory's first system, left where Android's shell writes: adopted once, while userdata holds
+# no state at all, into root's slots
+adopt() {{
+	first=/android-data/local/tmp/maison/rootfs.squashfs
+	[ ! -s $state ] && [ -s $first ] || return 0
+	mkdir -p $slots/a && chown 0:0 $slots $slots/a && chmod 700 $slots && mv $first $slots/a/rootfs.squashfs &&
+		(cd $slots/a && sha256sum rootfs.squashfs >sums) && sync && remember a "" 0 0
+}}
+choose() {{
+	adopt
+	active=$(key active) pending=$(key pending) tries=$(key tries) boots=$(key boots)
+	case "$active" in a | b) ;; *)
+		# no usable state: what is whole
+		whole a && active=a || active=b
+		pending=
+		;;
+	esac
+	if [ -n "$pending" ]; then
+		if [ "${{tries:-0}}" -gt 0 ] && whole "$pending" && remember "$active" "$pending" $((tries - 1)) "$boots"; then
+			slot=$pending
+			trial=1
+			say "update: trying slot $slot"
+			return
+		fi
+		say "update: slot $pending failed, back on $active"
+		echo "$pending" >$slots/failed
+		remember "$active" "" 0 "$boots"
+	fi
+	if [ "${{boots:-0}}" -ge 4 ] && whole "$(other $active)"; then
+		say "slot $active failed $boots boots: on to $(other $active)"
+		active=$(other $active)
+		boots=0
+	fi
+	whole "$active" || active=$(other $active)
+	# what cannot be counted (userdata full) still boots, and a slot failed for ever stops here
+	if [ "${{boots:-0}}" -lt 8 ]; then remember "$active" "" 0 $((${{boots:-0}} + 1)); slot=$active; fi
+}}
+# after a kexec, the first kernel chose
+slot=$(sed -n 's/.*maison\\.slot=\\([ab]\\).*/\\1/p' /proc/cmdline)
+if [ -n "$data" ]; then
+	device=/dev/$(grep "^DEVNAME=" $data | cut -d= -f2)
+	[ -n "$slot" ] || e2fsck -p $device >/dev/null 2>&1
+	if mount -t ext4 -o rw,noatime,nosuid,nodev,noexec $device /android-data; then
+		if [ -n "$slot" ]; then
+			[ "$(key pending)" = "$slot" ] && trial=1
+		else
+			choose
+			if [ -n "$slot" ] && [ -s $slots/$slot/zImage ]; then
+				here=$slots/$slot
+				maison-guard arm
+				say "kernel of slot $slot"
+				line=$(uboot_line)
+				if kexec -l $here/zImage --dtb=$here/board.dtb --initrd=$here/initramfs.cpio.gz --command-line="$line maison.slot=$slot"; then
+					umount /android-data
+					kexec -e
+					reboot -f
+				fi
+				# never a trial of a kernel that did not run: spent, the next boot goes back
+				say "kexec of slot $slot failed"
+				[ -z "$trial" ] || remember "$active" "$pending" 0 "$boots"
+				reboot -f
 			fi
 		fi
-		here=$slots/$slot
-		if [ -s $here/zImage ]; then
-			[ -z "$trial" ] || maison-guard arm
-			say "kernel of slot $slot"
-			pkill maison-loader
-			line=$(sed "s/ console=tty0 .*//" /proc/cmdline)
-			sync
-			kexec -l $here/zImage --dtb=$here/board.dtb --initrd=$here/initramfs.cpio.gz --command-line="$line maison.slot=$slot" && kexec -e
-			say "kexec of slot $slot failed: its system on this kernel"
-		fi
 	fi
-	[ -z "$slot" ] || img=$slots/$slot/rootfs.squashfs
 fi
 
 # 5. the Wi-Fi driver: its board support, then the driver itself, without its power save (the frame
@@ -152,10 +179,16 @@ say "net: $(echo $(ls /sys/class/net))"
 
 # 6. the system: its squashfs, read-only, a tmpfs over it, and userdata at /android-data, read-write
 #    for what the system keeps (/android-data/maison); else the failure's line stays
-if [ -n "$mounted" ] && [ -f $img ] && loop=$(losetup -f) && losetup -r $loop $img && mount -t squashfs -o ro $loop /lower &&
+img=$slots/$slot/rootfs.squashfs
+if [ -n "$slot" ] && loop=$(losetup -f) && losetup -r $loop $img && mount -t squashfs -o ro $loop /lower &&
 	mount -t tmpfs -o mode=755 tmpfs /rw &&
 	mkdir -p /rw/upper /rw/work && mount -t overlay overlay -o lowerdir=/lower,upperdir=/rw/upper,workdir=/rw/work /newroot; then
 	say "system: $img"
+	# the system is there: Maison's mark, its ring turning until the interface takes the panel
+	if [ -c /dev/fb0 ]; then
+		cat /splash/splash.raw >/dev/fb0 2>/dev/null
+		maison-loader {loader} &
+	fi
 	chown 0:0 /android-data
 	# Maison's address: root's, read by the units (LoadCredential); install.sh's copy, where
 	# Android's shell (any ADB key) writes, is adopted only while root keeps none, then removed
@@ -165,25 +198,33 @@ if [ -n "$mounted" ] && [ -f $img ] && loop=$(losetup -f) && losetup -r $loop $i
 	if [ -s $left ]; then
 		if [ -s $kept ]; then
 			say "address: $left ignored, $kept kept (removed from the console to adopt another)"
-		elif cp $left $kept.new && chown 0:0 $kept.new && chmod 600 $kept.new && mv $kept.new $kept; then
+		elif cp $left $kept.new && chown 0:0 $kept.new && chmod 600 $kept.new && sync && mv $kept.new $kept && sync; then
 			say "address: adopted from $left"
 		fi
 		rm -f $left
 	fi
-	[ -s $kept ] || say "address: none yet (install.sh --target)"
+	[ -s $kept ] || say "address: none yet: the frame's setup asks for it"
+	# one identity across boots: the journal stays one directory, its limit holds; what earlier
+	# systems left under random ids goes
+	id=$(sha256sum /sys/block/mmcblk0/device/cid | cut -c1-32)
+	echo "$id" >/newroot/etc/machine-id
+	for old in /android-data/maison/journal/*; do [ "$old" = /android-data/maison/journal/$id ] || rm -rf "$old"; done
 	mkdir -p /newroot/android-data
 	mount --move /android-data /newroot/android-data
 	[ -z "$trial" ] || maison-guard 240 &
 {handover}	for m in dev proc sys; do mount --move /$m /newroot/$m; done
 	exec switch_root /newroot /sbin/init
 fi
-say "no system: $img"
-# an update that cannot even start spends its try here
-[ -z "$trial" ] || reboot -f
-pkill maison-loader
+say "no system: slot $slot"
+# what cannot even start spends its count here, so that the next boot chooses again
+[ -z "$slot" ] || reboot -f
+cat /splash/splash.raw >/dev/fb0 2>/dev/null
 show missing
 while :; do sleep 3600; done
 """
+
+
+SLOTS = (Path(__file__).resolve().parent / "rootfs/usr/local/lib/maison-slots").read_text()
 
 
 def init(debug: bool) -> str:
@@ -194,6 +235,7 @@ def init(debug: bool) -> str:
         console=CONSOLE if debug else "",
         handover=HANDOVER if debug else "",
         settle=SETTLE_DEBUG if debug else SETTLE,
+        slots=SLOTS,
         stride=splash.STRIDE,
         row=splash.STRIP_ROW,
         loader=f"{splash.LOADER_X} {splash.LOADER_Y} {ground:#x} {ink:#x} 120",
@@ -215,7 +257,7 @@ def build(tools: Path, firmware: Path, debug: bool = False) -> bytes:
     add("init", init(debug).encode(), 0o100755)
     add("bin/mksh", (tools / "mksh").read_bytes(), 0o100755)
     add("bin/toybox", (tools / "toybox").read_bytes(), 0o100755)
-    for tool in ("maison-loader", "maison-guard", "kexec"):
+    for tool in ("maison-loader", "maison-guard", "kexec", "e2fsck"):
         add(f"bin/{tool}", (tools / tool).read_bytes(), 0o100755)
     for applet in (tools / "applets.txt").read_text().split():
         if applet not in ("mksh", "toybox", "sh"):

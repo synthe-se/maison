@@ -13,29 +13,48 @@ use maison_api::sun::Side;
 use crate::backlight::Backlight;
 use crate::client::Client;
 use crate::commands::{Commands, Toast};
-use crate::config::Config;
+use crate::config::{Config, Setup};
 use crate::families::{self, Cx, Sources};
 use crate::i18n::{Words, k};
 use crate::live::Live;
 use crate::pairing::{Ask, Screen as Who, Session};
 use crate::theme::{self, Palette};
 use crate::ui::icon;
-use crate::ui::layout::{Hit, REACH, Target};
-use crate::ui::model::{Act, Button, Screen, View};
+use crate::ui::layout::{Hit, Over, REACH, Rect, Target};
+use crate::ui::model::{Act, Asked, Button, Screen, View};
 use crate::ui::slider::{Sliders, value_at};
-use crate::ui::touch::{Finger, Meaning, Under};
+use crate::ui::touch::{Finger, Meaning, Tracked, Under};
 
 /// How long a toast stays (`paces::TOAST_MS`, the web app's). A warning stays until dismissed
 /// on a page; on a wall, which nobody dismisses, `WALL_WARNING_MS`.
 const TOAST: Duration = Duration::from_millis(paces::TOAST_MS);
 const TOAST_WARN: Duration = Duration::from_millis(paces::WALL_WARNING_MS);
-/// A frame while something moves (a fling): the panel's 60 Hz.
+/// A press stays visible at least this long (docs/ux.md § 7).
+const PRESSED: Duration = Duration::from_millis(paces::PRESSED_MS);
+/// A remote's key held starts repeating after this long.
+const REPEAT_DELAY: Duration = Duration::from_millis(paces::KEY_REPEAT_DELAY_MS);
+/// The group a chip led to stays marked this long, in case it was on screen already.
+const FLASH: Duration = Duration::from_millis(1500);
+/// A row's head is at most this high (the panel's pixels): a simulated press lands in it.
+const ROW_HEAD: f32 = 64.0;
+/// The panel's 60 Hz: a simulated finger's points are this far apart.
 pub const FRAME: Duration = Duration::from_millis(16);
+/// Time-based words (« il y a 3 min ») turn with the wall clock's minute.
+const MINUTE: i64 = 60;
 /// A page left open goes back to the house after this long without a finger: a wall screen
 /// shows the house to whoever passes by.
 pub const PAGE_IDLE: Duration = Duration::from_secs(120);
 /// Every API call's whole wait (a device's own limit is shorter: `commands::limit`).
 const HTTP_WAIT: Duration = Duration::from_secs(15);
+
+/// A remote's key the finger holds down: what it sends, and when next.
+struct Held {
+    order: crate::commands::Order,
+    every: Duration,
+    next: Instant,
+    /// It repeated: the lift is no tap.
+    repeated: bool,
+}
 
 pub struct App {
     pub words: Words,
@@ -45,11 +64,26 @@ pub struct App {
     sliders: Sliders,
     sources: Sources,
     finger: Finger,
+    /// Which of SDL's fingers `finger` follows.
+    pub tracked: Tracked,
     /// The column's scroll, in the panel's pixels.
     pub scroll: f32,
     /// What the finger went down on, as it was then: a drawing in between (a read came, the
     /// house redrew) moves the hits, never what the finger holds.
     pressed: Option<(Under, Hit)>,
+    /// Where the press is shown, and until when at least, however short the tap.
+    look: Option<(Rect, Instant)>,
+    held: Option<Held>,
+    /// The question a dialog asks.
+    asking: Option<Asked>,
+    /// « Maintenant » shown whole.
+    unfolded: bool,
+    /// The group a chip led to, until when.
+    flash: Option<(&'static str, Instant)>,
+    /// How far the column scrolls to each anchored group.
+    anchors: Vec<(&'static str, f32)>,
+    /// The Tempo calendar's month, once another was asked (`year * 12 + month0`).
+    month: Option<i32>,
     /// The house, or one of its pages; and when a finger last touched the panel.
     view: View,
     touched: Instant,
@@ -65,26 +99,47 @@ pub struct App {
     toasts: Vec<(Toast, Instant)>,
     /// The sun's side, kept once known (a page signed out reads it too).
     side: Option<Side>,
-    /// Something changed since the last drawing.
+    /// Something changed since the last drawing: the screen is made again.
     pub dirty: bool,
+    /// Only the scroll changed: the last screen, drawn again.
+    pub scrolled: bool,
+    /// When the screen shown was made, and when its time-based words turn (signed in).
+    looked: Instant,
+    minute: Option<Instant>,
 }
 
 impl App {
     pub fn new(config: &Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let client = Client::new(&config.origin, &config.state_dir, HTTP_WAIT);
+        let client = config.origin.as_ref().map_or_else(
+            || Client::nowhere(HTTP_WAIT),
+            |origin| Client::new(origin, &config.state_dir, HTTP_WAIT),
+        );
         let mut live = Live::new(client.clone(), wake.clone());
-        // what the server says changed: read again at once, the polls a safety net
-        live.listen();
+        let session = if config.origin.is_some() {
+            // what the server says changed: read again at once, the polls a safety net
+            live.listen();
+            Session::start(client.clone(), wake.clone())
+        } else {
+            Session::idle(Who::Setup(config.setup.clone()))
+        };
         Self {
             words: Words::new(config.lang),
             live,
-            session: Session::start(client.clone(), wake.clone()),
+            session,
             commands: Commands::new(client, wake),
             sliders: Sliders::default(),
             sources: Sources::new(),
             finger: Finger::default(),
+            tracked: Tracked::default(),
             scroll: 0.0,
             pressed: None,
+            look: None,
+            held: None,
+            asking: None,
+            unfolded: false,
+            flash: None,
+            anchors: Vec::new(),
+            month: None,
             view: View::House,
             touched: Instant::now(),
             backlight: Backlight::open(std::path::Path::new("/sys/class/backlight")),
@@ -95,37 +150,54 @@ impl App {
             toasts: Vec::new(),
             side: None,
             dirty: true,
+            scrolled: false,
+            looked: Instant::now(),
+            minute: None,
         }
+    }
+
+    /// A drawing is owed.
+    pub fn owed(&self) -> bool {
+        self.dirty || self.scrolled
     }
 
     /// What the threads said since; the screen is drawn again if anything changed.
     pub fn take(&mut self) {
-        let paired = self.session.screen == Who::Paired;
+        let (paired, revoked) = (
+            self.session.screen == Who::Paired,
+            self.session.screen == Who::Revoked,
+        );
         let mut changed = self.session.take();
+        let now = Instant::now();
+        if paired != (self.session.screen == Who::Paired) {
+            // what the finger held is on another screen now
+            self.end_gesture(now);
+        }
         if !paired && self.session.screen == Who::Paired {
             // refused until now: the event stream opens at once, not after its wait
             self.live.reopen();
         }
-        let read = self.live.take();
-        changed |= !read.is_empty();
-        for (key, asked) in &read {
-            self.commands.read(key, *asked);
+        if !revoked && self.session.screen == Who::Revoked {
+            // the screen was removed: the house goes, the pairing says so
+            self.live.clear();
+            self.open(View::House, now);
+        }
+        let came = self.live.take();
+        changed |= came.changed;
+        for (key, asked) in &came.read {
+            changed |= self.commands.read(key, *asked);
         }
         let mut toasts = Vec::new();
         let live = &self.live;
         changed |= self
             .commands
             .take(&self.words, &mut |f| live.refresh(f), &mut toasts);
-        let now = Instant::now();
         for t in toasts {
             self.toast(t, now);
         }
-        if self.live.signed_out() {
-            // the screen was removed: the house goes, the pairing says so
-            self.live.clear();
-            self.view = View::House;
-            self.session.ask(Ask::SignedOut);
-            changed = true;
+        // one read's 401 is no verdict: the pairing asks who the screen is
+        if self.live.signed_out() && self.session.screen == Who::Paired {
+            self.session.recheck();
         }
         self.dirty |= changed;
     }
@@ -148,36 +220,89 @@ impl App {
         self.toasts.retain(|(_, until)| now < *until);
         self.dirty |= self.toasts.len() != before;
         self.sliders.sweep(now);
-        let night = self.side == Some(Side::Dark);
-        self.backlight.idle(now, self.touched, night);
-        if self.view != View::House && now.saturating_duration_since(self.touched) >= PAGE_IDLE {
-            self.open(View::House);
+        self.backlight.idle(now, self.touched, self.night());
+        if now.saturating_duration_since(self.touched) >= PAGE_IDLE {
+            if self.view != View::House {
+                self.open(View::House, now);
+            }
+            self.dirty |= self.asking.take().is_some() || std::mem::take(&mut self.unfolded);
         }
+        if self.pressed.is_none() && self.look.is_some_and(|(_, until)| now >= until) {
+            self.look = None;
+            self.scrolled = true;
+        }
+        if self.flash.is_some_and(|(_, until)| now >= until) {
+            self.flash = None;
+            self.scrolled = true;
+        }
+        self.repeat(now);
         if self.finger.flinging() {
             let max = self.max_scroll();
             if let Some(next) = self.finger.step(self.scroll, max, now) {
+                self.scrolled |= next != self.scroll;
                 self.scroll = next;
-                self.dirty = true;
             }
+        }
+        self.dirty |= self.commands.sweep(now);
+        for t in self.commands.overdue(&self.words, now) {
+            self.toast(t, now);
+        }
+        // what turns with time alone wakes the loop for this
+        self.dirty |= self.next_look().is_some_and(|t| t <= now);
+    }
+
+    /// A remote's key still held: sent again, unless the last one is still on its way (a repeat
+    /// never queues: the cursor stops when the finger does).
+    fn repeat(&mut self, now: Instant) {
+        let Some(h) = self.held.as_mut().filter(|h| now >= h.next) else {
+            return;
+        };
+        h.next = now + h.every;
+        h.repeated = true;
+        if self.commands.state(&h.order.key) == crate::commands::State::Idle {
+            self.commands.run(h.order.clone());
         }
     }
 
-    /// When the loop must wake by itself, if nothing else happens.
-    pub fn next_wake(&self, now: Instant) -> Option<Instant> {
-        if self.finger.flinging() {
-            return Some(now + FRAME);
-        }
+    /// The next moment what the screen shows changes by itself, since it was made.
+    fn next_look(&self) -> Option<Instant> {
         [
-            self.live.next_stale(),
-            self.commands.next_change(),
-            self.sliders.next_change(now),
-            self.toasts.iter().map(|(_, until)| *until).min(),
-            (self.view != View::House).then(|| self.touched + PAGE_IDLE),
-            self.backlight.next(self.touched),
+            self.live.next_stale(self.looked),
+            self.live.next_gone(self.looked),
+            self.commands.next_change(self.looked),
+            self.sliders.next_change(self.looked),
+            self.minute,
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// When the loop must wake by itself, if nothing else happens. While a fling runs, at once:
+    /// the present is paced by the panel.
+    pub fn next_wake(&self, now: Instant) -> Option<Instant> {
+        if self.finger.flinging() {
+            return Some(now);
+        }
+        [
+            self.next_look(),
+            self.toasts.iter().map(|(_, until)| *until).min(),
+            (self.view != View::House || self.asking.is_some() || self.unfolded)
+                .then(|| self.touched + PAGE_IDLE),
+            self.backlight.next(self.touched),
+            self.look
+                .filter(|_| self.pressed.is_none())
+                .map(|(_, until)| until),
+            self.flash.map(|(_, until)| until),
+            self.held.as_ref().map(|h| h.next),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    fn night(&self) -> bool {
+        self.side == Some(Side::Dark)
     }
 
     pub fn palette(&self) -> &'static Palette {
@@ -192,6 +317,20 @@ impl App {
         &self.sliders
     }
 
+    /// What goes over the screen in a drawing at `now`.
+    pub fn over(&self, now: Instant) -> Over<'_> {
+        Over {
+            pressed: self
+                .look
+                .filter(|(_, until)| self.pressed.is_some() || now < *until)
+                .map(|(r, _)| r),
+            gone: self.session.screen == Who::Paired && self.live.gone(now),
+            asking: self.asking.as_ref(),
+            unfolded: self.unfolded,
+            flash: self.flash.map(|(id, _)| id),
+        }
+    }
+
     pub fn toasts(&self) -> Vec<Toast> {
         self.toasts.iter().map(|(t, _)| t.clone()).collect()
     }
@@ -202,11 +341,18 @@ impl App {
 
     /// What the screen shows now, from who it is and what the house says.
     pub fn screen(&mut self, now: Instant) -> Screen {
+        self.looked = now;
+        self.minute = (self.session.screen == Who::Paired).then(|| {
+            let into = chrono::Utc::now().timestamp().rem_euclid(MINUTE);
+            now + Duration::from_secs((MINUTE - into) as u64)
+        });
         self.live.begin();
         let mut cx = Cx {
             live: &mut self.live,
             words: &self.words,
             sources: &mut self.sources,
+            commands: &self.commands,
+            month: self.month,
             now,
         };
         let (side, screen) = match &self.session.screen {
@@ -216,27 +362,38 @@ impl App {
                     View::House => {
                         let now = cx.house_now();
                         Screen::House {
+                            time: self.words.clock(now.time()),
+                            date: self.words.long_date(now.date_naive()),
                             now: families::now::chips(&mut cx, &now),
                             groups: families::house(&mut cx),
                         }
                     }
                     View::Tempo => families::tempo::page(&mut cx),
                     View::Device(id) => families::cats::page(&mut cx, id),
+                    View::Climate => families::climate::page(&mut cx),
+                    View::Tv => families::tv::tv_page(&mut cx),
+                    View::Box => families::tv::box_page(&mut cx),
+                    View::Lamp(family, id) => families::lamps::page(&mut cx, family, id),
+                    View::Plug(id) => families::plugs::page(&mut cx, id),
                 },
             ),
+            who @ Who::Setup(_) => (None, door(&self.words, who)),
             who => (families::sun_signed_out(&mut cx), door(&self.words, who)),
         };
         if side.is_some() {
             self.side = side;
+            self.backlight.idle(now, self.touched, self.night());
         }
         self.live.sweep();
         screen
     }
 
-    /// What the last drawing left: where the controls are, how tall the column is.
-    pub fn drawn(&mut self, hits: Vec<Hit>, content: f32, height: f32) {
-        self.hits = hits;
-        self.content = content;
+    /// What the last drawing left: where the controls are, how tall the column is, where the
+    /// groups a chip leads to are.
+    pub fn drawn(&mut self, drawn: crate::ui::layout::Drawn, height: f32) {
+        self.hits = drawn.hits;
+        self.content = drawn.content;
+        self.anchors = drawn.anchors;
         self.height = height;
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
     }
@@ -248,7 +405,8 @@ impl App {
             .iter()
             .rev()
             .find(|h| h.what.key().as_deref() == Some(key))?;
-        Some((h.x + h.w / 2.0, h.y + h.h / 2.0))
+        // in a row, its head, past its words: what is under and in it has targets of its own
+        Some((h.x + h.w * 0.75, h.y + h.h.min(ROW_HEAD) / 2.0))
     }
 
     /// A slider's band: its ends' x and its middle's y.
@@ -279,6 +437,7 @@ impl App {
                 self.hits
                     .iter()
                     .enumerate()
+                    .filter(|(_, h)| !matches!(h.what, Target::Cover))
                     .map(|(i, h)| (i, h.distance(x, y)))
                     .filter(|(_, d)| *d <= REACH)
                     .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -288,6 +447,7 @@ impl App {
             Some(i) => match self.hits[i].what {
                 Target::Slider { .. } => Under::Slider(i),
                 Target::Act(_) => Under::Hit(i),
+                Target::Cover => Under::Nothing,
             },
             None => Under::Nothing,
         }
@@ -298,7 +458,7 @@ impl App {
     pub fn finger_down(&mut self, x: f32, y: f32, now: Instant) {
         self.touched = now;
         // asleep: this finger only wakes the panel
-        if self.backlight.wake() {
+        if self.backlight.wake(self.night()) {
             self.waking = true;
             self.dirty = true;
             return;
@@ -308,8 +468,19 @@ impl App {
             Under::Hit(i) | Under::Slider(i) => self.hits.get(i).map(|h| (under, h.clone())),
             Under::Nothing => None,
         };
-        let m = self.finger.down(x, y, under, self.scroll, now);
-        self.meant(m, now);
+        if let Some((Under::Hit(_), h)) = &self.pressed {
+            self.look = Some(((h.x, h.y, h.w, h.h), now + PRESSED));
+            self.scrolled = true;
+            if let Target::Act(Act::Key(order, Some(every))) = &h.what {
+                self.held = Some(Held {
+                    order: order.clone(),
+                    every: *every,
+                    next: now + REPEAT_DELAY,
+                    repeated: false,
+                });
+            }
+        }
+        self.finger.down(x, y, under, self.scroll, now);
     }
 
     pub fn finger_motion(&mut self, x: f32, y: f32, now: Instant) {
@@ -332,7 +503,24 @@ impl App {
         let m = self.finger.up(x, y, under, now);
         self.meant(m, now);
         self.pressed = None;
+        self.held = None;
         self.dirty = true;
+    }
+
+    /// The system took the finger back: whatever it was doing ends, nothing is sent.
+    pub fn finger_cancel(&mut self, now: Instant) {
+        self.end_gesture(now);
+        self.dirty = true;
+    }
+
+    /// No finger held any more, whatever it held.
+    fn end_gesture(&mut self, now: Instant) {
+        self.finger = Finger::default();
+        self.pressed = None;
+        self.look = None;
+        self.held = None;
+        self.waking = false;
+        self.sliders.cancel(now);
     }
 
     /// What a finger at (x, y) would land on, by its key (a log's words).
@@ -347,7 +535,7 @@ impl App {
     }
 
     /// What the finger holds (its target as it went down).
-    fn held(&self) -> Option<Target> {
+    fn held_target(&self) -> Option<Target> {
         self.pressed.as_ref().map(|(_, h)| h.what.clone())
     }
 
@@ -355,16 +543,24 @@ impl App {
         match m {
             Meaning::None => {}
             Meaning::Scrolled(s) => {
+                if s != self.scroll {
+                    // a drag: what it started on is no longer pressed
+                    self.scrolled = true;
+                    self.look = None;
+                    self.held = None;
+                }
                 self.scroll = s;
-                self.dirty = true;
             }
             Meaning::Tap(_) => {
-                if let Some(Target::Act(act)) = self.held() {
-                    self.act(act);
+                let repeated = self.held.as_ref().is_some_and(|h| h.repeated);
+                if let Some(Target::Act(act)) = self.held_target()
+                    && !(repeated && matches!(act, Act::Key(..)))
+                {
+                    self.act(act, now);
                 }
             }
             Meaning::SlideStart(_, x) | Meaning::Slide(_, x) | Meaning::SlideEnd(_, x) => {
-                let Some(Target::Slider { slider, x0, x1 }) = self.held() else {
+                let Some(Target::Slider { slider, x0, x1 }) = self.held_target() else {
                     return;
                 };
                 let v = value_at(&slider, x, x0, x1);
@@ -381,29 +577,47 @@ impl App {
         }
     }
 
-    fn act(&mut self, act: Act) {
+    fn act(&mut self, act: Act, now: Instant) {
         match act {
-            Act::Order(o) => {
+            Act::Order(o) | Act::Key(o, _) => {
                 // a new try clears what the tile said of the last one
                 self.commands.forget(&o.key);
                 self.commands.run(o);
             }
+            Act::Ask(a) => self.asking = Some(*a),
+            Act::Keep => self.asking = None,
+            Act::Sure => {
+                if let Some(a) = self.asking.take() {
+                    self.commands.forget(&a.order.key);
+                    self.commands.run(a.order);
+                }
+            }
+            Act::Jump(to) => {
+                if let Some((_, y)) = self.anchors.iter().find(|(id, _)| *id == to) {
+                    self.scroll = y.clamp(0.0, self.max_scroll());
+                    self.flash = Some((to, now + FLASH));
+                }
+            }
+            Act::Unfold => self.unfolded = true,
+            Act::Month(m) => self.month = Some(m),
             Act::Refresh(prefixes) => {
                 for p in prefixes {
                     self.live.refresh(p);
                 }
             }
             Act::Pairing(ask) => self.session.ask(ask),
-            Act::Open(view) => self.open(view),
+            Act::Open(view) => self.open(view, now),
         }
         self.dirty = true;
     }
 
-    /// Shows `view`, from its top.
-    fn open(&mut self, view: View) {
+    /// Shows `view`, from its top; a finger held on the last one holds nothing here.
+    fn open(&mut self, view: View, now: Instant) {
         self.view = view;
         self.scroll = 0.0;
-        self.finger = Finger::default();
+        self.month = None;
+        self.asking = None;
+        self.end_gesture(now);
         self.dirty = true;
     }
 }
@@ -418,8 +632,24 @@ fn door(w: &Words, who: &Who) -> Screen {
     let (title, lead, code, hint, button, warn) = match who {
         // shown only once the house is: the door of a screen still asking who it is
         Who::Checking | Who::Paired => (
-            k::SCREEN_PAIR_TITLE,
-            w.s(k::COMMON_LOADING),
+            k::SCREEN_WAITING_TITLE,
+            vec![w.s(k::COMMON_LOADING)],
+            None,
+            None,
+            None,
+            false,
+        ),
+        Who::Waiting => (
+            k::SCREEN_WAITING_TITLE,
+            vec![w.s(k::SCREEN_WAITING_BODY)],
+            None,
+            None,
+            None,
+            false,
+        ),
+        Who::Setup(s) => (
+            k::SCREEN_SETUP_TITLE,
+            setup_lead(w, s),
             None,
             None,
             None,
@@ -427,7 +657,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Code { code, minutes } => (
             k::SCREEN_PAIR_TITLE,
-            w.s(k::SCREEN_PAIR_INTRO),
+            vec![w.s(k::SCREEN_PAIR_INTRO)],
             Some(code.clone()),
             Some(w.t(
                 k::SCREEN_PAIR_VALID,
@@ -438,7 +668,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Expired => (
             k::SCREEN_PAIR_TITLE,
-            w.s(k::SCREEN_PAIR_EXPIRED),
+            vec![w.s(k::SCREEN_PAIR_EXPIRED)],
             None,
             None,
             pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
@@ -446,7 +676,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Failed(f) => (
             k::SCREEN_PAIR_TITLE,
-            w.failure(f),
+            vec![w.failure(f)],
             None,
             None,
             pair(&w.s(k::SCREEN_PAIR_AGAIN), Ask::Again),
@@ -454,7 +684,7 @@ fn door(w: &Words, who: &Who) -> Screen {
         ),
         Who::Revoked => (
             k::SCREEN_REVOKED_TITLE,
-            w.s(k::SCREEN_REVOKED_BODY),
+            vec![w.s(k::SCREEN_REVOKED_BODY)],
             None,
             None,
             pair(&w.s(k::SCREEN_PAIR_RETRY), Ask::Pair),
@@ -463,12 +693,28 @@ fn door(w: &Words, who: &Who) -> Screen {
     };
     Screen::Door {
         title: w.s(title),
-        lead: vec![lead],
+        lead,
         code,
         hint,
         button,
         warn,
     }
+}
+
+/// What the setup view says: join the frame's Wi-Fi, and each thing the frame was told of it.
+fn setup_lead(w: &Words, s: &Setup) -> Vec<String> {
+    let line = |key: &str, name: &str, value: &Option<String>| {
+        value.as_deref().map(|v| w.t(key, &[(name, v.into())]))
+    };
+    [
+        Some(w.s(k::SCREEN_SETUP_JOIN)),
+        line(k::SCREEN_SETUP_NETWORK, "ssid", &s.ssid),
+        line(k::SCREEN_SETUP_PASSWORD, "password", &s.password),
+        line(k::SCREEN_SETUP_OPEN, "url", &s.url),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 #[cfg(test)]
@@ -477,16 +723,20 @@ mod tests {
     use crate::client::stub::serve;
     use crate::i18n::Lang;
     use crate::testing::{temp_dir, wait_until};
+    use crate::ui::model::Slider;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn config(origin: &str, state_dir: PathBuf) -> Config {
         Config {
-            origin: origin.into(),
+            origin: Some(origin.into()),
+            setup: Setup::default(),
             state_dir,
             lang: Lang::Fr,
             rotate: false,
             scale: 1.0,
             window: None,
+            heartbeat: None,
         }
     }
 
@@ -496,6 +746,14 @@ mod tests {
             &config("http://127.0.0.1:9", temp_dir("app")),
             Arc::new(|| {}),
         )
+    }
+
+    fn drawing(hits: Vec<Hit>, content: f32) -> crate::ui::layout::Drawn {
+        crate::ui::layout::Drawn {
+            hits,
+            content,
+            anchors: Vec::new(),
+        }
     }
 
     fn toast(text: &str, warn: bool) -> Toast {
@@ -509,14 +767,14 @@ mod tests {
     fn the_scroll_stays_inside_the_column() {
         let mut app = alone();
         app.scroll = 5000.0;
-        app.drawn(Vec::new(), 3000.0, 1280.0);
+        app.drawn(drawing(Vec::new(), 3000.0), 1280.0);
         assert_eq!(app.scroll, 3000.0 - 1280.0);
         app.scroll = -40.0;
-        app.drawn(Vec::new(), 3000.0, 1280.0);
+        app.drawn(drawing(Vec::new(), 3000.0), 1280.0);
         assert_eq!(app.scroll, 0.0);
         // a column shorter than the panel does not scroll
         app.scroll = 100.0;
-        app.drawn(Vec::new(), 600.0, 1280.0);
+        app.drawn(drawing(Vec::new(), 600.0), 1280.0);
         assert_eq!(app.scroll, 0.0);
     }
 
@@ -551,14 +809,16 @@ mod tests {
     fn the_finger_that_wakes_the_dimmed_panel_does_nothing_else() {
         let mut app = alone();
         app.drawn(
-            vec![Hit {
-                x: 0.0,
-                y: 0.0,
-                w: 800.0,
-                h: 1280.0,
-                what: Target::Act(Act::Open(View::Tempo)),
-            }],
-            1280.0,
+            drawing(
+                vec![Hit {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 800.0,
+                    h: 1280.0,
+                    what: Target::Act(Act::Open(View::Tempo)),
+                }],
+                1280.0,
+            ),
             1280.0,
         );
         let asleep = app.touched + crate::backlight::DIM_AFTER;
@@ -572,6 +832,292 @@ mod tests {
         assert_eq!(app.view, View::Tempo);
     }
 
+    /// A slider's band across the panel (20..780 at y 100..144), a lamp's.
+    fn slider_hit() -> Hit {
+        Hit {
+            x: 0.0,
+            y: 100.0,
+            w: 800.0,
+            h: 44.0,
+            what: Target::Slider {
+                slider: Slider {
+                    key: "l".into(),
+                    value: 50.0,
+                    min: 0.0,
+                    max: 100.0,
+                    step: 1.0,
+                    mark: None,
+                    live: true,
+                    put: false,
+                    off: false,
+                    near: 2.0,
+                    ends: None,
+                    path: "/l".into(),
+                    body: |_| serde_json::Value::Null,
+                    refresh: "l",
+                    name: "l".into(),
+                },
+                x0: 20.0,
+                x1: 780.0,
+            },
+        }
+    }
+
+    #[test]
+    fn neither_a_tap_nor_a_swipe_moves_a_slider() {
+        let mut app = alone();
+        app.drawn(drawing(vec![slider_hit()], 5000.0), 1280.0);
+        app.scroll = 500.0;
+        let Target::Slider { slider: s, .. } = app.hits[0].what.clone() else {
+            unreachable!()
+        };
+        let t0 = Instant::now();
+        app.finger_down(600.0, 120.0, t0);
+        app.finger_up(600.0, 120.0, t0 + FRAME);
+        assert_eq!(app.sliders.shown(&s, t0 + FRAME), 50.0, "a tap");
+        app.finger_down(600.0, 120.0, t0);
+        app.finger_motion(604.0, 300.0, t0 + FRAME);
+        app.finger_up(604.0, 320.0, t0 + FRAME * 2);
+        assert_eq!(app.sliders.shown(&s, t0 + FRAME * 2), 50.0, "a swipe");
+        assert_eq!(app.commands.state("l:set"), crate::commands::State::Idle);
+        assert_eq!(app.scroll, 320.0, "the swipe scrolled the column");
+    }
+
+    #[test]
+    fn a_cancel_or_another_view_lets_the_slider_go() {
+        let mut app = alone();
+        app.drawn(drawing(vec![slider_hit()], 5000.0), 1280.0);
+        let Target::Slider { slider: s, .. } = app.hits[0].what.clone() else {
+            unreachable!()
+        };
+        let t0 = Instant::now();
+        app.finger_down(100.0, 120.0, t0);
+        app.finger_motion(600.0, 120.0, t0 + FRAME);
+        assert_ne!(app.sliders.shown(&s, t0 + FRAME), 50.0);
+        app.finger_cancel(t0 + FRAME);
+        assert!(app.pressed.is_none());
+        app.finger_motion(700.0, 120.0, t0 + FRAME * 2);
+        app.finger_up(700.0, 120.0, t0 + FRAME * 3);
+        assert!(!app.finger.held(), "its motion and its lift mean nothing");
+        // a page gone from under the finger
+        app.finger_down(100.0, 120.0, t0);
+        app.finger_motion(400.0, 120.0, t0 + FRAME);
+        app.open(View::Tempo, t0 + FRAME);
+        assert!(app.pressed.is_none());
+        let dragging = app.sliders.next_change(t0 + crate::ui::slider::HOLD * 2);
+        assert_eq!(dragging, None, "nothing held for ever");
+    }
+
+    #[test]
+    fn a_cancelled_wake_lets_the_next_finger_act() {
+        let mut app = alone();
+        app.drawn(
+            drawing(
+                vec![Hit {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 800.0,
+                    h: 1280.0,
+                    what: Target::Act(Act::Open(View::Tempo)),
+                }],
+                1280.0,
+            ),
+            1280.0,
+        );
+        let asleep = app.touched + crate::backlight::DIM_AFTER;
+        app.tick(asleep);
+        app.finger_down(400.0, 600.0, asleep);
+        app.finger_cancel(asleep);
+        app.finger_down(400.0, 600.0, asleep + FRAME);
+        app.finger_up(400.0, 600.0, asleep + FRAME * 2);
+        assert_eq!(app.view, View::Tempo);
+    }
+
+    fn hit_of(what: Target) -> Hit {
+        Hit {
+            x: 100.0,
+            y: 100.0,
+            w: 200.0,
+            h: 60.0,
+            what,
+        }
+    }
+
+    fn order(key: &str) -> crate::commands::Order {
+        crate::commands::Order::one(key, "x", crate::commands::Post::empty("/x"))
+    }
+
+    #[test]
+    fn a_press_is_shown_its_time_however_short_the_tap() {
+        let mut app = alone();
+        app.drawn(
+            drawing(vec![hit_of(Target::Act(Act::Refresh(&[])))], 1280.0),
+            1280.0,
+        );
+        let t0 = app.touched + Duration::from_millis(1);
+        app.scrolled = false;
+        app.finger_down(150.0, 120.0, t0);
+        assert!(app.owed(), "drawn pressed at once");
+        assert_eq!(app.over(t0).pressed, Some((100.0, 100.0, 200.0, 60.0)));
+        app.finger_up(150.0, 120.0, t0 + FRAME);
+        assert!(app.over(t0 + FRAME).pressed.is_some(), "a 16 ms tap");
+        assert_eq!(app.next_wake(t0 + FRAME), Some(t0 + PRESSED));
+        assert!(app.over(t0 + PRESSED).pressed.is_none());
+        app.scrolled = false;
+        app.tick(t0 + PRESSED);
+        assert!(app.scrolled, "drawn released, the screen not remade");
+        assert!(app.look.is_none());
+        // a drag lets go of what it started on; a slider and a cover show no press
+        app.drawn(
+            drawing(vec![hit_of(Target::Act(Act::Refresh(&[])))], 5000.0),
+            1280.0,
+        );
+        app.finger_down(150.0, 120.0, t0);
+        app.finger_motion(150.0, 60.0, t0 + FRAME);
+        assert!(app.over(t0 + FRAME).pressed.is_none());
+        app.finger_up(150.0, 60.0, t0 + FRAME * 2);
+        app.drawn(drawing(vec![hit_of(Target::Cover)], 1280.0), 1280.0);
+        app.finger_down(150.0, 120.0, t0);
+        assert!(app.look.is_none());
+    }
+
+    #[test]
+    fn a_held_key_repeats_paced_by_its_answers_and_a_tap_sends_once() {
+        let stub = serve(|_| (200, vec![], "{}".into()));
+        let mut app = App::new(&config(&stub.origin, temp_dir("app-key")), Arc::new(|| {}));
+        let every = Duration::from_millis(100);
+        let key = Act::Key(order("tv:key:up"), Some(every));
+        app.drawn(drawing(vec![hit_of(Target::Act(key))], 1280.0), 1280.0);
+        let sent = || {
+            let asked = stub.asked.lock().unwrap();
+            asked.iter().filter(|a| a.line.contains("/api/x ")).count()
+        };
+        // a tap: one, on the lift
+        let t0 = app.touched + Duration::from_millis(1);
+        app.finger_down(150.0, 120.0, t0);
+        assert_eq!(sent(), 0);
+        app.finger_up(150.0, 120.0, t0 + FRAME);
+        wait_until(|| {
+            app.take();
+            sent() == 1 && app.commands.state("tv:key:up") == crate::commands::State::Idle
+        });
+        // held: nothing until the delay, then every `every`, the lift adds nothing
+        app.finger_down(150.0, 120.0, t0);
+        assert_eq!(app.next_wake(t0), Some(t0 + REPEAT_DELAY));
+        app.tick(t0 + REPEAT_DELAY / 2);
+        assert_eq!(sent(), 1);
+        app.tick(t0 + REPEAT_DELAY);
+        wait_until(|| {
+            app.take();
+            sent() == 2 && app.commands.state("tv:key:up") == crate::commands::State::Idle
+        });
+        // on its way, a repeat is dropped, never queued
+        app.commands.run(order("tv:key:up"));
+        let before = sent();
+        app.tick(t0 + REPEAT_DELAY + every);
+        app.finger_up(150.0, 120.0, t0 + REPEAT_DELAY + every);
+        wait_until(|| {
+            app.take();
+            app.commands.state("tv:key:up") == crate::commands::State::Idle
+        });
+        assert!(sent() <= before + 1, "only the one already sent");
+        assert!(app.held.is_none());
+    }
+
+    #[test]
+    fn what_cannot_be_undone_is_asked_first() {
+        let stub = serve(|_| (200, vec![], "{}".into()));
+        let mut app = App::new(&config(&stub.origin, temp_dir("app-ask")), Arc::new(|| {}));
+        let ask = |key: &str| {
+            Act::Ask(Box::new(Asked {
+                title: "Remettre à zéro ?".into(),
+                text: "Le temps compté sera perdu.".into(),
+                action: "Remettre à zéro".into(),
+                order: order(key),
+            }))
+        };
+        let t0 = Instant::now();
+        app.act(ask("tuya:f1:water"), t0);
+        assert!(app.over(t0).asking.is_some());
+        assert_eq!(
+            app.commands.state("tuya:f1:water"),
+            crate::commands::State::Idle
+        );
+        // « Garder »: nothing went
+        app.act(Act::Keep, t0);
+        assert!(app.asking.is_none());
+        let asked = stub.asked.lock().unwrap();
+        assert!(!asked.iter().any(|a| a.line.contains("/api/x ")));
+        drop(asked);
+        app.act(ask("tuya:f1:water"), t0);
+        app.act(Act::Sure, t0);
+        assert!(app.asking.is_none());
+        assert_ne!(
+            app.commands.state("tuya:f1:water"),
+            crate::commands::State::Idle
+        );
+        // left open, a wall's dialog goes by itself
+        app.act(ask("tuya:f1:filter"), t0);
+        app.tick(app.touched + PAGE_IDLE);
+        assert!(app.asking.is_none());
+    }
+
+    #[test]
+    fn a_chip_scrolls_to_its_group_and_more_opens() {
+        let mut app = alone();
+        app.drawn(
+            crate::ui::layout::Drawn {
+                hits: Vec::new(),
+                content: 3000.0,
+                anchors: vec![("lamps", 400.0), ("plugs", 9000.0)],
+            },
+            1280.0,
+        );
+        let t0 = app.touched;
+        app.act(Act::Jump("lamps"), t0);
+        assert_eq!(app.scroll, 400.0);
+        assert_eq!(
+            app.over(t0).flash,
+            Some("lamps"),
+            "marked, were it on screen"
+        );
+        assert_eq!(app.next_wake(t0), Some(t0 + FLASH));
+        app.tick(t0 + FLASH);
+        assert_eq!(app.over(t0 + FLASH).flash, None);
+        app.act(Act::Jump("plugs"), t0);
+        assert_eq!(app.scroll, 3000.0 - 1280.0, "inside the column");
+        app.act(Act::Jump("nowhere"), t0);
+        assert_eq!(app.scroll, 3000.0 - 1280.0);
+        assert!(!app.over(t0).unfolded);
+        app.act(Act::Unfold, t0);
+        assert!(app.over(t0).unfolded);
+        app.tick(t0 + PAGE_IDLE);
+        assert!(!app.over(t0).unfolded, "folded again once nobody is there");
+    }
+
+    #[test]
+    fn a_cover_stops_a_finger_and_reaches_nothing() {
+        let mut app = alone();
+        let band = |y: f32, what: Target| Hit {
+            x: 0.0,
+            y,
+            w: 800.0,
+            h: 60.0,
+            what,
+        };
+        let open = Target::Act(Act::Open(View::Tempo));
+        app.drawn(
+            drawing(vec![band(60.0, open), band(0.0, Target::Cover)], 1280.0),
+            1280.0,
+        );
+        assert_eq!(app.under(400.0, 30.0), Under::Nothing, "on the header");
+        assert_eq!(app.under(400.0, 70.0), Under::Hit(0));
+        // just past the covered band's edge, a control is still within reach
+        app.hits.reverse();
+        app.hits[1].y = 80.0;
+        assert_eq!(app.under(400.0, 70.0), Under::Hit(1));
+    }
+
     #[test]
     fn the_loop_wakes_for_a_fling_every_frame_else_when_something_turns() {
         let mut app = alone();
@@ -581,7 +1127,7 @@ mod tests {
             Some(app.touched + crate::backlight::DIM_AFTER),
             "idle: only to dim the panel"
         );
-        app.drawn(Vec::new(), 5000.0, 1280.0);
+        app.drawn(drawing(Vec::new(), 5000.0), 1280.0);
         // a quick drag up, let go: a fling, a frame at a time
         app.finger_down(10.0, 900.0, t0);
         for i in 1..=5 {
@@ -589,20 +1135,74 @@ mod tests {
         }
         app.finger_up(10.0, 600.0, t0 + FRAME * 6);
         let now = t0 + FRAME * 6;
-        assert_eq!(app.next_wake(now), Some(now + FRAME));
+        assert_eq!(app.next_wake(now), Some(now), "the present paces it");
         assert!(app.scroll > 0.0);
+    }
+
+    #[test]
+    fn only_the_scroll_moved_the_last_screen_is_drawn_again() {
+        let mut app = alone();
+        app.drawn(drawing(Vec::new(), 5000.0), 1280.0);
+        app.dirty = false;
+        let t0 = Instant::now();
+        app.finger_down(10.0, 900.0, t0);
+        app.finger_motion(10.0, 700.0, t0 + FRAME);
+        assert!(app.scrolled && !app.dirty && app.owed());
+        // a finger that moves nothing owes no drawing
+        app.scrolled = false;
+        app.finger_motion(10.0, 700.0, t0 + FRAME * 2);
+        assert!(!app.owed());
+    }
+
+    #[test]
+    fn what_turns_with_time_is_drawn_when_it_turns() {
+        let mut app = alone();
+        let t0 = Instant::now();
+        app.looked = t0;
+        let order = crate::commands::Order::one("k", "x", crate::commands::Post::empty("/x"));
+        app.commands.run(order);
+        let slow = crate::commands::SLOW;
+        assert_eq!(
+            app.next_look().map(|t| t.duration_since(t0) >= slow),
+            Some(true)
+        );
+        app.dirty = false;
+        let due = app.next_look().unwrap();
+        app.tick(due - Duration::from_millis(1));
+        assert!(!app.dirty, "not yet");
+        app.tick(due);
+        assert!(app.dirty, "the gesture went slow: drawn, no read needed");
+        // drawn at that moment: the next change is the next one
+        app.looked = due;
+        assert!(app.next_look().is_some_and(|t| t > due));
+    }
+
+    #[test]
+    fn signed_in_the_words_turn_with_the_minute() {
+        let mut app = alone();
+        assert_eq!(app.minute, None);
+        app.session.screen = Who::Paired;
+        let t0 = Instant::now();
+        app.screen(t0);
+        let next = app.minute.expect("a minute's tick");
+        assert!(next > t0 && next <= t0 + Duration::from_secs(60));
+        app.dirty = false;
+        app.tick(next);
+        assert!(app.dirty);
     }
 
     #[test]
     fn a_removed_screen_leaves_the_house_for_its_door() {
         let dir = temp_dir("app-removed");
-        let stub = serve(|line| match line {
-            l if l.starts_with("POST /api/screens/me") => (
+        let removed = Arc::new(AtomicBool::new(false));
+        let gone = removed.clone();
+        let stub = serve(move |line| match line {
+            l if l.starts_with("POST /api/screens/me") && !gone.load(Ordering::SeqCst) => (
                 200,
                 vec![],
                 r#"{"success":true,"screen":{"name":"Salon"}}"#.into(),
             ),
-            // removed in « Mon compte »: every read now says 401
+            // removed in « Mon compte »: every read now says 401, and `/me` once it is asked
             _ => (401, vec![], r#"{"code":"not_signed_in"}"#.into()),
         });
         std::fs::write(
@@ -615,8 +1215,21 @@ mod tests {
             app.take();
             matches!(app.screen(Instant::now()), Screen::House { .. })
         });
-        // the house's reads say 401: the pairing is told, the screen says it was removed
+        // one read's 401 alone removes nothing: `/me` still knows the screen
+        let asked_me = || {
+            let asked = stub.asked.lock().unwrap();
+            asked.iter().filter(|a| a.line.contains("/me")).count()
+        };
         wait_until(|| {
+            app.take();
+            asked_me() >= 2
+        });
+        assert_eq!(app.session.screen, Who::Paired);
+        assert!(dir.join("screen-cookie").exists());
+        // the house's reads say 401 and `/me` agrees: the screen says it was removed
+        removed.store(true, Ordering::SeqCst);
+        wait_until(|| {
+            app.screen(Instant::now());
             app.take();
             app.session.screen == Who::Revoked
         });
@@ -636,6 +1249,8 @@ mod tests {
         let w = Words::new(Lang::Fr);
         for who in [
             Who::Checking,
+            Who::Waiting,
+            Who::Setup(Setup::default()),
             Who::Code {
                 code: "ABCD-2345".into(),
                 minutes: 10,
@@ -649,5 +1264,49 @@ mod tests {
             };
             assert!(!title.is_empty() && !lead[0].is_empty(), "{who:?}");
         }
+    }
+
+    #[test]
+    fn a_paired_screen_that_waits_for_maison_is_offered_no_new_code() {
+        let w = Words::new(Lang::Fr);
+        let Screen::Door {
+            title,
+            lead,
+            button,
+            warn,
+            ..
+        } = door(&w, &Who::Waiting)
+        else {
+            panic!("a door")
+        };
+        assert_eq!(title, w.s(k::SCREEN_WAITING_TITLE));
+        assert_eq!(lead, [w.s(k::SCREEN_WAITING_BODY)]);
+        assert!(button.is_none() && !warn, "calm, and nothing to do");
+    }
+
+    #[test]
+    fn without_a_target_the_app_starts_on_its_setup_view() {
+        let mut c = config("", temp_dir("app-setup"));
+        c.origin = None;
+        c.setup = Setup {
+            ssid: Some("maison-frame".into()),
+            password: Some("sel-de-mer".into()),
+            url: Some("http://10.42.0.1".into()),
+        };
+        let mut app = App::new(&c, Arc::new(|| {}));
+        let Screen::Door { title, lead, .. } = app.screen(Instant::now()) else {
+            panic!("a door")
+        };
+        assert_eq!(title, app.words.s(k::SCREEN_SETUP_TITLE));
+        assert_eq!(lead.len(), 4);
+        assert!(lead[1].contains("maison-frame"));
+        assert!(lead[2].contains("sel-de-mer"));
+        assert!(lead[3].contains("http://10.42.0.1"));
+        // what it was not told, it does not say
+        let bare = setup_lead(&app.words, &Setup::default());
+        assert_eq!(bare, [app.words.s(k::SCREEN_SETUP_JOIN)]);
+        // and it reads nothing
+        app.take();
+        assert_eq!(app.next_wake(app.touched), app.backlight.next(app.touched));
     }
 }

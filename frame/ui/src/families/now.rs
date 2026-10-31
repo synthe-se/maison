@@ -14,7 +14,7 @@ use serde_json::Value;
 use super::lamps::Lamp;
 use super::shutters::next_event;
 use super::tempo::{name, price_now};
-use super::{Cx, cats, lamps, plugs};
+use super::{Cx, LAMPS_GROUP, MEROSS, SHUTTERS, TEMPO, TUYA, cats, lamps, plugs};
 use crate::i18n::{Words, count, k};
 use crate::ui::model::Chip;
 use maison_api::matter::SunEvent;
@@ -46,6 +46,7 @@ pub fn tempo_chip(w: &Words, p: &PriceNow) -> Chip {
             ],
         ),
         warn: p.color == Color::Red && p.period == Period::Peak,
+        to: TEMPO,
     }
 }
 
@@ -55,6 +56,7 @@ pub fn lamps_chip(w: &Words, all: &[Lamp]) -> Option<Chip> {
     (lit > 0).then(|| Chip {
         text: w.t(k::NOW_LAMPS_ON, &[count(lit)]),
         warn: false,
+        to: LAMPS_GROUP,
     })
 }
 
@@ -81,6 +83,7 @@ pub fn shutter_chip(w: &Words, covers: &[Cover]) -> Option<Chip> {
             &[("name", c.name.as_str().into()), ("time", time.into())],
         ),
         warn: false,
+        to: SHUTTERS,
     })
 }
 
@@ -100,6 +103,7 @@ pub fn cat_chip(w: &Words, device: &Value, status: Option<&Value>) -> Option<Chi
             ],
         ),
         warn: true,
+        to: TUYA,
     })
 }
 
@@ -120,6 +124,7 @@ pub fn plug_chip(
             &[("name", plug.name.as_str().into()), ("cost", cost.into())],
         ),
         warn: true,
+        to: MEROSS,
     })
 }
 
@@ -193,6 +198,8 @@ mod tests {
             last_seen: None,
             is_on: on,
             brightness: 80,
+            temperature: None,
+            color: false,
         }
     }
 
@@ -210,6 +217,7 @@ mod tests {
         let c = tempo_chip(&w, &p);
         assert_eq!(c.text, "Rouge HP · 70,6\u{a0}c€ jusqu’à 22:00");
         assert!(c.warn);
+        assert_eq!(c.to, TEMPO, "each chip leads to its group");
         let blue = tempo_chip(
             &w,
             &PriceNow {

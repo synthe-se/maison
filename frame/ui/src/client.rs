@@ -22,6 +22,8 @@ const COOKIE_NAMES: [&str; 2] = [COOKIE_SECURE, COOKIE];
 const COOKIE_FILE: &str = "screen-cookie";
 /// No answer is bigger than this (a plug's consumption: a few kilobytes).
 const MAX_ANSWER: u64 = 4 * 1024 * 1024;
+/// The event stream says nothing for this long: dead.
+const EVENTS_SILENCE: Duration = Duration::from_millis(3 * maison_api::events::KEEP_ALIVE_MS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -33,6 +35,21 @@ pub enum Failure {
     Unreachable(String),
     /// An answer that does not read as expected.
     Unreadable(String),
+}
+
+impl Failure {
+    /// Nobody answered for Maison: no answer at all, or the tunnel's gateway without a code (a
+    /// device out of reach is a coded answer: Maison heard).
+    pub fn gone(&self) -> bool {
+        matches!(
+            self,
+            Self::Unreachable(_)
+                | Self::Refused {
+                    status: 502..=504 | 530,
+                    code: None
+                }
+        )
+    }
 }
 
 impl std::fmt::Display for Failure {
@@ -217,6 +234,20 @@ impl Client {
         }
     }
 
+    /// A client of no Maison, no cookie: the setup view's, which asks nothing.
+    pub fn nowhere(timeout: Duration) -> Self {
+        Self {
+            agent: agent(timeout, IpFamily::Any),
+            api: String::new(),
+            jar: Arc::new(Jar {
+                file: PathBuf::new(),
+                origin: String::new(),
+                cookie: Mutex::new(None),
+            }),
+            timeout,
+        }
+    }
+
     /// The same client (its cookie too) over `family` alone.
     pub fn over(&self, family: IpFamily) -> Self {
         Self {
@@ -235,38 +266,48 @@ impl Client {
         self.jar.forget();
     }
 
-    pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
-        let mut req = self.agent.get(format!("{}{path}", self.api));
-        if let Some(c) = self.jar.get() {
-            req = req.header("Cookie", c);
+    /// The request, with the screen's cookie if it holds one.
+    fn with_cookie<B>(&self, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+        match self.jar.get() {
+            Some(c) => req.header("Cookie", c),
+            None => req,
         }
-        self.answer(req.call())
     }
 
-    /// The server's event stream (`GET /api/events`), read line by line as it comes: no
-    /// global timeout (it stays open), but a body read at most ten minutes long, so a stream
-    /// that died silently is opened again.
+    pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
+        let req = self.agent.get(format!("{}{path}", self.api));
+        self.answer(self.with_cookie(req).call())
+    }
+
+    /// The server's event stream (`GET /api/events`), read line by line as it comes: no total
+    /// timeout (a healthy stream stays open for days), but it says a keep-alive every
+    /// `KEEP_ALIVE_MS`, so a stream silent for `EVENTS_SILENCE`, before its headers or after, is a
+    /// dead one and is opened again.
     pub fn events(&self) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
-        let mut req = self
+        self.events_within(EVENTS_SILENCE)
+    }
+
+    fn events_within(
+        &self,
+        silence: Duration,
+    ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
+        let req = self
             .agent
             .get(format!("{}{}", self.api, crate::paths::EVENTS))
             .header("Accept", "text/event-stream")
             .config()
             .timeout_global(None)
-            .timeout_recv_body(Some(Duration::from_secs(600)))
+            .timeout_per_read(Some(silence))
             .build();
-        if let Some(c) = self.jar.get() {
-            req = req.header("Cookie", c);
-        }
-        let res = req
+        let res = self
+            .with_cookie(req)
             .call()
             .map_err(|e| Failure::Unreachable(e.to_string()))?;
         match res.status().as_u16() {
             200 => Ok(Box::new(std::io::BufReader::new(
                 res.into_body().into_reader(),
             ))),
-            401 => Err(Failure::SignedOut),
-            status => Err(Failure::Refused { status, code: None }),
+            status => Err(refused(status, None)),
         }
     }
 
@@ -290,12 +331,10 @@ impl Client {
 
     fn send<T: DeserializeOwned>(
         &self,
-        mut req: ureq::RequestBuilder<ureq::typestate::WithBody>,
+        req: ureq::RequestBuilder<ureq::typestate::WithBody>,
         body: Option<&impl Serialize>,
     ) -> Result<T, Failure> {
-        if let Some(c) = self.jar.get() {
-            req = req.header("Cookie", c);
-        }
+        let req = self.with_cookie(req);
         let sent = match body {
             Some(b) => {
                 let json =
@@ -327,12 +366,16 @@ impl Client {
         match status {
             200..=299 => serde_json::from_str(&text)
                 .map_err(|e| Failure::Unreadable(format!("{e}: {}", clip(&text)))),
-            401 => Err(Failure::SignedOut),
-            _ => Err(Failure::Refused {
-                status,
-                code: code_of(&text),
-            }),
+            _ => Err(refused(status, code_of(&text))),
         }
+    }
+}
+
+/// A status that is no success: 401 means only « not signed in ».
+fn refused(status: u16, code: Option<Code>) -> Failure {
+    match status {
+        401 => Failure::SignedOut,
+        _ => Failure::Refused { status, code },
     }
 }
 
@@ -524,6 +567,66 @@ mod tests {
             Some("maison_screen=kept")
         );
         assert_eq!(Jar::open(&dir, "https://other.example").get(), None);
+    }
+
+    /// A server that takes each connection and has `talk` hold it (dropped: closed).
+    fn listening(talk: fn(std::net::TcpStream)) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                std::thread::spawn(move || talk(stream));
+            }
+        });
+        origin
+    }
+
+    #[test]
+    fn a_peer_lost_before_its_headers_does_not_hang_the_stream() {
+        let origin = listening(|stream| {
+            // connected, then nothing, ever: the socket stays open
+            std::thread::sleep(Duration::from_secs(30));
+            drop(stream);
+        });
+        let c = Client::new(&origin, &temp_dir("events-lost"), Duration::from_secs(5));
+        let started = std::time::Instant::now();
+        let silence = Duration::from_millis(200);
+        assert!(matches!(
+            c.events_within(silence).map(|_| ()),
+            Err(Failure::Unreachable(_))
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_healthy_stream_outlives_its_silence_and_a_mute_one_ends() {
+        use std::io::{BufRead, Read, Write};
+        let origin = listening(|mut stream| {
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+            stream.write_all(head.as_bytes()).unwrap();
+            // keep-alives for six times the silence, then mute, the socket open
+            for i in 0..6 {
+                write!(stream, ": keep-alive {i}\n\n").unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        let c = Client::new(&origin, &temp_dir("events-mute"), Duration::from_secs(5));
+        let stream = c.events_within(Duration::from_millis(300)).unwrap();
+        let started = std::time::Instant::now();
+        let lines: Vec<String> = stream.lines().map_while(Result::ok).collect();
+        assert_eq!(
+            lines.iter().filter(|l| !l.is_empty()).count(),
+            6,
+            "{lines:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "ended by itself"
+        );
     }
 
     #[test]

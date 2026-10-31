@@ -1,6 +1,6 @@
 """The frame's boot picture, drawn by the initramfs on /dev/fb0 as soon as the panel is up (U-Boot
-draws nothing from our boot image): Maison's mark on the app's ground and nothing else; a line
-under it only when the boot fails (« Système introuvable… »), a strip of its own copied over the
+draws nothing from our boot image): Synthèse's mark, large, while the frame checks what it boots,
+then Maison's mark on the app's ground and nothing else; a line under it only when the boot fails (« Système introuvable… »), a strip of its own copied over the
 picture. Raw XRGB8888 as the framebuffer holds it (800×1280, 3200 bytes a row), turned 180° (the
 panel is mounted upside down: what the person sees is the framebuffer's last row first). The
 colours are the app's tokens (web/src/styles/tokens.css), the mark the web app's
@@ -21,6 +21,7 @@ import build  # noqa: E402
 W, H = 800, 1280
 STRIDE = W * 4
 MARK = 240
+SYNTHESE_MARK = 600
 # the failure's line, under the mark (in what the person sees)
 STRIP_Y, STRIP_H = 900, 64
 # the framebuffer's row where the strip starts once turned
@@ -67,6 +68,22 @@ def raw(rows: list[bytes]) -> bytes:
     return bytes(out)
 
 
+def synthese(ground: str) -> str:
+    """Synthèse's mark, large, centred on the ground."""
+    mark = (Path(__file__).resolve().parent / "synthese-mark.svg").read_text()
+    size = re.search(r'viewBox="0 0 ([0-9.]+) ', mark)
+    if not size:
+        raise SystemExit("synthese-mark.svg: no viewBox")
+    head = mark.index(">", mark.index("<svg"))
+    inner = mark[head + 1 : mark.rindex("</svg>")]
+    x, y = (W - SYNTHESE_MARK) / 2, (H - SYNTHESE_MARK) / 2
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
+        f'<rect width="{W}" height="{H}" fill="{ground}"/>'
+        f'<g fill="none" transform="translate({x} {y}) scale({SYNTHESE_MARK / float(size[1])})">{inner}</g></svg>'
+    )
+
+
 def frames() -> dict[str, bytes]:
     """`splash` (the whole picture) and the failure's strip, by its key's last word."""
     ground, ink = token("cloud"), token("ink-soft")
@@ -80,7 +97,7 @@ def frames() -> dict[str, bytes]:
         f'<g transform="translate({x} {y}) scale({MARK / 48})">{inner}</g></svg>'
     )
     words = __import__("json").loads((REPO / "i18n/messages/fr.json").read_text())
-    out = {"splash": raw(render(splash, W, H))}
+    out = {"splash": raw(render(splash, W, H)), "synthese": raw(render(synthese(ground), W, H))}
     for key in STEPS:
         text = words[key].replace("&", "&amp;").replace("<", "&lt;")
         strip = (

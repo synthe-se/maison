@@ -99,21 +99,9 @@ pub struct MerossWifi {
     pub signal: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MerossConsumptionEntry {
-    pub date: String,
-    pub time: i64,
-    pub value: i32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MerossConsumptionSummary {
-    pub days: usize,
-    pub total_wh: i32,
-    pub total_kwh: f64,
-}
+pub use maison_api::meross::{
+    ConsumptionEntry as MerossConsumptionEntry, ConsumptionSummary as MerossConsumptionSummary,
+};
 
 #[derive(Debug, Clone)]
 pub struct MerossManager {

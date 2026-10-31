@@ -60,7 +60,7 @@ if $ram; then
 	done
 	# U-Boot's part of the command line: the new kernel adds its own (CONFIG_CMDLINE_EXTEND)
 	step "loading the kernel"
-	c 'kexec -l /tmp/ram-zImage --dtb=/tmp/ram-rk3126-amaboo-gbzk-y1000.dtb --initrd=/tmp/ram-linux-initramfs.cpio.gz --command-line="$(sed "s/ console=tty0 .*//" /proc/cmdline)"' 60
+	c 'kexec -l /tmp/ram-zImage --dtb=/tmp/ram-rk3126-amaboo-gbzk-y1000.dtb --initrd=/tmp/ram-linux-initramfs.cpio.gz --command-line="$(. /usr/local/lib/maison-slots; uboot_line)"' 60
 	c 'systemctl kexec' 10 || true
 	wait_for "the console to go" 60 no_console
 elif $flash && console; then

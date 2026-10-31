@@ -2,8 +2,9 @@
 //! cookie asks `POST /screens/me` (who it is, its cookie renewed); refused, or holding none, it shows a code
 //! (`POST /screens/pairing`) and asks every `pollMs` whether an admin paired it
 //! (`POST /screens/pairing/claim`, the secret kept in this thread's memory only), until the
-//! code's time is over (a new one is one tap away). Paired, the house shows; a later 401 (the
-//! screen removed from « Mon compte ») says so and pairs again.
+//! code's time is over (a new one is one tap away). Paired, the house shows. Only `/screens/me`
+//! decides that a screen was removed (from « Mon compte »): a read's 401 has it asked again, and
+//! what is no 401 (nobody answering, a 5xx) leaves the cookie alone, the screen waiting calmly.
 //!
 //! One thread does the asking; the drawing thread reads `Screen` and sends `Ask`.
 
@@ -15,6 +16,7 @@ use maison_api::codes::Code;
 use maison_api::screens::{ClaimAnswer, ClaimRequest, Me, Pairing};
 
 use crate::client::{Client, Failure};
+use crate::config::Setup;
 use crate::paths;
 use ureq::config::IpFamily;
 
@@ -31,6 +33,10 @@ const RETRY: [Duration; 4] = [
 pub enum Screen {
     /// Asking who it is (its cookie held).
     Checking,
+    /// Holding its cookie, Maison silent: said calmly, asked again by itself.
+    Waiting,
+    /// No Maison configured: the way to give it one.
+    Setup(Setup),
     /// The code to give from a phone, for how many minutes it was given.
     Code { code: String, minutes: u64 },
     /// The code's time is over: a new one on a tap.
@@ -48,7 +54,7 @@ pub enum Screen {
 pub enum Ask {
     /// A new code (after it expired, or on a failure's « Nouveau code »).
     Again,
-    /// A read said 401: the screen was removed.
+    /// A read said 401: `/screens/me` asked again.
     SignedOut,
     /// From the revoked notice: show a code.
     Pair,
@@ -58,6 +64,8 @@ pub struct Session {
     pub screen: Screen,
     rx: Receiver<Screen>,
     tx: Sender<Ask>,
+    /// A 401 was passed on, its verdict not back yet.
+    checking: bool,
 }
 
 impl Session {
@@ -74,6 +82,19 @@ impl Session {
             screen: Screen::Checking,
             rx,
             tx,
+            checking: false,
+        }
+    }
+
+    /// `screen` for good: nothing is asked of anyone.
+    pub fn idle(screen: Screen) -> Self {
+        let (_, rx) = mpsc::channel();
+        let (tx, _) = mpsc::channel();
+        Self {
+            screen,
+            rx,
+            tx,
+            checking: false,
         }
     }
 
@@ -81,14 +102,22 @@ impl Session {
     pub fn take(&mut self) -> bool {
         let mut changed = false;
         while let Ok(s) = self.rx.try_recv() {
+            self.checking = false;
+            changed |= s != self.screen;
             self.screen = s;
-            changed = true;
         }
         changed
     }
 
     pub fn ask(&self, ask: Ask) {
         let _ = self.tx.send(ask);
+    }
+
+    /// A read said 401: asked once, whatever the reads that say so meanwhile.
+    pub fn recheck(&mut self) {
+        if !std::mem::replace(&mut self.checking, true) {
+            self.ask(Ask::SignedOut);
+        }
     }
 }
 
@@ -109,28 +138,17 @@ fn run(
     loop {
         // who it is
         if client.has_cookie() {
-            let mut tries = 0;
-            let me = loop {
-                match client.post::<maison_api::Answer<Me>>(paths::SCREEN_ME, None::<&()>) {
-                    Ok(_) => break true,
-                    Err(Failure::SignedOut) => break false,
-                    Err(f) => {
-                        if !say(Screen::Failed(f)) {
-                            return;
-                        }
-                        if wait(asks, RETRY[tries.min(RETRY.len() - 1)]) == Waited::Gone {
-                            return;
-                        }
-                        tries += 1;
-                    }
+            loop {
+                match known(client, &say, asks) {
+                    Known::Yes => {}
+                    Known::No => break,
+                    Known::Gone => return,
                 }
-            };
-            if me {
                 was_paired = true;
                 if !say(Screen::Paired) {
                     return;
                 }
-                // the house shows until a read says 401
+                // the house shows until a read says 401, which is asked again above
                 loop {
                     match asks.recv() {
                         Ok(Ask::SignedOut) => break,
@@ -164,6 +182,33 @@ fn run(
 enum Paired {
     Yes,
     Gone,
+}
+
+/// What `/screens/me` says of the cookie held.
+enum Known {
+    Yes,
+    No,
+    Gone,
+}
+
+/// Asks until the server says: only a 401 says the cookie is no longer good.
+fn known(client: &Client, say: &dyn Fn(Screen) -> bool, asks: &Receiver<Ask>) -> Known {
+    let mut tries = 0;
+    loop {
+        match client.post::<maison_api::Answer<Me>>(paths::SCREEN_ME, None::<&()>) {
+            Ok(_) => return Known::Yes,
+            Err(Failure::SignedOut) => return Known::No,
+            Err(f) => {
+                eprintln!("who the screen is: {f}");
+                if !say(Screen::Waiting)
+                    || wait(asks, RETRY[tries.min(RETRY.len() - 1)]) == Waited::Gone
+                {
+                    return Known::Gone;
+                }
+                tries += 1;
+            }
+        }
+    }
 }
 
 #[derive(PartialEq)]
@@ -336,7 +381,7 @@ mod tests {
         assert!(asked.iter().all(|a| !a.line.contains("sec")));
         // removed in « Mon compte »: a read says 401, the screen says so, then a new code
         *removed.lock().unwrap() = true;
-        s.ask(Ask::SignedOut);
+        s.recheck();
         until(&mut s, |s| *s == Screen::Revoked);
         assert!(!dir.join("screen-cookie").exists());
         s.ask(Ask::Pair);
@@ -378,6 +423,62 @@ mod tests {
         let mut s = session(&stub.origin, &dir);
         // never paired in this life: straight to a code, no « removed » notice
         until(&mut s, |s| matches!(s, Screen::Code { .. }));
+    }
+
+    /// `/screens/me` answers `status`, whatever a test sets it to.
+    fn me(status: Arc<AtomicUsize>) -> crate::client::stub::Stub {
+        serve(move |line| match line {
+            l if l.starts_with("POST /api/screens/me") => (
+                status.load(Ordering::SeqCst) as u16,
+                vec![],
+                r#"{"success":true,"screen":{"name":"Salon"}}"#.into(),
+            ),
+            _ => (404, vec![], "{}".into()),
+        })
+    }
+
+    #[test]
+    fn maison_silent_at_boot_a_paired_screen_waits_and_keeps_its_cookie() {
+        let dir = temp_dir("pairing-waiting");
+        let status = Arc::new(AtomicUsize::new(502));
+        let stub = me(status.clone());
+        keep_cookie(&dir, &stub.origin, "maison_screen=t");
+        let mut s = session(&stub.origin, &dir);
+        until(&mut s, |s| *s == Screen::Waiting);
+        assert!(dir.join("screen-cookie").exists());
+        status.store(200, Ordering::SeqCst);
+        until(&mut s, |s| *s == Screen::Paired);
+    }
+
+    #[test]
+    fn a_reads_401_is_asked_again_before_the_pairing_goes() {
+        let dir = temp_dir("pairing-recheck");
+        let status = Arc::new(AtomicUsize::new(200));
+        let stub = me(status.clone());
+        keep_cookie(&dir, &stub.origin, "maison_screen=t");
+        let mut s = session(&stub.origin, &dir);
+        until(&mut s, |s| *s == Screen::Paired);
+        let asked = |stub: &crate::client::stub::Stub| stub.asked.lock().unwrap().len();
+
+        // the server still knows it: nothing lost, and twice in a row is asked once
+        s.recheck();
+        s.recheck();
+        wait_until(|| asked(&stub) == 2);
+        wait_until(|| {
+            s.take();
+            !s.checking
+        });
+        assert_eq!(s.screen, Screen::Paired);
+        assert!(dir.join("screen-cookie").exists());
+
+        // a failure is no verdict either: the cookie stays until the server says
+        status.store(500, Ordering::SeqCst);
+        s.recheck();
+        until(&mut s, |s| *s == Screen::Waiting);
+        assert!(dir.join("screen-cookie").exists());
+        status.store(401, Ordering::SeqCst);
+        until(&mut s, |s| *s == Screen::Revoked);
+        assert!(!dir.join("screen-cookie").exists());
     }
 
     #[test]

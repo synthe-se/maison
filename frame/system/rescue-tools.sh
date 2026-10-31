@@ -4,7 +4,7 @@
 # its adbd never runs as root (a user build): bootimg.py `rescue` puts these in its ramdisk.
 # Sources pinned by version and SHA-256; nothing built is kept in the repo.
 # Needs zig (mksh) and Docker with ARMv7 emulation (toybox's build wants GNU tools: an Alpine).
-# Usage: frame/system/rescue-tools.sh <out dir>     → <out>/mksh, <out>/toybox, <out>/applets.txt, <out>/maison-loader, <out>/maison-guard, <out>/kexec
+# Usage: frame/system/rescue-tools.sh <out dir>     → <out>/mksh, <out>/toybox, <out>/applets.txt, <out>/maison-loader, <out>/maison-guard, <out>/kexec, <out>/e2fsck
 set -euo pipefail
 
 OUT="$(mkdir -p "$1" && cd "$1" && pwd)"
@@ -43,6 +43,10 @@ fetch "https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-$KEXEC.ta
 docker run --rm --platform linux/arm/v7 -v "$TMP/kexec-tools-$KEXEC:/src" -w /src "$ALPINE" sh -c \
 	'apk add -q build-base linux-headers >/dev/null && LDFLAGS=-static ./configure --without-zlib --without-lzma >/dev/null && make -j8 build/sbin/kexec >/dev/null 2>&1 && strip build/sbin/kexec'
 cp "$TMP/kexec-tools-$KEXEC/build/sbin/kexec" "$OUT/kexec"
+# e2fsck, static: a power cut's userdata looked at before the system mounts it. Debian's package:
+# its sources do not build static on 32-bit musl
+docker run --rm --platform linux/arm/v7 -v "$OUT:/t" debian:trixie sh -euc \
+	'apt-get -qq update && apt-get -qq install -y --no-install-recommends e2fsck-static >/dev/null 2>&1 && cp -f /usr/sbin/e2fsck.static /t/e2fsck'
 # what it can do, one name a line: each gets its link beside it in the rescue shell
 docker run --rm --platform linux/arm/v7 -v "$OUT:/t" "$ALPINE" /t/toybox | tr -s ' \n' '\n' | grep . >"$OUT/applets.txt"
 file "$OUT/mksh" "$OUT/toybox" | sed "s|$OUT/||"

@@ -3,15 +3,19 @@
 //! a button row, Loaded's states).
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use crate::commands::Order;
 use crate::pairing::Ask;
+use crate::theme::Rgba;
 use crate::ui::icon::Icon;
 use maison_api::tempo::Color;
 
 /// A dashboard group (Group.svelte): a title, a fact or actions in its head, then its body.
 #[derive(Debug, Clone)]
 pub struct Group {
+    /// What « Maintenant » leads to it by.
+    pub anchor: Option<&'static str>,
     pub title: String,
     /// One short fact at the head's end (« 3 prises · 2 en ligne »).
     pub fact: Option<String>,
@@ -21,6 +25,39 @@ pub struct Group {
     /// « Réessayer ».
     pub stale: Option<(String, Button)>,
     pub body: Body,
+}
+
+impl Group {
+    pub fn new(title: impl Into<String>, body: Body) -> Self {
+        Self {
+            anchor: None,
+            title: title.into(),
+            fact: None,
+            actions: Vec::new(),
+            stale: None,
+            body,
+        }
+    }
+
+    pub fn anchor(mut self, anchor: &'static str) -> Self {
+        self.anchor = Some(anchor);
+        self
+    }
+
+    pub fn fact(mut self, fact: Option<String>) -> Self {
+        self.fact = fact;
+        self
+    }
+
+    pub fn actions(mut self, actions: Vec<Button>) -> Self {
+        self.actions = actions;
+        self
+    }
+
+    pub fn stale(mut self, stale: Option<(String, Button)>) -> Self {
+        self.stale = stale;
+        self
+    }
 }
 
 /// Loaded.svelte's states, then the content.
@@ -41,6 +78,8 @@ pub enum Body {
     Tiles(Vec<Tile>),
     /// A row of buttons that wraps (the scenes).
     Buttons(Vec<Button>),
+    /// A tile's parts, framed, without its head (a remote's pad, the calendar).
+    Parts(Vec<Part>),
 }
 
 /// One device (DeviceTile.svelte).
@@ -57,6 +96,40 @@ pub struct Tile {
     pub parts: Vec<Part>,
     /// The row leads somewhere (DeviceTile's `href`: the Tempo tile, its page).
     pub open: Option<Act>,
+}
+
+impl Tile {
+    pub fn new(name: impl Into<String>, state: impl Into<String>, lead: Lead) -> Self {
+        Self {
+            name: name.into(),
+            state: state.into(),
+            warn: false,
+            lead,
+            fact: None,
+            parts: Vec::new(),
+            open: None,
+        }
+    }
+
+    pub fn warn(mut self, warn: bool) -> Self {
+        self.warn = warn;
+        self
+    }
+
+    pub fn fact(mut self, fact: Option<String>) -> Self {
+        self.fact = fact;
+        self
+    }
+
+    pub fn parts(mut self, parts: Vec<Part>) -> Self {
+        self.parts = parts;
+        self
+    }
+
+    pub fn open(mut self, open: Option<Act>) -> Self {
+        self.open = open;
+        self
+    }
 }
 
 /// What leads the tile.
@@ -98,6 +171,57 @@ pub enum Part {
         link: Button,
         skipped: bool,
     },
+    /// Buttons left to right, wrapping: a choice, the chosen one `primary` (ToggleGroup).
+    Flow(Vec<Button>),
+    /// A remote's pad (Pad.svelte).
+    Pad(Box<Pad>),
+    /// Label and value, a line each (StatusRow).
+    Facts(Vec<(String, String)>),
+    /// A bar on the elapsed time of the timed order `key`, only while it travels (Progress).
+    Progress {
+        key: String,
+        label: String,
+        /// What the elapsed `seconds` are said with.
+        elapsed: &'static str,
+        limit: Duration,
+    },
+    /// One month of Tempo days (TempoCalendar's table).
+    Calendar(Box<Month>),
+    /// A table: its head, its rows; the first column left, the others right.
+    Table {
+        head: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+}
+
+/// Four arrows around an OK, the keys under them.
+#[derive(Debug, Clone)]
+pub struct Pad {
+    pub up: Button,
+    pub left: Button,
+    pub ok: Button,
+    pub right: Button,
+    pub down: Button,
+    pub under: Vec<Button>,
+}
+
+/// A month of the calendar: its title, how many empty cells before its first day.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Month {
+    pub title: String,
+    pub weekdays: [&'static str; 7],
+    pub lead: usize,
+    pub days: Vec<Day>,
+}
+
+/// A calendar's cell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Day {
+    pub day: u32,
+    pub color: Option<Color>,
+    /// Not published by RTE: a forecast, its probability, whether it is unsure.
+    pub forecast: Option<(String, bool)>,
+    pub today: bool,
 }
 
 /// A button (`.btn`).
@@ -110,6 +234,8 @@ pub struct Button {
     pub primary: bool,
     /// Out of reach: shown, does nothing (its reason said on the tile).
     pub unavailable: bool,
+    /// A disc of this color before the label (a lamp's colors).
+    pub dot: Option<Rgba>,
 }
 
 impl Button {
@@ -120,7 +246,13 @@ impl Button {
             act,
             primary: false,
             unavailable: false,
+            dot: None,
         }
+    }
+
+    pub fn dot(mut self, color: Rgba) -> Self {
+        self.dot = Some(color);
+        self
     }
 
     pub fn primary(mut self, yes: bool) -> Self {
@@ -137,15 +269,37 @@ impl Button {
     pub fn key(&self) -> Option<&str> {
         match &self.act {
             Act::Order(o) => Some(&o.key),
+            Act::Ask(a) => Some(&a.order.key),
             _ => None,
         }
     }
+}
+
+/// What cannot be undone, asked first (ConfirmDialog): the consequence, the precise verb.
+#[derive(Debug, Clone)]
+pub struct Asked {
+    pub title: String,
+    pub text: String,
+    pub action: String,
+    pub order: Order,
 }
 
 /// What a tap does.
 #[derive(Debug, Clone)]
 pub enum Act {
     Order(Order),
+    /// A remote's key: shows nothing in flight, repeats this often while held.
+    Key(Order, Option<Duration>),
+    /// Asked first; the order goes on « Remettre à zéro », nothing on « Garder ».
+    Ask(Box<Asked>),
+    /// The dialog's two answers.
+    Keep,
+    Sure,
+    /// « Maintenant »: a chip leads to its group, « +N » shows them all.
+    Jump(&'static str),
+    Unfold,
+    /// The Tempo calendar's month (`year * 12 + month0`).
+    Month(i32),
     /// The families' sources read again now (a failed group's « Réessayer »).
     Refresh(&'static [&'static str]),
     Pairing(Ask),
@@ -162,6 +316,12 @@ pub enum View {
     Tempo,
     /// A cat device's page, by its id (`/device/{id}` on the web).
     Device(String),
+    Climate,
+    Tv,
+    Box,
+    /// A lamp's page: its family's key, its id.
+    Lamp(&'static str, String),
+    Plug(String),
 }
 
 impl View {
@@ -171,6 +331,11 @@ impl View {
             Self::House => "open:house".into(),
             Self::Tempo => "open:tempo".into(),
             Self::Device(id) => format!("open:device:{id}").into(),
+            Self::Climate => "open:climate".into(),
+            Self::Tv => "open:tv".into(),
+            Self::Box => "open:box".into(),
+            Self::Lamp(family, id) => format!("open:{family}:{id}").into(),
+            Self::Plug(id) => format!("open:plug:{id}").into(),
         }
     }
 }
@@ -189,6 +354,10 @@ pub struct Slider {
     pub mark: Option<f64>,
     /// Sends while it moves (at most every `SLIDER_THROTTLE_MS`), not only on release.
     pub live: bool,
+    /// Its order is a PUT (the TV's volume).
+    pub put: bool,
+    /// Shown, does nothing (a lamp that is off: its reason said under it).
+    pub off: bool,
     /// The value held after release is let go once the device says one this near.
     pub near: f64,
     /// Words under each end (« Fermé », « Ouvert »).
@@ -206,13 +375,20 @@ pub struct Slider {
 pub struct Chip {
     pub text: String,
     pub warn: bool,
+    /// The group it leads to.
+    pub to: &'static str,
 }
 
 /// The whole screen.
 #[derive(Debug, Clone)]
 pub enum Screen {
-    /// The house: « Maintenant », then its groups in the dashboard's order.
-    House { now: Vec<Chip>, groups: Vec<Group> },
+    /// The house: the time and the date, « Maintenant », then its groups in the dashboard's order.
+    House {
+        time: String,
+        date: String,
+        now: Vec<Chip>,
+        groups: Vec<Group>,
+    },
     /// One of the house's pages (Tempo): its title, the way back, its groups in columns.
     Page {
         title: String,

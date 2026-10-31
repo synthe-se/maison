@@ -3,12 +3,32 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::remote::AndroidKey;
+
 /// The apps worth a shortcut, `(package, label)`, when the box's settings name no favourites
 /// (`favoriteApps`): its tile's chips and the remote's pickers offer these.
 pub const SHORTCUTS: &[(&str, &str)] = &[
     ("org.smarttube.beta", "SmartTube"),
     ("studio.kahn.iris.tv", "Iris"),
 ];
+
+/// `POST /api/androidtv/launch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRequest {
+    pub package: String,
+    /// Power the television on and route it to the box first: launching an app on a set that
+    /// is off or on another input is rarely what is meant.
+    #[serde(default = "crate::remote::default_true")]
+    pub ensure_tv_on: bool,
+}
+
+/// `POST /api/androidtv/key`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyRequest {
+    pub key: AndroidKey,
+}
 
 /// Why a package of the box is cut: what `backend/src/box_clean.rs`'s table says of each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,18 +4,21 @@
 //! (`maison_api::paces`: a lamp's, a plug's) goes back to what the device said, « Pas de
 //! réponse · Réessayer » on its tile. An answer reads its family again (`refresh`); a group's
 //! « Tout … » sends every order at once and says the outcome once, naming who did not answer.
+//! Every failure is said (a toast with the refusal's words): past its limit by itself
+//! (`overdue`), else when its answer comes.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use maison_api::paces;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::client::{Client, Failure};
-use crate::i18n::Words;
+use crate::i18n::{Words, count, k};
 
 /// How long a family's device may take (`maison_api::paces`, the web app's `LIMIT`).
 pub mod limit {
@@ -31,8 +34,37 @@ pub mod limit {
 /// Without an answer this long, the gesture says it is slow.
 pub const SLOW: Duration = Duration::from_millis(paces::COMMAND_SLOW_MS);
 
-/// What an answer says once it came: a toast's words, warning or not.
-pub type Say = fn(&Words, &Outcome) -> Option<Toast>;
+/// What an answer says once it came.
+#[derive(Debug, Clone, Copy)]
+pub enum Say {
+    /// A toast from how it went, warning or not.
+    With(fn(&Words, &Outcome) -> Option<Toast>),
+    /// These words once it went through; if not, the failure is said.
+    Done(&'static str),
+    /// These words with a count once it went through (« 3 portions distribuées »).
+    Counted(&'static str, usize),
+}
+
+impl Say {
+    pub fn toast(self, w: &Words, o: &Outcome) -> Option<Toast> {
+        match self {
+            Self::With(say) => say(w, o),
+            Self::Done(key) => o.failed.is_empty().then(|| Toast {
+                text: w.s(key),
+                warn: false,
+            }),
+            Self::Counted(key, n) => o.failed.is_empty().then(|| Toast {
+                text: w.t(key, &[count(n)]),
+                warn: false,
+            }),
+        }
+    }
+
+    /// It says how the order went whatever happened: no word needed from the clock.
+    fn speaks(self) -> bool {
+        matches!(self, Self::With(_))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
@@ -88,6 +120,20 @@ impl Post {
     }
 }
 
+/// A failure in the person's words: who, then what its refusal's code means.
+fn failure(w: &Words, names: &[String], why: &Failure) -> Toast {
+    Toast {
+        text: w.t(
+            k::NOW_ALERT,
+            &[
+                ("name", w.list(names).into()),
+                ("what", w.failure(why).into()),
+            ],
+        ),
+        warn: true,
+    }
+}
+
 /// A request type as JSON. The API's types are plain structs: they always serialize; were one
 /// ever to fail, the order goes without a body and the server says what it lacks.
 pub fn json(body: &impl Serialize) -> Value {
@@ -110,6 +156,8 @@ pub struct Order {
     /// The families read again once it is done.
     pub refresh: Vec<&'static str>,
     pub say: Option<Say>,
+    /// Long enough for a bar on elapsed time (docs/ux.md § 2): drawn again each second.
+    pub timed: bool,
 }
 
 impl Order {
@@ -127,6 +175,7 @@ impl Order {
             limit: limit::DEVICE,
             refresh: Vec::new(),
             say: None,
+            timed: false,
         }
     }
 
@@ -147,6 +196,12 @@ impl Order {
 
     pub fn said(mut self, say: Say) -> Self {
         self.say = Some(say);
+        self
+    }
+
+    /// While it travels, `Commands::elapsed` says for how long.
+    pub fn timed(mut self, timed: bool) -> Self {
+        self.timed = timed;
         self
     }
 }
@@ -170,6 +225,11 @@ struct Running {
     target: Option<bool>,
     limit: Duration,
     late: bool,
+    /// Who it was sent to, for words said by the clock.
+    names: Vec<String>,
+    /// Its failure was said already, or its answer will say.
+    said: bool,
+    timed: bool,
     /// Answered: still shown travelling until its families are read again after `.1` (the web
     /// app's `settle`, inside the gesture).
     settling: Option<(Vec<&'static str>, Instant)>,
@@ -179,6 +239,8 @@ struct Done {
     key: String,
     generation: u64,
     outcome: Outcome,
+    /// The first failure, in the person's words once it is said.
+    why: Option<Failure>,
     refresh: Vec<&'static str>,
     say: Option<Say>,
 }
@@ -191,6 +253,8 @@ pub struct Commands {
     on_wire: HashSet<String>,
     /// The latest order given while its key's was on the wire, sent once it answers.
     waiting: HashMap<String, (Order, u64)>,
+    /// Each toggle's last order that went through (an assumed state's only knowledge).
+    last: HashMap<String, (bool, DateTime<Utc>)>,
     generation: u64,
     tx: Sender<Done>,
     rx: Receiver<Done>,
@@ -205,6 +269,7 @@ impl Commands {
             running: HashMap::new(),
             on_wire: HashSet::new(),
             waiting: HashMap::new(),
+            last: HashMap::new(),
             generation: 0,
             tx,
             rx,
@@ -225,6 +290,9 @@ impl Commands {
                 target: order.target,
                 limit: order.limit,
                 late: false,
+                names: order.posts.iter().map(|(n, _)| n.clone()).collect(),
+                said: order.say.is_some_and(Say::speaks),
+                timed: order.timed,
                 settling: None,
             },
         );
@@ -275,6 +343,7 @@ impl Commands {
                     failed: Vec::new(),
                     answer: None,
                 };
+                let mut why = None;
                 for (name, t) in sent {
                     let answer = match t {
                         Ok(t) => t
@@ -289,6 +358,7 @@ impl Commands {
                         }
                         Err(f) => {
                             eprintln!("{} {name}: {f}", order.key);
+                            why.get_or_insert(f);
                             outcome.failed.push(name);
                         }
                     }
@@ -297,6 +367,7 @@ impl Commands {
                     key: order.key,
                     generation,
                     outcome,
+                    why,
                     refresh: order.refresh,
                     say: order.say,
                 });
@@ -313,6 +384,7 @@ impl Commands {
                     failed: names,
                     answer: None,
                 },
+                why: Some(Failure::Unreadable("it could not start".into())),
                 refresh,
                 say,
             });
@@ -324,7 +396,9 @@ impl Commands {
     pub fn state(&self, key: &str) -> State {
         match self.running.get(key) {
             None => State::Idle,
-            Some(r) if r.late || r.started.elapsed() >= r.limit => State::Late,
+            Some(r) if r.late => State::Late,
+            // answered: travelling until its families are read, whatever the time it took
+            Some(r) if r.settling.is_none() && r.started.elapsed() >= r.limit => State::Late,
             Some(r) => State::Pending {
                 target: r.target,
                 slow: r.started.elapsed() >= SLOW,
@@ -367,46 +441,108 @@ impl Commands {
             if r.generation != done.generation {
                 continue;
             }
-            let ok = done.outcome.failed.is_empty();
-            let past = r.started.elapsed() >= r.limit;
-            if ok && !past {
+            let failed = !done.outcome.failed.is_empty();
+            let late_said = r.said;
+            r.said = true;
+            if !failed && let Some(target) = r.target {
+                self.last.insert(done.key.clone(), (target, Utc::now()));
+            }
+            if !failed {
+                // a success settles, past its limit too: the tile said « Pas de réponse », the
+                // device has answered since
                 if done.refresh.is_empty() {
                     self.running.remove(&done.key);
                 } else {
                     r.settling = Some((done.refresh.clone(), Instant::now()));
                 }
             } else {
-                // refused, or the answer came past its limit (the tile already said so)
                 r.late = true;
                 r.target = None;
             }
-            if let Some(say) = done.say
-                && let Some(t) = say(words, &done.outcome)
-            {
-                toasts.push(t);
-            }
+            let said = done.say.and_then(|s| s.toast(words, &done.outcome));
+            toasts.extend(said.or_else(|| {
+                let why = done.why.as_ref().filter(|_| failed && !late_said)?;
+                Some(failure(words, &done.outcome.failed, why))
+            }));
         }
         changed
     }
 
+    /// Orders past their limit with nothing said yet: each said once, « Salon n'a pas répondu »
+    /// (a slider, a button: nothing else would say it). Its answer, if one ever comes, settles it
+    /// or stays silent.
+    pub fn overdue(&mut self, words: &Words, now: Instant) -> Vec<Toast> {
+        let mut said = Vec::new();
+        for r in self.running.values_mut() {
+            if r.said || r.late || r.settling.is_some() || now < r.started + r.limit {
+                continue;
+            }
+            r.said = true;
+            said.push(Toast {
+                text: words.t(
+                    k::COMMAND_NO_ANSWER,
+                    &[("name", words.list(&r.names).into())],
+                ),
+                warn: true,
+            });
+        }
+        said
+    }
+
+    /// How long the timed gesture has travelled; `None` once it ended, or none is.
+    pub fn elapsed(&self, key: &str) -> Option<Duration> {
+        let r = self.running.get(key).filter(|r| r.timed)?;
+        let travelling = matches!(self.state(key), State::Pending { .. }) && r.settling.is_none();
+        travelling.then(|| r.started.elapsed())
+    }
+
+    /// The toggle's last order that went through: where it went, and when.
+    pub fn last(&self, key: &str) -> Option<(bool, DateTime<Utc>)> {
+        self.last.get(key).copied()
+    }
+
     /// A family's value came, asked at `asked`: the gestures answered before that are done.
-    pub fn read(&mut self, key: &str, asked: Instant) {
+    /// True when one was.
+    pub fn read(&mut self, key: &str, asked: Instant) -> bool {
+        let before = self.running.len();
         self.running.retain(|_, r| match &r.settling {
             Some((families, answered)) => {
                 !(asked >= *answered && families.iter().any(|f| key.starts_with(f)))
             }
             None => true,
         });
+        self.running.len() != before
     }
 
-    /// The next moment a gesture's look changes by itself (slow, then late): the screen is
-    /// drawn again then.
-    pub fn next_change(&self) -> Option<Instant> {
+    /// Answered gestures whose read never came (their family no longer on screen) end, a limit
+    /// after the answer. True when one did.
+    pub fn sweep(&mut self, now: Instant) -> bool {
+        let before = self.running.len();
+        self.running.retain(|_, r| {
+            r.settling
+                .as_ref()
+                .is_none_or(|(_, answered)| now < *answered + r.limit)
+        });
+        self.running.len() != before
+    }
+
+    /// The first moment after `after` a gesture's look changes by itself (slow, late, its
+    /// settling over): the screen is drawn again then.
+    pub fn next_change(&self, after: Instant) -> Option<Instant> {
         self.running
             .values()
             .filter(|r| !r.late)
-            .flat_map(|r| [r.started + SLOW, r.started + r.limit])
-            .filter(|t| *t > Instant::now())
+            .flat_map(|r| {
+                let from = r.settling.as_ref().map_or(r.started, |(_, at)| *at);
+                // a timed gesture's next whole second, while it travels
+                let second = (r.timed && r.settling.is_none()).then(|| {
+                    let gone = after.saturating_duration_since(r.started).as_secs();
+                    r.started + Duration::from_secs(gone + 1)
+                });
+                [Some(r.started + SLOW), Some(from + r.limit), second]
+            })
+            .flatten()
+            .filter(|t| *t > after)
             .min()
     }
 
@@ -458,7 +594,7 @@ mod tests {
                 slow: false
             }
         );
-        assert!(c.next_change().is_some());
+        assert!(c.next_change(Instant::now()).is_some());
         let (refreshed, toasts) = settle(&mut c, &words);
         assert_eq!(refreshed, ["hue-lamp"]);
         assert!(toasts.is_empty());
@@ -479,7 +615,7 @@ mod tests {
 
     #[test]
     fn a_refusal_is_said_late_until_tried_again() {
-        let stub = serve(|_| (500, vec![], "{}".into()));
+        let stub = serve(|_| (503, vec![], r#"{"code":"device_unreachable"}"#.into()));
         let words = Words::new(Lang::Fr);
         let mut c = commands(&stub.origin);
         c.run(
@@ -490,8 +626,17 @@ mod tests {
             )
             .toggle(true),
         );
-        settle(&mut c, &words);
+        let (_, toasts) = settle(&mut c, &words);
         assert_eq!(c.state("meross:p:toggle"), State::Late);
+        // said in its code's words, naming the device
+        let code = words.s(k::CODE_DEVICE_UNREACHABLE);
+        assert_eq!(
+            toasts,
+            [Toast {
+                text: format!("Bouilloire\u{a0}: {code}"),
+                warn: true
+            }]
+        );
         // the late toggle shows what the device said
         assert!(!c.shown("meross:p:toggle", false));
         c.forget("meross:p:toggle");
@@ -499,7 +644,74 @@ mod tests {
     }
 
     #[test]
-    fn past_its_limit_a_gesture_is_late() {
+    fn past_its_limit_an_order_says_so_once_and_its_failure_adds_nothing() {
+        let stub = serve(|_| {
+            std::thread::sleep(Duration::from_millis(200));
+            (500, vec![], "{}".into())
+        });
+        let words = Words::new(Lang::Fr);
+        let mut c = commands(&stub.origin);
+        let t0 = Instant::now();
+        c.run(Order::one("k", "Volet", Post::empty("/x")).within(Duration::from_millis(50)));
+        assert!(c.overdue(&words, t0).is_empty(), "not yet");
+        let later = t0 + Duration::from_millis(60);
+        let said = c.overdue(&words, later);
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].text, "Volet n’a pas répondu");
+        assert!(said[0].warn);
+        assert!(c.overdue(&words, later).is_empty(), "once");
+        let (_, toasts) = settle(&mut c, &words);
+        assert!(toasts.is_empty(), "already said: {toasts:?}");
+    }
+
+    #[test]
+    fn a_group_that_says_its_outcome_is_not_said_twice() {
+        fn said(_: &Words, _: &Outcome) -> Option<Toast> {
+            Some(Toast {
+                text: "2 lampes".into(),
+                warn: true,
+            })
+        }
+        let stub = serve(|_| (500, vec![], "{}".into()));
+        let words = Words::new(Lang::Fr);
+        let mut c = commands(&stub.origin);
+        c.run(
+            Order::one("k", "x", Post::empty("/x"))
+                .within(Duration::ZERO)
+                .said(Say::With(said)),
+        );
+        assert!(c.overdue(&words, Instant::now()).is_empty());
+        let (_, toasts) = settle(&mut c, &words);
+        assert_eq!(toasts.len(), 1);
+    }
+
+    #[test]
+    fn a_timed_order_says_how_long_and_ticks_each_second() {
+        let stub = serve(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            (200, vec![], "{}".into())
+        });
+        let words = Words::new(Lang::Fr);
+        let mut c = commands(&stub.origin);
+        let t0 = Instant::now();
+        c.run(
+            Order::one("k", "x", Post::empty("/x"))
+                .toggle(true)
+                .within(Duration::from_secs(30))
+                .timed(true),
+        );
+        assert!(c.elapsed("k").is_some());
+        assert!(c.elapsed("other").is_none());
+        let next = c.next_change(t0 + Duration::from_millis(1500)).unwrap();
+        assert!(next <= t0 + Duration::from_secs(3), "{:?}", next - t0);
+        assert_eq!(c.last("k"), None);
+        settle(&mut c, &words);
+        assert!(c.elapsed("k").is_none(), "over");
+        assert_eq!(c.last("k").map(|(on, _)| on), Some(true));
+    }
+
+    #[test]
+    fn past_its_limit_a_gesture_is_late_until_its_answer_ends_it() {
         let stub = serve(|_| {
             std::thread::sleep(Duration::from_millis(400));
             (200, vec![], "{}".into())
@@ -514,8 +726,51 @@ mod tests {
         wait_until(|| c.state("k") == State::Late);
         let words = Words::new(Lang::Fr);
         settle(&mut c, &words);
-        // the answer past its limit does not clear what the tile said
-        assert_eq!(c.state("k"), State::Late);
+        // no family to read: a success ends it, late or not
+        assert_eq!(c.state("k"), State::Idle);
+    }
+
+    #[test]
+    fn a_success_past_its_limit_settles_like_any_other() {
+        let stub = serve(|_| {
+            std::thread::sleep(Duration::from_millis(300));
+            (200, vec![], "{}".into())
+        });
+        let words = Words::new(Lang::Fr);
+        let mut c = commands(&stub.origin);
+        c.run(
+            Order::one("k", "x", Post::empty("/x"))
+                .toggle(true)
+                .within(Duration::from_millis(50))
+                .then_refresh(&["hue-lamp"]),
+        );
+        wait_until(|| c.state("k") == State::Late);
+        settle(&mut c, &words);
+        assert!(c.shown("k", false), "its target, until the read");
+        assert!(c.read("hue-lamp:list", Instant::now()));
+        assert_eq!(c.state("k"), State::Idle);
+    }
+
+    #[test]
+    fn a_settling_gesture_whose_read_never_comes_ends() {
+        let stub = serve(|_| (200, vec![], "{}".into()));
+        let words = Words::new(Lang::Fr);
+        let mut c = commands(&stub.origin);
+        let limit = SLOW * 2;
+        c.run(
+            Order::one("k", "x", Post::empty("/x"))
+                .toggle(true)
+                .within(limit)
+                .then_refresh(&["hue-lamp"]),
+        );
+        settle(&mut c, &words);
+        let now = Instant::now();
+        assert!(!c.sweep(now), "not yet");
+        let end = c.next_change(now + SLOW).expect("its settling's end");
+        assert!(end > now);
+        assert!(c.sweep(end));
+        assert_eq!(c.state("k"), State::Idle);
+        assert!(!c.read("hue-lamp:list", Instant::now()), "nothing left");
     }
 
     #[test]
@@ -555,6 +810,32 @@ mod tests {
     }
 
     #[test]
+    fn done_words_are_said_only_once_it_went_through() {
+        let words = Words::new(Lang::Fr);
+        let say = Say::Done(crate::i18n::k::COMMON_RETRY);
+        let mut o = Outcome {
+            done: vec!["x".into()],
+            failed: Vec::new(),
+            answer: None,
+        };
+        assert_eq!(
+            say.toast(&words, &o),
+            Some(Toast {
+                text: "Réessayer".into(),
+                warn: false
+            })
+        );
+        o.failed.push("y".into());
+        assert_eq!(say.toast(&words, &o), None);
+        o.failed.clear();
+        let counted = Say::Counted(k::FEEDER_PORTIONS_DISTRIBUTED, 3);
+        assert_eq!(
+            counted.toast(&words, &o).unwrap().text,
+            "3 portions servies"
+        );
+    }
+
+    #[test]
     fn everyone_at_once_and_the_outcome_said_once() {
         let stub = serve(|line| {
             if line.contains("/2/") {
@@ -588,7 +869,7 @@ mod tests {
             )
             .within(limit::LAMP)
             .then_refresh(&["hue-lamp", "zigbee-lamp"])
-            .said(say),
+            .said(Say::With(say)),
         );
         let (refreshed, toasts) = settle(&mut c, &words);
         assert_eq!(refreshed, ["hue-lamp", "zigbee-lamp"]);

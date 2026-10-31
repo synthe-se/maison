@@ -1,7 +1,7 @@
 # The networks Android knows (its own wpa_supplicant.conf, in its userdata), handed to ours
 [Unit]
 Description=The Wi-Fi networks Android knows
-Before=wpa_supplicant@wlan0.service
+Before=wpa_supplicant@wlan0.service systemd-networkd.service
 RequiresMountsFor=/android-data
 
 [Service]

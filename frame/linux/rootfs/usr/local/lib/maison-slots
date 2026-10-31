@@ -1,0 +1,13 @@
+# The two slots' state, said once: sourced by the system's scripts, and written into the
+# initramfs's /init (initramfs.py). `state` is replaced whole: a new file, synced, renamed, synced,
+# so that a power cut leaves the old one or the new one. Keys: active, pending, tries, and boots
+# (of the active slot, without a proof that it works).
+slots=/android-data/maison/slots
+state=$slots/state
+key() { sed -n "s/^$1=//p" $state 2>/dev/null; }
+remember() { printf 'active=%s\npending=%s\ntries=%s\nboots=%s\n' "$1" "$2" "$3" "${4:-0}" >$state.new && sync && mv $state.new $state && sync; }
+other() { if [ "$1" = a ]; then echo b; else echo a; fi; }
+# every file of the slot as `sums` says it
+whole() { [ -s $slots/$1/sums ] && (cd $slots/$1 && sha256sum -c sums >/dev/null 2>&1); }
+# the command line U-Boot gave, without what our kernel adds to it
+uboot_line() { sed "s/ console=tty0 .*//" /proc/cmdline; }

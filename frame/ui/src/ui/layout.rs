@@ -9,10 +9,10 @@ use std::time::Instant;
 
 use crate::commands::Commands;
 use crate::i18n::Words;
-use crate::theme::{self, Palette, Rgba, Type, coarse, px, ty, wide};
+use crate::theme::{self, Face, Palette, Rgba, Type, coarse, px, ty, wide};
 use crate::ui::gfx::{Draw, Error, Pen};
 use crate::ui::icon::Icon;
-use crate::ui::model::{Act, Slider};
+use crate::ui::model::{Act, Asked, Slider};
 use crate::ui::slider::Sliders;
 
 /// What a finger can land on, in the panel's pixels as drawn (scroll applied).
@@ -52,18 +52,43 @@ pub enum Target {
         x0: f32,
         x1: f32,
     },
+    /// Nothing to press, but what lies under it is out of a finger's reach: the header, a toast.
+    Cover,
 }
 
 impl Target {
     /// The key of what it does: an order's, a slider's (a simulation finds controls by it).
     pub fn key(&self) -> Option<Cow<'_, str>> {
         match self {
-            Self::Act(Act::Order(o)) => Some(o.key.as_str().into()),
+            Self::Act(Act::Order(o) | Act::Key(o, _)) => Some(o.key.as_str().into()),
+            Self::Act(Act::Ask(a)) => Some(format!("ask:{}", a.order.key).into()),
+            Self::Act(Act::Keep) => Some("dialog:keep".into()),
+            Self::Act(Act::Sure) => Some("dialog:sure".into()),
+            Self::Act(Act::Jump(to)) => Some(format!("jump:{to}").into()),
+            Self::Act(Act::Unfold) => Some("now:more".into()),
             Self::Slider { slider, .. } => Some(slider.key.as_str().into()),
             Self::Act(Act::Open(v)) => Some(v.key()),
             _ => None,
         }
     }
+}
+
+/// A box in the panel's pixels.
+pub type Rect = (f32, f32, f32, f32);
+
+/// What the app adds over the screen, this drawing.
+#[derive(Default, Clone, Copy)]
+pub struct Over<'a> {
+    /// What the finger is on (docs/ux.md § 7: every target acknowledges a touch).
+    pub pressed: Option<Rect>,
+    /// Maison does not answer: one word for the house, the gestures out of reach.
+    pub gone: bool,
+    /// The question asked (a dialog over the screen).
+    pub asking: Option<&'a Asked>,
+    /// « Maintenant » shown whole.
+    pub unfolded: bool,
+    /// The group a chip just led to.
+    pub flash: Option<&'static str>,
 }
 
 /// What the painter reads besides the screen.
@@ -80,6 +105,7 @@ pub struct Ctx<'a> {
     pub height: f32,
     /// How far the house's column is scrolled, in the panel's pixels.
     pub scroll: f32,
+    pub over: Over<'a>,
 }
 
 /// What a drawing leaves.
@@ -87,6 +113,8 @@ pub struct Drawn {
     pub hits: Vec<Hit>,
     /// The house's column, in the panel's pixels (what scrolls).
     pub content: f32,
+    /// How far the column scrolls to bring each anchored group under the header.
+    pub anchors: Vec<(&'static str, f32)>,
 }
 
 pub const GROUP_HEAD: f32 = px::CONTROL_H;
@@ -96,6 +124,26 @@ pub const TOUCH: f32 = coarse::CONTROL_H_S;
 pub const TITLE: Type = ty::BODY.weight(600);
 
 // The components' own measures, written in their Svelte (not tokens yet): said here once.
+/// The home's head: the brand, then the date and the time, quiet, in the page head's height.
+pub const HOUSE_HEAD: f32 = px::HEADER_H;
+/// The time on the wall (no Svelte: a phone has its own clock): a head's word, not a poster.
+pub const CLOCK: Type = Type {
+    weight: 400,
+    size: 34.0,
+    line: 40.0,
+    face: Face::Display,
+};
+/// A chip's words, read from a metre (the web's `--t-tiny` is for a phone in a hand).
+pub const CHIP: Type = ty::BODY.weight(500);
+/// A calendar's cell, at most (Swatch.svelte `.cell`: `--tile-icon`), and between two.
+pub const CELL_GAP: f32 = px::S_HALF * 2.0;
+/// A remote's pad: three keys high, three wide (Pad.svelte), arrows and OK 8 px apart.
+pub const PAD_H: f32 = 2.0 * px::REMOTE_KEY + px::REMOTE_OK + 2.0 * px::S_2;
+pub const PAD_W: f32 = PAD_H;
+/// A line of facts, a table's row (StatusRow).
+pub const FACT_H: f32 = ty::SECONDARY.line + px::S_2;
+/// A dialog's width (ConfirmDialog: `--measure` on a panel this narrow, less than its margins).
+pub const DIALOG_W: f32 = 520.0;
 /// Icon.svelte's default size (a button's icon).
 pub const ICON: f32 = 18.0;
 /// DeviceTile's gesture icon.
@@ -134,9 +182,9 @@ pub const ROW_PAD_BOTTOM: f32 = px::S_3;
 /// Between a row's head and each control under it (`.tile`'s gap).
 pub const PART_GAP: f32 = px::S_2;
 /// « Maintenant » (NowStrip): two lines of chips at most, 4 px apart, 16 px over the groups; a
-/// chip's warning triangle (Chip.svelte: 14 px).
+/// chip's warning triangle (Chip.svelte: 14 px, grown with its words).
 pub const NOW_LINES: usize = 2;
-pub const CHIP_ICON: f32 = 14.0;
+pub const CHIP_ICON: f32 = 16.0;
 
 /// Which chips fit `lines` lines `w` wide, `gap` apart, given their widths and whether each
 /// needs a hand, and how many wait behind « +N » (`more`: its width for a count): the facts
@@ -194,6 +242,17 @@ pub const HEADER_MARK: f32 = 28.0;
 /// in its row, brings the name half of it down (in ems of the brand's size).
 pub const BRAND_NUDGE: f32 = 0.15;
 
+/// `hits` scrolled up under a band that stays, ending at `edge`: each cut there, gone when wholly
+/// under it.
+pub fn clip_above(hits: &mut Vec<Hit>, edge: f32) {
+    hits.retain_mut(|h| {
+        let under = (edge - h.y).max(0.0);
+        h.y += under;
+        h.h -= under;
+        h.h > 0.0
+    });
+}
+
 /// The page margin for the panel's width in CSS pixels (tokens.css `--page-margin` and its
 /// media queries).
 pub fn margin(width_css: f32) -> f32 {
@@ -249,6 +308,7 @@ pub struct P<'d, 'a, 't, 'c> {
     /// Measuring only: nothing drawn, no hit left, every height said (the columns' balance
     /// asks each group's height of the same code that draws it).
     pub measuring: bool,
+    pub anchors: Vec<(&'static str, f32)>,
 }
 
 impl P<'_, '_, '_, '_> {
@@ -309,15 +369,7 @@ impl P<'_, '_, '_, '_> {
         let (x0, y0, x1, y1) = (self.d(x), self.y(y), self.d(x + w), self.y(y + h));
         let r = self.d(r);
         let t = (self.s().round() as i32).max(1);
-        self.d.rounded(x0, y0, x1 - x0, y1 - y0, r, line)?;
-        self.d.rounded(
-            x0 + t,
-            y0 + t,
-            x1 - x0 - 2 * t,
-            y1 - y0 - 2 * t,
-            (r - t).max(0),
-            fill,
-        )
+        self.d.ringed((x0, y0, x1 - x0, y1 - y0), r, t, fill, line)
     }
 
     /// A disc of diameter `d` at (x, y); with `ring`, a ring of that width in `ring.1` around.
@@ -336,15 +388,8 @@ impl P<'_, '_, '_, '_> {
         match ring {
             Some((w, color)) => {
                 let t = ((w * self.s()).round() as i32).max(1);
-                self.d.rounded(x0, y0, size, size, size / 2, color)?;
-                self.d.rounded(
-                    x0 + t,
-                    y0 + t,
-                    size - 2 * t,
-                    size - 2 * t,
-                    size / 2 - t,
-                    fill,
-                )
+                self.d
+                    .ringed((x0, y0, size, size), size / 2, t, fill, color)
             }
             None => self.d.rounded(x0, y0, size, size, size / 2, fill),
         }
@@ -376,21 +421,26 @@ impl P<'_, '_, '_, '_> {
         y: f32,
         max: f32,
     ) -> Result<f32, Error> {
-        let size = self.size(t);
-        let max_px = (max * self.s()).max(0.0) as u32;
-        let fitted = self.d.gfx.fit(t.style(), size, text, max_px)?;
-        let (w, h) = self.d.gfx.measure(t.style(), size, 0, &fitted)?;
-        if self.visible(y, t.line) {
-            let top = y * self.s() + self.dy + (t.line * self.s() - h as f32) / 2.0;
-            let pen = Pen {
-                style: t.style(),
-                size,
-                color,
-                wrap: 0,
-            };
-            self.d.text(pen, &fitted, x * self.s(), top)?;
+        let (size, style, s) = (self.size(t), t.style(), self.s());
+        let max_px = (max * s).max(0.0) as u32;
+        let (whole, _) = self.d.gfx.measure(style, size, 0, text)?;
+        if !self.visible(y, t.line) {
+            return Ok(whole.min(max_px) as f32 / s);
         }
-        Ok(w as f32 / self.s())
+        let fitted = if whole <= max_px {
+            Cow::Borrowed(text)
+        } else {
+            Cow::Owned(self.d.gfx.fit(style, size, text, max_px)?)
+        };
+        let pen = Pen {
+            style,
+            size,
+            color,
+            wrap: 0,
+        };
+        let top = y * s + self.dy;
+        let (w, _) = self.d.gfx.text_in(pen, &fitted, x * s, top, t.line * s)?;
+        Ok(w as f32 / s)
     }
 
     /// A line's width in CSS px, uncut.
@@ -449,10 +499,24 @@ impl P<'_, '_, '_, '_> {
         }
     }
 
+    /// What is drawn here hides what lies under it from the finger.
+    pub fn cover(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.hit(x, y, w, h, Target::Cover);
+    }
+
+    /// Whether a gesture can go now: while Maison is gone, what would send nothing but a look.
+    pub fn can(&self, act: &Act) -> bool {
+        let sends = matches!(
+            act,
+            Act::Order(_) | Act::Key(..) | Act::Ask(_) | Act::Sure | Act::Refresh(_)
+        );
+        !(self.c.over.gone && sends)
+    }
+
     /// Words, then « · » and a link (underlined, `ink`), on one secondary line at (x, y) in `w`
     /// CSS px (Stale's « Dernière lecture 14:02 · Réessayer », a tile's « Pas de réponse ·
     /// Réessayer », a shutter's « Fermeture 20:24 · Ne pas fermer ce soir »). The link is a 44 px
-    /// target from `target_y` when it acts (`act`).
+    /// target from `target_y`: it acts (`act`), or keeps its hit and does nothing.
     #[allow(clippy::too_many_arguments)] // one line's pieces: words, link, where, how
     pub fn link_line(
         &mut self,
@@ -465,21 +529,19 @@ impl P<'_, '_, '_, '_> {
         act: Option<Act>,
     ) -> Result<(), Error> {
         let t = ty::SECONDARY;
-        let used = self.line(said, t, said_color, x, y, w)?;
-        let sep_w = self.line(" · ", t, said_color, x + used, y, w - used)?;
+        const SEP: &str = " · ";
+        // the link keeps its width: the words give way, never the only control on the line
+        let reserved = self.width(link, t)? + self.width(SEP, t)?;
+        let used = self.line(said, t, said_color, x, y, (w - reserved).max(0.0))?;
+        let sep_w = self.line(SEP, t, said_color, x + used, y, w - used)?;
         let lx = x + used + sep_w;
         let lw = self.line(link, t, ink, lx, y, w - used - sep_w)?;
         // app.css: `text-underline-offset: var(--s-half)`
         self.rounded(lx, y + t.line - px::S_HALF, lw, 1.0, 0.0, ink)?;
-        if let Some(act) = act {
-            self.hit(
-                lx - px::S_2,
-                target_y,
-                lw + px::S_4,
-                TOUCH,
-                Target::Act(act),
-            );
-        }
+        let what = act
+            .filter(|a| self.can(a))
+            .map_or(Target::Cover, Target::Act);
+        self.hit(lx - px::S_2, target_y, lw + px::S_4, TOUCH, what);
         Ok(())
     }
 }
@@ -548,6 +610,21 @@ mod tests {
         assert_eq!(balance(&[], 2, 12.0), vec![0]);
         // never more columns than groups need
         assert_eq!(balance(&[10.0, 10.0], 6, 12.0), vec![0, 1]);
+    }
+
+    #[test]
+    fn what_scrolled_under_the_header_is_out_of_reach() {
+        let band = |y: f32, h: f32| Hit {
+            x: 0.0,
+            y,
+            w: 100.0,
+            h,
+            what: Target::Cover,
+        };
+        let mut hits = vec![band(-50.0, 60.0), band(30.0, 60.0), band(100.0, 60.0)];
+        clip_above(&mut hits, 64.0);
+        let left: Vec<(f32, f32)> = hits.iter().map(|h| (h.y, h.h)).collect();
+        assert_eq!(left, [(64.0, 26.0), (100.0, 60.0)]);
     }
 
     #[test]

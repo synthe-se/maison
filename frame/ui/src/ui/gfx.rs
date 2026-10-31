@@ -1,20 +1,21 @@
 //! Drawing on the GPU through SDL's renderer (GLES 2 on Lima), in the panel's pixels: text from
 //! SDL_ttf's renderer engine (its glyphs in an atlas: a line costs one draw, not a texture),
-//! anti-aliased discs and rounded rectangles from one white disc per radius (drawn as nine
-//! pieces, tinted), the web app's icons rasterised once per size (resvg), tinted. Everything
-//! drawn is cached: a line, a disc, an icon or a picture is made once and drawn again from its
-//! texture (looking one up still builds its key: a few small allocations a line, no texture).
+//! anti-aliased discs and rounded rectangles from one white texture per radius (its corners and
+//! a solid middle: every piece of a box comes from it, one batch, tinted), the web app's icons
+//! rasterised once per size (resvg), tinted. Everything drawn is cached: a line, a shape, an icon
+//! or a picture is made once and drawn again from its texture; a text's size is kept apart, by
+//! `TTF_GetStringSize`, so a line measured and not drawn makes nothing.
 
+use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
-use std::ffi::CString;
-use std::path::Path;
+use std::hash::Hash;
 
 use resvg::tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 use resvg::usvg;
 use sdl3::iostream::IOStream;
 use sdl3::pixels::PixelFormat;
 use sdl3::rect::Rect as SdlRect;
-use sdl3::render::{BlendMode, Canvas, FRect, Texture, TextureCreator};
+use sdl3::render::{BlendMode, Canvas, FRect, ScaleMode, Texture, TextureCreator};
 use sdl3::ttf::{Font, Sdl3TtfContext, Text, TextEngine};
 use sdl3::video::{Window, WindowContext};
 
@@ -65,26 +66,53 @@ fn font_bytes(style: Style) -> &'static [u8] {
         .expect("every face is embedded")
 }
 
-/// Behind the text face, on the frame (Debian's fonts-noto-core, rootfs.sh): the signs Cal Sans
-/// lacks (`FROM_FALLBACK`).
-const FALLBACK_FONT: &str = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf";
-
 /// Lines kept drawn; past this, those not drawn for a while go.
 const TEXTS_KEPT: usize = 1200;
+/// Sizes kept; past this they are measured again.
+const SIZES_KEPT: usize = 4000;
+/// The solid side between a shape texture's corners.
+const MIDDLE: u32 = 2;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TextKey {
-    style: Style,
-    size: u16,
-    color: Rgba,
-    /// 0: one line.
-    wrap: i32,
-    text: String,
+/// The value under `key`, made once. By reference: a look-up that finds it allocates nothing.
+fn cached<'m, K, Q, V>(
+    map: &'m mut HashMap<K, V>,
+    key: &Q,
+    make: impl FnOnce() -> Result<V, Error>,
+) -> Result<&'m mut V, Error>
+where
+    K: Borrow<Q> + Eq + Hash,
+    Q: ToOwned<Owned = K> + Eq + Hash + ?Sized,
+{
+    if !map.contains_key(key) {
+        map.insert(key.to_owned(), make()?);
+    }
+    Ok(map.get_mut(key).expect("just inserted"))
 }
 
-struct Line {
+/// A NUL would end the C string early: never in the API's words, dropped if it came.
+fn clean(text: &str) -> Cow<'_, str> {
+    if text.contains('\0') {
+        text.replace('\0', "").into()
+    } else {
+        text.into()
+    }
+}
+
+/// `true`, or SDL's error.
+fn sdl(ok: bool) -> Result<(), Error> {
+    if ok {
+        Ok(())
+    } else {
+        Err(sdl3::get_error().into())
+    }
+}
+
+/// In pixels.
+type Size = (u32, u32);
+
+pub(super) struct Line {
     text: Text,
-    size: (u32, u32),
+    pub(super) size: Size,
     used: u64,
 }
 
@@ -103,16 +131,19 @@ pub struct Pen {
 /// The renderer's caches. Field order is drop order: the texts before their engine and their
 /// fonts, the textures before the renderer that made them (held by the caller).
 pub struct Gfx<'t> {
-    lines: HashMap<TextKey, Line>,
+    /// Each pen's lines, by their words (0 wide: one line).
+    pub(super) lines: HashMap<(Style, u16, Rgba, i32), HashMap<String, Line>>,
+    /// A text's size, whatever its color.
+    sizes: HashMap<(Style, u16, i32), HashMap<String, Size>>,
     engine: TextEngine,
     fonts: HashMap<(Style, u16), Font<'static>>,
-    /// The system's Noto Sans behind the text face, for the few signs Cal Sans lacks; dropped
-    /// after the fonts that fall back on it.
-    fallbacks: HashMap<u16, Font<'static>>,
-    discs: HashMap<u32, Texture<'t>>,
+    /// By radius.
+    shapes: HashMap<u32, Texture<'t>>,
     icons: HashMap<(Icon, u32), Texture<'t>>,
-    /// Pictures drawn in their own colors (a Tempo swatch), by their SVG.
-    pictures: HashMap<String, Texture<'t>>,
+    /// Pictures drawn in their own colors (a Tempo swatch), by size, by their SVG.
+    pub(super) pictures: HashMap<(u32, u32), HashMap<String, Texture<'t>>>,
+    /// Pictures made from a small key (a Tempo mark): nothing is written to find one.
+    marks: HashMap<(u32, u32), Texture<'t>>,
     creator: &'t TextureCreator<WindowContext>,
     ttf: Sdl3TtfContext,
     frame: u64,
@@ -125,99 +156,67 @@ impl<'t> Gfx<'t> {
     ) -> Result<Self, Error> {
         Ok(Self {
             lines: HashMap::new(),
+            sizes: HashMap::new(),
             engine: TextEngine::new(creator)?,
             fonts: HashMap::new(),
-            fallbacks: HashMap::new(),
-            discs: HashMap::new(),
+            shapes: HashMap::new(),
             icons: HashMap::new(),
             pictures: HashMap::new(),
+            marks: HashMap::new(),
             creator,
             ttf,
             frame: 0,
         })
     }
 
-    /// A frame starts; lines not drawn for long go when there are too many.
+    /// A frame starts; lines not drawn for long go when there are too many, the kept sizes all at
+    /// once when they are (a clock's minutes add up).
     pub fn begin(&mut self) {
         self.frame += 1;
-        if self.lines.len() > TEXTS_KEPT {
+        if self.lines.values().map(HashMap::len).sum::<usize>() > TEXTS_KEPT {
             let recent = self.frame.saturating_sub(4);
-            self.lines.retain(|_, l| l.used >= recent);
+            for lines in self.lines.values_mut() {
+                lines.retain(|_, l| l.used >= recent);
+            }
+        }
+        if self.sizes.values().map(HashMap::len).sum::<usize>() > SIZES_KEPT {
+            self.sizes.clear();
         }
     }
 
     fn font(&mut self, style: Style, size: u16) -> Result<&Font<'static>, Error> {
-        self.load_font(style, size)?;
-        Ok(&self.fonts[&(style, size)])
+        font(&mut self.fonts, &self.ttf, style, size)
     }
 
-    fn load_font(&mut self, style: Style, size: u16) -> Result<(), Error> {
-        if !self.fonts.contains_key(&(style, size)) {
-            let bytes = font_bytes(style);
-            let font = self
-                .ttf
-                .load_font_from_iostream(IOStream::from_bytes(bytes)?, f32::from(size))?;
-            if style.face == Face::Text && Path::new(FALLBACK_FONT).exists() {
-                if !self.fallbacks.contains_key(&size) {
-                    let fallback = self.ttf.load_font(FALLBACK_FONT, f32::from(size))?;
-                    self.fallbacks.insert(size, fallback);
-                }
-                let fallback = &self.fallbacks[&size];
-                // SAFETY: two live fonts; the fallback outlives the font (field order)
-                if !unsafe { sdl3::ttf::sys::TTF_AddFallbackFont(font.raw(), fallback.raw()) } {
-                    return Err(sdl3::get_error().into());
-                }
-            }
-            self.fonts.insert((style, size), font);
-        }
-        Ok(())
-    }
-
-    /// The line drawn (or measured): its size in pixels. `wrap` 0: one line.
-    fn line(
-        &mut self,
-        style: Style,
-        size: u16,
-        color: Rgba,
-        wrap: i32,
-        text: &str,
-    ) -> Result<&Line, Error> {
-        let key = TextKey {
-            style,
-            size,
-            color,
-            wrap,
-            text: text.to_string(),
-        };
-        if !self.lines.contains_key(&key) {
-            // a NUL would end the C string early: never in the API's words, dropped if it came
-            let clean = text.replace('\0', "");
-            self.load_font(style, size)?;
-            let font = &self.fonts[&(style, size)];
+    /// The line, drawn once. `pen.wrap` 0: one line.
+    pub(super) fn line(&mut self, pen: Pen, text: &str) -> Result<&Line, Error> {
+        let (engine, fonts, ttf, frame) =
+            (&mut self.engine, &mut self.fonts, &self.ttf, self.frame);
+        let lines = self
+            .lines
+            .entry((pen.style, pen.size, pen.color, pen.wrap))
+            .or_default();
+        let line = cached(lines, text, || {
             // the font outlives the text (field order), the engine is this renderer's
-            let mut t = self.engine.create_text(font, &clean)?;
-            t.set_color(color)?;
-            if wrap > 0 {
-                t.set_wrap_width(wrap)?;
+            let font = font(fonts, ttf, pen.style, pen.size)?;
+            let mut t = engine.create_text(font, &clean(text))?;
+            t.set_color(pen.color)?;
+            if pen.wrap > 0 {
+                t.set_wrap_width(pen.wrap)?;
             }
             t.update()?;
             let size = t.size();
-            self.lines.insert(
-                key.clone(),
-                Line {
-                    text: t,
-                    size,
-                    used: 0,
-                },
-            );
-        }
-        let frame = self.frame;
-        let line = self.lines.get_mut(&key).expect("just inserted");
+            Ok(Line {
+                text: t,
+                size,
+                used: 0,
+            })
+        })?;
         line.used = frame;
         Ok(line)
     }
 
-    /// A text's size, as it would be drawn.
+    /// A text's size, as it would be drawn: asked once of SDL_ttf, nothing made.
     pub fn measure(
         &mut self,
         style: Style,
@@ -225,8 +224,35 @@ impl<'t> Gfx<'t> {
         wrap: i32,
         text: &str,
     ) -> Result<(u32, u32), Error> {
-        // measured in a color it may be drawn in: the line is reused when it is
-        Ok(self.line(style, size, Rgba(0, 0, 0, 255), wrap, text)?.size)
+        let (fonts, ttf) = (&mut self.fonts, &self.ttf);
+        let sizes = self.sizes.entry((style, size, wrap)).or_default();
+        let measured = cached(sizes, text, || {
+            let text = clean(text);
+            if text.is_empty() {
+                return Ok((0, 0));
+            }
+            let font = font(fonts, ttf, style, size)?;
+            let (mut w, mut h) = (0, 0);
+            let c = text.as_ptr().cast();
+            // SAFETY: a live font, a text of `len` bytes (not 0, which means NUL-terminated), two
+            // out-parameters
+            sdl(unsafe {
+                if wrap > 0 {
+                    sdl3::ttf::sys::TTF_GetStringSizeWrapped(
+                        font.raw(),
+                        c,
+                        text.len(),
+                        wrap,
+                        &mut w,
+                        &mut h,
+                    )
+                } else {
+                    sdl3::ttf::sys::TTF_GetStringSize(font.raw(), c, text.len(), &mut w, &mut h)
+                }
+            })?;
+            Ok((w.max(0) as u32, h.max(0) as u32))
+        })?;
+        Ok(*measured)
     }
 
     /// The text's top-left at (x, y).
@@ -234,7 +260,25 @@ impl<'t> Gfx<'t> {
         if text.is_empty() {
             return Ok((0, 0));
         }
-        let line = self.line(pen.style, pen.size, pen.color, pen.wrap, text)?;
+        let line = self.line(pen, text)?;
+        line.text.draw(x.round(), y.round())?;
+        Ok(line.size)
+    }
+
+    /// The text at x, centred in a line box `box_h` high from `top`.
+    pub fn text_in(
+        &mut self,
+        pen: Pen,
+        text: &str,
+        x: f32,
+        top: f32,
+        box_h: f32,
+    ) -> Result<(u32, u32), Error> {
+        if text.is_empty() {
+            return Ok((0, 0));
+        }
+        let line = self.line(pen, text)?;
+        let y = top + (box_h - line.size.1 as f32) / 2.0;
         line.text.draw(x.round(), y.round())?;
         Ok(line.size)
     }
@@ -242,30 +286,30 @@ impl<'t> Gfx<'t> {
     /// How much of `text` fits in `max` pixels; the rest is cut and an ellipsis said. A NUL
     /// (never in the API's words) is dropped first, as a drawn line drops it.
     pub fn fit(&mut self, style: Style, size: u16, text: &str, max: u32) -> Result<String, Error> {
-        let text = text.replace('\0', "");
+        let text = clean(text);
         if self.measure(style, size, 0, &text)?.0 <= max {
-            return Ok(text);
+            return Ok(text.into_owned());
         }
         let ellipsis = self.measure(style, size, 0, "…")?.0;
         let room = max.saturating_sub(ellipsis) as i32;
+        // SDL_ttf reads a width of 0 as no limit at all
+        if room == 0 {
+            return Ok("…".to_string());
+        }
         let font = self.font(style, size)?;
-        // no NUL left: the C string is the whole text, and `len` counts its bytes
-        let c = CString::new(text.as_str())?;
         let (mut w, mut len) = (0, 0usize);
-        // SAFETY: a live font, a NUL-terminated string and its length, two out-parameters
-        let ok = unsafe {
+        // SAFETY: a live font, a text of `len` bytes (wider than `max`: not empty), two
+        // out-parameters
+        sdl(unsafe {
             sdl3::ttf::sys::TTF_MeasureString(
                 font.raw(),
-                c.as_ptr(),
-                c.as_bytes().len(),
+                text.as_ptr().cast(),
+                text.len(),
                 room,
                 &mut w,
                 &mut len,
             )
-        };
-        if !ok {
-            return Err(sdl3::get_error().into());
-        }
+        })?;
         let mut cut = len.min(text.len());
         while !text.is_char_boundary(cut) {
             cut -= 1;
@@ -273,11 +317,15 @@ impl<'t> Gfx<'t> {
         Ok(format!("{}…", text[..cut].trim_end()))
     }
 
-    fn disc(&mut self, diameter: u32) -> Result<&mut Texture<'t>, Error> {
-        if !self.discs.contains_key(&diameter) {
-            let mut pm = Pixmap::new(diameter, diameter).ok_or("a disc of no size")?;
-            let r = diameter as f32 / 2.0;
-            let path = PathBuilder::from_circle(r, r, r).ok_or("a disc of no size")?;
+    /// The white texture boxes of radius `r` are drawn from: the corners of a disc, `MIDDLE`
+    /// solid pixels between them. Sampled by the nearest pixel, its pieces meet without a seam.
+    fn shape(&mut self, r: u32) -> Result<&mut Texture<'t>, Error> {
+        let creator = self.creator;
+        cached(&mut self.shapes, &r, || {
+            let d = 2 * r;
+            let mut pm = Pixmap::new(d, d).ok_or("a disc of no size")?;
+            let c = r as f32;
+            let path = PathBuilder::from_circle(c, c, c).ok_or("a disc of no size")?;
             let mut paint = Paint::default();
             paint.set_color_rgba8(255, 255, 255, 255);
             paint.anti_alias = true;
@@ -288,72 +336,130 @@ impl<'t> Gfx<'t> {
                 Transform::identity(),
                 None,
             );
-            let t = self.white_texture(pm)?;
-            self.discs.insert(diameter, t);
-        }
-        Ok(self.discs.get_mut(&diameter).expect("just inserted"))
+            let side = d + MIDDLE;
+            let mut data = vec![255; (side * side * 4) as usize];
+            let disc = pm.data().as_chunks::<4>().0;
+            let of_disc = |v: u32| {
+                (v < r)
+                    .then_some(v)
+                    .or((v >= r + MIDDLE).then(|| v - MIDDLE))
+            };
+            for (i, px) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let (x, y) = (i as u32 % side, i as u32 / side);
+                if let (Some(x), Some(y)) = (of_disc(x), of_disc(y)) {
+                    px[3] = disc[(y * d + x) as usize][3];
+                }
+            }
+            let mut t = texture(creator, &data, side, side)?;
+            t.set_scale_mode(ScaleMode::Nearest);
+            Ok(t)
+        })
     }
 
     fn icon_texture(&mut self, icon: Icon, size: u32) -> Result<&mut Texture<'t>, Error> {
-        if !self.icons.contains_key(&(icon, size)) {
-            let pm = rasterise_icon(icon.markup(), size)?;
-            let t = self.white_texture(pm)?;
-            self.icons.insert((icon, size), t);
-        }
-        Ok(self.icons.get_mut(&(icon, size)).expect("just inserted"))
+        let creator = self.creator;
+        cached(&mut self.icons, &(icon, size), || {
+            white_texture(creator, rasterise_icon(icon.markup(), size)?)
+        })
     }
 
-    fn picture(&mut self, svg: &str, w: u32, h: u32) -> Result<&Texture<'t>, Error> {
-        if !self.pictures.contains_key(svg) {
-            let tree = usvg::Tree::from_str(svg, &usvg::Options::default())?;
-            let mut pm = Pixmap::new(w, h).ok_or("a picture of no size")?;
-            let size = tree.size();
-            resvg::render(
-                &tree,
-                Transform::from_scale(w as f32 / size.width(), h as f32 / size.height()),
-                &mut pm.as_mut(),
-            );
-            let t = self.straight_texture(pm)?;
-            self.pictures.insert(svg.to_string(), t);
-        }
-        Ok(&self.pictures[svg])
+    pub(super) fn picture(&mut self, svg: &str, w: u32, h: u32) -> Result<&Texture<'t>, Error> {
+        let creator = self.creator;
+        let pictures = self.pictures.entry((w, h)).or_default();
+        let picture = cached(pictures, svg, || rasterise(creator, svg, w, h))?;
+        Ok(picture)
     }
 
-    /// tiny-skia's premultiplied pixels made straight, as SDL blends them.
-    fn straight_texture(&self, pm: Pixmap) -> Result<Texture<'t>, Error> {
-        let (w, h) = (pm.width(), pm.height());
-        let mut data = pm.take();
-        for px in data.as_chunks_mut::<4>().0 {
-            let a = u16::from(px[3]);
-            for c in &mut px[..3] {
-                // a transparent pixel stays black
-                *c = (u16::from(*c) * 255 + a / 2)
-                    .checked_div(a)
-                    .map_or(0, |v| v.min(255) as u8);
-            }
-        }
-        self.texture(&data, w, h)
+    /// The picture `svg()` makes, kept under `key` at side `size`.
+    fn mark(
+        &mut self,
+        key: u32,
+        size: u32,
+        svg: impl FnOnce() -> String,
+    ) -> Result<&Texture<'t>, Error> {
+        let creator = self.creator;
+        let mark = cached(&mut self.marks, &(key, size), || {
+            rasterise(creator, &svg(), size, size)
+        })?;
+        Ok(mark)
     }
+}
 
-    fn texture(&self, data: &[u8], w: u32, h: u32) -> Result<Texture<'t>, Error> {
-        let mut t = self
-            .creator
-            .create_texture_static(PixelFormat::RGBA32, w, h)?;
-        t.update(None::<SdlRect>, data, w as usize * 4)?;
-        t.set_blend_mode(BlendMode::Blend);
-        Ok(t)
-    }
+/// An SVG on a `w` × `h` texture.
+fn rasterise<'t>(
+    creator: &'t TextureCreator<WindowContext>,
+    svg: &str,
+    w: u32,
+    h: u32,
+) -> Result<Texture<'t>, Error> {
+    let tree = usvg::Tree::from_str(svg, &usvg::Options::default())?;
+    let mut pm = Pixmap::new(w, h).ok_or("a picture of no size")?;
+    let size = tree.size();
+    resvg::render(
+        &tree,
+        Transform::from_scale(w as f32 / size.width(), h as f32 / size.height()),
+        &mut pm.as_mut(),
+    );
+    straight_texture(creator, pm)
+}
 
-    /// A white mask (tiny-skia's premultiplied pixels made straight: white, its coverage as
-    /// alpha), tinted when drawn.
-    fn white_texture(&self, pm: Pixmap) -> Result<Texture<'t>, Error> {
-        let (w, h) = (pm.width(), pm.height());
-        let mut data = pm.take();
-        for px in data.as_chunks_mut::<4>().0 {
-            px[..3].fill(255);
+/// The embedded face at `style`, loaded once.
+fn font<'f>(
+    fonts: &'f mut HashMap<(Style, u16), Font<'static>>,
+    ttf: &Sdl3TtfContext,
+    style: Style,
+    size: u16,
+) -> Result<&'f Font<'static>, Error> {
+    let font = cached(fonts, &(style, size), || {
+        let bytes = IOStream::from_bytes(font_bytes(style))?;
+        Ok(ttf.load_font_from_iostream(bytes, f32::from(size))?)
+    })?;
+    Ok(font)
+}
+
+fn texture<'t>(
+    creator: &'t TextureCreator<WindowContext>,
+    data: &[u8],
+    w: u32,
+    h: u32,
+) -> Result<Texture<'t>, Error> {
+    let mut t = creator.create_texture_static(PixelFormat::RGBA32, w, h)?;
+    t.update(None::<SdlRect>, data, w as usize * 4)?;
+    t.set_blend_mode(BlendMode::Blend);
+    Ok(t)
+}
+
+/// tiny-skia's premultiplied pixels made straight, as SDL blends them.
+fn straight_texture<'t>(
+    creator: &'t TextureCreator<WindowContext>,
+    pm: Pixmap,
+) -> Result<Texture<'t>, Error> {
+    let (w, h) = (pm.width(), pm.height());
+    let mut data = pm.take();
+    for px in data.as_chunks_mut::<4>().0 {
+        let a = u16::from(px[3]);
+        for c in &mut px[..3] {
+            // a transparent pixel stays black
+            *c = (u16::from(*c) * 255 + a / 2)
+                .checked_div(a)
+                .map_or(0, |v| v.min(255) as u8);
         }
-        self.texture(&data, w, h)
     }
+    texture(creator, &data, w, h)
+}
+
+/// A white mask (tiny-skia's premultiplied pixels made straight: white, its coverage as
+/// alpha), tinted when drawn.
+fn white_texture<'t>(
+    creator: &'t TextureCreator<WindowContext>,
+    pm: Pixmap,
+) -> Result<Texture<'t>, Error> {
+    let (w, h) = (pm.width(), pm.height());
+    let mut data = pm.take();
+    for px in data.as_chunks_mut::<4>().0 {
+        px[..3].fill(255);
+    }
+    texture(creator, &data, w, h)
 }
 
 /// An icon's markup as the web app draws it (24×24, stroked 2, round caps), white, `size` px.
@@ -374,7 +480,16 @@ pub struct Draw<'a, 't> {
     pub gfx: &'a mut Gfx<'t>,
 }
 
+/// A box on the panel, in its pixels.
+pub type Area = (i32, i32, i32, i32);
+
 impl Draw<'_, '_> {
+    /// The whole picture in `color`, nothing blended.
+    pub fn clear(&mut self, color: Rgba) {
+        self.canvas.set_draw_color(color);
+        self.canvas.clear();
+    }
+
     pub fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, color: Rgba) -> Result<(), Error> {
         if w <= 0 || h <= 0 || color.3 == 0 {
             return Ok(());
@@ -402,26 +517,79 @@ impl Draw<'_, '_> {
         if r == 0 {
             return self.fill(x, y, w, h, color);
         }
-        let disc = self.gfx.disc(2 * r as u32)?;
-        disc.set_color_mod(color.0, color.1, color.2);
-        disc.set_alpha_mod(color.3);
-        let rf = r as f32;
+        // a round pill whose straight sides vanish: only its corners
+        let straight = [
+            (x + r, y, w - 2 * r, r),
+            (x + r, y + h - r, w - 2 * r, r),
+            (x, y + r, w, h - 2 * r),
+        ];
+        self.shape((x, y, w, h), r, &straight, color)
+    }
+
+    /// The box's four corners of radius `r`, then `straight`, all from one texture: one batch.
+    fn shape(
+        &mut self,
+        (x, y, w, h): Area,
+        r: i32,
+        straight: &[Area],
+        color: Rgba,
+    ) -> Result<(), Error> {
+        let t = self.gfx.shape(r as u32)?;
+        t.set_color_mod(color.0, color.1, color.2);
+        t.set_alpha_mod(color.3);
+        let (rf, far) = (r as f32, (r as u32 + MIDDLE) as f32);
         for (sx, sy, dx, dy) in [
-            (0, 0, x, y),
-            (r, 0, x + w - r, y),
-            (0, r, x, y + h - r),
-            (r, r, x + w - r, y + h - r),
+            (0.0, 0.0, x, y),
+            (far, 0.0, x + w - r, y),
+            (0.0, far, x, y + h - r),
+            (far, far, x + w - r, y + h - r),
         ] {
             self.canvas.copy(
-                disc,
-                FRect::new(sx as f32, sy as f32, rf, rf),
+                t,
+                FRect::new(sx, sy, rf, rf),
                 FRect::new(dx as f32, dy as f32, rf, rf),
             )?;
         }
-        // a round pill whose straight sides vanish: only the disc's halves
-        self.fill(x + r, y, w - 2 * r, r, color)?;
-        self.fill(x + r, y + h - r, w - 2 * r, r, color)?;
-        self.fill(x, y + r, w, h - 2 * r, color)
+        let solid = FRect::new(rf, rf, MIDDLE as f32, MIDDLE as f32);
+        for &(sx, sy, sw, sh) in straight {
+            if sw > 0 && sh > 0 {
+                let to = FRect::new(sx as f32, sy as f32, sw as f32, sh as f32);
+                self.canvas.copy(t, solid, to)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A rounded box with a ring `t` thick just inside its edge. Over an opaque fill only the
+    /// ring's own band is drawn, not the whole box again: the same pixels, half the overdraw.
+    pub fn ringed(
+        &mut self,
+        (x, y, w, h): Area,
+        radius: i32,
+        t: i32,
+        fill: Rgba,
+        ring: Rgba,
+    ) -> Result<(), Error> {
+        let r = radius.min(w / 2).min(h / 2).max(0);
+        if fill.3 == 255 && ring.3 > 0 && r > 0 && t < w / 2 && t < h / 2 {
+            let band = [
+                (x + r, y, w - 2 * r, t),
+                (x + r, y + h - t, w - 2 * r, t),
+                (x, y + r, t, h - 2 * r),
+                (x + w - t, y + r, t, h - 2 * r),
+            ];
+            self.shape((x, y, w, h), r, &band, ring)?;
+        } else {
+            self.rounded(x, y, w, h, radius, ring)?;
+        }
+        self.rounded(
+            x + t,
+            y + t,
+            w - 2 * t,
+            h - 2 * t,
+            (radius - t).max(0),
+            fill,
+        )
     }
 
     /// The icon, `size` px square at (x, y), in `color`.
@@ -456,6 +624,20 @@ impl Draw<'_, '_> {
             .copy(t, None, FRect::new(x as f32, y as f32, w as f32, h as f32))?;
         Ok(())
     }
+
+    /// The picture kept under `key`, `side` square at (x, y); `svg` written only the first time.
+    pub fn mark(
+        &mut self,
+        key: u32,
+        side: u32,
+        svg: impl FnOnce() -> String,
+        (x, y): (i32, i32),
+    ) -> Result<(), Error> {
+        let t = self.gfx.mark(key, side, svg)?;
+        let box_ = FRect::new(x as f32, y as f32, side as f32, side as f32);
+        self.canvas.copy(t, None, box_)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -484,7 +666,7 @@ mod tests {
         }
     }
 
-    /// Every character of the words is in the text face (the display face draws titles only).
+    /// Every character the frame says is in the text face (the display face draws titles only).
     #[test]
     fn the_text_font_has_every_character_of_the_words() {
         let ttf = sdl3::ttf::init().unwrap();
@@ -503,11 +685,11 @@ mod tests {
                 }
             }
         }
-        // the plug page's « ≈ » and the TV keyboard's arrows, none on the frame: Noto Sans has them
-        let from_fallback: std::collections::BTreeSet<char> = ['←', '→', '≈'].into();
+        // the web app's plug page's « ≈ » and TV keyboard's arrows: words the frame never says
+        let web_only: std::collections::BTreeSet<char> = ['←', '→', '≈'].into();
         assert_eq!(
-            missing, from_fallback,
-            "signs Cal Sans lacks: add them to the fallback's"
+            missing, web_only,
+            "signs Cal Sans lacks: nothing draws them"
         );
     }
 

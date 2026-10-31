@@ -1,22 +1,49 @@
 #!/bin/sh
-# Android's network blocks, with only the keys both supplicants read the same way (its own global
-# settings and extensions stay out), into the configuration wpa_supplicant@wlan0 reads (/etc is
-# the tmpfs over the read-only system: rebuilt at every boot, never written to the eMMC).
+# What wpa_supplicant@wlan0 reads (/etc is the tmpfs over the read-only system: rebuilt at every
+# boot, never written to the eMMC): the network the frame's setup was given, else the ones Android
+# knows, with only the keys both supplicants read the same way. With no network or no address, the
+# frame is its own Wi-Fi for its first setup (maison-setup): named and locked from its eMMC's
+# serial, what the interface shows, the only time it is ever an access point.
 set -eu
+own=/android-data/maison/wifi.conf
 android=/android-data/misc/wifi/wpa_supplicant.conf
+target=/android-data/maison/target
 out=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
 umask 077
 mkdir -p /etc/wpa_supplicant
-{
-	echo "ctrl_interface=/run/wpa_supplicant"
-	echo "country=FR"
-	awk '
-		/^network=\{/ { inside = 1; print; next }
-		inside && /^\}/ { inside = 0; print; next }
-		inside {
-			key = $0; sub(/^[ \t]*/, "", key); sub(/=.*/, "", key)
-			if (key ~ /^(ssid|psk|key_mgmt|priority|scan_ssid|proto|pairwise|group|ieee80211w)$/) print
-		}
-	' "$android"
-} >"$out"
-echo "maison-wifi: $(grep -c '^network=' "$out") network(s) from Android"
+# no address yet: an empty one, for the interface's credential; it then asks to set the frame up
+[ -e "$target" ] || : >"$target"
+
+networks() {
+	if [ -s "$own" ]; then
+		cat "$own"
+	elif [ -s "$android" ]; then
+		awk '
+			/^network=\{/ { inside = 1; print; next }
+			inside && /^\}/ { inside = 0; print; next }
+			inside {
+				key = $0; sub(/^[ \t]*/, "", key); sub(/=.*/, "", key)
+				if (key ~ /^(ssid|psk|key_mgmt|priority|scan_ssid|proto|pairwise|group|ieee80211w)$/) print
+			}
+		' "$android"
+	fi
+}
+
+found=$(networks)
+if [ -n "$found" ] && [ -s "$target" ]; then
+	printf 'ctrl_interface=/run/wpa_supplicant\ncountry=FR\n%s\n' "$found" >"$out"
+	echo "maison-wifi: $(grep -c '^network=' "$out") network(s)"
+	exit 0
+fi
+
+serial=$(sha256sum /sys/block/mmcblk0/device/cid | cut -c1-64)
+ssid=Maison-$(echo "$serial" | cut -c1-4)
+password=$(echo "$serial" | cut -c5-16)
+printf 'ctrl_interface=/run/wpa_supplicant\ncountry=FR\nap_scan=2\nnetwork={\n\tssid="%s"\n\tmode=2\n\tfrequency=2437\n\tkey_mgmt=WPA-PSK\n\tproto=RSN\n\tpairwise=CCMP\n\tgroup=CCMP\n\tpsk="%s"\n}\n' "$ssid" "$password" >"$out"
+printf 'MAISON_SETUP_SSID=%s\nMAISON_SETUP_PASSWORD=%s\nMAISON_SETUP_URL=http://192.168.4.1\n' "$ssid" "$password" >/run/maison-setup
+chmod 644 /run/maison-setup
+mkdir -p /run/systemd/network
+printf '[Match]\nName=wlan0\n\n[Network]\nAddress=192.168.4.1/24\nDHCPServer=yes\n' >/run/systemd/network/40-maison-setup.network
+chmod 644 /run/systemd/network/40-maison-setup.network
+systemctl --no-block start maison-setup
+echo "maison-wifi: to be set up, as $ssid"

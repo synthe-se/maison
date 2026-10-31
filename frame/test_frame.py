@@ -236,7 +236,7 @@ class Initramfs(unittest.TestCase):
         self.assertIn("left=/android-data/local/tmp/maison/target", boot)
         adopt = boot[boot.index("kept=") :]
         # root's copy, 0600, only while root keeps none; the shell's copy always removed
-        self.assertIn("chown 0:0 $kept.new && chmod 600 $kept.new && mv $kept.new $kept", adopt)
+        self.assertIn("chown 0:0 $kept.new && chmod 600 $kept.new && sync && mv $kept.new $kept && sync", adopt)
         self.assertLess(adopt.index("if [ -s $kept ]"), adopt.index("cp $left"))
         self.assertIn("rm -f $left", adopt)
         # before the system starts
@@ -254,21 +254,45 @@ class Initramfs(unittest.TestCase):
 
     def test_a_try_is_counted_before_it_starts_and_a_spent_update_goes_back(self):
         boot = initramfs.init(False)
-        # the shell gets its escapes: two arguments to printf and sed read as written
-        self.assertIn("printf 'active=%s\\npending=%s\\ntries=%s\\n'", boot)
+        # the slots' words are one file's, the system's too, and the shell gets their escapes
+        self.assertIn(initramfs.SLOTS, boot)
+        self.assertIn("printf 'active=%s\\npending=%s\\ntries=%s\\nboots=%s\\n'", boot)
         self.assertIn(r"sed -n 's/.*maison\.slot=\([ab]\).*/\1/p' /proc/cmdline", boot)
-        # counted, then chosen; an update out of tries leaves the active slot
-        self.assertLess(boot.index('remember "$slot" "$pending" $((tries - 1))'), boot.index("slot=$pending"))
-        self.assertIn('remember "$slot" "" 0', boot)
+        # counted, then chosen; an update out of tries, or not whole, leaves the active slot
+        self.assertIn('[ "${tries:-0}" -gt 0 ] && whole "$pending" && remember "$active" "$pending" $((tries - 1)) "$boots"', boot)
+        self.assertIn('remember "$active" "" 0 "$boots"', boot)
         self.assertIn('echo "$pending" >$slots/failed', boot)
+        # the active slot's boots counted, the other slot tried, a slot for ever bad stops
+        self.assertIn('[ "${boots:-0}" -ge 4 ] && whole "$(other $active)"', boot)
+        self.assertIn('[ "${boots:-0}" -lt 8 ]', boot)
         # the state written whole: to a new file, synced, renamed
-        self.assertIn("mv $state.new $state && sync", boot)
-        # a slot's kernel before the Wi-Fi holds its hardware; watched on trial, and a system that
-        # cannot start spends its try
+        self.assertIn("sync && mv $state.new $state && sync", boot)
+        # a slot's kernel before the Wi-Fi holds its hardware, armed, userdata let go; a failed
+        # kexec never leaves a trial running on another kernel
         self.assertLess(boot.index("kexec -l"), boot.index("insmod"))
         self.assertLess(boot.index("maison-guard arm"), boot.index("kexec -l"))
+        self.assertLess(boot.index("umount /android-data"), boot.index("kexec -e"))
+        self.assertIn('[ -z "$trial" ] || remember "$active" "$pending" 0 "$boots"', boot)
         self.assertLess(boot.index("maison-guard 240"), boot.index("switch_root"))
-        self.assertLess(boot.index("switch_root"), boot.index("reboot -f"))
+        # what cannot start spends its count
+        self.assertLess(boot.index("switch_root"), boot.index('[ -z "$slot" ] || reboot -f'))
+
+    def test_a_power_cut_finds_userdata_looked_at_and_closed_to_devices_and_programs(self):
+        boot = initramfs.init(False)
+        self.assertLess(boot.index("e2fsck -p"), boot.index("mount -t ext4"))
+        self.assertIn("-o rw,noatime,nosuid,nodev,noexec", boot)
+        self.assertNotIn("legacy", boot)
+
+    def test_the_boot_shows_synthese_then_maison_and_its_ring(self):
+        boot = initramfs.init(False)
+        self.assertLess(boot.index("/splash/synthese.raw"), boot.index("/splash/splash.raw"))
+        self.assertLess(boot.index("/splash/splash.raw"), boot.index("maison-loader "))
+        self.assertLess(boot.index("maison-loader "), boot.index("switch_root"))
+
+    def test_the_journal_is_one_directory_across_boots(self):
+        boot = initramfs.init(False)
+        self.assertIn("sha256sum /sys/block/mmcblk0/device/cid", boot)
+        self.assertIn('echo "$id" >/newroot/etc/machine-id', boot)
 
 
 if __name__ == "__main__":

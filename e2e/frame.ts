@@ -2,8 +2,9 @@
 // simulated house (house.ts, the same one the pages see) answers the device routes through a
 // small proxy, everything else goes to the backend. The app pairs as a wall screen (its code
 // given from an admin's phone), shows the house, and a finger acts on it: a lamp toggled, its
-// brightness slid, a plug turned off, a shutter closed, the column scrolled. Its own window is
-// nowhere (SDL's dummy driver, software rendering). Pictures land in SHOTS.
+// brightness slid, a plug turned off, a shutter closed, the column scrolled, every device's page,
+// the remotes' keys, a reset asked first, Maison gone and back. Its own window is nowhere (SDL's
+// dummy driver, software rendering). Pictures land in SHOTS.
 //
 // Needs: `cargo build --manifest-path frame/ui/Cargo.toml`.
 import { spawn } from 'node:child_process';
@@ -14,6 +15,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { LAMP_LIMIT_MS } from '../web/src/lib/paces.ts';
+import type { BroadlinkClimateStateResponse } from '../web/src/lib/devices/climate/api.ts';
+import type { AndroidTvStatusResponse, TvStatusResponse } from '../web/src/lib/devices/tv/api.ts';
 import { PAIRING_CODE, SHOTS, BASE, check, done, fr, launch, open, pairScreen, removeScreen, signIn, until } from './lib.ts';
 import { house } from './house.ts';
 
@@ -35,6 +38,53 @@ const readAgain = (path: string, timeout = 15_000) => {
 
 /** How many event streams the backend opened for the app (a 200 on GET /api/events). */
 let streamsOpened = 0;
+/** Maison gone: nothing answers, the open stream drops. */
+let down = false;
+let stream: { destroy: () => void } | undefined;
+
+state.hue[0].state.temperature = 40;
+/** What only the wall's pages ask of the house: the remotes, the air conditioner's last order. */
+const tv: TvStatusResponse = {
+	success: true,
+	config: { host: '192.0.2.30' },
+	status: {
+		configured: true,
+		power: 'on',
+		name: 'Philips',
+		volume: { current: 12, min: 0, max: 60, muted: false },
+		ambilight: { power: true, mode: 'lounge', style: 'STANDARD' }
+	}
+};
+const box: AndroidTvStatusResponse = {
+	success: true,
+	config: { host: '192.0.2.40' },
+	status: { configured: true, reachable: true, awake: true, model: 'LEAP-S1', paired: true }
+};
+const climate: BroadlinkClimateStateResponse = {
+	success: true,
+	state: {
+		power: true,
+		lastCommand: 'state-cool-21-fan-auto-vane-auto',
+		lastOnCommand: 'state-cool-21-fan-auto-vane-auto',
+		settings: { mode: 'cool', temperature: 21, fan: 'auto', vane: 'auto', econo: false, stopInMinutes: null },
+		host: '192.0.2.60',
+		model: 'msz-hj5va',
+		updatedAt: new Date().toISOString()
+	},
+	message: ''
+};
+function remotes(method: string, pathname: string, text: string): string | undefined {
+	const orders = /^\/api\/(tv\/(key|volume|ambilight)|androidtv\/key|broadlink\/mitsubishi\/send|hue-lamps\/[^/]+\/temperature)/;
+	if (method !== 'GET' && orders.test(pathname)) {
+		state.sent.push(`${method} ${pathname} ${text}`);
+		return JSON.stringify({ success: true, message: 'ok' });
+	}
+	if (method !== 'GET') return undefined;
+	if (pathname === '/api/tv') return JSON.stringify(tv);
+	if (pathname === '/api/androidtv') return JSON.stringify(box);
+	if (pathname === '/api/broadlink/mitsubishi/state') return JSON.stringify(climate);
+	return undefined;
+}
 
 // the proxy: the house answers its routes, the backend the rest (its cookies passed both ways)
 const proxy = createServer(async (req, res) => {
@@ -42,6 +92,12 @@ const proxy = createServer(async (req, res) => {
 	for await (const c of req) chunks.push(c as Buffer);
 	const text = Buffer.concat(chunks).toString();
 	const url = new URL(req.url ?? '/', 'http://proxy');
+	if (down) return void req.socket.destroy();
+	const own = remotes(req.method ?? 'GET', url.pathname, text);
+	if (own) {
+		res.writeHead(200, { 'content-type': 'application/json' }).end(own);
+		return;
+	}
 	// a screen's own routes go straight to the backend, never into the house's log (its
 	// pairing secret is no test's to print)
 	const device = url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/screens/');
@@ -71,7 +127,10 @@ const proxy = createServer(async (req, res) => {
 	});
 	const cookies = back.headers.getSetCookie();
 	if (cookies.length) out['set-cookie'] = cookies;
-	if (url.pathname === '/api/events' && back.status === 200) streamsOpened++;
+	if (url.pathname === '/api/events' && back.status === 200) {
+		streamsOpened++;
+		stream = res;
+	}
 	// passed on as it comes: the event stream is an answer that never ends
 	res.writeHead(back.status, out);
 	try {
@@ -131,6 +190,17 @@ async function shown(command: string) {
 		} catch (e) {
 			if (Date.now() > deadline || !/: no (control|slider) /.test(String(e))) throw e;
 			await new Promise((r) => setTimeout(r, 200));
+		}
+	}
+}
+/** Tells `command` on a control further down the column: scrolled to until it is drawn. */
+async function reach(command: string) {
+	for (let i = 0; ; i++) {
+		try {
+			return await tell(command);
+		} catch (e) {
+			if (i > 8 || !/: no control /.test(String(e))) throw e;
+			await tell('drag 1100 500');
 		}
 	}
 }
@@ -222,8 +292,8 @@ await picture('scrolled');
 state.silent.add('hue');
 await tell('drag 300 1100');
 await tell('press hue-lamp:hue-01:power');
-// past the lamps' limit the app gives up on its own: its next read of them after the limit has
-// it drawn « Pas de réponse » (the same limit as the web app's, paces.ts)
+// past the lamps' limit the app gives up on its own and draws « Pas de réponse » (the same limit
+// as the web app's, paces.ts)
 const pressed = Date.now();
 await until(() => readSince('/api/hue-lamps', pressed + LAMP_LIMIT_MS), 15_000);
 await picture('no-answer');
@@ -232,6 +302,78 @@ state.silent.delete('hue');
 // the server's changes: one stream, opened once paired and kept open all along (never a loop of
 // reconnections)
 check('the app follows the event stream, kept open', streamsOpened === 1, `${streamsOpened} opened`);
+
+// « Maintenant »: a chip leads to its group
+await tell('press open:tempo');
+await tell('press open:house');
+await shown('press jump:lamps');
+await picture('jumped');
+await tell('press open:tempo');
+await tell('press open:house');
+
+// each device's page, from its row: what a person at home does there reaches the device
+const page = async (door: string, title: string) => {
+	await reach(`press ${door}`);
+	check(`${door} opens its page`, await saidLine((l) => l === `screen page ${title}`, 10_000));
+	await tell('keys');
+};
+await page('open:tv', 'Philips');
+await picture('tv');
+await reach('press tv:key:cursor_up');
+check('a pad key reaches the TV', await sent('POST /api/tv/key {"key":"cursor_up"}'), state.sent.join(' | '));
+await reach('press tv:key:play_pause');
+check('and a media key', await sent('POST /api/tv/key {"key":"play_pause"}'));
+await reach('press tv:ambilight');
+check('Ambilight too', await sent('POST /api/tv/ambilight'));
+await tell('press open:house');
+await page('open:box', 'LEAP-S1');
+await picture('box');
+await reach('press androidtv:key:ok');
+check('a key reaches the box', await sent('POST /api/androidtv/key {"key":"ok"}'), state.sent.join(' | '));
+await reach('press androidtv:key:volume_up');
+check('its volume too', await sent('POST /api/androidtv/key {"key":"volume_up"}'));
+await tell('press open:house');
+await page('open:climate', fr.climate_brand_name());
+await picture('climate');
+await tell('press open:house');
+await page('open:hue-lamp:hue-01', 'Salon');
+await picture('lamp');
+await shown('slide hue-lamp:hue-01:temperature 0.75');
+check('a lamp’s white follows its slider', await sent('POST /api/hue-lamps/hue-01/temperature'), state.sent.join(' | '));
+await tell('press open:house');
+await page('open:plug:plug-1', 'Lave-linge');
+await readAgain('/api/meross/plug-1/consumption');
+await tell('keys');
+await picture('plug');
+await tell('press open:house');
+await page('open:device:fountain-1', 'Fontaine');
+await reach('press ask:tuya:fountain-1:water');
+await picture('asked');
+check('a reset waits for its answer', !state.sent.some((s) => s.includes('/fountain/reset/water')));
+await tell('press dialog:keep');
+check('« Garder » keeps it', !state.sent.some((s) => s.includes('/fountain/reset/water')));
+await reach('press ask:tuya:fountain-1:water');
+await tell('press dialog:sure');
+check('the verb sends it', await sent('POST /api/devices/fountain-1/fountain/reset/water'), state.sent.join(' | '));
+await tell('press open:house');
+await until(() => said.at(-1) === 'screen house' || said.includes('screen house'), 5_000);
+await picture('home-again');
+
+// Maison gone: no gesture left, one band for the house; back by itself at the first answer
+down = true;
+stream?.destroy();
+const noGesture = async () => {
+	const from = said.length;
+	app.stdin!.write('press meross:plug-1:toggle\n');
+	await until(() => said.slice(from).some((l) => l.includes('press meross:plug-1:toggle')), 5_000);
+	return said.slice(from).some((l) => l.startsWith('error') && l.includes('no control'));
+};
+await tell('drag 300 1100');
+check('Maison gone, no gesture is reachable', await until(noGesture, 15_000));
+await picture('gone');
+down = false;
+await tell('drag 300 1100');
+check('it comes back by itself', await until(async () => !(await noGesture()), 40_000));
 
 // removed in « Mon compte »: the app says so, then offers a new code
 await removeScreen(phone, 'Cadre natif');

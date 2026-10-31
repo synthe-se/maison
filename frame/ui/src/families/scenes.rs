@@ -9,7 +9,7 @@ use maison_api::scenes::Scene;
 
 use super::{Cx, HUE, MEROSS, SCENES, SHUTTERS, ZIGBEE};
 use crate::client::Failure;
-use crate::commands::{Order, Outcome, Post, Toast, limit};
+use crate::commands::{Order, Outcome, Post, Say, Toast, limit};
 use crate::i18n::{Arg, Words, k};
 use crate::paths;
 use crate::ui::icon::{self, Icon};
@@ -61,14 +61,12 @@ pub fn said(w: &Words, name: &str, r: &KeyResponse) -> Toast {
 
 fn run_said(w: &Words, o: &Outcome) -> Option<Toast> {
     let name = o.done.first().or(o.failed.first())?;
-    match o
-        .answer
-        .as_ref()
-        .map(|v| serde_json::from_value::<KeyResponse>(v.clone()))
-    {
-        Some(Ok(r)) => Some(said(w, name, &r)),
-        // refused, unreachable, or an answer that does not read: « Pas de réponse » for it
-        _ => Some(Toast {
+    // refused or unreachable: nothing here, the order says what its refusal means
+    let answer = o.answer.as_ref()?;
+    match serde_json::from_value::<KeyResponse>(answer.clone()) {
+        Ok(r) => Some(said(w, name, &r)),
+        // an answer that does not read
+        Err(_) => Some(Toast {
             text: w.t(k::COMMAND_NO_ANSWER, &[("name", name.into())]),
             warn: true,
         }),
@@ -84,7 +82,7 @@ pub fn button(s: &Scene) -> Button {
     .within(limit::DEVICE)
     // what a scene may have changed (the web app reads these again)
     .then_refresh(&[HUE, ZIGBEE, MEROSS, SHUTTERS])
-    .said(run_said);
+    .said(Say::With(run_said));
     Button::new(Some(icon_of(s)), s.name.clone(), Act::Order(order))
 }
 
@@ -92,13 +90,10 @@ pub fn scenes_group(w: &Words, scenes: &[Scene]) -> Option<Group> {
     if scenes.is_empty() {
         return None;
     }
-    Some(Group {
-        title: w.s(k::SCENES_TITLE),
-        fact: None,
-        actions: Vec::new(),
-        stale: None,
-        body: Body::Buttons(scenes.iter().map(button).collect()),
-    })
+    Some(Group::new(
+        w.s(k::SCENES_TITLE),
+        Body::Buttons(scenes.iter().map(button).collect()),
+    ))
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {

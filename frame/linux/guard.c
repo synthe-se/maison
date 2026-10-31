@@ -1,10 +1,9 @@
 /*
  * An update on trial, watched from outside the system it tries: started by the initramfs, it
  * outlives it, and restarts the frame after <seconds> unless maison-commit ends it first, whatever
- * became of PID 1. With `arm`, the SoC's watchdog is left running (closed without its magic
- * character) so that a kernel started by kexec that hangs resets the frame; the driver and systemd
- * feed it once they are up, CONFIG_WATCHDOG_OPEN_TIMEOUT bounds the wait for them. Static, no
- * library.
+ * became of PID 1. With `arm`, the SoC's watchdog is left running for 30 s (closed without its
+ * magic character): a kernel started by kexec that does not reach systemd, which feeds it, resets
+ * the frame. Static, no library.
  *
  *     maison-guard arm
  *     maison-guard <seconds>

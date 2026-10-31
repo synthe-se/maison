@@ -1,0 +1,22 @@
+#!/bin/sh
+# The slots from the system: `free` says the slot an update may fill, `offer <slot>` puts it on
+# trial, `good` records that the running system proved itself (maison-commit).
+set -eu
+. /usr/local/lib/maison-slots
+case "${1:-}" in
+free)
+	other "$(key active)"
+	;;
+offer)
+	whole "$2" || { echo "slot $2 is not whole" >&2; exit 1; }
+	remember "$(key active)" "$2" 2
+	;;
+good)
+	pending=$(key pending)
+	remember "${pending:-$(key active)}" "" 0
+	;;
+*)
+	echo "usage: maison-slot free | offer <slot> | good" >&2
+	exit 2
+	;;
+esac

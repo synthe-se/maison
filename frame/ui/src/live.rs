@@ -6,10 +6,14 @@
 //! a family again at once. Values reach the drawing thread over a channel, which then wakes.
 //!
 //! A value is stale once it is older than `STALE_CADENCES` times its pace (a source that stopped
-//! answering), or when its last read failed: the screen says it is old, never blank.
+//! answering), or when Maison refused its last read: the screen says it is old, never blank.
+//!
+//! Sources that get no answer at all, with nothing heard since, are Maison gone (`gone`): one
+//! state for the whole house, ended by the first answer. The first silence asks every source
+//! again at once, so a slow read alone is told from a server that is down.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -19,6 +23,9 @@ use crate::client::{Client, Failure};
 
 /// A value read late this many times its pace is said to be old (the web app's `STALE_CADENCES`).
 const STALE_CADENCES: u32 = maison_api::paces::STALE_CADENCES as u32;
+
+/// Without an answer this long, Maison is said gone.
+const GONE_AFTER: Duration = Duration::from_secs(5);
 
 /// What a source reads.
 pub type Fetch<T> = Arc<dyn Fn(&Client) -> Result<T, Failure> + Send + Sync>;
@@ -42,7 +49,7 @@ impl<T> Clone for Source<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Source<T> {
+impl<T: PartialEq + Send + Sync + 'static> Source<T> {
     /// Read every `every`.
     pub fn every(
         key: impl Into<String>,
@@ -74,7 +81,8 @@ impl<T: Send + Sync + 'static> Source<T> {
 pub enum Read {
     Value {
         key: String,
-        value: Arc<dyn Any + Send + Sync>,
+        /// `None`: the same as its last read.
+        value: Option<Arc<dyn Any + Send + Sync>>,
         pace: Duration,
         /// When it was asked (a gesture settles on a read asked after its answer).
         asked: Instant,
@@ -88,6 +96,15 @@ pub enum Read {
     Changed(String),
 }
 
+/// What `Live::take` found.
+#[derive(Debug, Default)]
+pub struct Came {
+    /// The reads: each value's key and when it was asked.
+    pub read: Vec<(String, Instant)>,
+    /// One of them changes what a view shows.
+    pub changed: bool,
+}
+
 /// A value as a view sees it (shared: a view reads several at once).
 #[derive(Debug)]
 pub struct View<T> {
@@ -96,7 +113,7 @@ pub struct View<T> {
     pub loading: bool,
     /// How the last read failed (and nothing else is known when `data` is none).
     pub failure: Option<Failure>,
-    /// Older than `STALE_CADENCES` paces, or its last read failed: shown, said old.
+    /// Older than `STALE_CADENCES` paces, or its last read refused: shown, said old.
     pub stale: bool,
     /// When the value shown was read.
     pub at: Option<Instant>,
@@ -142,6 +159,14 @@ struct Entry {
     wanted: u64,
 }
 
+impl Entry {
+    /// Its value is older than `STALE_CADENCES` paces.
+    fn old(&self) -> bool {
+        self.at
+            .is_some_and(|at| at.elapsed() > self.pace.saturating_mul(STALE_CADENCES))
+    }
+}
+
 pub struct Live {
     client: Client,
     /// The server's event stream is open: pushed sources are read only as a safety net.
@@ -153,6 +178,8 @@ pub struct Live {
     drawing: u64,
     /// The last read said the screen is not signed in.
     signed_out: bool,
+    /// No answer since then, and the sources that got none.
+    silent: Option<(Instant, HashSet<String>)>,
     /// Wakes the event stream's thread from its wait (the screen was just paired).
     reopen: Option<Sender<()>>,
 }
@@ -171,6 +198,7 @@ impl Live {
             wake,
             drawing: 0,
             signed_out: false,
+            silent: None,
         }
     }
 
@@ -180,7 +208,7 @@ impl Live {
     }
 
     /// The source's value now; its worker started on the first ask.
-    pub fn want<T: Send + Sync + 'static>(&mut self, source: &Source<T>) -> View<T> {
+    pub fn want<T: PartialEq + Send + Sync + 'static>(&mut self, source: &Source<T>) -> View<T> {
         let drawing = self.drawing;
         // its worker started on the first ask, or again when wanted after a sweep (its last
         // value shown while it reads again)
@@ -205,9 +233,9 @@ impl Live {
             e.poke = poke;
         }
         let data = e.value.clone().and_then(|v| v.downcast::<T>().ok());
-        let old =
-            e.at.is_some_and(|at| at.elapsed() > e.pace.saturating_mul(STALE_CADENCES));
-        let stale = data.is_some() && (old || e.failure.is_some());
+        // no answer at all is Maison's silence, said once for the house (`gone`), not per value
+        let refused = e.failure.as_ref().is_some_and(|f| !f.gone());
+        let stale = data.is_some() && (e.old() || refused);
         View {
             data,
             loading: e.at.is_none() && e.failure.is_none(),
@@ -244,9 +272,11 @@ impl Live {
         }
     }
 
-    /// The reads that came in: each value's key and when it was asked (empty: nothing changed).
-    pub fn take(&mut self) -> Vec<(String, Instant)> {
-        let mut read_now = Vec::new();
+    /// The reads that came in. An answer identical to the last changes nothing shown, unless it
+    /// ends a failure or an old value.
+    pub fn take(&mut self) -> Came {
+        let mut came = Came::default();
+        let now = Instant::now();
         while let Ok(read) = self.rx.try_recv() {
             match read {
                 Read::Value {
@@ -255,9 +285,14 @@ impl Live {
                     pace,
                     asked,
                 } => {
-                    read_now.push((key.clone(), asked));
+                    came.read.push((key.clone(), asked));
+                    came.changed |= self.gone(now);
+                    self.silent = None;
                     if let Some(e) = self.entries.get_mut(&key) {
-                        e.value = Some(value);
+                        came.changed |= value.is_some() || e.failure.is_some() || e.old();
+                        if value.is_some() {
+                            e.value = value;
+                        }
                         e.at = Some(Instant::now());
                         e.pace = pace;
                         e.failure = None;
@@ -266,25 +301,59 @@ impl Live {
                 }
                 Read::Changed(prefix) => self.refresh(&prefix),
                 Read::Failed { key, failure, pace } => {
-                    read_now.push((key.clone(), Instant::now()));
+                    came.read.push((key.clone(), Instant::now()));
+                    came.changed |= self.heard(&key, &failure, now);
                     if failure == Failure::SignedOut {
                         self.signed_out = true;
                     } else {
                         eprintln!("{key}: {failure}");
                     }
                     if let Some(e) = self.entries.get_mut(&key) {
+                        came.changed |= e.failure.as_ref() != Some(&failure);
                         e.failure = Some(failure);
                         e.pace = pace;
                     }
                 }
             }
         }
-        read_now
+        came
     }
 
-    /// A read said 401: the screen was removed (or never paired).
-    pub fn signed_out(&self) -> bool {
-        self.signed_out
+    /// A read failed: whether it adds to Maison's silence or breaks it. True when what the screen
+    /// says of it changes.
+    fn heard(&mut self, key: &str, failure: &Failure, now: Instant) -> bool {
+        if !failure.gone() {
+            let was = self.gone(now);
+            self.silent = None;
+            return was;
+        }
+        let first = self.silent.is_none();
+        let (_, keys) = self.silent.get_or_insert_with(|| (now, HashSet::new()));
+        let more = keys.insert(key.to_string());
+        if first {
+            self.refresh("");
+        }
+        more
+    }
+
+    /// Maison has not answered for `GONE_AFTER`: two sources in silence, or one with the event
+    /// stream closed (open, it says Maison is there and one read was merely slow).
+    pub fn gone(&self, now: Instant) -> bool {
+        self.silent.as_ref().is_some_and(|(since, keys)| {
+            now.saturating_duration_since(*since) >= GONE_AFTER
+                && (keys.len() >= 2 || !self.pushed.load(Ordering::Acquire))
+        })
+    }
+
+    /// When Maison will be said gone, if nothing is heard, after `after`.
+    pub fn next_gone(&self, after: Instant) -> Option<Instant> {
+        let (since, _) = self.silent.as_ref()?;
+        Some(*since + GONE_AFTER).filter(|t| *t > after)
+    }
+
+    /// A read said 401 since the last asked: the screen may have been removed, or never paired.
+    pub fn signed_out(&mut self) -> bool {
+        std::mem::take(&mut self.signed_out)
     }
 
     /// Everything stops and is forgotten (signed out: the house is no longer shown).
@@ -293,17 +362,17 @@ impl Live {
         self.signed_out = false;
     }
 
-    /// When the soonest value turns stale: the screen is drawn again then, to say so.
-    pub fn next_stale(&self) -> Option<Instant> {
+    /// When the first value turns stale after `after`: the screen is drawn again then, to say so.
+    pub fn next_stale(&self, after: Instant) -> Option<Instant> {
         self.entries
             .values()
             .filter(|e| e.poke.is_some() && e.failure.is_none())
             .filter_map(|e| e.at?.checked_add(e.pace.saturating_mul(STALE_CADENCES)))
-            .filter(|t| *t > Instant::now())
+            .filter(|t| *t > after)
             .min()
     }
 
-    fn spawn<T: Send + Sync + 'static>(&self, source: Source<T>) -> Sender<()> {
+    fn spawn<T: PartialEq + Send + Sync + 'static>(&self, source: Source<T>) -> Sender<()> {
         spawn(
             &self.client,
             source,
@@ -346,6 +415,11 @@ impl Live {
                                 wake();
                             }
                             pushed.store(false, Ordering::Release);
+                            // the polls waited at the safety pace: asked now, they tell why
+                            if tx.send(Read::Changed(String::new())).is_err() {
+                                return;
+                            }
+                            wake();
                         }
                         Err(f) => {
                             pushed.store(false, Ordering::Release);
@@ -390,7 +464,7 @@ fn is_pushed(key: &str) -> bool {
     maison_api::events::ALL
         .iter()
         .any(|(_, name)| key.starts_with(name))
-        || key.starts_with("tuya:")
+        || key.starts_with(maison_api::events::TUYA)
 }
 
 /// A source's pace, given whether the event stream is open.
@@ -403,7 +477,7 @@ fn effective(key: &str, pace: Duration, pushed: bool) -> Duration {
 }
 
 /// The worker: read, say it, wait the pace (or a poke), again; ends when its ear is dropped.
-fn spawn<T: Send + Sync + 'static>(
+fn spawn<T: PartialEq + Send + Sync + 'static>(
     client: &Client,
     source: Source<T>,
     tx: Sender<Read>,
@@ -414,6 +488,8 @@ fn spawn<T: Send + Sync + 'static>(
     let client = client.clone();
     let name = format!("live {}", source.key);
     let spawned = std::thread::Builder::new().name(name).spawn(move || {
+        // compared here, off the drawing thread: an identical answer draws nothing
+        let mut last: Option<Arc<T>> = None;
         loop {
             let asked = Instant::now();
             let read = match (source.fetch)(&client) {
@@ -423,10 +499,14 @@ fn spawn<T: Send + Sync + 'static>(
                         (source.pace)(Some(&v)),
                         pushed.load(Ordering::Acquire),
                     );
+                    let value = (last.as_deref() != Some(&v)).then(|| Arc::new(v));
+                    if value.is_some() {
+                        last.clone_from(&value);
+                    }
                     (
                         Read::Value {
                             key: source.key.clone(),
-                            value: Arc::new(v),
+                            value: value.map(|v| v as Arc<dyn Any + Send + Sync>),
                             pace,
                             asked,
                         },
@@ -536,7 +616,7 @@ mod tests {
         let first = live.want(&source);
         assert!(first.loading && first.data.is_none());
         wait_until(|| wakes.load(Ordering::SeqCst) == 1);
-        assert!(!live.take().is_empty());
+        assert!(live.take().changed);
         let v = live.want(&source);
         assert_eq!(v.data.as_deref(), Some(&1));
         assert!(!v.stale && !v.loading);
@@ -546,6 +626,40 @@ mod tests {
         live.take();
         assert_eq!(live.want(&source).data.as_deref(), Some(&2));
         assert_eq!(live.peek::<u32>("n:count").as_deref(), Some(&2));
+    }
+
+    #[test]
+    fn an_identical_answer_changes_nothing_shown_but_still_counts_as_read() {
+        let n = Arc::new(AtomicUsize::new(0));
+        let served = n.clone();
+        let stub = serve(move |_| match served.fetch_add(1, Ordering::SeqCst) {
+            0 | 1 => (200, vec![], r#"{"n":1}"#.into()),
+            2 => (500, vec![], "{}".into()),
+            3 => (200, vec![], r#"{"n":1}"#.into()),
+            _ => (200, vec![], r#"{"n":2}"#.into()),
+        });
+        let (mut live, wakes) = live(&stub.origin);
+        let source = counter();
+        live.begin();
+        live.want(&source);
+        let turn = |live: &mut Live, wanted: usize| {
+            if wanted > 1 {
+                live.refresh("n:");
+            }
+            wait_until(|| wakes.load(Ordering::SeqCst) == wanted);
+            live.take()
+        };
+        assert!(turn(&mut live, 1).changed, "the first answer");
+        let same = turn(&mut live, 2);
+        assert!(!same.changed, "the same again");
+        assert_eq!(same.read.len(), 1, "a gesture settles on it all the same");
+        assert!(turn(&mut live, 3).changed, "a failure is said");
+        assert!(
+            turn(&mut live, 4).changed,
+            "the same again ends the failure"
+        );
+        assert!(turn(&mut live, 5).changed, "another value");
+        assert_eq!(live.want(&source).data.as_deref(), Some(&2));
     }
 
     #[test]
@@ -607,6 +721,72 @@ mod tests {
     }
 
     #[test]
+    fn no_answer_is_maison_gone_until_anything_answers() {
+        let (mut live, _) = live("http://127.0.0.1:9");
+        let t0 = Instant::now();
+        let silence = Failure::Unreachable("x".into());
+        assert!(!live.gone(t0));
+        live.heard("a", &silence, t0);
+        assert!(!live.gone(t0 + GONE_AFTER / 2), "not yet");
+        assert_eq!(live.next_gone(t0), Some(t0 + GONE_AFTER));
+        assert!(
+            live.gone(t0 + GONE_AFTER),
+            "the stream closed: one is enough"
+        );
+        // the stream open, one slow read says nothing of Maison; a second source does
+        live.pushed.store(true, Ordering::Release);
+        assert!(!live.gone(t0 + GONE_AFTER));
+        live.heard("b", &silence, t0);
+        assert!(live.gone(t0 + GONE_AFTER));
+        // a device's coded refusal is Maison answering
+        let refused = Failure::Refused {
+            status: 503,
+            code: Some(maison_api::codes::Code::DeviceUnreachable),
+        };
+        assert!(live.heard("c", &refused, t0 + GONE_AFTER), "said over");
+        assert!(!live.gone(t0 + GONE_AFTER * 2));
+        // the tunnel's gateway says nothing of Maison either
+        assert!(
+            Failure::Refused {
+                status: 502,
+                code: None
+            }
+            .gone()
+        );
+    }
+
+    #[test]
+    fn a_silent_read_is_no_old_value_until_its_time() {
+        let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
+        let (mut live, wakes) = live(&stub.origin);
+        let source = counter();
+        live.begin();
+        live.want(&source);
+        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
+        live.take();
+        live.entries.get_mut("n:count").unwrap().failure = Some(Failure::Unreachable("x".into()));
+        let v = live.want(&source);
+        assert!(
+            !v.stale && v.failed(),
+            "nothing shifts while Maison is silent"
+        );
+    }
+
+    #[test]
+    fn the_first_answer_ends_it() {
+        let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
+        let (mut live, wakes) = live(&stub.origin);
+        let source = counter();
+        live.begin();
+        live.want(&source);
+        live.silent = Some((Instant::now() - GONE_AFTER, HashSet::new()));
+        assert!(live.gone(Instant::now()));
+        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
+        assert!(live.take().changed);
+        assert!(!live.gone(Instant::now()));
+    }
+
+    #[test]
     fn the_pace_follows_what_was_read() {
         let stub = serve(|_| (200, vec![], r#"{"n":5}"#.into()));
         let (mut live, wakes) = live(&stub.origin);
@@ -629,6 +809,6 @@ mod tests {
         // read every 50 ms once it said 5
         wait_until(|| wakes.load(Ordering::SeqCst) >= 3);
         live.take();
-        assert!(live.next_stale().is_some());
+        assert!(live.next_stale(Instant::now()).is_some());
     }
 }

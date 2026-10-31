@@ -7,7 +7,8 @@
 //! the turn (`MAISON_ROTATE=180`), the scale, a window for a simulation; `SDL_RENDER_DRIVER`
 //! (default `opengles2`) and `SDL_RENDER_VSYNC` (default 1) are SDL's own. `MAISON_STATS=1` says
 //! the frame times on stdout (the journal); `MAISON_FRAMES=n` quits after n drawings (a
-//! measured run); `MAISON_STDIN=1` takes a simulation's commands on stdin (sim.rs).
+//! measured run); `MAISON_STDIN=1` takes a simulation's commands on stdin (sim.rs);
+//! `MAISON_HEARTBEAT` names a file touched while it runs (heartbeat.rs).
 
 mod app;
 mod backlight;
@@ -15,6 +16,7 @@ mod client;
 mod commands;
 mod config;
 mod families;
+mod heartbeat;
 mod i18n;
 mod live;
 mod pairing;
@@ -37,6 +39,7 @@ use sdl3::video::{Window, WindowContext};
 
 use crate::app::App;
 use crate::config::{Config, PANEL};
+use crate::heartbeat::Heartbeat;
 use crate::i18n::k;
 use crate::ui::gfx::{Draw, Error, Gfx};
 use crate::ui::layout::{Ctx, Drawn};
@@ -221,9 +224,12 @@ fn run() -> Result<(), Error> {
     let mut failures = 0_u32;
     let mut retry: Option<Instant> = None;
     let mut stats = Stats::new();
+    let mut shown: Option<Screen> = None;
+    let mut heart = config.heartbeat.clone().map(Heartbeat::new);
 
     loop {
-        let first = wait(&mut pump, &app, retry);
+        let beat = heart.as_ref().and_then(Heartbeat::next);
+        let first = wait(&mut pump, &app, [retry, beat]);
         let (w, h) = panel.canvas.output_size()?;
         for event in first.into_iter().chain(pump.poll_iter()) {
             match on_event(&mut app, event, (w as f32, h as f32), &pending) {
@@ -243,13 +249,24 @@ fn run() -> Result<(), Error> {
             app.dirty = true;
         }
         app.tick(now);
-        if !app.dirty {
+        if let Some(h) = &mut heart {
+            h.idle(now);
+        }
+        if !app.owed() {
             continue;
         }
-        app.dirty = false;
         let begun = Instant::now();
-        let shown = app.screen(now);
-        let drawn = match panel.draw(&app, &shown, now, shot.take()) {
+        // the scroll alone moved: the same screen, elsewhere
+        app.scrolled = false;
+        if std::mem::take(&mut app.dirty) {
+            let made = app.screen(now);
+            if opts.simulated {
+                say_screen(&made, &mut said);
+            }
+            shown = Some(made);
+        }
+        let Some(screen) = &shown else { continue };
+        let drawn = match panel.draw(&app, screen, now, shot.take()) {
             Ok(d) => {
                 failures = 0;
                 d
@@ -266,9 +283,9 @@ fn run() -> Result<(), Error> {
                 continue;
             }
         };
-        app.drawn(drawn.hits, drawn.content, h as f32);
-        if opts.simulated {
-            say_screen(&shown, &mut said);
+        app.drawn(drawn, h as f32);
+        if let Some(h) = &mut heart {
+            h.presented(Instant::now());
         }
         drawings += 1;
         if drawings == 1 {
@@ -287,13 +304,14 @@ fn run() -> Result<(), Error> {
 }
 
 /// The first event once there is one, or none when the app is due by itself (a drawing owed,
-/// something turning with time, a failed drawing's retry).
-fn wait(pump: &mut sdl3::EventPump, app: &App, retry: Option<Instant>) -> Option<Event> {
-    if app.dirty {
+/// something turning with time) or the loop is, at one of `also` (a failed drawing's retry, a
+/// heartbeat).
+fn wait(pump: &mut sdl3::EventPump, app: &App, also: [Option<Instant>; 2]) -> Option<Event> {
+    if app.owed() {
         return None;
     }
     let now = Instant::now();
-    let next = [app.next_wake(now), retry].into_iter().flatten().min();
+    let next = also.into_iter().chain([app.next_wake(now)]).flatten().min();
     match next.map(|t| t.saturating_duration_since(now)) {
         Some(t) => pump.wait_event_timeout(t),
         None => Some(pump.wait_event()),
@@ -320,23 +338,32 @@ fn on_event(app: &mut App, event: Event, (wf, hf): (f32, f32), pending: &AtomicB
             keycode: Some(Keycode::Escape),
             ..
         } => return Flow::Quit,
-        Event::FingerDown { x, y, .. } => {
+        Event::FingerDown {
+            finger_id, x, y, ..
+        } if app.tracked.down(finger_id) => {
             let (x, y) = at(x, y);
             if said_touches() {
                 eprintln!("touch down {x:.0},{y:.0} on {}", app.key_under(x, y));
             }
             app.finger_down(x, y, now);
         }
-        Event::FingerMotion { x, y, .. } => {
+        Event::FingerMotion {
+            finger_id, x, y, ..
+        } if app.tracked.is(finger_id) => {
             let (x, y) = at(x, y);
             app.finger_motion(x, y, now);
         }
-        Event::FingerUp { x, y, .. } => {
+        Event::FingerUp {
+            finger_id, x, y, ..
+        } if app.tracked.lifted(finger_id) => {
             let (x, y) = at(x, y);
             if said_touches() {
                 eprintln!("touch up {x:.0},{y:.0}");
             }
             app.finger_up(x, y, now);
+        }
+        Event::FingerCanceled { finger_id, .. } if app.tracked.lifted(finger_id) => {
+            app.finger_cancel(now);
         }
         Event::Window {
             win_event:
@@ -429,6 +456,7 @@ impl Panel<'_> {
             width: w as f32,
             height: h as f32,
             scroll: app.scroll,
+            over: app.over(now),
         };
         let drawn = if self.rotate {
             let target = match &mut self.turned {

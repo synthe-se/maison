@@ -34,9 +34,11 @@ for await (const f of new Glob('frame/ui/src/**/*.rs').scan(root)) {
 	const s = await Bun.file(root + f).text();
 	for (const x of s.matchAll(/\bk::([A-Z][A-Z0-9_]*)\b/g)) used.add(x[1].toLowerCase());
 }
-for await (const f of new Glob('frame/linux/*.py').scan(root)) {
-	const s = await Bun.file(root + f).text();
-	for (const x of s.matchAll(/["']([a-z][a-z0-9_]*)["']/g)) if (keys.has(x[1])) used.add(x[1]);
+for (const glob of ['frame/linux/*.py', 'frame/tools/src/**/*.rs']) {
+	for await (const f of new Glob(glob).scan(root)) {
+		const s = await Bun.file(root + f).text();
+		for (const x of s.matchAll(/["']([a-z][a-z0-9_]*)["']/g)) if (keys.has(x[1])) used.add(x[1]);
+	}
 }
 for (const k of keys) if (!used.has(k)) problems.push(`${k}: unused`);
 
