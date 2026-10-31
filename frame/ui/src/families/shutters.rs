@@ -166,6 +166,8 @@ pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
             step: 5.0,
             mark: c.moving().then_some(f64::from(open)),
             live: false,
+            put: false,
+            off: false,
             // Range's `near = step`: a reading within a step lets the held value go
             near: 5.0,
             ends: Some((w.s(k::SHUTTERS_CLOSED), w.s(k::SHUTTERS_OPEN))),
@@ -239,6 +241,7 @@ pub fn shutters_group(
         },
     );
     Group::new(w.s(k::SHUTTERS_TITLE), body)
+        .anchor(SHUTTERS)
         .actions(actions)
         .stale(stale)
 }

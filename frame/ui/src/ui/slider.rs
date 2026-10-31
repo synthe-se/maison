@@ -46,7 +46,7 @@ fn order(s: &Slider, value: f64) -> Order {
     let post = Post {
         path: s.path.clone(),
         body: Some((s.body)(value)),
-        put: false,
+        put: s.put,
     };
     Order::one(format!("{}:set", s.key), s.name.clone(), post)
         .within(limit::DEVICE)
@@ -179,6 +179,8 @@ mod tests {
             step: 1.0,
             mark: None,
             live: true,
+            put: false,
+            off: false,
             near: 2.0,
             ends: None,
             path: "/hue-lamps/1/brightness".into(),
