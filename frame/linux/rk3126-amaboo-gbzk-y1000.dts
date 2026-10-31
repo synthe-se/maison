@@ -25,16 +25,6 @@
 		mmc1 = &sdio;
 	};
 
-	/*
-	 * Where U-Boot loads the initramfs (the boot image's header), and how much of it there is
-	 * (image.py pads to that): the appended device tree is all the kernel reads, none of U-Boot's
-	 * command line reaches it.
-	 */
-	chosen {
-		linux,initrd-start = <0x62000000>;
-		linux,initrd-end = <0x62300000>;
-	};
-
 	memory@60000000 {
 		device_type = "memory";
 		reg = <0x60000000 0x40000000>;

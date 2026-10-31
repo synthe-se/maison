@@ -1,7 +1,5 @@
-"""The frame's boot pictures. U-Boot draws Synthèse's mark from the first second (`logo()`, in the
-boot image); the initramfs draws the same on /dev/fb0 as soon as Linux has the panel, while the
-frame checks what it boots,
-then Maison's mark on the app's ground and nothing else; a line under it only when the boot fails (« Système introuvable… »), a strip of its own copied over the
+"""The frame's boot pictures. U-Boot draws Synthèse's mark from the first second (`logo()`); as soon
+as Linux has the panel, the initramfs draws Maison's mark on /dev/fb0, on the app's ground, and nothing else; a line under it only when the boot fails (« Système introuvable… »), a strip of its own copied over the
 picture. Raw XRGB8888 as the framebuffer holds it (800×1280, 3200 bytes a row), turned 180° (the
 panel is mounted upside down: what the person sees is the framebuffer's last row first). The
 colours are the app's tokens (web/src/styles/tokens.css), the mark the web app's
@@ -17,6 +15,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "frame/system"))
+import bootimg  # noqa: E402
 import build  # noqa: E402
 
 W, H = 800, 1280
@@ -109,7 +108,7 @@ def frames() -> dict[str, bytes]:
         f'<g transform="translate({x} {y}) scale({MARK / 48})">{inner}</g></svg>'
     )
     words = __import__("json").loads((REPO / "i18n/messages/fr.json").read_text())
-    out = {"splash": raw(render(splash, W, H)), "synthese": raw(render(synthese(ground), W, H))}
+    out = {"splash": raw(render(splash, W, H))}
     for key in STEPS:
         text = words[key].replace("&", "&amp;").replace("<", "&lt;")
         strip = (
@@ -122,6 +121,12 @@ def frames() -> dict[str, bytes]:
     return out
 
 
+def resource(image: Path, out: Path) -> None:
+    """A copy of the `resource` partition with `logo()` in place of its logo: what U-Boot draws."""
+    out.write_bytes(bootimg.rsce_put(image.read_bytes(), "logo.bmp", logo()))
+
+
 if __name__ == "__main__":
-    for name, data in frames().items():
-        print(name, len(data))
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: splash.py <resource.img> <out.img>")
+    resource(Path(sys.argv[1]), Path(sys.argv[2]))

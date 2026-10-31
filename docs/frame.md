@@ -113,9 +113,11 @@ Android, no ADB.
 frame/linux/build.sh            # kernel, device tree, the AIC8800 Wi-Fi modules (Docker)
 frame/linux/buildroot.sh        # the system: frame/build/buildroot/rootfs.squashfs (Docker, ~25 min from nothing)
 python3 -I frame/linux/initramfs.py [--debug] frame/build/tools ~/maison-frame/recon/gslX680.fw frame/build/linux-initramfs.cpio.gz
-python3 -I frame/linux/image.py frame/build/linux/zImage frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/linux-initramfs.cpio.gz frame/build/boot-linux.img
+frame/linux/build.sh --initramfs frame/build/linux-initramfs.cpio.gz   # the kernel of `boot`, holding it
+python3 -I frame/linux/image.py frame/build/linux/zImage.boot frame/build/linux/rk3126-amaboo-gbzk-y1000.dtb frame/build/boot-linux.img
 frame/linux/try.sh --install [--kernel]   # an update to the free slot, tried, kept or rolled back
 frame/linux/try.sh --ram        # a new kernel and initramfs run from RAM (kexec): a power cut returns to boot's
+frame/linux/try.sh --logo       # U-Boot's picture, in the resource partition
 frame/linux/try.sh --flash      # a new kernel or initramfs: to boot, from Linux (addressing proved), else the loader
 frame/linux/console.sh 'systemctl status maison-ui'   # a command over SSH (FRAME_HOST=<address> without mDNS)
 frame/linux/release.sh [--kernel] [--publish]   # a signed release, for updates over the air
@@ -147,9 +149,11 @@ What the bring-up taught, each point seen on the frame:
 - The touch chip's axes are swapped, 1024 down by 640 across; `touchscreen-size-*` are the
   chip's axes, before the swap.
 - simpledrm left beside Rockchip's card is a second card, where a client would draw unseen.
-- `boot` holds 14 MiB. U-Boot needs the vendor's device tree to draw its logo: it stays in the image's
-  resource with our `logo.bmp`, and our device tree follows the zImage (`ARM_APPENDED_DTB`), its
-  `chosen` saying the 3 MiB initramfs, none of U-Boot's command line reaching the kernel.
+- U-Boot draws its logo only with the vendor's device tree, kept in the boot image's resource, and it
+  takes the picture from the `resource` partition (`try.sh --logo`), not from the image. The kernel
+  ignores that device tree: ours follows the zImage (`ARM_APPENDED_DTB`). U-Boot moves an image's
+  initramfs (0x65bf0000 here) and says so only in its own device tree, so the kernel of `boot` holds
+  its initramfs (`build.sh --initramfs`); none of U-Boot's command line reaches it either.
 - Powered up with the USB-C on a computer, U-Boot still boots `boot` (Linux); `misc` is ignored
   (a power cycle is the boot slot's): the loader comes from the reset pinhole.
 - No battery and a system in RAM: the clock came back six months behind after a power cut, and
@@ -160,9 +164,8 @@ What the bring-up taught, each point seen on the frame:
   (try.sh --flash) go that way; boot is then written by Linux on /dev/mmcblk0 once the layout's
   addressing is proved (U-Boot's head where layout.txt says, boot's `ANDROID!` header), read back
   and compared. The loader stays the way back.
-- The boot pictures (splash.py): U-Boot draws Synthèse's mark, and the initramfs the same on
-  /dev/fb0 as soon as Linux has the panel, then, the system mounted,
-  Maison's mark with a ring turning under it (loader.c, a static binary, outliving the initramfs)
+- The boot pictures (splash.py): U-Boot draws Synthèse's mark; as soon as Linux has the panel, the
+  initramfs draws Maison's mark with a ring turning under it (loader.c, a static binary, outliving the initramfs)
   until `maison-ui` starts. The kernel has no console on the panel: no text at boot, the log stays
   in the journal. A line appears only on failure (« Système introuvable… »).
 - SSH: root by a certificate of the frames' CA only (`ssh-cert.sh`, 8 hours, the CA in

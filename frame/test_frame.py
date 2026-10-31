@@ -283,11 +283,11 @@ class Initramfs(unittest.TestCase):
         self.assertIn("-o rw,noatime,nosuid,nodev,noexec", boot)
         self.assertNotIn("legacy", boot)
 
-    def test_the_boot_shows_synthese_then_maison_and_its_ring(self):
+    def test_the_boot_shows_maison_and_its_ring_as_soon_as_the_panel_is_up(self):
         boot = initramfs.init(False)
-        self.assertLess(boot.index("/splash/synthese.raw"), boot.index("/splash/splash.raw"))
+        self.assertNotIn("synthese", boot)
         self.assertLess(boot.index("/splash/splash.raw"), boot.index("maison-loader "))
-        self.assertLess(boot.index("maison-loader "), boot.index("switch_root"))
+        self.assertLess(boot.index("maison-loader "), boot.index("data=$(grep"))
 
     def test_the_journal_is_one_directory_across_boots(self):
         boot = initramfs.init(False)
