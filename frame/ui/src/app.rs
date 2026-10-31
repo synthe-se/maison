@@ -1017,7 +1017,8 @@ mod tests {
         assert_eq!(app.sliders.shown(&s, t0 + FRAME), 50.0, "a tap");
         app.finger_down(600.0, 120.0, t0);
         app.finger_motion(604.0, 300.0, t0 + FRAME);
-        app.finger_up(604.0, 320.0, t0 + FRAME * 2);
+        app.finger_motion(604.0, 480.0, t0 + FRAME * 2);
+        app.finger_up(604.0, 480.0, t0 + FRAME * 2);
         assert_eq!(app.sliders.shown(&s, t0 + FRAME * 2), 50.0, "a swipe");
         assert_eq!(app.commands.state("l:set"), crate::commands::State::Idle);
         assert_eq!(app.scroll, 320.0, "the swipe scrolled the column");
