@@ -1,5 +1,5 @@
-# The setup's page, started by maison-wifi on a frame not set up or that lost its network. It binds
-# the access point's address, which comes seconds later: retried without a limit
+# The setup's page, started by maison-wifi on the frame's own Wi-Fi (maison-hotspot). It binds the
+# access point's address, which comes seconds later: retried without a limit
 [Unit]
 Description=The frame's setup
 RequiresMountsFor=/android-data

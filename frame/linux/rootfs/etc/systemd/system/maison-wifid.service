@@ -1,0 +1,28 @@
+# What the interface, as kiosk, may ask of the Wi-Fi: root, a socket of group kiosk in its own
+# directory (frame/tools: maison-wifid). Keeps running while wpa_supplicant restarts.
+[Unit]
+Description=The frame's Wi-Fi, for its interface
+RequiresMountsFor=/android-data
+After=maison-wifi.service
+
+[Service]
+Group=kiosk
+ExecStart=/usr/local/bin/maison-wifid
+RuntimeDirectory=maison-wifi
+RuntimeDirectoryMode=0750
+Restart=always
+RestartSec=2
+# what it may reach: wifi.conf, and wpa_supplicant's socket
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/android-data/maison
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

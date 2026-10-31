@@ -1,0 +1,30 @@
+#!/bin/sh
+# The frame's own Wi-Fi, for a touch panel that no longer answers: `open` from the power key held
+# (maison-power-key), `close` from maison-wifi-watch, 30 minutes after the page's last request.
+# wpa_supplicant@wlan0 requires maison-wifi, a oneshot that has ended: it runs again first and reads
+# $hotspot. The app reads MAISON_SETUP_* as it starts, from the unit's EnvironmentFile.
+set -eu
+hotspot=/run/maison-hotspot
+
+apply() {
+	systemctl restart wpa_supplicant@wlan0
+	networkctl reload
+	systemctl restart maison-ui
+}
+
+case "${1-}" in
+open)
+	[ ! -e "$hotspot" ] || exit 0
+	: >"$hotspot"
+	apply
+	;;
+close)
+	rm -f "$hotspot" /run/maison-setup /run/systemd/network/40-maison-setup.network
+	systemctl stop maison-setup
+	apply
+	;;
+*)
+	echo "usage: maison-hotspot open|close" >&2
+	exit 2
+	;;
+esac

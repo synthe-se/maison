@@ -3,7 +3,7 @@ name = "maison-frame-tools"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
-description = "The frame's updates and first setup: maison-update, maison-setup; maison-sign on the build machine"
+description = "The frame's updates, Wi-Fi and hotspot: maison-update, maison-wifid, maison-power-key, maison-setup; maison-sign on the build machine"
 publish = false
 
 [dependencies]

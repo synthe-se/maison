@@ -7,13 +7,18 @@ root=$1
 install -D -m 0755 /tmp/maison-frame-ui "$root/usr/local/bin/maison-frame-ui"
 "$HOST_DIR/bin/arm-buildroot-linux-gnueabihf-strip" "$root/usr/local/bin/maison-frame-ui"
 install -D -m 0755 /tmp/maison-update "$root/usr/local/bin/maison-update"
-install -D -m 0755 /tmp/maison-setup "$root/usr/local/bin/maison-setup"
-"$HOST_DIR/bin/arm-buildroot-linux-gnueabihf-strip" "$root/usr/local/bin/maison-update" "$root/usr/local/bin/maison-setup"
+for tool in maison-setup maison-wifid maison-power-key; do
+	install -D -m 0755 "/tmp/$tool" "$root/usr/local/bin/$tool"
+done
+"$HOST_DIR/bin/arm-buildroot-linux-gnueabihf-strip" "$root/usr/local/bin/maison-update" "$root/usr/local/bin/maison-setup" \
+	"$root/usr/local/bin/maison-wifid" "$root/usr/local/bin/maison-power-key"
 # who may come in: the CA's certificates, no key on the frame (frame/linux/ssh-cert.sh)
 install -m 0644 /ssh-ca.pub "$root/etc/ssh/maison-ca.pub"
 # what this image is, and where its updates live (none without FRAME_UPDATE_URL)
 cp /tmp/maison-version "$root/etc/maison-version"
 if [ -s /tmp/maison-update-url ]; then cp /tmp/maison-update-url "$root/etc/maison-update"; fi
+# Maison's address for a frame that has none of its own (FRAME_TARGET; maison-wifi reads it)
+if [ -s /tmp/maison-target ]; then cp /tmp/maison-target "$root/etc/maison-target"; fi
 # one known board: no table of the world's hardware (the option alone leaves what systemd installed)
 rm -f "$root/usr/lib/udev/hwdb.bin"
 rm -rf "$root/usr/lib/udev/hwdb.d"
@@ -46,6 +51,8 @@ enable sshd.service
 enable maison-ui.service
 enable maison-mac.service
 enable maison-wifi-watch.service
+enable maison-wifid.service
+enable maison-power-key.service
 enable wpa_supplicant@.service wlan0
 enable maison-commit.service
 enable maison-update.timer

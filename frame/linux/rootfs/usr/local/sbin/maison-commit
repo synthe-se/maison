@@ -2,11 +2,10 @@
 # What every boot must prove, for 45 s: the interface drawing (its heartbeat fresh), without a
 # restart. Then the system counts as good: an update on trial is kept, the active slot's boots go
 # back to zero. Else, after 150 s, a restart: the initramfs counts it, and comes back to the slot
-# before. A frame still to be set up has nothing to prove.
+# before.
 set -eu
 . /usr/local/lib/maison-slots
 [ -s "$state" ] || exit 0
-[ ! -e /run/maison-setup ] || exit 0
 
 heartbeat=/run/maison-ui/heartbeat
 pending=$(key pending)

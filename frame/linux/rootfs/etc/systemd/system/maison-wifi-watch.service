@@ -1,7 +1,7 @@
-# A frame set up that lost its network opens its setup (usr/local/sbin/maison-wifi-watch). After
-# wpa_supplicant's unit: maison-wifi has said by then whether this is a first setup.
+# A frame that lost its network says so, and its own Wi-Fi closes in time
+# (usr/local/sbin/maison-wifi-watch).
 [Unit]
-Description=The setup of a frame that lost its network
+Description=The frame's network, watched
 RequiresMountsFor=/android-data
 After=maison-wifi.service wpa_supplicant@wlan0.service
 

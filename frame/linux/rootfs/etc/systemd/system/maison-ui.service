@@ -9,7 +9,7 @@
 Description=Maison's native interface
 Conflicts=getty@tty7.service
 RequiresMountsFor=/android-data
-Wants=dbus.socket systemd-logind.service
+Wants=dbus.socket systemd-logind.service maison-wifi.service
 # never after the network: the interface shows the house as soon as it can, and retries
 After=systemd-user-sessions.service dbus.socket systemd-logind.service maison-wifi.service
 ConditionPathExists=/dev/tty0
@@ -27,9 +27,9 @@ ExecStartPre=+/usr/bin/install -d -o kiosk -g kiosk -m 0700 /android-data/maison
 ExecStartPost=+/usr/bin/chvt 7
 # the boot's loader (frame/linux/loader.c) stops where the interface starts; `-`: it may be gone
 ExecStartPost=-+/bin/sh -c 'kill $$(pidof maison-loader)'
-# root's copy of the address (the initramfs adopts what install.sh left, Android's shell-writable
-# /data/local/tmp never read here)
-LoadCredential=target:/android-data/maison/target
+# root's copy of the address, else the image's (maison-wifi; the initramfs adopts what install.sh
+# left, Android's shell-writable /data/local/tmp never read here)
+LoadCredential=target:/run/maison-target
 EnvironmentFile=-/run/maison-setup
 RuntimeDirectory=maison-ui
 # what it may reach
