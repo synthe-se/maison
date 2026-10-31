@@ -43,7 +43,7 @@ and IPv6-only agents so the server records both of the screen's addresses. HTTPS
 
 ```
 src/main.rs      SDL, the loop, rotation, simulation shots, touch logging (MAISON_STATS=1)
-config.rs        address (credential `target`, else MAISON_TARGET; none: the setup view, the frame's
+config.rs        address (credential `target`, else MAISON_TARGET; none, or MAISON_SETUP_SSID: the setup view, the frame's
                  Wi-Fi from MAISON_SETUP_*), state dir, language, turn, scale
 heartbeat.rs     MAISON_HEARTBEAT: a file touched once a frame was presented, then every 10 s
 client.rs        ureq 3 + rustls; no redirects, no proxy, bounded waits; POST/PUT; per-family

@@ -239,13 +239,22 @@ Failures provoked on the frame, each back on the good slot by itself: an image t
 `sums` (27 s), an unreadable image with valid `sums` (39 s), a kernel that panics (49 s), a kernel
 that hangs (73 s, a real watchdog reset). A good `--kernel` slot boots by kexec under that watchdog.
 An update over the air, from updates.synthe.se to the frame: 80 s. Not proved on the frame: the
-first setup's access point.
+setup's access point, which needs an image with wpa_supplicant's AP mode (none before it was in the
+defconfig), and the live switches below.
 
 First setup: with no network or no address (`maison-wifi`), the frame is its own Wi-Fi, named and
 locked from its eMMC's serial; the interface shows both and the address of its page (`maison-setup`,
 http://192.168.4.1), which takes the house's network and Maison's address, writes them to
 `/android-data/maison` (0600) and restarts. An image's factory install: `rootfs.squashfs` left in
 `/data/local/tmp/maison`, adopted once into slot a while userdata holds no state.
+
+Network lost (`maison-wifi-watch`, the kernel's `operstate`, not carrier: a wrong password raises
+carrier too): 10 minutes without associating, after boot or a lost link, the frame opens the same
+setup: `/run/maison-lost` makes `maison-wifi` take its access-point branch, the watch restarts
+wpa_supplicant, reloads networkd and restarts `maison-ui`, which reads `MAISON_SETUP_*` as it starts.
+The page has the kept address already in the form. 30 minutes after the page's last request the
+same steps return to the configured network without a restart, and the count starts again. An
+update on trial never counts: `maison-commit` judges it, within its 150 s, before the 10 minutes.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.

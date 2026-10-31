@@ -1,4 +1,5 @@
-# The networks Android knows (its own wpa_supplicant.conf, in its userdata), handed to ours
+# The networks Android knows (its own wpa_supplicant.conf, in its userdata), handed to ours. Not
+# RemainAfterExit: restarting wpa_supplicant@wlan0 runs it again (maison-wifi-watch)
 [Unit]
 Description=The Wi-Fi networks Android knows
 Before=wpa_supplicant@wlan0.service systemd-networkd.service

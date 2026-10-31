@@ -6,6 +6,7 @@
 import gzip
 import os
 import re
+import stat
 import struct
 import subprocess
 import sys
@@ -419,6 +420,119 @@ echo "sums $(basename "$PWD") end" >>$LOG
     def test_e2fsck_believes_no_clock_and_repairs_without_optimising(self):
         self.assertEqual(initramfs.E2FSCK_CONF, "[options]\nbroken_system_clock = 1\n")
         self.assertIn("e2fsck -p -E fixes_only $device", initramfs.init(False))
+
+
+class WifiWatch(unittest.TestCase):
+    """maison-wifi and maison-wifi-watch, run over a timeline of 15 s steps."""
+
+    SBIN = HERE / "linux/rootfs/usr/local/sbin"
+    PATHS = ("run", "sys", "android-data", "etc/wpa_supplicant")
+    OPEN = ["systemctl restart wpa_supplicant@wlan0", "systemctl --no-block start maison-setup", "networkctl reload", "systemctl restart maison-ui"]
+    BACK = ["systemctl stop maison-setup", "systemctl restart wpa_supplicant@wlan0", "networkctl reload", "systemctl restart maison-ui"]
+    OPERSTATE = "echo %s >$ROOT/sys/class/net/wlan0/operstate"
+    # a request on the page: maison-setup touches the file
+    REQUEST = "touch -t 203001010000 $ROOT/run/maison-setup"
+
+    def run_watch(self, until, events=None, state="active=a\npending=\ntries=0\nboots=0\n", target="https://a.b"):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        root = self.root = Path(d.name)
+        maison = root / "android-data/maison"
+        (maison / "slots").mkdir(parents=True)
+        (maison / "slots/state").write_text(state)
+        (maison / "wifi.conf").write_text("network={\n}\n")
+        (maison / "target").write_text(target)
+        (root / "run").mkdir()
+        (root / "etc").mkdir()
+        (root / "sys/class/net/wlan0").mkdir(parents=True)
+        (root / "sys/class/net/wlan0/operstate").write_text("dormant\n")
+        (root / "log").touch()
+        (root / "clock").write_text("0")
+        (root / "at").mkdir()
+        for at, command in (events or {}).items():
+            (root / f"at/{at}").write_text(command)
+        slots = (self.SBIN.parent / "lib/maison-slots").read_text()
+        (root / "maison-slots").write_text(rooted(slots, root, *self.PATHS))
+        for name in ("maison-wifi", "maison-wifi-watch"):
+            script = rooted((self.SBIN / name).read_text(), root, *self.PATHS)
+            (root / name).write_text(script.replace("/usr/local/lib/maison-slots", f"{root}/maison-slots"))
+        stubs(
+            root,
+            sha256sum="echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            sleep=f"""t=$(($(cat $ROOT/clock) + $1))
+echo $t >$ROOT/clock
+[ "$t" -le {until} ] || exit 1
+[ ! -e $ROOT/at/$t ] || . $ROOT/at/$t""",
+            networkctl='echo "$(cat $ROOT/clock) networkctl $*" >>$LOG',
+            # wpa_supplicant@wlan0 requires maison-wifi
+            systemctl="""echo "$(cat $ROOT/clock) systemctl $*" >>$LOG
+[ "$*" != "restart wpa_supplicant@wlan0" ] || sh $ROOT/maison-wifi""",
+        )
+        env = {**os.environ, "PATH": f"{root}/stubs:{os.environ['PATH']}"}
+        subprocess.run(["sh", str(root / "maison-wifi")], env=env, check=True, capture_output=True)
+        (root / "log").write_text("")
+        self.done = subprocess.run(["sh", str(root / "maison-wifi-watch")], env=env, capture_output=True, timeout=30)
+        return (root / "log").read_text().splitlines()
+
+    @staticmethod
+    def at(time, lines):
+        return [f"{time} {line}" for line in lines]
+
+    def conf(self):
+        return (self.root / "etc/wpa_supplicant/wpa_supplicant-wlan0.conf").read_text()
+
+    def test_ten_minutes_without_a_network_open_the_setup(self):
+        self.assertEqual(self.run_watch(700), self.at(600, self.OPEN))
+        self.assertIn("mode=2", self.conf())
+        setup = (self.root / "run/maison-setup").read_text()
+        self.assertIn("MAISON_SETUP_SSID=Maison-0123\n", setup)
+        self.assertIn("MAISON_SETUP_PASSWORD=456789abcdef\n", setup)
+        self.assertIn("MAISON_SETUP_URL=http://192.168.4.1\n", setup)
+        network = self.root / "run/systemd/network"
+        self.assertEqual(stat.S_IMODE(network.stat().st_mode), 0o755, "networkd's user reads it")
+        self.assertEqual(stat.S_IMODE((network / "40-maison-setup.network").stat().st_mode), 0o644)
+
+    def test_thirty_minutes_later_it_returns_to_its_network_and_the_cycle_repeats(self):
+        back = 600 + 15 + 1800
+        self.assertEqual(self.run_watch(back + 60), self.at(600, self.OPEN) + self.at(back, self.BACK))
+        self.assertNotIn("mode=2", self.conf())
+        self.assertFalse((self.root / "run/maison-setup").exists())
+        self.assertFalse((self.root / "run/maison-lost").exists())
+        self.assertFalse((self.root / "run/systemd/network/40-maison-setup.network").exists())
+        log = self.run_watch(back + 700)
+        self.assertEqual(log, self.at(600, self.OPEN) + self.at(back, self.BACK) + self.at(back + 600, self.OPEN))
+
+    def test_an_association_stops_the_count_and_a_lost_link_counts_from_its_loss(self):
+        events = {300: self.OPERSTATE % "up", 1500: self.OPERSTATE % "dormant"}
+        self.assertEqual(self.run_watch(2200, events), self.at(1500 + 585, self.OPEN))
+
+    def test_never_while_an_update_is_on_trial(self):
+        self.assertEqual(self.run_watch(1000, state="active=a\npending=b\ntries=1\nboots=0\n"), [])
+        self.assertEqual(self.done.returncode, 1, "stopped by the timeline, not by itself")
+
+    def test_a_first_setup_stays_open_whatever_the_time(self):
+        self.assertEqual(self.run_watch(1000, target=""), [])
+        self.assertEqual(self.done.returncode, 0, "nothing to watch")
+        self.assertIn("mode=2", self.conf())
+
+    def test_someone_at_the_page_holds_the_way_back(self):
+        self.assertEqual(self.run_watch(4300, {2400: self.REQUEST}), self.at(600, self.OPEN) + self.at(2400 + 1800, self.BACK))
+
+    def test_its_ten_minutes_come_after_maison_commit_is_done(self):
+        watch = (self.SBIN / "maison-wifi-watch").read_text()
+        commit = (self.SBIN / "maison-commit").read_text()
+        self.assertIn("patience=600\n", watch)
+        self.assertIn('[ "$waited" -lt 150 ]', commit)
+        self.assertIn("[ ! -e /run/maison-setup ] || exit 0", commit)
+
+    def test_it_runs_on_every_frame_and_the_image_can_be_an_access_point(self):
+        linux = HERE / "linux"
+        self.assertIn("enable maison-wifi-watch.service\n", (linux / "buildroot/post-build.sh").read_text())
+        self.assertIn("BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT=y\n", (linux / "buildroot/maison_defconfig").read_text())
+        units = linux / "rootfs/etc/systemd/system"
+        self.assertNotIn("RemainAfterExit=", (units / "maison-wifi.service").read_text())
+        self.assertIn("EnvironmentFile=-/run/maison-setup\n", (units / "maison-ui.service").read_text())
+        self.assertTrue(os.access(self.SBIN / "maison-wifi-watch", os.X_OK))
 
 
 if __name__ == "__main__":
