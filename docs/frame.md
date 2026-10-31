@@ -285,14 +285,9 @@ takes the house's network and Maison's address, the kept one already in the form
 `/android-data/maison` (0600) and restarts. 30 minutes after its last request, `maison-hotspot close`
 returns to the configured network without a restart.
 
-Not proved on the frame: all of the above was only run against a fake control socket, a fake service
-and stubbed commands. Unseen so far: wpa_supplicant's real replies on the AIC8800 (a scan from a
-network-less supplicant, `[TEMP-DISABLED]` after a wrong password, whose absence would end in the
-no-answer word after 40 s), DHCP after a live join, a socket connected from `kiosk` under
-`ProtectSystem=strict`, the gpio-keys node really being the frame's power key and its device name,
-logind's drop-in, SDL staying calm on that key, the keyboard's real touch offset, frame
-times on the Mali-400, and the access point itself, which needs an image with wpa_supplicant's AP
-mode (none before it was in the defconfig). The live switches above are unproved too.
+Seen on the frame: scan and list, a wrong password then the right one, the power key held 10 s, the
+access point on the AIC8800 and the setup view. A photo's fade draws at 20 images a second, 63 ms at
+worst. Not seen: the page's form submitted from a phone, and `maison-hotspot close` after its 30 minutes.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.

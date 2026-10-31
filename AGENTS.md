@@ -414,6 +414,8 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   `ui/keyboard.rs`): the app stays `kiosk`, `maison-wifid` is the only root behind it. No network, or
   10 minutes without one (`maison-wifi-watch`, `/run/maison-lost`, never on trial): the screen comes
   by itself.
+- Mainline, KMSDRM makes its surface anew at the first present and shows that, blank: the app draws
+  twice at its start, or a screen that never changes stays black until a touch.
 - Mainline, the hotspot is dormant, a dead touch panel's last resort: only the power key held 10 s
   opens it (`maison-power-key`, `maison-hotspot`; logind must keep off that key), for 30 minutes after
   its page's last request, then back without a restart.
