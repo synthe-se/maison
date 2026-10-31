@@ -11,7 +11,7 @@ Conflicts=getty@tty7.service
 RequiresMountsFor=/android-data
 Wants=dbus.socket systemd-logind.service
 # never after the network: the interface shows the house as soon as it can, and retries
-After=systemd-user-sessions.service dbus.socket systemd-logind.service
+After=systemd-user-sessions.service dbus.socket systemd-logind.service maison-wifi.service
 ConditionPathExists=/dev/tty0
 
 [Service]
@@ -30,8 +30,6 @@ ExecStartPost=-+/bin/sh -c 'kill $$(pidof maison-loader)'
 # root's copy of the address (the initramfs adopts what install.sh left, Android's shell-writable
 # /data/local/tmp never read here)
 LoadCredential=target:/android-data/maison/target
-# no address yet: empty, and the interface asks to set the frame up
-SetCredential=target:
 EnvironmentFile=-/run/maison-setup
 RuntimeDirectory=maison-ui
 # what it may reach

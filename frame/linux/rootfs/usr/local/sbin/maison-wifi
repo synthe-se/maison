@@ -11,6 +11,8 @@ target=/android-data/maison/target
 out=/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
 umask 077
 mkdir -p /etc/wpa_supplicant
+# no address yet: an empty one, for the interface's credential; it then asks to set the frame up
+[ -e "$target" ] || : >"$target"
 
 networks() {
 	if [ -s "$own" ]; then
@@ -42,6 +44,5 @@ printf 'MAISON_SETUP_SSID=%s\nMAISON_SETUP_PASSWORD=%s\nMAISON_SETUP_URL=http://
 chmod 644 /run/maison-setup
 mkdir -p /run/systemd/network
 printf '[Match]\nName=wlan0\n\n[Network]\nAddress=192.168.4.1/24\nDHCPServer=yes\n' >/run/systemd/network/40-maison-setup.network
-networkctl reload
 systemctl --no-block start maison-setup
 echo "maison-wifi: to be set up, as $ssid"
