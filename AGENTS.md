@@ -35,6 +35,8 @@ backend/src/
   events.rs          `GET /api/events`: server-sent change names (`maison_api::events`), one
                      task per family's watch
   scenes.rs          scenes: named lists of IR actions, run by `ir::run_actions` (scenes.json)
+  photos.rs          the frame's photos: JPEGs kept as they came in photos/ (0700), named by
+                     their SHA-256, the directory their only index
   tuya/              feeder, fountain, litter box (local TCP, uplg fork of rust-async-tuyapi):
                      mod (manager), worker (one supervised session per device), cache, parse,
                      feeder (meal-plan codec)
@@ -62,7 +64,7 @@ backend/src/
   bin/               fit_tempo (build machine only), send_ir, atv_pair, decode_mitsubishi_ir, tuya_probe
 backend/tests/       integration tests (+ `live-runtime-tests` feature for real devices)
 api/                 maison-api (edition 2024): the API's types said once (screens, sun, tempo
-                     and `Today::price_at`, lamps, meross, matter, scenes, remote; the request
+                     and `Today::price_at`, lamps, meross, matter, scenes, photos, remote; the request
                      bodies; `Answer`, `Message`, `OfDevice`, `DeviceRef`), `HOUSE_TZ` and `Tz`,
                      and three tables: `codes.rs` (every refusal: code, status, message),
                      `paces.rs` (every read pace, and how long a gesture, a slider, a toast
@@ -83,6 +85,7 @@ web/src/lib/components/   every shared brick, each Bits UI primitive wrapped onc
 web/src/lib/devices/      one folder per device family: api.ts (its types and endpoints), data.ts
                      (its live sources), its components; a dashboard group is `<Family>Group`,
                      a page body `<Thing>Page` (a part of one `<Thing>Panel`), a row `<Thing>Tile`
+                     (`photos/`: « Cadre photo », resized in the browser, reached from « Mon compte »)
 web/src/lib/account/      the account page's sections
 web/src/styles/      tokens.css (light-dark()), app.css
 web/scripts/         i18n.check, i18n.add, css.check, imports.fix
@@ -112,7 +115,7 @@ docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md, box.md, 
 Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devices.json`,
 `device-cache.json`, `hue-lamps*.json`, `zigbee-lamps*.json`, `climate-state.json`,
 `broadlink-codes.json`, `ir-keymap.json`, `scenes.json`, `tv.json`, `androidtv.json`,
-`nabaztag.json`, `refresh-tokens.json`, `adb-key`, `atv-identity`, `auth/`, `matter/`.
+`nabaztag.json`, `refresh-tokens.json`, `adb-key`, `atv-identity`, `auth/`, `matter/`, `photos/`.
 
 ## Rules
 
@@ -455,6 +458,19 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
   `events.rs`, its name in `api/src/events.rs` (the prefix of its `live()` keys), then
   `shared-ts events`. Cloudflare closes an idle answer after ~100 s: the stream says a
   keep-alive every `KEEP_ALIVE_MS` (25 s).
+
+### The frame's photos (`photos.rs`, `frame/ui/src/photos/`)
+
+- The browser resizes (cover 800×1280, cut evenly, never enlarged, JPEG 0.85): the Pi never decodes
+  a picture. It checks a JPEG's first and last bytes and `MAX_PHOTO_BYTES`; `DefaultBodyLimit` on the
+  route is that plus the multipart wrapping. Limits in `maison_api::photos`.
+- `/api/photos/<id>` is the one `/api/` answer kept by a browser (`private`, immutable, success
+  only): its name is its content. Reads are a `DeviceClient`'s, changes an `AdminUser`'s.
+- On the frame the show replaces the house only once its first picture is on the GPU, and
+  `Screen::Photos` wants no house source: `sweep` stops their polls. Back on the house, a value kept
+  meanwhile is not said old (`Entry::resumed`). The event stream open, a screen removed from
+  « Mon compte » learns it at its next read: a minute on the house, up to `PHOTOS_MS` on the photos.
+  Removed, its cache goes with its cookie.
 
 ### Tempo
 

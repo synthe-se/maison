@@ -180,7 +180,8 @@ be touched anywhere (WCAG 2.5.7), `touch-action: pan-y`.
   move can be skipped once next to it (« Fermeture 18:42 · Ne pas fermer ce soir », then
   « Fermeture de 18:42 sautée · Annuler »).
 - Three destinations: Accueil, Tempo, Télécommande. Device pages are not destinations: the
-  home tab stays current and the page starts with « Retour à l’accueil ».
+  home tab stays current and the page starts with « Retour à l’accueil ». « Cadre photo » is such a
+  page, an admin's, reached from the wall screens' group in « Mon compte ».
 - « Télécommande » is the IR keymap page only: the TV's and the box's pads live on their own
   pages (`/tv`, `/androidtv`), so one word never names two screens.
 
@@ -198,6 +199,8 @@ be touched anywhere (WCAG 2.5.7), `touch-action: pan-y`.
   answer and what they said, in a warning that stays.
 - Giving portions or starting a clean: no dialog, the quantity in the label, the result on
   the tile.
+- Several photos added at once say which one goes and how many are done; what was refused is said
+  by reason, in a warning that stays, the others still go.
 - Long steps are named and timed (Matter pairing, APK upload then install); a form changed
   and not saved is not lost to a stray Escape (`Sheet`).
 
@@ -249,6 +252,8 @@ be touched anywhere (WCAG 2.5.7), `touch-action: pan-y`.
 - `e2e/layout.ts`: container, title alignment, bottom bar, no sideways scroll, stable tiles;
   the door at 320, 390 and 1440 px; the phone dashboard's height bound, 56 px rows, two
   lines of « Maintenant ».
+- `e2e/photos.ts`: « Cadre photo » through the real backend (resized, listed, refused, removed);
+  `e2e/frame.ts` takes them on to the frame.
 - `e2e/dashboard.ts`: tiles, gestures, a device that does not answer, group actions, skipping
   a shutter move, scenes (made from a template, run, asked from a shortcut). The timings it
   checks (a command's 1 s and 3 s, a shutter's 400 ms) run on the page's clock
