@@ -320,7 +320,9 @@ cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the 
   `boxHost`/`boxWakeApp` still loads.
 
 - Ambilight: `currentconfiguration` answers GET and takes one POST body verified on the set
-  (`FOLLOW_VIDEO`, `STANDARD`). A color style left on the set holds that color whatever plays.
+  (`FOLLOW_VIDEO`, `STANDARD`), which also brings `mode` back from `lounge` to `internal`. In
+  `lounge` the configuration answers empty and the set holds a color whatever plays. It was once
+  found back there without cause known (a box reboot is not it): the TV page then offers the fix.
 
 ### Android TV box (MECOOL LEAP-S1)
 
