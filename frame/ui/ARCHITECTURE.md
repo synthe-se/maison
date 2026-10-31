@@ -21,7 +21,7 @@ Cortex-A7, Mali-400 (Lima, GLES 2.0), 1 GB, 800×1280 portrait panel mounted ups
 
 | What | Source | Here |
 |---|---|---|
-| API types | `api/` (maison-api): screens, sun, Tempo (`Today::price_at`), lamps, Meross, Matter covers, scenes, remote, climate and Nabaztag constants, `androidtv::SHORTCUTS`, request bodies, `Answer`, `DeviceRef`, `HOUSE_TZ` | path dependency, shared with the backend. Climate, Nabaztag, TV and Tuya answers are still read as JSON by field name |
+| API types | `api/` (maison-api): screens, sun, Tempo (`Today::price_at`), lamps, Meross, Matter covers, scenes, remote, climate and Nabaztag constants, `androidtv::SHORTCUTS`, every request body the frame sends (the backend's routes read the same structs), `Answer`, `DeviceRef`, `HOUSE_TZ` | path dependency, shared with the backend. Climate, Nabaztag, TV and Tuya answers are still read as JSON by field name |
 | Paces | `maison_api::paces` | read directly; the web app's `paces.ts` is generated from the same table |
 | Refusal codes | `maison_api::codes::Code` | words from the `code_<code>` keys, else from the status |
 | Events | `maison_api::events` (`GET /api/events`) | one thread for the app's life; a `change` refreshes its prefix; pushed sources poll every `PUSHED_SAFETY_MS` while the stream is open; reconnect with backoff, immediately once paired |
@@ -32,7 +32,8 @@ Cortex-A7, Mali-400 (Lima, GLES 2.0), 1 GB, 800×1280 portrait panel mounted ups
 | Fonts | `web/static/fonts`, Fraunces from `web/node_modules` | build.rs (allsorts): WOFF2 → TTF, variable faces instanced per weight |
 | Mark | `web/static/brand.svg` | header and door |
 
-Pairing follows the web app (`/screens/pairing`, `/claim`, `POST /me` to renew). The cookie is
+Pairing follows the web app (`/screens/pairing`, `/claim`, `POST /me` to renew; a screen with no
+target shows a setup view, a paired one Maison cannot reach waits calmly). The cookie is
 kept 0600 in `/android-data/maison/ui`, bound to its origin. Claims rotate over any, IPv4-only
 and IPv6-only agents so the server records both of the screen's addresses. HTTPS only
 (`MAISON_ALLOW_HTTP=1` for simulations); no proxy from the environment.
@@ -58,7 +59,8 @@ backlight.rs     dims after DIM_AFTER (2 min): 25 % of the awake level by day, 4
                  side, followed asleep), never off; the first touch only wakes, to 40 % at night
 app.rs           screens and views (house, Tempo page, a cat device's page, door), page timeout (PAGE_IDLE), touch:
                  the pressed target kept across redraws, REACH tolerance, jitter that scrolls
-                 nothing still taps
+                 nothing still taps, one finger followed, a slider moved only sideways, nothing
+                 reached under the header or a toast (`Target::Cover`)
 families/        now, scenes, tempo, lamps (Hue + Zigbee), cats, climate, shutters, plugs,
                  nabaztag, tv: answers → groups, pure, tested on backend JSON
 ui/              gfx, icon, model, layout (dashboard measures, measuring pass, column balance,

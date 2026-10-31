@@ -411,7 +411,7 @@ fn is_pushed(key: &str) -> bool {
     maison_api::events::ALL
         .iter()
         .any(|(_, name)| key.starts_with(name))
-        || key.starts_with("tuya:")
+        || key.starts_with(maison_api::events::TUYA)
 }
 
 /// A source's pace, given whether the event stream is open.

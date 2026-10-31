@@ -251,12 +251,17 @@ impl Client {
         self.jar.forget();
     }
 
-    pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
-        let mut req = self.agent.get(format!("{}{path}", self.api));
-        if let Some(c) = self.jar.get() {
-            req = req.header("Cookie", c);
+    /// The request, with the screen's cookie if it holds one.
+    fn with_cookie<B>(&self, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+        match self.jar.get() {
+            Some(c) => req.header("Cookie", c),
+            None => req,
         }
-        self.answer(req.call())
+    }
+
+    pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
+        let req = self.agent.get(format!("{}{path}", self.api));
+        self.answer(self.with_cookie(req).call())
     }
 
     /// The server's event stream (`GET /api/events`), read line by line as it comes: no total
@@ -271,7 +276,7 @@ impl Client {
         &self,
         silence: Duration,
     ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
-        let mut req = self
+        let req = self
             .agent
             .get(format!("{}{}", self.api, crate::paths::EVENTS))
             .header("Accept", "text/event-stream")
@@ -279,18 +284,15 @@ impl Client {
             .timeout_global(None)
             .timeout_per_read(Some(silence))
             .build();
-        if let Some(c) = self.jar.get() {
-            req = req.header("Cookie", c);
-        }
-        let res = req
+        let res = self
+            .with_cookie(req)
             .call()
             .map_err(|e| Failure::Unreachable(e.to_string()))?;
         match res.status().as_u16() {
             200 => Ok(Box::new(std::io::BufReader::new(
                 res.into_body().into_reader(),
             ))),
-            401 => Err(Failure::SignedOut),
-            status => Err(Failure::Refused { status, code: None }),
+            status => Err(refused(status, None)),
         }
     }
 
@@ -314,12 +316,10 @@ impl Client {
 
     fn send<T: DeserializeOwned>(
         &self,
-        mut req: ureq::RequestBuilder<ureq::typestate::WithBody>,
+        req: ureq::RequestBuilder<ureq::typestate::WithBody>,
         body: Option<&impl Serialize>,
     ) -> Result<T, Failure> {
-        if let Some(c) = self.jar.get() {
-            req = req.header("Cookie", c);
-        }
+        let req = self.with_cookie(req);
         let sent = match body {
             Some(b) => {
                 let json =
@@ -351,12 +351,16 @@ impl Client {
         match status {
             200..=299 => serde_json::from_str(&text)
                 .map_err(|e| Failure::Unreadable(format!("{e}: {}", clip(&text)))),
-            401 => Err(Failure::SignedOut),
-            _ => Err(Failure::Refused {
-                status,
-                code: code_of(&text),
-            }),
+            _ => Err(refused(status, code_of(&text))),
         }
+    }
+}
+
+/// A status that is no success: 401 means only « not signed in ».
+fn refused(status: u16, code: Option<Code>) -> Failure {
+    match status {
+        401 => Failure::SignedOut,
+        _ => Failure::Refused { status, code },
     }
 }
 

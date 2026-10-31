@@ -110,12 +110,17 @@ pub fn tile(
     } else {
         w.s(k::STATE_OFF)
     };
-    Tile {
-        open: None,
-        name: plug.name.clone(),
+    let fact = plug
+        .is_online
+        .then(|| {
+            let price = price.filter(|_| plug.is_on).map(|p| p.price);
+            power.map(|p| power_and_cost(w, p, price))
+        })
+        .flatten();
+    Tile::new(
+        plug.name.clone(),
         state,
-        warn: nudge.is_some() && plug.is_on,
-        lead: Lead::Toggle {
+        Lead::Toggle {
             icon: if plug.is_on {
                 icon::PLUG_ZAP
             } else {
@@ -126,23 +131,9 @@ pub fn tile(
             turn_on: Box::new(toggle(true)),
             turn_off: Box::new(toggle(false)),
         },
-        fact: if plug.is_online {
-            power.map(|p| {
-                power_and_cost(
-                    w,
-                    p,
-                    if plug.is_on {
-                        price.map(|p| p.price)
-                    } else {
-                        None
-                    },
-                )
-            })
-        } else {
-            None
-        },
-        parts: Vec::new(),
-    }
+    )
+    .warn(nudge.is_some() && plug.is_on)
+    .fact(fact)
 }
 
 pub fn plugs_group(
@@ -168,13 +159,9 @@ pub fn plugs_group(
         (k::MEROSS_NONE, k::MEROSS_NONE_HINT),
         |plugs| (!plugs.is_empty()).then(|| Body::Tiles(tiles(plugs))),
     );
-    Group {
-        title: w.s(k::MEROSS_TITLE),
-        fact,
-        actions: Vec::new(),
-        stale,
-        body,
-    }
+    Group::new(w.s(k::MEROSS_TITLE), body)
+        .fact(fact)
+        .stale(stale)
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {

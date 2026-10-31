@@ -3,7 +3,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use maison_api::nabaztag::{CommandRequest, TempoPushRequest};
+use serde::Serialize;
 
 use crate::{
     auth::AdminUser,
@@ -18,19 +19,6 @@ use crate::{
 struct NabaztagStatus {
     config: NabaztagConfig,
     reachable: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CommandRequest {
-    command: String,
-}
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct TempoPushRequest {
-    #[serde(default)]
-    force_refresh: bool,
 }
 
 #[derive(Debug, Serialize)]

@@ -2,6 +2,8 @@
 //! clients share with the backend (`backend/src/mitsubishi_ir.rs`, which writes and encodes the
 //! commands).
 
+use serde::{Deserialize, Serialize};
+
 /// The setpoints the Mitsubishi protocol takes (°C).
 pub const MIN_TEMPERATURE_C: u8 = 16;
 pub const MAX_TEMPERATURE_C: u8 = 31;
@@ -15,6 +17,23 @@ pub const FIRST_ON_COMMAND: &str = "state-cool-20-fan-auto-vane-auto-wide-center
 
 /// The living room's unit: the backend looks its learnt codes up first (`send_mitsubishi`).
 pub const MODEL: &str = "msz-hj5va";
+
+/// `POST /api/broadlink/mitsubishi/send`: a structured command as text (`state-cool-21-…`) or as
+/// settings (`{mode, temperature, …}`, written into a command by the backend), one of the two.
+/// `S`: the settings, the backend's typed `ClimateSettings`, as clients found them otherwise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendRequest<S> {
+    pub host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<S>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
 
 /// A setpoint `delta` degrees away from `from`, within the protocol's bounds.
 pub fn step_temperature(from: u8, delta: i8) -> u8 {
@@ -31,5 +50,24 @@ mod tests {
         assert_eq!(step_temperature(20, 1), 21);
         assert_eq!(step_temperature(16, -1), 16);
         assert_eq!(step_temperature(31, 1), 31);
+    }
+
+    #[test]
+    fn a_send_says_one_of_the_two_and_nothing_empty() {
+        let off = SendRequest::<()> {
+            host: "192.168.1.60".into(),
+            local_ip: None,
+            command: Some(OFF_COMMAND.into()),
+            settings: None,
+            model: Some(MODEL.into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&off).unwrap(),
+            serde_json::json!({
+                "host": "192.168.1.60",
+                "command": "state-off",
+                "model": "msz-hj5va"
+            })
+        );
     }
 }

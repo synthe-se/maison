@@ -177,18 +177,16 @@ pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
         (true, None) => parts.push(Part::Hint(w.s(k::SHUTTERS_CALIBRATE_HINT))),
         _ => {}
     }
-    Tile {
-        open: None,
-        name: c.name.clone(),
-        state: describe(w, c),
-        warn: off,
-        lead: Lead::Glyph {
+    Tile::new(
+        c.name.clone(),
+        describe(w, c),
+        Lead::Glyph {
             icon: icon::BLINDS,
             on: c.online && c.open_percent.unwrap_or(0) > 0,
         },
-        fact: None,
-        parts,
-    }
+    )
+    .warn(off)
+    .parts(parts)
 }
 
 fn all_opening(w: &Words, o: &Outcome) -> Option<Toast> {
@@ -222,12 +220,12 @@ pub fn shutters_group(
         actions.push(Button::new(
             Some(icon::ARROW_UP),
             w.s(k::SHUTTERS_ALL_OPEN),
-            Act::Order(all("open", all_opening)),
+            Act::Order(all("open", Say::With(all_opening))),
         ));
         actions.push(Button::new(
             Some(icon::ARROW_DOWN),
             w.s(k::SHUTTERS_ALL_CLOSE),
-            Act::Order(all("close", all_closing)),
+            Act::Order(all("close", Say::With(all_closing))),
         ));
     }
     let body = loaded(
@@ -240,13 +238,9 @@ pub fn shutters_group(
                 .then(|| Body::Tiles(covers.iter().map(|c| tile(w, c, now)).collect()))
         },
     );
-    Group {
-        title: w.s(k::SHUTTERS_TITLE),
-        fact: None,
-        actions,
-        stale,
-        body,
-    }
+    Group::new(w.s(k::SHUTTERS_TITLE), body)
+        .actions(actions)
+        .stale(stale)
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {

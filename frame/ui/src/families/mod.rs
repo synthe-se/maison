@@ -86,7 +86,7 @@ pub const CLIMATE: &str = maison_api::events::CLIMATE;
 pub const NABAZTAG: &str = "nabaztag";
 /// Every cats' key starts with it: one refresh after a gesture reads them all again (the
 /// server says `tuya:<id>:` when a device pushes).
-pub const TUYA: &str = "tuya:";
+pub const TUYA: &str = maison_api::events::TUYA;
 pub const TV: &str = "tv";
 /// The box: the event the server says when its power changes.
 pub const BOX: &str = maison_api::events::ANDROID_TV;

@@ -3,7 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use maison_api::Message;
+use maison_api::{climate::SendRequest, Message};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -61,18 +61,6 @@ struct SendPacketRequest {
 struct SendCodeRequest {
     host: String,
     local_ip: Option<String>,
-}
-
-/// A structured command as text (`state-cool-21-…`) or as settings (`{mode, temperature,
-/// …}`, written into a command by the backend): one of the two.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MitsubishiCommandRequest {
-    host: String,
-    local_ip: Option<String>,
-    command: Option<String>,
-    settings: Option<ClimateSettings>,
-    model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -296,7 +284,7 @@ async fn get_climate_state(State(state): State<AppState>) -> Json<Answer<Climate
 async fn send_mitsubishi_command(
     State(state): State<AppState>,
     client: DeviceClient,
-    Json(body): Json<MitsubishiCommandRequest>,
+    Json(body): Json<SendRequest<ClimateSettings>>,
 ) -> Result<Json<Answer<Done<SendResult>>>, AppError> {
     known_blaster(&state, &client, &body.host).await?;
     let broadlink = &state.broadlink;

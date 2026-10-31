@@ -37,14 +37,14 @@ impl P<'_, '_, '_, '_> {
     fn group_head(&mut self, g: &Group, x: f32, y: f32, w: f32) -> Result<(), Error> {
         let pal = self.c.pal;
         let mut end = x + w;
-        let mut actions_w = 0.0;
-        for b in g.actions.iter().rev() {
-            actions_w += self.button_width(b)? + if actions_w > 0.0 { px::S_2 } else { 0.0 };
+        let mut widths = Vec::with_capacity(g.actions.len());
+        for b in &g.actions {
+            widths.push(self.button_width(b)?);
         }
-        if actions_w > 0.0 {
+        if !widths.is_empty() {
+            let actions_w = widths.iter().sum::<f32>() + px::S_2 * (widths.len() - 1) as f32;
             let mut bx = end - actions_w;
-            for b in &g.actions {
-                let bw = self.button_width(b)?;
+            for (b, bw) in g.actions.iter().zip(widths) {
                 self.button(b, bx, y, bw, TOUCH)?;
                 bx += bw + px::S_2;
             }

@@ -23,6 +23,33 @@ pub struct Group {
     pub body: Body,
 }
 
+impl Group {
+    pub fn new(title: impl Into<String>, body: Body) -> Self {
+        Self {
+            title: title.into(),
+            fact: None,
+            actions: Vec::new(),
+            stale: None,
+            body,
+        }
+    }
+
+    pub fn fact(mut self, fact: Option<String>) -> Self {
+        self.fact = fact;
+        self
+    }
+
+    pub fn actions(mut self, actions: Vec<Button>) -> Self {
+        self.actions = actions;
+        self
+    }
+
+    pub fn stale(mut self, stale: Option<(String, Button)>) -> Self {
+        self.stale = stale;
+        self
+    }
+}
+
 /// Loaded.svelte's states, then the content.
 #[derive(Debug, Clone)]
 pub enum Body {
@@ -57,6 +84,40 @@ pub struct Tile {
     pub parts: Vec<Part>,
     /// The row leads somewhere (DeviceTile's `href`: the Tempo tile, its page).
     pub open: Option<Act>,
+}
+
+impl Tile {
+    pub fn new(name: impl Into<String>, state: impl Into<String>, lead: Lead) -> Self {
+        Self {
+            name: name.into(),
+            state: state.into(),
+            warn: false,
+            lead,
+            fact: None,
+            parts: Vec::new(),
+            open: None,
+        }
+    }
+
+    pub fn warn(mut self, warn: bool) -> Self {
+        self.warn = warn;
+        self
+    }
+
+    pub fn fact(mut self, fact: Option<String>) -> Self {
+        self.fact = fact;
+        self
+    }
+
+    pub fn parts(mut self, parts: Vec<Part>) -> Self {
+        self.parts = parts;
+        self
+    }
+
+    pub fn open(mut self, open: Option<Act>) -> Self {
+        self.open = open;
+        self
+    }
 }
 
 /// What leads the tile.

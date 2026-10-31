@@ -3,29 +3,15 @@
 //! Out of reach, both buttons stay, out of reach. No group at all once the server says no
 //! rabbit is set.
 
-use maison_api::nabaztag::TAICHI;
-use serde_json::{Value, json};
+use maison_api::nabaztag::{CommandRequest, TAICHI, TempoPushRequest};
+use serde_json::Value;
 
 use super::{Cx, NABAZTAG, loaded, stale};
-use crate::commands::{Order, Outcome, Post, Toast};
+use crate::commands::{Order, Post, Say};
 use crate::i18n::{Words, k};
 use crate::paths;
 use crate::ui::icon;
 use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Tile};
-
-fn taichi_said(w: &Words, o: &Outcome) -> Option<Toast> {
-    o.failed.is_empty().then(|| Toast {
-        text: w.s(k::NABAZTAG_TAICHI_DONE),
-        warn: false,
-    })
-}
-
-fn pushed_said(w: &Words, o: &Outcome) -> Option<Toast> {
-    o.failed.is_empty().then(|| Toast {
-        text: w.s(k::NABAZTAG_TEMPO_PUSHED),
-        warn: false,
-    })
-}
 
 /// The rabbit's tile, from `/nabaztag` (`{config: {host, tempoEnabled}, reachable}`).
 pub fn tile(w: &Words, status: &Value) -> Tile {
@@ -43,34 +29,34 @@ pub fn tile(w: &Words, status: &Value) -> Tile {
     let dance = Order::one(
         format!("{NABAZTAG}:taichi"),
         name.clone(),
-        Post::json(paths::NABAZTAG_CTL, &json!({ "command": TAICHI })),
+        Post::json(
+            paths::NABAZTAG_CTL,
+            &CommandRequest {
+                command: TAICHI.into(),
+            },
+        ),
     )
-    .said(taichi_said);
+    .said(Say::Done(k::NABAZTAG_TAICHI_DONE));
     let push = Order::one(
         format!("{NABAZTAG}:tempo"),
         name.clone(),
-        Post::json(
-            paths::NABAZTAG_TEMPO_PUSH,
-            &json!({ "forceRefresh": false }),
-        ),
+        Post::json(paths::NABAZTAG_TEMPO_PUSH, &TempoPushRequest::default()),
     )
     .then_refresh(&[NABAZTAG])
-    .said(pushed_said);
-    Tile {
+    .said(Say::Done(k::NABAZTAG_TEMPO_PUSHED));
+    Tile::new(
         name,
         state,
-        warn: !reachable,
-        lead: Lead::Glyph {
+        Lead::Glyph {
             icon: icon::RABBIT,
             on: reachable,
         },
-        fact: None,
-        parts: vec![Part::Row(vec![
-            button(icon::RABBIT, w.s(k::NABAZTAG_TAICHI), dance),
-            button(icon::REFRESH_CW, w.s(k::NABAZTAG_PUSH_TEMPO), push),
-        ])],
-        open: None,
-    }
+    )
+    .warn(!reachable)
+    .parts(vec![Part::Row(vec![
+        button(icon::RABBIT, w.s(k::NABAZTAG_TAICHI), dance),
+        button(icon::REFRESH_CW, w.s(k::NABAZTAG_PUSH_TEMPO), push),
+    ])])
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
@@ -87,13 +73,7 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
     let body = loaded(w, &status, &[NABAZTAG], ("", ""), |s| {
         Some(Body::Tiles(vec![tile(w, s)]))
     });
-    Some(Group {
-        title: w.s(k::NABAZTAG_NAME),
-        fact: None,
-        actions: Vec::new(),
-        stale: stale(cx, &status, &[NABAZTAG]),
-        body,
-    })
+    Some(Group::new(w.s(k::NABAZTAG_NAME), body).stale(stale(cx, &status, &[NABAZTAG])))
 }
 
 #[cfg(test)]

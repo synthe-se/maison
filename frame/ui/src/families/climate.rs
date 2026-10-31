@@ -8,8 +8,8 @@
 
 use chrono::DateTime;
 use maison_api::Tz;
-use maison_api::climate::{self, FIRST_ON_COMMAND, OFF_COMMAND};
-use serde_json::{Value, json};
+use maison_api::climate::{self, FIRST_ON_COMMAND, OFF_COMMAND, SendRequest};
+use serde_json::Value;
 
 use super::{CLIMATE, Cx, loaded, stale};
 use crate::commands::{Order, Post};
@@ -46,21 +46,36 @@ pub fn blaster(found: &Value) -> Option<&str> {
     found["devices"][0]["host"].as_str()
 }
 
-/// The order sending `body` (a command or settings) through the blaster at `host`.
-fn send(host: &str, mut body: Value) -> Order {
-    body["host"] = json!(host);
-    body["model"] = json!(climate::MODEL);
+/// What the unit is sent: a command, or settings.
+enum Sent {
+    Command(&'static str),
+    Settings(Value),
+}
+
+/// The order sending `what` through the blaster at `host`.
+fn send(host: &str, what: Sent) -> Order {
+    let (command, settings) = match what {
+        Sent::Command(c) => (Some(c.to_string()), None),
+        Sent::Settings(s) => (None, Some(s)),
+    };
+    let body = SendRequest {
+        host: host.to_string(),
+        local_ip: None,
+        command,
+        settings,
+        model: Some(climate::MODEL.to_string()),
+    };
     Order::one(KEY, "climate", Post::json(paths::CLIMATE_SEND, &body)).then_refresh(&[CLIMATE])
 }
 
 /// The last settings sent, again: without their sleep timer, at `temperature` if given.
-fn settings_at(settings: &Value, temperature: Option<u8>) -> Value {
+fn settings_at(settings: &Value, temperature: Option<u8>) -> Sent {
     let mut s = settings.clone();
     s["stopInMinutes"] = Value::Null;
     if let Some(t) = temperature {
-        s["temperature"] = json!(t);
+        s["temperature"] = t.into();
     }
-    json!({ "settings": s })
+    Sent::Settings(s)
 }
 
 /// The tile, from the blaster found (if any) and the last order the server kept
@@ -92,17 +107,13 @@ pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &DateTime<Tz>) -> 
         )),
         _ => None,
     };
-    let order = |body: Value| host.map(|h| send(h, body));
-    let button = |icon, label: String, body: Option<Value>| {
-        let o = body.and_then(order);
+    let button = |icon, label: String, what: Option<Sent>| {
+        let o = what.and_then(|what| host.map(|h| send(h, what)));
         let out = o.is_none();
         let act = o.map_or(Act::Refresh(&[CLIMATE]), Act::Order);
         Button::new(Some(icon), label, act).unavailable(out)
     };
-    let on = settings.map_or_else(
-        || json!({ "command": FIRST_ON_COMMAND }),
-        |s| settings_at(s, None),
-    );
+    let on = settings.map_or(Sent::Command(FIRST_ON_COMMAND), |s| settings_at(s, None));
     let mut parts = Vec::new();
     if host.is_none() {
         parts.push(Part::Hint(w.s(k::CLIMATE_SEARCHING_TITLE)));
@@ -112,7 +123,7 @@ pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &DateTime<Tz>) -> 
         button(
             icon::SQUARE,
             w.s(k::ACTION_TURN_OFF),
-            Some(json!({ "command": OFF_COMMAND })),
+            Some(Sent::Command(OFF_COMMAND)),
         ),
     ]));
     if let (Some(s), Some(t)) = (settings, temperature) {
@@ -130,18 +141,16 @@ pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &DateTime<Tz>) -> 
             step(1, icon::ARROW_UP),
         ]));
     }
-    Tile {
-        name: w.s(k::CLIMATE_BRAND_NAME),
+    Tile::new(
+        w.s(k::CLIMATE_BRAND_NAME),
         state,
-        warn: false,
-        lead: Lead::Glyph {
+        Lead::Glyph {
             icon: icon::SNOWFLAKE,
             on: power,
         },
-        fact,
-        parts,
-        open: None,
-    }
+    )
+    .fact(fact)
+    .parts(parts)
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
@@ -158,13 +167,7 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
             &now,
         )]))
     });
-    Some(Group {
-        title: w.s(k::CLIMATE_DASHBOARD_TITLE),
-        fact: None,
-        actions: Vec::new(),
-        stale: stale(cx, &state, &[CLIMATE]),
-        body,
-    })
+    Some(Group::new(w.s(k::CLIMATE_DASHBOARD_TITLE), body).stale(stale(cx, &state, &[CLIMATE])))
 }
 
 #[cfg(test)]

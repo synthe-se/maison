@@ -13,10 +13,14 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, TimeZone};
 use maison_api::Tz;
-use serde_json::{Value, json};
+use maison_api::cats::{
+    FeedRequest, FountainUvSettingsRequest, LitterActions, LitterBoxSettingsRequest,
+};
+use maison_api::lamps::PowerRequest;
+use serde_json::Value;
 
 use super::{Cx, TUYA, loaded, stale};
-use crate::commands::{Order, Outcome, Post, Say, Toast};
+use crate::commands::{Order, Outcome, Post, Say, Toast, json};
 use crate::i18n::{Arg, Words, count, k};
 use crate::paths;
 use crate::ui::icon::{self, Icon};
@@ -123,11 +127,11 @@ fn feed(id: &str, name: &str) -> Order {
         name,
         Post::json(
             paths::of(paths::DEVICES, id, "feeder/feed"),
-            &json!({ "portion": 1 }),
+            &FeedRequest { portion: 1 },
         ),
     )
     .then_refresh(&[TUYA])
-    .said(served_said)
+    .said(Say::With(served_said))
 }
 
 /// One device's row, from its entry in `/devices` and its parsed status (once read).
@@ -160,19 +164,18 @@ pub fn tile(w: &Words, device: &Value, status: Option<&Value>) -> Tile {
         .filter(|_| connected && kind == "litter-box")
         .and_then(|s| s["sensors"]["litterLevel"].as_str())
         .map(|l| word_of(w, LITTER_LEVEL, Some(l)));
-    Tile {
+    Tile::new(
         name,
         state,
-        warn,
-        lead: Lead::Glyph {
+        Lead::Glyph {
             icon: icon_of(kind),
             on: connected,
         },
-        fact: level,
-        parts,
-        open: (kind != "unknown" && !id.is_empty())
-            .then(|| Act::Open(View::Device(id.to_string()))),
-    }
+    )
+    .warn(warn)
+    .fact(level)
+    .parts(parts)
+    .open((kind != "unknown" && !id.is_empty()).then(|| Act::Open(View::Device(id.to_string()))))
 }
 
 pub fn group(cx: &mut Cx) -> Option<Group> {
@@ -218,42 +221,27 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
             })
         },
     );
-    Some(Group {
-        title: w.s(k::DASHBOARD_CATS_TITLE),
-        fact: list.data.as_deref().map(|d| {
-            w.t(
-                k::DASHBOARD_DEVICE_COUNT,
-                &[crate::i18n::count(
-                    d["total"].as_u64().unwrap_or(devices.len() as u64) as usize,
-                )],
-            )
-        }),
-        actions: Vec::new(),
-        stale: stale(cx, &list, &[TUYA]),
-        body,
-    })
+    let fact = list.data.as_deref().map(|d| {
+        w.t(
+            k::DASHBOARD_DEVICE_COUNT,
+            &[crate::i18n::count(
+                d["total"].as_u64().unwrap_or(devices.len() as u64) as usize,
+            )],
+        )
+    });
+    Some(
+        Group::new(w.s(k::DASHBOARD_CATS_TITLE), body)
+            .fact(fact)
+            .stale(stale(cx, &list, &[TUYA])),
+    )
 }
 
 /// A fact of a device's page (StatusRow): what it is, its value, in the warning style when it
 /// needs a hand; its controls under it.
 fn fact(icon: Icon, label: &str, value: String, warn: bool, parts: Vec<Part>) -> Tile {
-    Tile {
-        name: label.to_string(),
-        state: value,
-        warn,
-        lead: Lead::Glyph { icon, on: false },
-        fact: None,
-        parts,
-        open: None,
-    }
-}
-
-/// A toast once the order went through.
-fn done(w: &Words, o: &Outcome, key: &str) -> Option<Toast> {
-    o.failed.is_empty().then(|| Toast {
-        text: w.s(key),
-        warn: false,
-    })
+    Tile::new(label, value, Lead::Glyph { icon, on: false })
+        .warn(warn)
+        .parts(parts)
 }
 
 /// A device's order from its page: `action` under its path, `body` if any; its key under the
@@ -293,48 +281,47 @@ fn connection(w: &Words, id: &str, name: &str, connected: bool) -> Tile {
         })
     }
     let toggle = |on: bool| {
-        let (action, say): (_, Say) = if on {
-            ("connect", connecting)
+        let (action, say) = if on {
+            ("connect", Say::With(connecting))
         } else {
-            ("disconnect", disconnected)
+            ("disconnect", Say::With(disconnected))
         };
         Box::new(order(id, name, "connection", action, None, say).toggle(on))
     };
-    Tile {
-        name: w.s(k::DEVICE_LOCAL_CONNECTION),
-        state: w.s(if connected {
+    Tile::new(
+        w.s(k::DEVICE_LOCAL_CONNECTION),
+        w.s(if connected {
             k::DEVICE_ONLINE
         } else {
             k::DEVICE_OFFLINE
         }),
-        warn: !connected,
-        lead: Lead::Toggle {
+        Lead::Toggle {
             icon: icon::WIFI,
             on: connected,
             offline: false,
             turn_on: toggle(true),
             turn_off: toggle(false),
         },
-        fact: None,
-        parts: vec![Part::Hint(w.s(k::DEVICE_LOCAL_CONNECTION_HINT))],
-        open: None,
-    }
+    )
+    .warn(!connected)
+    .parts(vec![Part::Hint(w.s(k::DEVICE_LOCAL_CONNECTION_HINT))])
 }
 
 /// The litter box's page (LitterBoxPanel): clean now, its state, its level and « J'ai rempli
 /// la litière », what needs a hand. Offline, « Lancer le nettoyage » stays, out of reach, said
 /// why; refilling waits for the connection.
 pub fn litter_tiles(w: &Words, id: &str, name: &str, connected: bool, s: &Value) -> Vec<Tile> {
-    fn started(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::LITTER_BOX_CLEANING_STARTED)
-    }
-    fn saved(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::DEVICE_SETTING_SAVED)
-    }
     let clean = Button::new(
         Some(icon::TRASH),
         w.s(k::LITTER_BOX_START_CLEANING),
-        Act::Order(order(id, name, "clean", "litter-box/clean", None, started)),
+        Act::Order(order(
+            id,
+            name,
+            "clean",
+            "litter-box/clean",
+            None,
+            Say::Done(k::LITTER_BOX_CLEANING_STARTED),
+        )),
     )
     .primary(true)
     .unavailable(!connected);
@@ -361,8 +348,14 @@ pub fn litter_tiles(w: &Words, id: &str, name: &str, connected: bool, s: &Value)
                 name,
                 "level",
                 "litter-box/settings",
-                Some(json!({ "actions": { "resetSandLevel": true } })),
-                saved,
+                Some(json(&LitterBoxSettingsRequest {
+                    actions: Some(LitterActions {
+                        reset_sand_level: Some(true),
+                        ..LitterActions::default()
+                    }),
+                    ..LitterBoxSettingsRequest::default()
+                })),
+                Say::Done(k::DEVICE_SETTING_SAVED),
             );
             parts.push(Part::Row(vec![Button::new(
                 Some(icon::REFRESH_CW),
@@ -404,19 +397,13 @@ pub fn litter_tiles(w: &Words, id: &str, name: &str, connected: bool, s: &Value)
 
 /// The fountain's switches (FountainPanel): running, UV.
 pub fn fountain_switches(w: &Words, id: &str, name: &str, connected: bool, s: &Value) -> Vec<Tile> {
-    fn on(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::FOUNTAIN_FOUNTAIN_ON)
-    }
-    fn off(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::FOUNTAIN_FOUNTAIN_OFF)
-    }
-    fn uv_on(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::FOUNTAIN_UV_ON)
-    }
-    fn uv_off(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::FOUNTAIN_UV_OFF)
-    }
-    let switch = |label: &str, icon, is_on: bool, state: String, key: &str, says: [Say; 2]| {
+    let switch = |label: &str,
+                  icon,
+                  is_on: bool,
+                  state: String,
+                  key: &str,
+                  body: fn(bool) -> Value,
+                  says: [&'static str; 2]| {
         let to = |target: bool| {
             Box::new(
                 order(
@@ -424,27 +411,23 @@ pub fn fountain_switches(w: &Words, id: &str, name: &str, connected: bool, s: &V
                     name,
                     key,
                     &format!("fountain/{key}"),
-                    Some(json!({ "enabled": target })),
-                    says[usize::from(!target)],
+                    Some(body(target)),
+                    Say::Done(says[usize::from(!target)]),
                 )
                 .toggle(target),
             )
         };
-        Tile {
-            name: label.to_string(),
+        Tile::new(
+            label,
             state,
-            warn: false,
-            lead: Lead::Toggle {
+            Lead::Toggle {
                 icon,
                 on: is_on,
                 offline: !connected,
                 turn_on: to(true),
                 turn_off: to(false),
             },
-            fact: None,
-            parts: Vec::new(),
-            open: None,
-        }
+        )
     };
     let on_off = |yes: bool| w.s(if yes { k::STATE_ON } else { k::STATE_OFF });
     let power = s["power"].as_bool().unwrap_or(false);
@@ -465,7 +448,8 @@ pub fn fountain_switches(w: &Words, id: &str, name: &str, connected: bool, s: &V
             power,
             on_off(power),
             "power",
-            [on, off],
+            |enabled| json(&PowerRequest { enabled }),
+            [k::FOUNTAIN_FOUNTAIN_ON, k::FOUNTAIN_FOUNTAIN_OFF],
         ),
         switch(
             &w.s(k::FOUNTAIN_UV_STERILIZATION),
@@ -473,30 +457,27 @@ pub fn fountain_switches(w: &Words, id: &str, name: &str, connected: bool, s: &V
             uv,
             uv_state,
             "uv",
-            [uv_on, uv_off],
+            |on| {
+                json(&FountainUvSettingsRequest {
+                    enabled: Some(on),
+                    runtime: None,
+                })
+            },
+            [k::FOUNTAIN_UV_ON, k::FOUNTAIN_UV_OFF],
         ),
     ]
 }
 
 /// The fountain's upkeep (FountainPanel): its water, then each counter and its reset.
 pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Value) -> Vec<Tile> {
-    fn water(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::FOUNTAIN_WATER_COUNTER_RESET)
-    }
-    fn filter(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::FOUNTAIN_FILTER_COUNTER_RESET)
-    }
-    fn pump(w: &Words, o: &Outcome) -> Option<Toast> {
-        done(w, o, k::FOUNTAIN_PUMP_COUNTER_RESET)
-    }
-    let counters: [(&str, &str, Icon, &str, &str, Say); 3] = [
+    let counters: [(&str, &str, Icon, &str, &str, &'static str); 3] = [
         (
             "water",
             "waterTime",
             icon::DROPLETS,
             k::FOUNTAIN_FRESH_WATER,
             k::FOUNTAIN_WATER_CHANGED,
-            water,
+            k::FOUNTAIN_WATER_COUNTER_RESET,
         ),
         (
             "filter",
@@ -504,7 +485,7 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
             icon::FUNNEL,
             k::FOUNTAIN_FILTER_TIME,
             k::FOUNTAIN_RESET_FILTER_CHANGED,
-            filter,
+            k::FOUNTAIN_FILTER_COUNTER_RESET,
         ),
         (
             "pump",
@@ -512,7 +493,7 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
             icon::GAUGE,
             k::FOUNTAIN_PUMP_TIME,
             k::FOUNTAIN_RESET_PUMP_CLEANED,
-            pump,
+            k::FOUNTAIN_PUMP_COUNTER_RESET,
         ),
     ];
     let low = s["waterLevel"] == "low";
@@ -527,12 +508,19 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
             Vec::new()
         },
     )];
-    for (key, field, icon, label, button, say) in counters {
+    for (key, field, icon, label, button, done) in counters {
         let value = s[field].as_u64().map_or_else(
             || w.s(k::COMMON_UNKNOWN),
             |minutes| w.duration(minutes * 60),
         );
-        let reset = order(id, name, key, &format!("fountain/reset/{key}"), None, say);
+        let reset = order(
+            id,
+            name,
+            key,
+            &format!("fountain/reset/{key}"),
+            None,
+            Say::Done(done),
+        );
         let parts = if connected {
             vec![Part::Row(vec![Button::new(
                 Some(icon::REFRESH_CW),
@@ -618,19 +606,17 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
         } else {
             k::COMMON_LOADING
         };
-        let missing = Group {
-            title: w.s(k::DEVICE_TITLE),
-            fact: None,
-            actions: Vec::new(),
-            stale: stale(cx, &list, &[TUYA]),
-            body: loaded(
+        let missing = Group::new(
+            w.s(k::DEVICE_TITLE),
+            loaded(
                 w,
                 &list,
                 &[TUYA],
                 (k::DEVICE_NOT_FOUND, k::DEVICE_NOT_FOUND_DESCRIPTION),
                 |_| None,
             ),
-        };
+        )
+        .stale(stale(cx, &list, &[TUYA]));
         return Screen::Page {
             title: w.s(title),
             back,
@@ -654,24 +640,22 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
         "litter-box" => k::DEVICE_TYPES_LITTER_BOX,
         _ => k::COMMON_UNKNOWN,
     };
-    let mut groups = vec![Group {
-        title: w.s(type_label),
-        fact: (!about.is_empty()).then_some(about),
-        actions: Vec::new(),
-        stale: stale(cx, &list, &[TUYA]),
-        body: Body::Tiles(vec![connection(w, id, &name, connected)]),
-    }];
+    let mut groups = vec![
+        Group::new(
+            w.s(type_label),
+            Body::Tiles(vec![connection(w, id, &name, connected)]),
+        )
+        .fact((!about.is_empty()).then_some(about))
+        .stale(stale(cx, &list, &[TUYA])),
+    ];
     if kind == "unknown" {
-        groups.push(Group {
-            title: w.s(k::DEVICE_TITLE),
-            fact: None,
-            actions: Vec::new(),
-            stale: None,
-            body: Body::Empty {
+        groups.push(Group::new(
+            w.s(k::DEVICE_TITLE),
+            Body::Empty {
                 text: w.s(k::DEVICE_UNKNOWN_TYPE),
                 hint: String::new(),
             },
-        });
+        ));
         return Screen::Page {
             title: name,
             back,
@@ -682,15 +666,15 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
     let st = cx.live.want(&source);
     let now = cx.house_now();
     let w = cx.words;
-    let group = |title: &str, tiles: &dyn Fn(&Value) -> Vec<Tile>, none: (&str, &str)| Group {
-        title: w.s(title),
-        fact: None,
-        actions: Vec::new(),
-        stale: stale(cx, &st, &[TUYA]),
-        body: loaded(w, &st, &[TUYA], none, |s| {
-            let tiles = tiles(s);
-            (!s.is_null() && !tiles.is_empty()).then_some(Body::Tiles(tiles))
-        }),
+    let group = |title: &str, tiles: &dyn Fn(&Value) -> Vec<Tile>, none: (&str, &str)| {
+        Group::new(
+            w.s(title),
+            loaded(w, &st, &[TUYA], none, |s| {
+                let tiles = tiles(s);
+                (!s.is_null() && !tiles.is_empty()).then_some(Body::Tiles(tiles))
+            }),
+        )
+        .stale(stale(cx, &st, &[TUYA]))
     };
     let none = (k::FEEDER_STATUS_FETCH_ERROR, "");
     match kind {
@@ -718,13 +702,10 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
             if !connected {
                 serve.state = w.s(k::CATS_OFFLINE_REASON);
             }
-            groups.push(Group {
-                title: w.s(k::FEEDER_MANUAL_DISTRIBUTION),
-                fact: None,
-                actions: Vec::new(),
-                stale: None,
-                body: Body::Tiles(vec![serve]),
-            });
+            groups.push(Group::new(
+                w.s(k::FEEDER_MANUAL_DISTRIBUTION),
+                Body::Tiles(vec![serve]),
+            ));
             groups.push(group(
                 k::FEEDER_FEEDER_STATUS,
                 &|s| feeder_facts(w, s, &now),
@@ -743,6 +724,7 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
+    use serde_json::json;
 
     fn v(json: &str) -> Value {
         serde_json::from_str(json).unwrap()
@@ -907,7 +889,7 @@ mod tests {
         assert_eq!(turn_on.posts[0].1.path, "/devices/l1/connect");
         assert_eq!(turn_off.posts[0].1.path, "/devices/l1/disconnect");
         assert_eq!(turn_on.key, turn_off.key);
-        let said = (turn_on.say.unwrap())(
+        let said = turn_on.say.unwrap().toast(
             &w,
             &Outcome {
                 done: vec!["Litière".into()],

@@ -31,8 +31,26 @@ pub mod limit {
 /// Without an answer this long, the gesture says it is slow.
 pub const SLOW: Duration = Duration::from_millis(paces::COMMAND_SLOW_MS);
 
-/// What an answer says once it came: a toast's words, warning or not.
-pub type Say = fn(&Words, &Outcome) -> Option<Toast>;
+/// What an answer says once it came.
+#[derive(Debug, Clone, Copy)]
+pub enum Say {
+    /// A toast from how it went, warning or not.
+    With(fn(&Words, &Outcome) -> Option<Toast>),
+    /// These words once it went through; if not, the tile says so.
+    Done(&'static str),
+}
+
+impl Say {
+    pub fn toast(self, w: &Words, o: &Outcome) -> Option<Toast> {
+        match self {
+            Self::With(say) => say(w, o),
+            Self::Done(key) => o.failed.is_empty().then(|| Toast {
+                text: w.s(key),
+                warn: false,
+            }),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
@@ -382,7 +400,7 @@ impl Commands {
                 r.target = None;
             }
             if let Some(say) = done.say
-                && let Some(t) = say(words, &done.outcome)
+                && let Some(t) = say.toast(words, &done.outcome)
             {
                 toasts.push(t);
             }
@@ -617,6 +635,26 @@ mod tests {
     }
 
     #[test]
+    fn done_words_are_said_only_once_it_went_through() {
+        let words = Words::new(Lang::Fr);
+        let say = Say::Done(crate::i18n::k::COMMON_RETRY);
+        let mut o = Outcome {
+            done: vec!["x".into()],
+            failed: Vec::new(),
+            answer: None,
+        };
+        assert_eq!(
+            say.toast(&words, &o),
+            Some(Toast {
+                text: "Réessayer".into(),
+                warn: false
+            })
+        );
+        o.failed.push("y".into());
+        assert_eq!(say.toast(&words, &o), None);
+    }
+
+    #[test]
     fn everyone_at_once_and_the_outcome_said_once() {
         let stub = serve(|line| {
             if line.contains("/2/") {
@@ -650,7 +688,7 @@ mod tests {
             )
             .within(limit::LAMP)
             .then_refresh(&["hue-lamp", "zigbee-lamp"])
-            .said(say),
+            .said(Say::With(say)),
         );
         let (refreshed, toasts) = settle(&mut c, &words);
         assert_eq!(refreshed, ["hue-lamp", "zigbee-lamp"]);
