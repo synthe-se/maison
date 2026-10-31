@@ -286,8 +286,8 @@ takes the house's network and Maison's address, the kept one already in the form
 returns to the configured network without a restart.
 
 Seen on the frame: scan and list, a wrong password then the right one, the power key held 10 s, the
-access point on the AIC8800, the setup view and its page's form from a phone. A photo's fade draws at
-20 images a second, 63 ms at worst. Not seen: `maison-hotspot close` after its 30 minutes.
+access point on the AIC8800, the setup view and its page's form from a phone, the way back to the
+network 30 minutes after, without a restart. A photo's fade draws at 20 images a second, 63 ms at worst.
 
 A frozen frame restarts alone: systemd feeds the SoC's watchdog (`RuntimeWatchdogSec`), an oops
 panics, a panic reboots after 5 s.
