@@ -154,6 +154,7 @@ own_kernel() {{
 	here=$slots/$slot
 	maison-guard arm
 	say "kernel of slot $slot"
+	pkill maison-loader
 	line=$(uboot_line)
 	if kexec -l $here/zImage --dtb=$here/board.dtb --initrd=$here/initramfs.cpio.gz --command-line="$line maison.slot=$slot"; then
 		umount /android-data
