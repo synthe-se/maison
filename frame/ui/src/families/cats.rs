@@ -5,7 +5,8 @@
 //! its local session is down. The feeder gives one portion from its row; offline, out of reach.
 //! A row opens its device's page (routes/device/[deviceId], FeederPanel, FountainPanel,
 //! LitterBoxPanel): its local connection, what it reports, and what a passer-by does there (clean
-//! the litter now, say it was refilled, a fountain's counters reset, a portion). Its settings
+//! the litter now, say it was refilled, a fountain's counters reset, portions). What cannot be
+//! undone (a counter, the litter's level) is asked first: anyone touches a wall. Its settings
 //! (night hours, preferences, meal plans) stay the web app's.
 
 use std::collections::BTreeSet;
@@ -15,16 +16,17 @@ use chrono::{DateTime, TimeZone};
 use maison_api::Tz;
 use maison_api::cats::{
     FeedRequest, FountainUvSettingsRequest, LitterActions, LitterBoxSettingsRequest,
+    MAX_FEED_PORTIONS,
 };
 use maison_api::lamps::PowerRequest;
 use serde_json::Value;
 
-use super::{Cx, TUYA, loaded, stale};
+use super::{Cx, TUYA, fact, loaded, stale};
 use crate::commands::{Order, Outcome, Post, Say, Toast, json};
 use crate::i18n::{Arg, Words, count, k};
 use crate::paths;
 use crate::ui::icon::{self, Icon};
-use crate::ui::model::{Act, Body, Button, Group, Lead, Part, Screen, Tile, View};
+use crate::ui::model::{Act, Asked, Body, Button, Group, Lead, Part, Screen, Tile, View};
 
 /// The litter box waiting between two visits, in the device's own spelling: cleaned.
 const STANDBY: &str = "satnd_by";
@@ -113,25 +115,35 @@ pub fn status_line(w: &Words, kind: &str, s: &Value) -> Option<(String, bool)> {
     }
 }
 
-fn served_said(w: &Words, o: &Outcome) -> Option<Toast> {
-    o.failed.is_empty().then(|| Toast {
-        text: w.t(k::FEEDER_PORTIONS_DISTRIBUTED, &[crate::i18n::count(1)]),
-        warn: false,
-    })
-}
-
-/// One portion now, from the feeder's row or its page.
-fn feed(id: &str, name: &str) -> Order {
+/// `portion` portions now, from the feeder's row or its page.
+fn feed(id: &str, name: &str, portion: u8) -> Order {
     Order::one(
         format!("{TUYA}{id}:feed"),
         name,
         Post::json(
             paths::of(paths::DEVICES, id, "feeder/feed"),
-            &FeedRequest { portion: 1 },
+            &FeedRequest { portion },
         ),
     )
     .then_refresh(&[TUYA])
-    .said(Say::With(served_said))
+    .said(Say::Counted(
+        k::FEEDER_PORTIONS_DISTRIBUTED,
+        usize::from(portion),
+    ))
+}
+
+/// What the feeder's page serves: the quantity in each label, no dialog (docs/ux.md § 6).
+pub fn portions(w: &Words, id: &str, name: &str, connected: bool) -> Vec<Button> {
+    (1..=MAX_FEED_PORTIONS)
+        .map(|n| {
+            Button::new(
+                None,
+                w.t(k::FEEDER_PORTION, &[count(usize::from(n))]),
+                Act::Order(feed(id, name, n)),
+            )
+            .unavailable(!connected)
+        })
+        .collect()
 }
 
 /// One device's row, from its entry in `/devices` and its parsed status (once read).
@@ -152,7 +164,7 @@ pub fn tile(w: &Words, device: &Value, status: Option<&Value>) -> Tile {
             Button::new(
                 Some(icon::UTENSILS),
                 w.s(k::FEEDER_ONE_PORTION),
-                Act::Order(feed(id, &name)),
+                Act::Order(feed(id, &name, 1)),
             )
             .unavailable(!connected),
         ])]
@@ -234,14 +246,6 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
             .fact(fact)
             .stale(stale(cx, &list, &[TUYA])),
     )
-}
-
-/// A fact of a device's page (StatusRow): what it is, its value, in the warning style when it
-/// needs a hand; its controls under it.
-fn fact(icon: Icon, label: &str, value: String, warn: bool, parts: Vec<Part>) -> Tile {
-    Tile::new(label, value, Lead::Glyph { icon, on: false })
-        .warn(warn)
-        .parts(parts)
 }
 
 /// A device's order from its page: `action` under its path, `body` if any; its key under the
@@ -360,7 +364,12 @@ pub fn litter_tiles(w: &Words, id: &str, name: &str, connected: bool, s: &Value)
             parts.push(Part::Row(vec![Button::new(
                 Some(icon::REFRESH_CW),
                 w.s(k::LITTER_BOX_RESET_LITTER_LEVEL),
-                Act::Order(refilled),
+                Act::Ask(Box::new(Asked {
+                    title: w.s(k::LITTER_BOX_RESET_LITTER_LEVEL_TITLE),
+                    text: w.s(k::LITTER_BOX_RESET_LITTER_LEVEL_DESCRIPTION),
+                    action: w.s(k::LITTER_BOX_RESET_ACTION),
+                    order: refilled,
+                })),
             )]));
         }
         tiles.push(fact(
@@ -470,13 +479,15 @@ pub fn fountain_switches(w: &Words, id: &str, name: &str, connected: bool, s: &V
 
 /// The fountain's upkeep (FountainPanel): its water, then each counter and its reset.
 pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Value) -> Vec<Tile> {
-    let counters: [(&str, &str, Icon, &str, &str, &'static str); 3] = [
+    #[allow(clippy::type_complexity)] // one row of words per counter
+    let counters: [(&str, &str, Icon, &str, &str, &str, &'static str); 3] = [
         (
             "water",
             "waterTime",
             icon::DROPLETS,
             k::FOUNTAIN_FRESH_WATER,
             k::FOUNTAIN_WATER_CHANGED,
+            k::FOUNTAIN_RESET_WATER_TITLE,
             k::FOUNTAIN_WATER_COUNTER_RESET,
         ),
         (
@@ -485,6 +496,7 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
             icon::FUNNEL,
             k::FOUNTAIN_FILTER_TIME,
             k::FOUNTAIN_RESET_FILTER_CHANGED,
+            k::FOUNTAIN_RESET_FILTER_TITLE,
             k::FOUNTAIN_FILTER_COUNTER_RESET,
         ),
         (
@@ -493,6 +505,7 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
             icon::GAUGE,
             k::FOUNTAIN_PUMP_TIME,
             k::FOUNTAIN_RESET_PUMP_CLEANED,
+            k::FOUNTAIN_RESET_PUMP_TITLE,
             k::FOUNTAIN_PUMP_COUNTER_RESET,
         ),
     ];
@@ -508,7 +521,7 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
             Vec::new()
         },
     )];
-    for (key, field, icon, label, button, done) in counters {
+    for (key, field, icon, label, button, title, done) in counters {
         let value = s[field].as_u64().map_or_else(
             || w.s(k::COMMON_UNKNOWN),
             |minutes| w.duration(minutes * 60),
@@ -525,7 +538,12 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
             vec![Part::Row(vec![Button::new(
                 Some(icon::REFRESH_CW),
                 w.s(button),
-                Act::Order(reset),
+                Act::Ask(Box::new(Asked {
+                    title: w.s(title),
+                    text: w.s(k::FOUNTAIN_RESET_DESCRIPTION),
+                    action: w.s(k::DEVICE_RESET),
+                    order: reset,
+                })),
             )])]
         } else {
             Vec::new()
@@ -593,11 +611,6 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
             .cloned()
     });
     let w = cx.words;
-    let back = Box::new(Button::new(
-        Some(icon::ARROW_LEFT),
-        w.s(k::BACK_HOME),
-        Act::Open(View::House),
-    ));
     let Some(device) = device else {
         let title = if list.data.is_some() {
             k::DEVICE_NOT_FOUND
@@ -617,11 +630,7 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
             ),
         )
         .stale(stale(cx, &list, &[TUYA]));
-        return Screen::Page {
-            title: w.s(title),
-            back,
-            groups: vec![missing],
-        };
+        return super::page(w, w.s(title), vec![missing]);
     };
     let kind = device["type"].as_str().unwrap_or("unknown");
     let name = device["name"].as_str().unwrap_or(id).to_string();
@@ -656,11 +665,7 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
                 hint: String::new(),
             },
         ));
-        return Screen::Page {
-            title: name,
-            back,
-            groups,
-        };
+        return super::page(w, name, groups);
     }
     let source = cx.sources.cat_status(id, kind).clone();
     let st = cx.live.want(&source);
@@ -697,8 +702,8 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
         }
         _ => {
             // its row as on the dashboard, its offline reason said in full
-            let mut serve = tile(w, &device, None);
-            serve.open = None;
+            let mut serve = tile(w, &device, None).open(None);
+            serve.parts = vec![Part::Flow(portions(w, id, &name, connected))];
             if !connected {
                 serve.state = w.s(k::CATS_OFFLINE_REASON);
             }
@@ -713,11 +718,7 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
             ));
         }
     }
-    Screen::Page {
-        title: name,
-        back,
-        groups,
-    }
+    super::page(w, name, groups)
 }
 
 #[cfg(test)]
@@ -801,6 +802,34 @@ mod tests {
         o
     }
 
+    fn asked(b: &Button) -> &Asked {
+        let Act::Ask(a) = &b.act else {
+            panic!("asked first")
+        };
+        a
+    }
+
+    #[test]
+    fn the_feeder_page_serves_a_count_said_in_each_label() {
+        let w = Words::new(Lang::Fr);
+        let b = portions(&w, "feeder-1", "Pixi", true);
+        assert_eq!(b.len(), usize::from(MAX_FEED_PORTIONS));
+        assert_eq!(b[2].label, "3 portions");
+        let o = order_of(&b[2]);
+        assert_eq!(o.posts[0].1.body, Some(json!({ "portion": 3 })));
+        assert_eq!(o.key, "tuya:feeder-1:feed");
+        let said = o.say.unwrap().toast(
+            &w,
+            &Outcome {
+                done: vec!["Pixi".into()],
+                failed: Vec::new(),
+                answer: None,
+            },
+        );
+        assert_eq!(said.unwrap().text, "3 portions servies");
+        assert!(portions(&w, "f", "x", false).iter().all(|b| b.unavailable));
+    }
+
     #[test]
     fn a_row_opens_its_device_page() {
         let w = Words::new(Lang::Fr);
@@ -838,7 +867,14 @@ mod tests {
             panic!("a hint, then « J'ai rempli la litière »")
         };
         assert_eq!(soon, "Pense à la remplir bientôt");
-        let refill = order_of(&b[0]);
+        // anyone touches a wall: the level is asked first, the consequence said
+        let a = asked(&b[0]);
+        assert_eq!(
+            a.title,
+            "Marquer la litière comme remplie\u{a0}?".replace('\u{a0}', "\u{202f}")
+        );
+        assert_eq!(a.action, "Marquer comme remplie");
+        let refill = &a.order;
         assert_eq!(refill.posts[0].1.path, "/devices/l1/litter-box/settings");
         assert_eq!(
             refill.posts[0].1.body,
@@ -925,10 +961,9 @@ mod tests {
         let [Part::Row(b)] = &up[2].parts[..] else {
             panic!()
         };
-        assert_eq!(
-            order_of(&b[0]).posts[0].1.path,
-            "/devices/f1/fountain/reset/filter"
-        );
+        let a = asked(&b[0]);
+        assert_eq!(a.action, "Remettre à zéro");
+        assert_eq!(a.order.posts[0].1.path, "/devices/f1/fountain/reset/filter");
         assert!(
             fountain_upkeep(&w, "f1", "Fontaine", false, &s)[1]
                 .parts
