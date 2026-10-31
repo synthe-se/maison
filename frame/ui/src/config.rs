@@ -6,8 +6,10 @@
 //!   target's token). HTTPS only, but for this computer (`localhost`, a loopback address) and a
 //!   simulation that says `MAISON_ALLOW_HTTP=1` (the host seen from a container): the screen's
 //!   cookie never crosses the Wi-Fi in clear;
-//! - no address at all: the app starts on its setup view, with what `MAISON_SETUP_SSID`,
-//!   `MAISON_SETUP_PASSWORD` and `MAISON_SETUP_URL` say of the frame's Wi-Fi and its page;
+//! - no address at all, or `MAISON_SETUP_SSID` said (the frame lost its network and is its own
+//!   Wi-Fi; the unit's file, read as the app starts: `maison-wifi-watch` restarts it): the app
+//!   starts on its setup view, with what `MAISON_SETUP_SSID`, `MAISON_SETUP_PASSWORD` and
+//!   `MAISON_SETUP_URL` say of that Wi-Fi and its page;
 //! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
 //!   `$XDG_DATA_HOME/maison-ui`;
 //! - its language: `MAISON_LANG`, else `LANG` (`fr_FR.UTF-8`);
@@ -81,6 +83,7 @@ impl Config {
             password: env("MAISON_SETUP_PASSWORD"),
             url: env("MAISON_SETUP_URL"),
         };
+        let origin = origin.filter(|_| setup.ssid.is_none());
         let state_dir = env("MAISON_STATE")
             .map(PathBuf::from)
             .or_else(|| env("XDG_DATA_HOME").map(|d| PathBuf::from(d).join("maison-ui")))
@@ -231,6 +234,20 @@ mod tests {
         assert_eq!(c.setup.ssid.as_deref(), Some("maison-frame"));
         assert_eq!(c.setup.password.as_deref(), Some("sel"));
         assert_eq!(c.setup.url.as_deref(), Some("http://10.42.0.1"));
+    }
+
+    #[test]
+    fn a_frame_that_is_its_own_wifi_shows_its_setup_even_with_an_address() {
+        let c = Config::from(
+            Some("https://maison.example".into()),
+            vars(&[
+                ("MAISON_STATE", "/tmp/s"),
+                ("MAISON_SETUP_SSID", "Maison-ab12"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(c.origin, None);
+        assert_eq!(c.setup.ssid.as_deref(), Some("Maison-ab12"));
     }
 
     #[test]

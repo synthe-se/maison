@@ -5,7 +5,10 @@
 
 import gzip
 import os
+import re
+import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -265,6 +268,8 @@ class Initramfs(unittest.TestCase):
         # the active slot's boots counted, the other slot tried, a slot for ever bad stops
         self.assertIn('[ "${boots:-0}" -ge 4 ] && whole "$(other $active)"', boot)
         self.assertIn('[ "${boots:-0}" -lt 8 ]', boot)
+        # the slot taken instead is checked too: neither whole, nothing is mounted
+        self.assertIn('whole "$active" || return 0', boot)
         # the state written whole: to a new file, synced, renamed
         self.assertIn("sync && mv $state.new $state && sync", boot)
         # a slot's kernel before the Wi-Fi holds its hardware, armed, userdata let go; a failed
@@ -293,6 +298,243 @@ class Initramfs(unittest.TestCase):
         boot = initramfs.init(False)
         self.assertIn("sha256sum /sys/block/mmcblk0/device/cid", boot)
         self.assertIn('echo "$id" >/newroot/etc/machine-id', boot)
+
+
+def stubs(root: Path, **scripts) -> None:
+    """Commands of the system, each a /bin/sh body, first in PATH."""
+    bin_dir = root / "stubs"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in scripts.items():
+        path = bin_dir / name.replace("_", "-")
+        path.write_text(f"#!/bin/sh\nROOT={root}\nLOG=$ROOT/log\n{body}\n")
+        path.chmod(0o755)
+
+
+def rooted(text: str, root: Path, *directories: str) -> str:
+    """A script of the frame with its absolute paths under `root`."""
+    names = "|".join(re.escape(d) for d in directories)
+    return re.sub(rf"(?<![\w.$}}/])/({names})\b", rf"{root}/\1", text)
+
+
+class BootInit(unittest.TestCase):
+    """The generated /init, run: the frame's commands stubbed, its paths in a temporary directory."""
+
+    PATHS = ("sys", "proc", "dev", "android-data", "lower", "rw", "newroot", "tmp", "splash")
+    STATE = "active=a\npending=\ntries=0\nboots=0\n"
+    TRIAL = "active=a\npending=b\ntries=2\nboots=0\n"
+
+    def boot(self, state, kernels="", broken=""):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        root = Path(d.name)
+        (root / "log").touch()
+        for name in self.PATHS:
+            (root / name).mkdir()
+        slots = root / "android-data/maison/slots"
+        for slot in "ab":
+            (slots / slot).mkdir(parents=True)
+            (slots / slot / "sums").write_text("x\n")
+            if slot in kernels:
+                (slots / slot / "zImage").write_text("z")
+            if slot in broken:
+                (slots / slot / "bad").touch()
+        (slots / "state").write_text(state)
+        (root / "sys/class/block/p").mkdir(parents=True)
+        (root / "sys/class/block/p/uevent").write_text("PARTNAME=userdata\nDEVNAME=p\n")
+        (root / "proc/cmdline").write_text("root=x console=tty0 y\n")
+        (root / "newroot/etc").mkdir()
+        logged = 'echo "$(basename "$0") $*" >>$LOG'
+        wait = "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e $ROOT/%s ] && break; /bin/sleep 0.02; done"
+        stubs(
+            root,
+            mount=logged,
+            umount=logged,
+            e2fsck=logged,
+            kexec=logged,
+            losetup=f'if [ "$1" = -f ]; then echo loop; else {logged}; fi',
+            switch_root=logged,
+            maison_guard=":",
+            maison_loader=":",
+            chown=":",
+            sync=":",
+            sleep=":",
+            reboot=f"{logged}\nkill -9 $PPID",
+            # each waits for the other, long enough to tell that one never overlaps the other
+            insmod=f"""case "$1" in *fdrv*) {wait % "began"} ;; esac
+{logged}
+case "$1" in *fdrv*) : >$ROOT/loaded ;; esac""",
+            sha256sum=f"""[ "$1" = -c ] || {{ echo 0123; exit 0; }}
+echo "sums $(basename "$PWD") begin" >>$LOG
+: >$ROOT/began
+{wait % "loaded"}
+echo "sums $(basename "$PWD") end" >>$LOG
+[ ! -e bad ]""",
+        )
+        init = root / "init"
+        init.write_text(rooted(initramfs.init(False), root, *self.PATHS).replace("export PATH=/bin", f"export PATH={root}/stubs:$PATH"))
+        subprocess.run(["sh", str(init)], capture_output=True, timeout=30)
+        return (root / "log").read_text().splitlines(), (slots / "state").read_text()
+
+    @staticmethod
+    def started(log):
+        return [line.split("/")[-2] for line in log if line.startswith("losetup")]
+
+    @staticmethod
+    def loads(log):
+        return [i for i, line in enumerate(log) if line.startswith("insmod")]
+
+    def test_it_parses(self):
+        for debug in (False, True):
+            subprocess.run(["sh", "-n"], input=initramfs.init(debug).encode(), check=True)
+
+    def test_without_a_kernel_the_driver_loads_during_the_sums_then_the_slot_starts(self):
+        log, state = self.boot(self.STATE)
+        self.assertEqual(len(self.loads(log)), 2, "loaded once")
+        self.assertLess(log.index("sums a begin"), self.loads(log)[1])
+        self.assertLess(self.loads(log)[1], log.index("sums a end"))
+        self.assertLess(log.index("sums a end"), next(i for i, line in enumerate(log) if line.startswith("losetup")))
+        self.assertEqual(self.started(log), ["a"])
+        self.assertIn("boots=1", state)
+
+    def test_a_slot_that_fails_its_sums_is_never_mounted(self):
+        log, state = self.boot(self.TRIAL, broken="b")
+        self.assertIn("sums b end", log)
+        self.assertEqual(self.started(log), ["a"])
+        self.assertEqual(state, "active=a\npending=\ntries=0\nboots=1\n")
+
+    def test_a_try_is_counted_before_the_system_starts(self):
+        log, state = self.boot(self.TRIAL)
+        self.assertEqual(self.started(log), ["b"])
+        self.assertEqual(state, "active=a\npending=b\ntries=1\nboots=0\n")
+
+    def test_a_slot_with_its_kernel_starts_it_with_the_hardware_free(self):
+        log, _ = self.boot(self.STATE, kernels="a")
+        self.assertTrue([line for line in log if line.startswith("kexec -l")])
+        self.assertEqual((self.loads(log), self.started(log)), ([], []))
+
+    def test_a_kernel_a_failure_could_reach_keeps_the_driver_for_after_the_sums(self):
+        log, _ = self.boot(self.STATE, kernels="b")
+        self.assertLess(log.index("sums a end"), self.loads(log)[0])
+        log, _ = self.boot(self.STATE, kernels="b", broken="a")
+        self.assertTrue([line for line in log if line.startswith("kexec -l")])
+        self.assertEqual(self.loads(log), [])
+
+    def test_e2fsck_believes_no_clock_and_repairs_without_optimising(self):
+        self.assertEqual(initramfs.E2FSCK_CONF, "[options]\nbroken_system_clock = 1\n")
+        self.assertIn("e2fsck -p -E fixes_only $device", initramfs.init(False))
+
+
+class WifiWatch(unittest.TestCase):
+    """maison-wifi and maison-wifi-watch, run over a timeline of 15 s steps."""
+
+    SBIN = HERE / "linux/rootfs/usr/local/sbin"
+    PATHS = ("run", "sys", "android-data", "etc/wpa_supplicant")
+    OPEN = ["systemctl restart wpa_supplicant@wlan0", "systemctl --no-block start maison-setup", "networkctl reload", "systemctl restart maison-ui"]
+    BACK = ["systemctl stop maison-setup", "systemctl restart wpa_supplicant@wlan0", "networkctl reload", "systemctl restart maison-ui"]
+    OPERSTATE = "echo %s >$ROOT/sys/class/net/wlan0/operstate"
+    # a request on the page: maison-setup touches the file
+    REQUEST = "touch -t 203001010000 $ROOT/run/maison-setup"
+
+    def run_watch(self, until, events=None, state="active=a\npending=\ntries=0\nboots=0\n", target="https://a.b"):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        root = self.root = Path(d.name)
+        maison = root / "android-data/maison"
+        (maison / "slots").mkdir(parents=True)
+        (maison / "slots/state").write_text(state)
+        (maison / "wifi.conf").write_text("network={\n}\n")
+        (maison / "target").write_text(target)
+        (root / "run").mkdir()
+        (root / "etc").mkdir()
+        (root / "sys/class/net/wlan0").mkdir(parents=True)
+        (root / "sys/class/net/wlan0/operstate").write_text("dormant\n")
+        (root / "log").touch()
+        (root / "clock").write_text("0")
+        (root / "at").mkdir()
+        for at, command in (events or {}).items():
+            (root / f"at/{at}").write_text(command)
+        slots = (self.SBIN.parent / "lib/maison-slots").read_text()
+        (root / "maison-slots").write_text(rooted(slots, root, *self.PATHS))
+        for name in ("maison-wifi", "maison-wifi-watch"):
+            script = rooted((self.SBIN / name).read_text(), root, *self.PATHS)
+            (root / name).write_text(script.replace("/usr/local/lib/maison-slots", f"{root}/maison-slots"))
+        stubs(
+            root,
+            sha256sum="echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            sleep=f"""t=$(($(cat $ROOT/clock) + $1))
+echo $t >$ROOT/clock
+[ "$t" -le {until} ] || exit 1
+[ ! -e $ROOT/at/$t ] || . $ROOT/at/$t""",
+            networkctl='echo "$(cat $ROOT/clock) networkctl $*" >>$LOG',
+            # wpa_supplicant@wlan0 requires maison-wifi
+            systemctl="""echo "$(cat $ROOT/clock) systemctl $*" >>$LOG
+[ "$*" != "restart wpa_supplicant@wlan0" ] || sh $ROOT/maison-wifi""",
+        )
+        env = {**os.environ, "PATH": f"{root}/stubs:{os.environ['PATH']}"}
+        subprocess.run(["sh", str(root / "maison-wifi")], env=env, check=True, capture_output=True)
+        (root / "log").write_text("")
+        self.done = subprocess.run(["sh", str(root / "maison-wifi-watch")], env=env, capture_output=True, timeout=30)
+        return (root / "log").read_text().splitlines()
+
+    @staticmethod
+    def at(time, lines):
+        return [f"{time} {line}" for line in lines]
+
+    def conf(self):
+        return (self.root / "etc/wpa_supplicant/wpa_supplicant-wlan0.conf").read_text()
+
+    def test_ten_minutes_without_a_network_open_the_setup(self):
+        self.assertEqual(self.run_watch(700), self.at(600, self.OPEN))
+        self.assertIn("mode=2", self.conf())
+        setup = (self.root / "run/maison-setup").read_text()
+        self.assertIn("MAISON_SETUP_SSID=Maison-0123\n", setup)
+        self.assertIn("MAISON_SETUP_PASSWORD=456789abcdef\n", setup)
+        self.assertIn("MAISON_SETUP_URL=http://192.168.4.1\n", setup)
+        network = self.root / "run/systemd/network"
+        self.assertEqual(stat.S_IMODE(network.stat().st_mode), 0o755, "networkd's user reads it")
+        self.assertEqual(stat.S_IMODE((network / "40-maison-setup.network").stat().st_mode), 0o644)
+
+    def test_thirty_minutes_later_it_returns_to_its_network_and_the_cycle_repeats(self):
+        back = 600 + 15 + 1800
+        self.assertEqual(self.run_watch(back + 60), self.at(600, self.OPEN) + self.at(back, self.BACK))
+        self.assertNotIn("mode=2", self.conf())
+        self.assertFalse((self.root / "run/maison-setup").exists())
+        self.assertFalse((self.root / "run/maison-lost").exists())
+        self.assertFalse((self.root / "run/systemd/network/40-maison-setup.network").exists())
+        log = self.run_watch(back + 700)
+        self.assertEqual(log, self.at(600, self.OPEN) + self.at(back, self.BACK) + self.at(back + 600, self.OPEN))
+
+    def test_an_association_stops_the_count_and_a_lost_link_counts_from_its_loss(self):
+        events = {300: self.OPERSTATE % "up", 1500: self.OPERSTATE % "dormant"}
+        self.assertEqual(self.run_watch(2200, events), self.at(1500 + 585, self.OPEN))
+
+    def test_never_while_an_update_is_on_trial(self):
+        self.assertEqual(self.run_watch(1000, state="active=a\npending=b\ntries=1\nboots=0\n"), [])
+        self.assertEqual(self.done.returncode, 1, "stopped by the timeline, not by itself")
+
+    def test_a_first_setup_stays_open_whatever_the_time(self):
+        self.assertEqual(self.run_watch(1000, target=""), [])
+        self.assertEqual(self.done.returncode, 0, "nothing to watch")
+        self.assertIn("mode=2", self.conf())
+
+    def test_someone_at_the_page_holds_the_way_back(self):
+        self.assertEqual(self.run_watch(4300, {2400: self.REQUEST}), self.at(600, self.OPEN) + self.at(2400 + 1800, self.BACK))
+
+    def test_its_ten_minutes_come_after_maison_commit_is_done(self):
+        watch = (self.SBIN / "maison-wifi-watch").read_text()
+        commit = (self.SBIN / "maison-commit").read_text()
+        self.assertIn("patience=600\n", watch)
+        self.assertIn('[ "$waited" -lt 150 ]', commit)
+        self.assertIn("[ ! -e /run/maison-setup ] || exit 0", commit)
+
+    def test_it_runs_on_every_frame_and_the_image_can_be_an_access_point(self):
+        linux = HERE / "linux"
+        self.assertIn("enable maison-wifi-watch.service\n", (linux / "buildroot/post-build.sh").read_text())
+        self.assertIn("BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT=y\n", (linux / "buildroot/maison_defconfig").read_text())
+        units = linux / "rootfs/etc/systemd/system"
+        self.assertNotIn("RemainAfterExit=", (units / "maison-wifi.service").read_text())
+        self.assertIn("EnvironmentFile=-/run/maison-setup\n", (units / "maison-ui.service").read_text())
+        self.assertTrue(os.access(self.SBIN / "maison-wifi-watch", os.X_OK))
 
 
 if __name__ == "__main__":

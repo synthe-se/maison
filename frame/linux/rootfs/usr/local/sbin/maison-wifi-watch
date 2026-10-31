@@ -1,0 +1,50 @@
+#!/bin/sh
+# A frame set up that cannot reach its network must not stay stuck: 10 minutes without associating,
+# after boot or after a lost link, it opens its setup (maison-wifi, then the same access point, page
+# and setup view as a first setup). A router that is only off must come back by itself: 30 minutes
+# after the page's last request (maison-setup touches $setup), the frame returns to its network and
+# the count starts again. All of it lives in /run: a restart is a frame as configured. A first setup
+# stays open until it is done, and an update on trial stays maison-commit's to judge.
+set -eu
+. /usr/local/lib/maison-slots
+step=15
+patience=600
+open_for=1800
+lost=/run/maison-lost
+setup=/run/maison-setup
+[ ! -e "$setup" ] || [ -e "$lost" ] || exit 0
+
+# `up` only once wpa_supplicant finished the handshake: carrier also rises for a wrong password
+associated() { [ "$(cat /sys/class/net/wlan0/operstate 2>/dev/null)" = up ]; }
+
+# wpa_supplicant@wlan0 requires maison-wifi, a oneshot that has ended: it runs again first. The app
+# reads MAISON_SETUP_* as it starts, from the unit's EnvironmentFile
+apply() {
+	systemctl restart wpa_supplicant@wlan0
+	networkctl reload
+	systemctl restart maison-ui
+}
+
+waited=0 seen=
+while :; do
+	sleep "$step"
+	waited=$((waited + step))
+	if [ -e "$lost" ]; then
+		asked=$(date -r "$setup" +%s 2>/dev/null || echo none)
+		[ "$asked" = "$seen" ] || { seen=$asked; waited=0; }
+		if [ "$waited" -ge "$open_for" ]; then
+			echo "maison-wifi-watch: nothing submitted, back to the configured network"
+			rm -f "$lost" "$setup" /run/systemd/network/40-maison-setup.network
+			systemctl stop maison-setup
+			apply
+			waited=0
+		fi
+	elif associated || [ -n "$(key pending)" ]; then
+		waited=0
+	elif [ "$waited" -ge "$patience" ]; then
+		echo "maison-wifi-watch: no network for ${waited}s, opening the setup"
+		: >"$lost"
+		apply
+		waited=0
+	fi
+done
