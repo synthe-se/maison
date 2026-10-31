@@ -4,6 +4,7 @@
 //! (`hits`), for the finger. `bricks` draws the web app's bricks with them, `screens` the
 //! screens.
 
+use std::borrow::Cow;
 use std::time::Instant;
 
 use crate::commands::Commands;
@@ -55,10 +56,10 @@ pub enum Target {
 
 impl Target {
     /// The key of what it does: an order's, a slider's (a simulation finds controls by it).
-    pub fn key(&self) -> Option<&str> {
+    pub fn key(&self) -> Option<Cow<'_, str>> {
         match self {
-            Self::Act(Act::Order(o)) => Some(&o.key),
-            Self::Slider { slider, .. } => Some(&slider.key),
+            Self::Act(Act::Order(o)) => Some(o.key.as_str().into()),
+            Self::Slider { slider, .. } => Some(slider.key.as_str().into()),
             Self::Act(Act::Open(v)) => Some(v.key()),
             _ => None,
         }
@@ -561,7 +562,7 @@ mod tests {
         };
         assert!(h.contains(10.0, 20.0) && h.contains(39.9, 59.9));
         assert!(!h.contains(40.0, 30.0) && !h.contains(20.0, 60.0) && !h.contains(9.9, 30.0));
-        assert_eq!(h.what.key(), Some("k"));
+        assert_eq!(h.what.key().as_deref(), Some("k"));
         assert_eq!(Target::Act(Act::Refresh(&[])).key(), None);
     }
 }

@@ -527,22 +527,27 @@ mod tests {
             groups: vec![group.clone()],
         };
         let drawn = paint(&mut d, &ctx, &house, &toasts).unwrap();
-        let keys: Vec<&str> = drawn.hits.iter().filter_map(|h| h.what.key()).collect();
+        let keys: Vec<String> = drawn
+            .hits
+            .iter()
+            .filter_map(|h| Some(h.what.key()?.into_owned()))
+            .collect();
         // « Tout éteindre », each gesture (its row's head and its disc), the lit one's slider,
         // and the late one's « Réessayer », which turns it on again
-        assert!(keys.contains(&"lamps:all-off"), "{keys:?}");
+        let has = |k: &str| keys.iter().any(|x| x == k);
+        assert!(has("lamps:all-off"), "{keys:?}");
         assert_eq!(
-            keys.iter().filter(|k| **k == "hue-lamp:2:power").count(),
+            keys.iter().filter(|k| *k == "hue-lamp:2:power").count(),
             3,
             "the late lamp's row, its disc and its « Réessayer »: {keys:?}"
         );
         let row = drawn
             .hits
             .iter()
-            .find(|h| h.what.key() == Some("hue-lamp:1:power"))
+            .find(|h| h.what.key().as_deref() == Some("hue-lamp:1:power"))
             .unwrap();
         assert!(row.w > 300.0, "the whole row is the lamp's on/off: {row:?}");
-        assert!(keys.contains(&"hue-lamp:1:power") && keys.contains(&"hue-lamp:1:brightness"));
+        assert!(has("hue-lamp:1:power") && has("hue-lamp:1:brightness"));
         let slider = drawn
             .hits
             .iter()
