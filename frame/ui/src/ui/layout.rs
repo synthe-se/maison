@@ -322,15 +322,7 @@ impl P<'_, '_, '_, '_> {
         let (x0, y0, x1, y1) = (self.d(x), self.y(y), self.d(x + w), self.y(y + h));
         let r = self.d(r);
         let t = (self.s().round() as i32).max(1);
-        self.d.rounded(x0, y0, x1 - x0, y1 - y0, r, line)?;
-        self.d.rounded(
-            x0 + t,
-            y0 + t,
-            x1 - x0 - 2 * t,
-            y1 - y0 - 2 * t,
-            (r - t).max(0),
-            fill,
-        )
+        self.d.ringed((x0, y0, x1 - x0, y1 - y0), r, t, fill, line)
     }
 
     /// A disc of diameter `d` at (x, y); with `ring`, a ring of that width in `ring.1` around.
@@ -349,15 +341,8 @@ impl P<'_, '_, '_, '_> {
         match ring {
             Some((w, color)) => {
                 let t = ((w * self.s()).round() as i32).max(1);
-                self.d.rounded(x0, y0, size, size, size / 2, color)?;
-                self.d.rounded(
-                    x0 + t,
-                    y0 + t,
-                    size - 2 * t,
-                    size - 2 * t,
-                    size / 2 - t,
-                    fill,
-                )
+                self.d
+                    .ringed((x0, y0, size, size), size / 2, t, fill, color)
             }
             None => self.d.rounded(x0, y0, size, size, size / 2, fill),
         }
@@ -389,21 +374,26 @@ impl P<'_, '_, '_, '_> {
         y: f32,
         max: f32,
     ) -> Result<f32, Error> {
-        let size = self.size(t);
-        let max_px = (max * self.s()).max(0.0) as u32;
-        let fitted = self.d.gfx.fit(t.style(), size, text, max_px)?;
-        let (w, h) = self.d.gfx.measure(t.style(), size, 0, &fitted)?;
-        if self.visible(y, t.line) {
-            let top = y * self.s() + self.dy + (t.line * self.s() - h as f32) / 2.0;
-            let pen = Pen {
-                style: t.style(),
-                size,
-                color,
-                wrap: 0,
-            };
-            self.d.text(pen, &fitted, x * self.s(), top)?;
+        let (size, style, s) = (self.size(t), t.style(), self.s());
+        let max_px = (max * s).max(0.0) as u32;
+        let (whole, _) = self.d.gfx.measure(style, size, 0, text)?;
+        if !self.visible(y, t.line) {
+            return Ok(whole.min(max_px) as f32 / s);
         }
-        Ok(w as f32 / self.s())
+        let fitted = if whole <= max_px {
+            Cow::Borrowed(text)
+        } else {
+            Cow::Owned(self.d.gfx.fit(style, size, text, max_px)?)
+        };
+        let pen = Pen {
+            style,
+            size,
+            color,
+            wrap: 0,
+        };
+        let top = y * s + self.dy;
+        let (w, _) = self.d.gfx.text_in(pen, &fitted, x * s, top, t.line * s)?;
+        Ok(w as f32 / s)
     }
 
     /// A line's width in CSS px, uncut.
@@ -483,8 +473,11 @@ impl P<'_, '_, '_, '_> {
         act: Option<Act>,
     ) -> Result<(), Error> {
         let t = ty::SECONDARY;
-        let used = self.line(said, t, said_color, x, y, w)?;
-        let sep_w = self.line(" · ", t, said_color, x + used, y, w - used)?;
+        const SEP: &str = " · ";
+        // the link keeps its width: the words give way, never the only control on the line
+        let reserved = self.width(link, t)? + self.width(SEP, t)?;
+        let used = self.line(said, t, said_color, x, y, (w - reserved).max(0.0))?;
+        let sep_w = self.line(SEP, t, said_color, x + used, y, w - used)?;
         let lx = x + used + sep_w;
         let lw = self.line(link, t, ink, lx, y, w - used - sep_w)?;
         // app.css: `text-underline-offset: var(--s-half)`
