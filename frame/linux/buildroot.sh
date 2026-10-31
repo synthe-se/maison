@@ -16,9 +16,9 @@ RUST=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' "$REPO/frame/ui/Cargo.toml")
 TARGET=armv7-unknown-linux-gnueabihf
 SSH_CA="$HOME/maison-frame/keys/ssh_ca.pub"
 [ -s "$SSH_CA" ] || "$REPO/frame/linux/ssh-cert.sh"
-# an image number that only goes up, and where frames look for updates (none if unset)
+# an image number that only goes up, and where frames look for updates (FRAME_UPDATE_URL= for none)
 IMAGE_VERSION=$(date -u +%Y%m%d%H%M)
-UPDATE_URL="${FRAME_UPDATE_URL:-}"
+UPDATE_URL="${FRAME_UPDATE_URL-https://updates.synthe.se/frame}"
 [ -n "$RUST" ] || { echo "frame/ui/Cargo.toml says no rust-version" >&2; exit 1; }
 
 tarball="$SRC/buildroot-$VERSION.tar.xz"
