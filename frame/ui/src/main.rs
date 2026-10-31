@@ -221,6 +221,7 @@ fn run() -> Result<(), Error> {
     let mut failures = 0_u32;
     let mut retry: Option<Instant> = None;
     let mut stats = Stats::new();
+    let mut shown: Option<Screen> = None;
 
     loop {
         let first = wait(&mut pump, &app, retry);
@@ -243,13 +244,21 @@ fn run() -> Result<(), Error> {
             app.dirty = true;
         }
         app.tick(now);
-        if !app.dirty {
+        if !app.owed() {
             continue;
         }
-        app.dirty = false;
         let begun = Instant::now();
-        let shown = app.screen(now);
-        let drawn = match panel.draw(&app, &shown, now, shot.take()) {
+        // the scroll alone moved: the same screen, elsewhere
+        app.scrolled = false;
+        if std::mem::take(&mut app.dirty) {
+            let made = app.screen(now);
+            if opts.simulated {
+                say_screen(&made, &mut said);
+            }
+            shown = Some(made);
+        }
+        let Some(screen) = &shown else { continue };
+        let drawn = match panel.draw(&app, screen, now, shot.take()) {
             Ok(d) => {
                 failures = 0;
                 d
@@ -267,9 +276,6 @@ fn run() -> Result<(), Error> {
             }
         };
         app.drawn(drawn.hits, drawn.content, h as f32);
-        if opts.simulated {
-            say_screen(&shown, &mut said);
-        }
         drawings += 1;
         if drawings == 1 {
             println!(
@@ -289,7 +295,7 @@ fn run() -> Result<(), Error> {
 /// The first event once there is one, or none when the app is due by itself (a drawing owed,
 /// something turning with time, a failed drawing's retry).
 fn wait(pump: &mut sdl3::EventPump, app: &App, retry: Option<Instant>) -> Option<Event> {
-    if app.dirty {
+    if app.owed() {
         return None;
     }
     let now = Instant::now();

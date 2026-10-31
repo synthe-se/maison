@@ -29,8 +29,10 @@ use crate::ui::touch::{Finger, Meaning, Under};
 /// on a page; on a wall, which nobody dismisses, `WALL_WARNING_MS`.
 const TOAST: Duration = Duration::from_millis(paces::TOAST_MS);
 const TOAST_WARN: Duration = Duration::from_millis(paces::WALL_WARNING_MS);
-/// A frame while something moves (a fling): the panel's 60 Hz.
+/// The panel's 60 Hz: a simulated finger's points are this far apart.
 pub const FRAME: Duration = Duration::from_millis(16);
+/// Time-based words (« il y a 3 min ») turn with the wall clock's minute.
+const MINUTE: i64 = 60;
 /// A page left open goes back to the house after this long without a finger: a wall screen
 /// shows the house to whoever passes by.
 pub const PAGE_IDLE: Duration = Duration::from_secs(120);
@@ -65,8 +67,13 @@ pub struct App {
     toasts: Vec<(Toast, Instant)>,
     /// The sun's side, kept once known (a page signed out reads it too).
     side: Option<Side>,
-    /// Something changed since the last drawing.
+    /// Something changed since the last drawing: the screen is made again.
     pub dirty: bool,
+    /// Only the scroll changed: the last screen, drawn again.
+    pub scrolled: bool,
+    /// When the screen shown was made, and when its time-based words turn (signed in).
+    looked: Instant,
+    minute: Option<Instant>,
 }
 
 impl App {
@@ -95,7 +102,15 @@ impl App {
             toasts: Vec::new(),
             side: None,
             dirty: true,
+            scrolled: false,
+            looked: Instant::now(),
+            minute: None,
         }
+    }
+
+    /// A drawing is owed.
+    pub fn owed(&self) -> bool {
+        self.dirty || self.scrolled
     }
 
     /// What the threads said since; the screen is drawn again if anything changed.
@@ -106,10 +121,10 @@ impl App {
             // refused until now: the event stream opens at once, not after its wait
             self.live.reopen();
         }
-        let read = self.live.take();
-        changed |= !read.is_empty();
-        for (key, asked) in &read {
-            self.commands.read(key, *asked);
+        let came = self.live.take();
+        changed |= came.changed;
+        for (key, asked) in &came.read {
+            changed |= self.commands.read(key, *asked);
         }
         let mut toasts = Vec::new();
         let live = &self.live;
@@ -156,21 +171,36 @@ impl App {
         if self.finger.flinging() {
             let max = self.max_scroll();
             if let Some(next) = self.finger.step(self.scroll, max, now) {
+                self.scrolled |= next != self.scroll;
                 self.scroll = next;
-                self.dirty = true;
             }
         }
+        self.dirty |= self.commands.sweep(now);
+        // what turns with time alone wakes the loop for this
+        self.dirty |= self.next_look().is_some_and(|t| t <= now);
     }
 
-    /// When the loop must wake by itself, if nothing else happens.
+    /// The next moment what the screen shows changes by itself, since it was made.
+    fn next_look(&self) -> Option<Instant> {
+        [
+            self.live.next_stale(self.looked),
+            self.commands.next_change(self.looked),
+            self.sliders.next_change(self.looked),
+            self.minute,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// When the loop must wake by itself, if nothing else happens. While a fling runs, at once:
+    /// the present is paced by the panel.
     pub fn next_wake(&self, now: Instant) -> Option<Instant> {
         if self.finger.flinging() {
-            return Some(now + FRAME);
+            return Some(now);
         }
         [
-            self.live.next_stale(),
-            self.commands.next_change(),
-            self.sliders.next_change(now),
+            self.next_look(),
             self.toasts.iter().map(|(_, until)| *until).min(),
             (self.view != View::House).then(|| self.touched + PAGE_IDLE),
             self.backlight.next(self.touched),
@@ -202,6 +232,11 @@ impl App {
 
     /// What the screen shows now, from who it is and what the house says.
     pub fn screen(&mut self, now: Instant) -> Screen {
+        self.looked = now;
+        self.minute = (self.session.screen == Who::Paired).then(|| {
+            let into = chrono::Utc::now().timestamp().rem_euclid(MINUTE);
+            now + Duration::from_secs((MINUTE - into) as u64)
+        });
         self.live.begin();
         let mut cx = Cx {
             live: &mut self.live,
@@ -355,8 +390,8 @@ impl App {
         match m {
             Meaning::None => {}
             Meaning::Scrolled(s) => {
+                self.scrolled |= s != self.scroll;
                 self.scroll = s;
-                self.dirty = true;
             }
             Meaning::Tap(_) => {
                 if let Some(Target::Act(act)) = self.held() {
@@ -589,8 +624,60 @@ mod tests {
         }
         app.finger_up(10.0, 600.0, t0 + FRAME * 6);
         let now = t0 + FRAME * 6;
-        assert_eq!(app.next_wake(now), Some(now + FRAME));
+        assert_eq!(app.next_wake(now), Some(now), "the present paces it");
         assert!(app.scroll > 0.0);
+    }
+
+    #[test]
+    fn only_the_scroll_moved_the_last_screen_is_drawn_again() {
+        let mut app = alone();
+        app.drawn(Vec::new(), 5000.0, 1280.0);
+        app.dirty = false;
+        let t0 = Instant::now();
+        app.finger_down(10.0, 900.0, t0);
+        app.finger_motion(10.0, 700.0, t0 + FRAME);
+        assert!(app.scrolled && !app.dirty && app.owed());
+        // a finger that moves nothing owes no drawing
+        app.scrolled = false;
+        app.finger_motion(10.0, 700.0, t0 + FRAME * 2);
+        assert!(!app.owed());
+    }
+
+    #[test]
+    fn what_turns_with_time_is_drawn_when_it_turns() {
+        let mut app = alone();
+        let t0 = Instant::now();
+        app.looked = t0;
+        let order = crate::commands::Order::one("k", "x", crate::commands::Post::empty("/x"));
+        app.commands.run(order);
+        let slow = crate::commands::SLOW;
+        assert_eq!(
+            app.next_look().map(|t| t.duration_since(t0) >= slow),
+            Some(true)
+        );
+        app.dirty = false;
+        let due = app.next_look().unwrap();
+        app.tick(due - Duration::from_millis(1));
+        assert!(!app.dirty, "not yet");
+        app.tick(due);
+        assert!(app.dirty, "the gesture went slow: drawn, no read needed");
+        // drawn at that moment: the next change is the next one
+        app.looked = due;
+        assert!(app.next_look().is_some_and(|t| t > due));
+    }
+
+    #[test]
+    fn signed_in_the_words_turn_with_the_minute() {
+        let mut app = alone();
+        assert_eq!(app.minute, None);
+        app.session.screen = Who::Paired;
+        let t0 = Instant::now();
+        app.screen(t0);
+        let next = app.minute.expect("a minute's tick");
+        assert!(next > t0 && next <= t0 + Duration::from_secs(60));
+        app.dirty = false;
+        app.tick(next);
+        assert!(app.dirty);
     }
 
     #[test]

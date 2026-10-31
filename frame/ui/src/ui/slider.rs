@@ -127,15 +127,15 @@ impl Sliders {
             .collect()
     }
 
-    /// When the look changes by itself: a held send due, a hold ending.
-    pub fn next_change(&self, now: Instant) -> Option<Instant> {
+    /// When the look changes by itself after `after`: a held send due, a hold ending.
+    pub fn next_change(&self, after: Instant) -> Option<Instant> {
         self.held
             .values()
             .filter_map(|h| {
                 if h.dragging && h.slider.live && h.sent != Some(h.value) {
-                    Some(h.sent_at.map_or(now, |t| t + THROTTLE))
+                    Some(h.sent_at.map_or(after, |t| t + THROTTLE))
                 } else {
-                    h.until.filter(|u| *u > now)
+                    h.until.filter(|u| *u > after)
                 }
             })
             .min()
