@@ -297,6 +297,9 @@ fn run() -> Result<(), Error> {
         }
         drawings += 1;
         if drawings == 1 {
+            // KMSDRM makes its surface anew at the first present and shows that, blank: a screen
+            // that never changes (the setup's) would stay black until a finger came
+            app.dirty = true;
             println!(
                 "first frame after {:.0} ms",
                 started.elapsed().as_secs_f64() * 1000.0
