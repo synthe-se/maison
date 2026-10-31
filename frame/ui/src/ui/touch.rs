@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 /// Past this many pixels a finger is dragging, not tapping: Android's touch slop (8 dp) at 1.5 px
 /// a dp (hdpi), in the panel's pixels.
 pub const SLOP: f32 = 12.0;
+/// How far a finger that went down on a slider moves vertically before it scrolls the column.
+const SLIDER_SCROLL_SLOP: f32 = SLOP * 3.0;
 /// A fling slower than this (px/s) stops at once.
 const MIN_FLING: f32 = 60.0;
 /// How fast a fling slows: its speed falls by e every this long (iOS's « normal » deceleration).
@@ -89,12 +91,21 @@ impl Finger {
             return Meaning::Slide(i, x);
         }
         let (dx, dy) = (x - d.x, y - d.y);
-        if !d.dragging && dx.hypot(dy) > SLOP {
-            if let (Under::Slider(i), true) = (d.under, dx.abs() > dy.abs()) {
-                d.sliding = true;
-                return Meaning::SlideStart(i, x);
+        if !d.dragging {
+            if let Under::Slider(i) = d.under {
+                // a thumb on a slider rolls: sideways wins at once, the column only past a
+                // real vertical swipe, from where it then was (no jump)
+                if dx.abs() > SLOP && dx.abs() * 2.0 >= dy.abs() {
+                    d.sliding = true;
+                    return Meaning::SlideStart(i, x);
+                }
+                if dy.abs() > SLIDER_SCROLL_SLOP {
+                    d.dragging = true;
+                    d.y = y;
+                }
+            } else if dx.hypot(dy) > SLOP {
+                d.dragging = true;
             }
-            d.dragging = true;
         }
         self.trail.push((at, y));
         self.trail
@@ -193,6 +204,41 @@ impl Tracked {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_thumb_rolling_on_a_slider_moves_neither_the_column_nor_the_slider() {
+        let t = Instant::now();
+        let mut f = Finger::default();
+        f.down(100.0, 500.0, Under::Slider(0), 40.0, t);
+        // up a little, more than the slop: not yet a swipe
+        assert_eq!(f.motion(101.0, 500.0 - SLOP * 2.0, 900.0, t), Meaning::None);
+    }
+
+    #[test]
+    fn sideways_wins_on_a_slider_even_after_a_little_vertical() {
+        let t = Instant::now();
+        let mut f = Finger::default();
+        f.down(100.0, 500.0, Under::Slider(0), 40.0, t);
+        assert_eq!(f.motion(101.0, 500.0 - SLOP * 2.0, 900.0, t), Meaning::None);
+        assert_eq!(
+            f.motion(100.0 + SLOP * 2.0, 496.0, 900.0, t),
+            Meaning::SlideStart(0, 100.0 + SLOP * 2.0)
+        );
+    }
+
+    #[test]
+    fn a_real_vertical_swipe_from_a_slider_scrolls_from_where_it_decided() {
+        let t = Instant::now();
+        let mut f = Finger::default();
+        f.down(100.0, 500.0, Under::Slider(0), 40.0, t);
+        let y = 500.0 - SLIDER_SCROLL_SLOP - 1.0;
+        assert_eq!(
+            f.motion(100.0, y, 900.0, t),
+            Meaning::Scrolled(40.0),
+            "no jump"
+        );
+        assert_eq!(f.motion(100.0, y - 10.0, 900.0, t), Meaning::Scrolled(50.0));
+    }
+
     use super::*;
 
     fn ms(t0: Instant, n: u64) -> Instant {
@@ -341,12 +387,12 @@ mod tests {
         f.down(100.0, 500.0, Under::Slider(2), 300.0, t0);
         assert_eq!(
             f.motion(104.0, 450.0, 1000.0, ms(t0, 20)),
-            Meaning::Scrolled(350.0)
+            Meaning::Scrolled(300.0)
         );
         // sideways afterwards: still the column's
         assert_eq!(
             f.motion(300.0, 440.0, 1000.0, ms(t0, 40)),
-            Meaning::Scrolled(360.0)
+            Meaning::Scrolled(310.0)
         );
         assert_eq!(
             f.up(300.0, 400.0, Under::Nothing, ms(t0, 60)),
