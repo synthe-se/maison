@@ -715,6 +715,24 @@ fn append_frame(pulses: &mut Vec<u32>, state: &[u8; MITSUBISHI_STATE_LEN]) {
 
 #[cfg(test)]
 mod tests {
+    /// What clients offer is what the tables know.
+    #[test]
+    fn the_apis_tokens_are_the_tables() {
+        fn tokens<S: Setting + 'static>() -> Vec<&'static str> {
+            let mut all: Vec<_> = S::TABLE.iter().map(|(_, t, _)| *t).collect();
+            all.sort_unstable();
+            all
+        }
+        let sorted = |mut a: Vec<&'static str>| {
+            a.sort_unstable();
+            a
+        };
+        use maison_api::climate::{FANS, MODES, VANES};
+        assert_eq!(sorted(MODES.to_vec()), tokens::<Mode>());
+        assert_eq!(sorted(FANS.to_vec()), tokens::<Fan>());
+        assert_eq!(sorted(VANES.to_vec()), tokens::<Vane>());
+    }
+
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 

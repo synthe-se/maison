@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The most one feed may serve (the web app's `FEED_MAX_PORTIONS`, `web/src/lib/limits.ts`).
+pub const MAX_FEED_PORTIONS: u8 = 12;
+
 fn one_portion() -> u8 {
     1
 }

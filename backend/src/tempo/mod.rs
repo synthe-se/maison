@@ -18,10 +18,9 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use maison_api::tempo::{
-    Color, Count, Day, Forecast, ForecastDay, ModelInfo, Probabilities, Reliability, SeasonStock,
-    Tariffs, Today, HOURS,
+    Color, Count, Day, Forecast, ForecastDay, ModelInfo, Reliability, SeasonStock, Tariffs, Today,
+    HOURS,
 };
-use serde::Serialize;
 use tokio::sync::{watch, Mutex, MutexGuard};
 
 pub use rules::current_season;
@@ -155,27 +154,7 @@ fn season_stock(start_year: i32, history: &History, quotas: Quotas) -> SeasonSto
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CalendarDay {
-    pub date: NaiveDate,
-    pub color: Color,
-    pub is_actual: bool,
-    pub is_prediction: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub probabilities: Option<Probabilities>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub confidence: Option<f64>,
-}
-
-/// A season's days, the forecast's after the published ones for the current season.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Calendar {
-    pub season: String,
-    pub calendar: Vec<CalendarDay>,
-    pub stock: SeasonStock,
-}
+pub use maison_api::tempo::{Calendar, CalendarDay};
 
 /// The days after today up to J+7: the published ones, then the forecast's from `weather`
 /// and the past year's `levels`. Pure: the service and the tests call it.

@@ -82,6 +82,13 @@ pub struct Hours {
     pub peak_end: Cow<'static, str>,
 }
 
+impl Hours {
+    /// The part of a day spent in peak hours (16 h of 24 with 06:00–22:00).
+    pub fn peak_share(&self) -> f64 {
+        f64::from(minutes(&self.peak_end).saturating_sub(minutes(&self.peak_start))) / (24.0 * 60.0)
+    }
+}
+
 /// The regulated Tempo's peak hours: 06:00 to 22:00.
 pub const HOURS: Hours = Hours {
     peak_start: Cow::Borrowed("06:00"),
@@ -297,10 +304,56 @@ pub struct Forecast {
     pub note: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarDay {
+    pub date: NaiveDate,
+    pub color: Color,
+    pub is_actual: bool,
+    pub is_prediction: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probabilities: Option<Probabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+}
+
+/// A season's days, the forecast's after the published ones for the current season
+/// (`GET /api/tempo/calendar`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Calendar {
+    pub season: String,
+    pub calendar: Vec<CalendarDay>,
+    pub stock: SeasonStock,
+}
+
+/// The Tempo season a month belongs to, September starting it (« 2026-2027 »); `month0` from 0.
+pub fn season_of(year: i32, month0: u32) -> String {
+    if month0 >= 8 {
+        format!("{year}-{}", year + 1)
+    } else {
+        format!("{}-{year}", year - 1)
+    }
+}
+
+/// How a forecast is said unsure (`colors.ts` `UNSURE`, docs/ux.md § 8).
+pub const UNSURE: f64 = 0.6;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Answer;
+
+    #[test]
+    fn a_calendar_round_trips_and_a_season_starts_in_september() {
+        let json = r#"{"success":true,"season":"2026-2027","calendar":[{"date":"2026-10-16","color":"BLUE","isActual":true,"isPrediction":false},{"date":"2026-10-17","color":"RED","isActual":false,"isPrediction":true,"probabilities":{"BLUE":0.2,"WHITE":0.2,"RED":0.6},"confidence":0.6}],"stock":{"season":"2026-2027","blue":{"used":40,"total":300,"remaining":260},"white":{"used":2,"total":43,"remaining":41},"red":{"used":0,"total":22,"remaining":22}}}"#;
+        let c: Answer<Calendar> = serde_json::from_str(json).unwrap();
+        assert_eq!(c.body.calendar[1].confidence, Some(0.6));
+        assert_eq!(serde_json::to_string(&c).unwrap(), json);
+        assert_eq!(season_of(2026, 8), "2026-2027");
+        assert_eq!(season_of(2027, 7), "2026-2027");
+        assert!((HOURS.peak_share() - 2.0 / 3.0).abs() < 1e-9);
+    }
 
     #[test]
     fn today_round_trips() {

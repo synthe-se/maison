@@ -4,17 +4,17 @@ use axum::{
     Json, Router,
 };
 use maison_api::{
-    tv::{PowerRequest, VolumeRequest},
+    tv::{AmbilightRequest, KeyRequest, PowerRequest, VolumeRequest},
     Message,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
     auth::AdminUser,
     error::AppError,
-    ir::{Resolve, SwitchState},
+    ir::Resolve,
     routes::{Answer, Reply},
-    tv::{self, TvAmbilight, TvConfig, TvKey, TvPower, TvStatus, TvVolume},
+    tv::{self, TvAmbilight, TvConfig, TvPower, TvStatus, TvVolume},
     AppState,
 };
 
@@ -23,19 +23,6 @@ use crate::{
 struct Status {
     config: TvConfig,
     status: TvStatus,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct KeyRequest {
-    key: TvKey,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AmbilightRequest {
-    #[serde(default)]
-    state: SwitchState,
 }
 
 #[derive(Debug, Serialize)]

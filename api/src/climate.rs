@@ -8,6 +8,19 @@ use serde::{Deserialize, Serialize};
 pub const MIN_TEMPERATURE_C: u8 = 16;
 pub const MAX_TEMPERATURE_C: u8 = 31;
 
+/// The settings' tokens as the grammar spells them, in the order a person reads them
+/// (`backend/src/mitsubishi_ir.rs`'s tables hold each one's frame code; a test there keeps them
+/// in step).
+pub const MODES: [&str; 5] = ["cool", "heat", "dry", "fan", "auto"];
+pub const FANS: [&str; 6] = ["auto", "1", "2", "3", "4", "silent"];
+pub const VANES: [&str; 7] = [
+    "auto", "highest", "high", "middle", "low", "lowest", "swing",
+];
+
+/// The sleep timer's presets, in minutes, like the remote's 1 h / 3 h buttons (multiples of the
+/// unit's 10-minute ticks; the web form's `STOP_AFTER_CHOICES`).
+pub const STOP_CHOICES_MIN: [u32; 7] = [30, 60, 120, 180, 300, 480, 720];
+
 /// The command that switches the unit off.
 pub const OFF_COMMAND: &str = "state-off";
 
