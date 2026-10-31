@@ -38,18 +38,12 @@ BR2_PACKAGE_LINUX_PAM=y
 # what SystemCallFilter= in the units is applied with
 BR2_PACKAGE_LIBSECCOMP=y
 
-# The picture: Lima on KMS, cage, what the app's SDL opens at run time
+# The picture: Lima on KMS, what the app's SDL opens at run time
 BR2_PACKAGE_MESA3D=y
 BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_LIMA=y
 BR2_PACKAGE_MESA3D_GBM=y
 BR2_PACKAGE_MESA3D_OPENGL_EGL=y
 BR2_PACKAGE_MESA3D_OPENGL_ES=y
-BR2_PACKAGE_WAYLAND=y
-BR2_PACKAGE_LIBXKBCOMMON=y
-# xkbcommon's data: SDL and wlroots ask for a context, keyboard or not
-BR2_PACKAGE_XKEYBOARD_CONFIG=y
-BR2_PACKAGE_CAGE=y
-BR2_PACKAGE_WLR_RANDR=y
 
 # The Wi-Fi, SSH by key only, a new kernel tried in RAM
 BR2_PACKAGE_WPA_SUPPLICANT=y

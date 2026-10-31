@@ -1,4 +1,4 @@
-//! Maison on the wall frame, drawn natively: SDL 3 under cage (Wayland, EGL, GLES 2 on Lima),
+//! Maison on the wall frame, drawn natively: SDL 3 on KMS (EGL, GLES 2 on Lima),
 //! no WebView (ARCHITECTURE.md). The loop sleeps on SDL's events: a finger, a window event, or
 //! a thread's word that something came (a read, an answer); it draws only when something
 //! changed, and every frame while a fling runs. Idle, the CPU sleeps.
@@ -198,6 +198,10 @@ fn run() -> Result<(), Error> {
             .borderless()
             .build()?,
     };
+    // on the panel nothing else draws one: a finger is not a pointer
+    if config.window.is_none() {
+        sdl.mouse().show_cursor(false);
+    }
     // fallible: `into_canvas` panics when the driver has no renderer (GLES missing)
     let mut canvas = sdl3::render::create_renderer(window, None)?;
     canvas.set_blend_mode(sdl3::render::BlendMode::Blend);

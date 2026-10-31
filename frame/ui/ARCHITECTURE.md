@@ -1,14 +1,14 @@
 # frame/ui
 
-The wall frame's dashboard: Rust (edition 2024), SDL3 under cage on KMS. Target: RK3126, four
+The wall frame's dashboard: Rust (edition 2024), SDL3 straight on KMS. Target: RK3126, four
 Cortex-A7, Mali-400 (Lima, GLES 2.0), 1 GB, 800×1280 portrait panel mounted upside down.
 
 ## Process and display
 
-- `maison-ui.service`: cage on tty7 in a logind session (user `kiosk`, PAM `maison-ui`), one
-  client, `maison-frame-ui`. The launcher (`/usr/local/sbin/maison-ui`) turns the output 180°
-  with `wlr-randr`; if refused, the app turns its own picture (`MAISON_ROTATE=180`). The touch
-  is already mapped by the device tree: never invert it.
+- `maison-ui.service`: `maison-frame-ui` on tty7 in a logind session (user `kiosk`, PAM
+  `maison-ui`), no compositor. It turns its own picture (`MAISON_ROTATE=180`) and hides the
+  cursor; the launcher (`/usr/local/sbin/maison-ui`) gives SDL the card that has the panel. The
+  touch is already mapped by the device tree: never invert it.
 - SDL 3 and SDL_ttf 3 built from source and linked in (8.9 MB armv7 binary; runtime deps libc,
   libm, libgcc_s). SDL's GLES 2 renderer, vsync on.
 - Event-driven: the loop sleeps on SDL events (input, window, a user event posted by a worker

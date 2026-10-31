@@ -3,7 +3,7 @@ name = "maison-frame-ui"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
-description = "Maison on the wall frame, drawn natively (SDL3, GLES 2 under cage): no WebView"
+description = "Maison on the wall frame, drawn natively (SDL3, GLES 2 on KMS): no WebView"
 publish = false
 
 [dependencies]
@@ -12,7 +12,7 @@ maison-api = { path = "../../api" }
 # the Wi-Fi's protocol with maison-wifid and what a network's name and password may be, said once
 maison-frame-tools = { path = "../tools" }
 # SDL from its latest sources, linked in (trixie's libSDL3 is older: never loaded in its place);
-# SDL itself opens the system's Wayland, EGL and GLES libraries at run time
+# SDL itself opens the system's DRM, GBM, EGL and GLES libraries at run time
 sdl3 = { version = "0.20.0", features = ["build-from-source-static", "ttf"] }
 # SDL_ttf from its sources with its own FreeType, HarfBuzz and PlutoSVG, linked in: nothing of
 # the system's text stack (the feature reaches sdl3's own dependency, `^0.7.1`, the same crate).
@@ -31,6 +31,10 @@ resvg = { version = "0.49.0", default-features = false }
 # the family's photos read off the drawing thread: JPEG in pure Rust, nothing of the system's
 zune-jpeg = "0.5.15"
 zune-core = "0.5.3"
+
+# the frame's SDL has KMS and no window system: SDL's build refuses that unless told
+[target.'cfg(all(target_os = "linux", target_arch = "arm"))'.dependencies]
+sdl3-sys = { version = "=0.7.2", features = ["sdl-unix-console-build"] }
 
 [build-dependencies]
 # the web app's WOFF2 fonts into TrueType, its variable faces instanced at the weights the type

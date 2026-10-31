@@ -14,8 +14,8 @@
 //! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
 //!   `$XDG_DATA_HOME/maison-ui`;
 //! - its language: `MAISON_LANG`, else `LANG` (`fr_FR.UTF-8`);
-//! - `MAISON_ROTATE=180` (the app turns its picture, when the compositor does not; the touch
-//!   is already the person's way up on the frame), `MAISON_SCALE` (CSS pixels to the panel's, 1
+//! - `MAISON_ROTATE=180` (the app turns its picture: the panel is mounted upside down; the
+//!   touch is already the person's way up on the frame), `MAISON_SCALE` (CSS pixels to the panel's, 1
 //!   as the kiosk drew), `MAISON_WINDOW` (`800x1280`: a window in place of the full screen, for
 //!   a simulation);
 //! - `MAISON_HEARTBEAT`: a file touched while the app runs, for the update system.

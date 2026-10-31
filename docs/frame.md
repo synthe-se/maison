@@ -189,10 +189,13 @@ What the bring-up taught, each point seen on the frame:
   eMMC's serial, so that it stays one directory, within its 64 MB.
 
 The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)) is in the
-system: `maison-ui.service` runs cage on tty7 with `maison-frame-ui` as its one
-client, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`;
-its launcher (`/usr/local/sbin/maison-ui`) turns the output with `wlr-randr` (`MAISON_TURN`, 0
-or 180, else the app turns its own picture).
+system: `maison-ui.service` runs `maison-frame-ui` on tty7, SDL straight on KMS with no
+compositor, as the `kiosk` user in a logind session, its cookie 0600 in `/android-data/maison/ui`.
+It turns its own picture (`MAISON_ROTATE=180`); its launcher (`/usr/local/sbin/maison-ui`) gives
+SDL the card that has the panel. SDL is built without a window system
+(`sdl-unix-console-build`), and hides the cursor on the panel. Measured against cage on the frame:
+99 to 92 MB of RAM, a draw 28 to 29-34 ms, first picture unchanged at 1.1 s; what compositing itself
+cost is not measured.
 
 A wall screen's theme follows the sun at the house when nothing is chosen (« Soleil », which
 anyone may choose too): dark from sunset to sunrise, from the house's place (set with the
@@ -286,7 +289,7 @@ and stubbed commands. Unseen so far: wpa_supplicant's real replies on the AIC880
 network-less supplicant, `[TEMP-DISABLED]` after a wrong password, whose absence would end in the
 no-answer word after 40 s), DHCP after a live join, a socket connected from `kiosk` under
 `ProtectSystem=strict`, the gpio-keys node really being the frame's power key and its device name,
-logind's drop-in, cage and SDL staying calm on that key, the keyboard's real touch offset, frame
+logind's drop-in, SDL staying calm on that key, the keyboard's real touch offset, frame
 times on the Mali-400, and the access point itself, which needs an image with wpa_supplicant's AP
 mode (none before it was in the defconfig). The live switches above are unproved too.
 

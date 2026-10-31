@@ -103,7 +103,7 @@ frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): 
                      from the recovery slot: build.sh, buildroot.sh (the system), release.sh, ssh-cert.sh,
                      loader.c, initramfs.py, image.py,
                      install.sh, try.sh, console.sh, the board's device tree, rootfs/: units and
-                     launchers); ui/ (the native interface: SDL3 under cage, Rust 2024,
+                     launchers); ui/ (the native interface: SDL3 on KMS, Rust 2024,
                      ARCHITECTURE.md; maison-api's types, codes, paces and events, `paths.rs`
                      for every path it asks; frame/linux/buildroot.sh cross-builds it for the system)
 box/launcher/        the box's home: Compose for TV, for any Android TV (docs/box.md)

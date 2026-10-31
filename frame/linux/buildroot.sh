@@ -55,7 +55,7 @@ docker run --rm --platform linux/arm64 -v maison-buildroot:/build -v maison-fram
 	# the file must have been taken whole, as the kernel'"'"'s
 	missing=$(grep -E "^BR2_[A-Za-z0-9_]+=" /frame/linux/buildroot/maison_defconfig | while read -r l; do grep -qx "$l" /build/out/.config || echo "$l"; done)
 	[ -z "$missing" ] || { echo "not taken by kconfig: $missing" >&2; exit 1; }
-	date; $m toolchain libdrm wayland libxkbcommon mesa3d systemd >/build/deps.log 2>&1 || { tail -30 /build/deps.log; exit 1; }
+	date; $m toolchain libdrm mesa3d systemd >/build/deps.log 2>&1 || { tail -30 /build/deps.log; exit 1; }
 	# the app and the tools, against what the frame runs
 	date
 	H=/build/out/host; S=$H/arm-buildroot-linux-gnueabihf/sysroot

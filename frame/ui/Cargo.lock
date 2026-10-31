@@ -473,6 +473,7 @@ dependencies = [
  "maison-frame-tools",
  "resvg",
  "sdl3",
+ "sdl3-sys",
  "sdl3-ttf-sys",
  "serde",
  "serde_json",
