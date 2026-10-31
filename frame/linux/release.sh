@@ -31,7 +31,7 @@ mv "$OUT/$version/manifest.json" "$OUT/manifest.json"
 sign sign "$KEY" "$OUT/manifest.json"
 ls -la "$OUT" "$OUT/$version"
 if $publish; then
-	HOST="${FRAME_UPDATE_HOST:-apps@yuki.synthe.se}"
+	HOST="${FRAME_UPDATE_HOST:-yuki-apps}"
 	rsync -a "$OUT/$version" "$HOST:/srv/updates/frame/"
 	rsync -a "$OUT/manifest.json" "$OUT/manifest.sig" "$HOST:/srv/updates/frame/"
 	echo "published: $version"

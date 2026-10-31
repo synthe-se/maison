@@ -238,8 +238,8 @@ newer, or once failed, downloads to the free slot, resumed if cut, and restarts 
 Failures provoked on the frame, each back on the good slot by itself: an image that fails its
 `sums` (27 s), an unreadable image with valid `sums` (39 s), a kernel that panics (49 s), a kernel
 that hangs (73 s, a real watchdog reset). A good `--kernel` slot boots by kexec under that watchdog.
-Not proved on the frame: an update over the air against a real server, the first setup's access
-point.
+An update over the air, from updates.synthe.se to the frame: 80 s. Not proved on the frame: the
+first setup's access point.
 
 First setup: with no network or no address (`maison-wifi`), the frame is its own Wi-Fi, named and
 locked from its eMMC's serial; the interface shows both and the address of its page (`maison-setup`,
