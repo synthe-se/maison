@@ -195,6 +195,9 @@ impl App {
             }
         }
         self.dirty |= self.commands.sweep(now);
+        for t in self.commands.overdue(&self.words, now) {
+            self.toast(t, now);
+        }
         // what turns with time alone wakes the loop for this
         self.dirty |= self.next_look().is_some_and(|t| t <= now);
     }

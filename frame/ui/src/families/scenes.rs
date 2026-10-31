@@ -61,14 +61,12 @@ pub fn said(w: &Words, name: &str, r: &KeyResponse) -> Toast {
 
 fn run_said(w: &Words, o: &Outcome) -> Option<Toast> {
     let name = o.done.first().or(o.failed.first())?;
-    match o
-        .answer
-        .as_ref()
-        .map(|v| serde_json::from_value::<KeyResponse>(v.clone()))
-    {
-        Some(Ok(r)) => Some(said(w, name, &r)),
-        // refused, unreachable, or an answer that does not read: « Pas de réponse » for it
-        _ => Some(Toast {
+    // refused or unreachable: nothing here, the order says what its refusal means
+    let answer = o.answer.as_ref()?;
+    match serde_json::from_value::<KeyResponse>(answer.clone()) {
+        Ok(r) => Some(said(w, name, &r)),
+        // an answer that does not read
+        Err(_) => Some(Toast {
             text: w.t(k::COMMAND_NO_ANSWER, &[("name", name.into())]),
             warn: true,
         }),
