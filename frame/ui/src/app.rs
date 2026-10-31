@@ -23,7 +23,7 @@ use crate::ui::icon;
 use crate::ui::layout::{Hit, REACH, Target};
 use crate::ui::model::{Act, Button, Screen, View};
 use crate::ui::slider::{Sliders, value_at};
-use crate::ui::touch::{Finger, Meaning, Under};
+use crate::ui::touch::{Finger, Meaning, Tracked, Under};
 
 /// How long a toast stays (`paces::TOAST_MS`, the web app's). A warning stays until dismissed
 /// on a page; on a wall, which nobody dismisses, `WALL_WARNING_MS`.
@@ -47,6 +47,8 @@ pub struct App {
     sliders: Sliders,
     sources: Sources,
     finger: Finger,
+    /// Which of SDL's fingers `finger` follows.
+    pub tracked: Tracked,
     /// The column's scroll, in the panel's pixels.
     pub scroll: f32,
     /// What the finger went down on, as it was then: a drawing in between (a read came, the
@@ -90,6 +92,7 @@ impl App {
             sliders: Sliders::default(),
             sources: Sources::new(),
             finger: Finger::default(),
+            tracked: Tracked::default(),
             scroll: 0.0,
             pressed: None,
             view: View::House,
@@ -163,10 +166,9 @@ impl App {
         self.toasts.retain(|(_, until)| now < *until);
         self.dirty |= self.toasts.len() != before;
         self.sliders.sweep(now);
-        let night = self.side == Some(Side::Dark);
-        self.backlight.idle(now, self.touched, night);
+        self.backlight.idle(now, self.touched, self.night());
         if self.view != View::House && now.saturating_duration_since(self.touched) >= PAGE_IDLE {
-            self.open(View::House);
+            self.open(View::House, now);
         }
         if self.finger.flinging() {
             let max = self.max_scroll();
@@ -208,6 +210,10 @@ impl App {
         .into_iter()
         .flatten()
         .min()
+    }
+
+    fn night(&self) -> bool {
+        self.side == Some(Side::Dark)
     }
 
     pub fn palette(&self) -> &'static Palette {
@@ -263,6 +269,7 @@ impl App {
         };
         if side.is_some() {
             self.side = side;
+            self.backlight.idle(now, self.touched, self.night());
         }
         self.live.sweep();
         screen
@@ -314,6 +321,7 @@ impl App {
                 self.hits
                     .iter()
                     .enumerate()
+                    .filter(|(_, h)| !matches!(h.what, Target::Cover))
                     .map(|(i, h)| (i, h.distance(x, y)))
                     .filter(|(_, d)| *d <= REACH)
                     .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -323,6 +331,7 @@ impl App {
             Some(i) => match self.hits[i].what {
                 Target::Slider { .. } => Under::Slider(i),
                 Target::Act(_) => Under::Hit(i),
+                Target::Cover => Under::Nothing,
             },
             None => Under::Nothing,
         }
@@ -333,7 +342,7 @@ impl App {
     pub fn finger_down(&mut self, x: f32, y: f32, now: Instant) {
         self.touched = now;
         // asleep: this finger only wakes the panel
-        if self.backlight.wake() {
+        if self.backlight.wake(self.night()) {
             self.waking = true;
             self.dirty = true;
             return;
@@ -343,8 +352,7 @@ impl App {
             Under::Hit(i) | Under::Slider(i) => self.hits.get(i).map(|h| (under, h.clone())),
             Under::Nothing => None,
         };
-        let m = self.finger.down(x, y, under, self.scroll, now);
-        self.meant(m, now);
+        self.finger.down(x, y, under, self.scroll, now);
     }
 
     pub fn finger_motion(&mut self, x: f32, y: f32, now: Instant) {
@@ -368,6 +376,20 @@ impl App {
         self.meant(m, now);
         self.pressed = None;
         self.dirty = true;
+    }
+
+    /// The system took the finger back: whatever it was doing ends, nothing is sent.
+    pub fn finger_cancel(&mut self, now: Instant) {
+        self.end_gesture(now);
+        self.dirty = true;
+    }
+
+    /// No finger held any more, whatever it held.
+    fn end_gesture(&mut self, now: Instant) {
+        self.finger = Finger::default();
+        self.pressed = None;
+        self.waking = false;
+        self.sliders.cancel(now);
     }
 
     /// What a finger at (x, y) would land on, by its key (a log's words).
@@ -395,7 +417,7 @@ impl App {
             }
             Meaning::Tap(_) => {
                 if let Some(Target::Act(act)) = self.held() {
-                    self.act(act);
+                    self.act(act, now);
                 }
             }
             Meaning::SlideStart(_, x) | Meaning::Slide(_, x) | Meaning::SlideEnd(_, x) => {
@@ -416,7 +438,7 @@ impl App {
         }
     }
 
-    fn act(&mut self, act: Act) {
+    fn act(&mut self, act: Act, now: Instant) {
         match act {
             Act::Order(o) => {
                 // a new try clears what the tile said of the last one
@@ -429,16 +451,16 @@ impl App {
                 }
             }
             Act::Pairing(ask) => self.session.ask(ask),
-            Act::Open(view) => self.open(view),
+            Act::Open(view) => self.open(view, now),
         }
         self.dirty = true;
     }
 
-    /// Shows `view`, from its top.
-    fn open(&mut self, view: View) {
+    /// Shows `view`, from its top; a finger held on the last one holds nothing here.
+    fn open(&mut self, view: View, now: Instant) {
         self.view = view;
         self.scroll = 0.0;
-        self.finger = Finger::default();
+        self.end_gesture(now);
         self.dirty = true;
     }
 }
@@ -512,6 +534,7 @@ mod tests {
     use crate::client::stub::serve;
     use crate::i18n::Lang;
     use crate::testing::{temp_dir, wait_until};
+    use crate::ui::model::Slider;
     use std::path::PathBuf;
 
     fn config(origin: &str, state_dir: PathBuf) -> Config {
@@ -605,6 +628,127 @@ mod tests {
         app.finger_down(400.0, 600.0, asleep + FRAME * 10);
         app.finger_up(400.0, 600.0, asleep + FRAME * 11);
         assert_eq!(app.view, View::Tempo);
+    }
+
+    /// A slider's band across the panel (20..780 at y 100..144), a lamp's.
+    fn slider_hit() -> Hit {
+        Hit {
+            x: 0.0,
+            y: 100.0,
+            w: 800.0,
+            h: 44.0,
+            what: Target::Slider {
+                slider: Slider {
+                    key: "l".into(),
+                    value: 50.0,
+                    min: 0.0,
+                    max: 100.0,
+                    step: 1.0,
+                    mark: None,
+                    live: true,
+                    near: 2.0,
+                    ends: None,
+                    path: "/l".into(),
+                    body: |_| serde_json::Value::Null,
+                    refresh: "l",
+                    name: "l".into(),
+                },
+                x0: 20.0,
+                x1: 780.0,
+            },
+        }
+    }
+
+    #[test]
+    fn neither_a_tap_nor_a_swipe_moves_a_slider() {
+        let mut app = alone();
+        app.drawn(vec![slider_hit()], 5000.0, 1280.0);
+        app.scroll = 500.0;
+        let Target::Slider { slider: s, .. } = app.hits[0].what.clone() else {
+            unreachable!()
+        };
+        let t0 = Instant::now();
+        app.finger_down(600.0, 120.0, t0);
+        app.finger_up(600.0, 120.0, t0 + FRAME);
+        assert_eq!(app.sliders.shown(&s, t0 + FRAME), 50.0, "a tap");
+        app.finger_down(600.0, 120.0, t0);
+        app.finger_motion(604.0, 300.0, t0 + FRAME);
+        app.finger_up(604.0, 320.0, t0 + FRAME * 2);
+        assert_eq!(app.sliders.shown(&s, t0 + FRAME * 2), 50.0, "a swipe");
+        assert_eq!(app.commands.state("l:set"), crate::commands::State::Idle);
+        assert_eq!(app.scroll, 320.0, "the swipe scrolled the column");
+    }
+
+    #[test]
+    fn a_cancel_or_another_view_lets_the_slider_go() {
+        let mut app = alone();
+        app.drawn(vec![slider_hit()], 5000.0, 1280.0);
+        let Target::Slider { slider: s, .. } = app.hits[0].what.clone() else {
+            unreachable!()
+        };
+        let t0 = Instant::now();
+        app.finger_down(100.0, 120.0, t0);
+        app.finger_motion(600.0, 120.0, t0 + FRAME);
+        assert_ne!(app.sliders.shown(&s, t0 + FRAME), 50.0);
+        app.finger_cancel(t0 + FRAME);
+        assert!(app.pressed.is_none());
+        app.finger_motion(700.0, 120.0, t0 + FRAME * 2);
+        app.finger_up(700.0, 120.0, t0 + FRAME * 3);
+        assert!(!app.finger.held(), "its motion and its lift mean nothing");
+        // a page gone from under the finger
+        app.finger_down(100.0, 120.0, t0);
+        app.finger_motion(400.0, 120.0, t0 + FRAME);
+        app.open(View::Tempo, t0 + FRAME);
+        assert!(app.pressed.is_none());
+        let dragging = app.sliders.next_change(t0 + crate::ui::slider::HOLD * 2);
+        assert_eq!(dragging, None, "nothing held for ever");
+    }
+
+    #[test]
+    fn a_cancelled_wake_lets_the_next_finger_act() {
+        let mut app = alone();
+        app.drawn(
+            vec![Hit {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 1280.0,
+                what: Target::Act(Act::Open(View::Tempo)),
+            }],
+            1280.0,
+            1280.0,
+        );
+        let asleep = app.touched + crate::backlight::DIM_AFTER;
+        app.tick(asleep);
+        app.finger_down(400.0, 600.0, asleep);
+        app.finger_cancel(asleep);
+        app.finger_down(400.0, 600.0, asleep + FRAME);
+        app.finger_up(400.0, 600.0, asleep + FRAME * 2);
+        assert_eq!(app.view, View::Tempo);
+    }
+
+    #[test]
+    fn a_cover_stops_a_finger_and_reaches_nothing() {
+        let mut app = alone();
+        let band = |y: f32, what: Target| Hit {
+            x: 0.0,
+            y,
+            w: 800.0,
+            h: 60.0,
+            what,
+        };
+        let open = Target::Act(Act::Open(View::Tempo));
+        app.drawn(
+            vec![band(60.0, open), band(0.0, Target::Cover)],
+            1280.0,
+            1280.0,
+        );
+        assert_eq!(app.under(400.0, 30.0), Under::Nothing, "on the header");
+        assert_eq!(app.under(400.0, 70.0), Under::Hit(0));
+        // just past the covered band's edge, a control is still within reach
+        app.hits.reverse();
+        app.hits[1].y = 80.0;
+        assert_eq!(app.under(400.0, 70.0), Under::Hit(1));
     }
 
     #[test]

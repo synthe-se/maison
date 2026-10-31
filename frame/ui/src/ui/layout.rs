@@ -52,6 +52,8 @@ pub enum Target {
         x0: f32,
         x1: f32,
     },
+    /// Nothing to press, but what lies under it is out of a finger's reach: the header, a toast.
+    Cover,
 }
 
 impl Target {
@@ -193,6 +195,17 @@ pub const HEADER_MARK: f32 = 28.0;
 /// Borel sits high in its box: Brand.svelte's `.name` has `padding-top: 0.3em`, which, centred
 /// in its row, brings the name half of it down (in ems of the brand's size).
 pub const BRAND_NUDGE: f32 = 0.15;
+
+/// `hits` scrolled up under a band that stays, ending at `edge`: each cut there, gone when wholly
+/// under it.
+pub fn clip_above(hits: &mut Vec<Hit>, edge: f32) {
+    hits.retain_mut(|h| {
+        let under = (edge - h.y).max(0.0);
+        h.y += under;
+        h.h -= under;
+        h.h > 0.0
+    });
+}
 
 /// The page margin for the panel's width in CSS pixels (tokens.css `--page-margin` and its
 /// media queries).
@@ -449,6 +462,11 @@ impl P<'_, '_, '_, '_> {
         }
     }
 
+    /// What is drawn here hides what lies under it from the finger.
+    pub fn cover(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.hit(x, y, w, h, Target::Cover);
+    }
+
     /// Words, then « · » and a link (underlined, `ink`), on one secondary line at (x, y) in `w`
     /// CSS px (Stale's « Dernière lecture 14:02 · Réessayer », a tile's « Pas de réponse ·
     /// Réessayer », a shutter's « Fermeture 20:24 · Ne pas fermer ce soir »). The link is a 44 px
@@ -548,6 +566,21 @@ mod tests {
         assert_eq!(balance(&[], 2, 12.0), vec![0]);
         // never more columns than groups need
         assert_eq!(balance(&[10.0, 10.0], 6, 12.0), vec![0, 1]);
+    }
+
+    #[test]
+    fn what_scrolled_under_the_header_is_out_of_reach() {
+        let band = |y: f32, h: f32| Hit {
+            x: 0.0,
+            y,
+            w: 100.0,
+            h,
+            what: Target::Cover,
+        };
+        let mut hits = vec![band(-50.0, 60.0), band(30.0, 60.0), band(100.0, 60.0)];
+        clip_above(&mut hits, 64.0);
+        let left: Vec<(f32, f32)> = hits.iter().map(|h| (h.y, h.h)).collect();
+        assert_eq!(left, [(64.0, 26.0), (100.0, 60.0)]);
     }
 
     #[test]

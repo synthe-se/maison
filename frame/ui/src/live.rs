@@ -589,7 +589,7 @@ mod tests {
         let source = counter();
         live.begin();
         live.want(&source);
-        let mut turn = |live: &mut Live, wanted: usize| {
+        let turn = |live: &mut Live, wanted: usize| {
             if wanted > 1 {
                 live.refresh("n:");
             }

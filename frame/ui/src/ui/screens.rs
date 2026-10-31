@@ -9,7 +9,8 @@ use crate::ui::gfx::{Draw, Error};
 use crate::ui::icon;
 use crate::ui::layout::{
     BRAND_NUDGE, CHIP_ICON, CODE_SPACING, COLUMN_GAP, Ctx, Drawn, GROUP_GAP, GROUP_HEAD, HEAD_GAP,
-    HEADER_MARK, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH, balance, columns, fold, margin,
+    HEADER_MARK, MARK, MARK_SVG, NOW_LINES, P, STALE_ICON, TOUCH, balance, clip_above, columns,
+    fold, margin,
 };
 use crate::ui::model::{Body, Button, Chip, Group, Screen};
 
@@ -233,8 +234,12 @@ impl P<'_, '_, '_, '_> {
             bottom = bottom.max(y - GROUP_GAP);
         }
         let content = (bottom + px::S_5) * self.s();
-        // the header stays, a line under it: the brand, or a page's way back and its title
+        // the header stays, a line under it: the brand, or a page's way back and its title; what
+        // scrolled under it is hidden from the finger too
         self.dy = 0.0;
+        let edge = px::HEADER_H * self.s();
+        clip_above(&mut self.hits, edge);
+        self.cover(0.0, 0.0, wcss, px::HEADER_H);
         self.rounded(0.0, 0.0, wcss, px::HEADER_H, 0.0, pal.ground)?;
         let hair = 1.0 / self.s();
         self.rounded(0.0, px::HEADER_H - hair, wcss, hair, 0.0, pal.line)?;
@@ -368,6 +373,7 @@ impl P<'_, '_, '_, '_> {
                 y + (th - text_h) / 2.0,
                 text_w,
             )?;
+            self.cover(x, y, tw, th);
             y -= px::S_2;
         }
         Ok(())
@@ -437,7 +443,7 @@ mod tests {
     use crate::testing::{temp_dir, wait_until};
     use crate::theme::{Face, LIGHT, Style};
     use crate::ui::gfx::Gfx;
-    use crate::ui::layout::Target;
+    use crate::ui::layout::{Hit, Target};
     use crate::ui::model::{Act, Lead};
     use crate::ui::slider::Sliders;
     use maison_api::HOUSE_TZ;
@@ -560,6 +566,39 @@ mod tests {
             assert!(h.h >= TOUCH.min(px::TILE_ICON), "{h:?}");
         }
         assert!(drawn.content > px::HEADER_H);
+        // the header and the toast cover what lies under them
+        let covers: Vec<&Hit> = drawn
+            .hits
+            .iter()
+            .filter(|h| matches!(h.what, Target::Cover))
+            .collect();
+        assert_eq!(covers.len(), 2);
+        assert!(covers[0].contains(400.0, 10.0));
+        assert!(covers[1].contains(400.0, 1280.0 - 2.0 * px::S_4));
+        assert!(matches!(drawn.hits.last().unwrap().what, Target::Cover));
+
+        // scrolled: nothing left to press under the header
+        let scrolled = Ctx {
+            scroll: 70.0,
+            pal: &LIGHT,
+            words: &words,
+            commands: &commands,
+            sliders: &sliders,
+            now: ctx.now,
+            scale: 1.0,
+            width: 800.0,
+            height: 1280.0,
+        };
+        let moved = paint(&mut d, &scrolled, &house, &[]).unwrap();
+        assert!(
+            moved
+                .hits
+                .iter()
+                .filter(|h| !matches!(h.what, Target::Cover))
+                .all(|h| h.y >= px::HEADER_H),
+            "{:?}",
+            moved.hits
+        );
 
         // the state lines, as each gesture says it
         {

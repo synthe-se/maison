@@ -4,7 +4,7 @@
 //!
 //! - `tap X Y`: a finger down and up there (the panel's pixels, as the picture shows them)
 //! - `press KEY`: a tap on the control whose gesture is KEY (`hue-lamp:hue-01:power`)
-//! - `slide KEY SHARE`: the slider KEY held from its start and let go at SHARE (0..1) of its band
+//! - `slide KEY SHARE`: the slider KEY taken from its far end and let go at SHARE (0..1) of its band
 //! - `drag Y0 Y1`: a finger from Y0 to Y1 down the middle (the column scrolls)
 //! - `shot PATH`: the next drawing saved there as PNG
 //! - `keys`: every control's key, one line each
@@ -76,7 +76,9 @@ pub fn run(app: &mut App, c: Command) -> Result<Option<String>, String> {
         Command::Slide(key, share) => {
             let (x0, x1, y) = app.band_of(&key).ok_or(format!("no slider {key}"))?;
             let to = x0 + (x1 - x0) * share.clamp(0.0, 1.0);
-            app.finger_down(x0, y, now);
+            // a slider moves only once the finger left the slop sideways
+            let from = if share < 0.5 { x1 } else { x0 };
+            app.finger_down(from, y, now);
             app.finger_motion(to, y, now + step);
             app.finger_up(to, y, now + step * 2);
         }

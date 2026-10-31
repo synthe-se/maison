@@ -50,8 +50,8 @@ live.rs          sources: one thread each at its pace while drawn, stale after S
 pairing.rs       POST /me, codes, claims, expiry, removal
 commands.rs      gestures: optimistic target, slow, late, settle until re-read; one order in
                  flight per key, the latest waits
-backlight.rs     dims after DIM_AFTER (2 min): 25 % of the start level by day, 4 % at night (sun
-                 side), never off; the first touch only wakes
+backlight.rs     dims after DIM_AFTER (2 min): 25 % of the awake level by day, 4 % at night (sun
+                 side, followed asleep), never off; the first touch only wakes, to 40 % at night
 app.rs           screens and views (house, Tempo page, a cat device's page, door), page timeout (PAGE_IDLE), touch:
                  the pressed target kept across redraws, REACH tolerance, jitter that scrolls
                  nothing still taps

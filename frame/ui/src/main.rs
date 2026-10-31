@@ -326,23 +326,32 @@ fn on_event(app: &mut App, event: Event, (wf, hf): (f32, f32), pending: &AtomicB
             keycode: Some(Keycode::Escape),
             ..
         } => return Flow::Quit,
-        Event::FingerDown { x, y, .. } => {
+        Event::FingerDown {
+            finger_id, x, y, ..
+        } if app.tracked.down(finger_id) => {
             let (x, y) = at(x, y);
             if said_touches() {
                 eprintln!("touch down {x:.0},{y:.0} on {}", app.key_under(x, y));
             }
             app.finger_down(x, y, now);
         }
-        Event::FingerMotion { x, y, .. } => {
+        Event::FingerMotion {
+            finger_id, x, y, ..
+        } if app.tracked.is(finger_id) => {
             let (x, y) = at(x, y);
             app.finger_motion(x, y, now);
         }
-        Event::FingerUp { x, y, .. } => {
+        Event::FingerUp {
+            finger_id, x, y, ..
+        } if app.tracked.lifted(finger_id) => {
             let (x, y) = at(x, y);
             if said_touches() {
                 eprintln!("touch up {x:.0},{y:.0}");
             }
             app.finger_up(x, y, now);
+        }
+        Event::FingerCanceled { finger_id, .. } if app.tracked.lifted(finger_id) => {
+            app.finger_cancel(now);
         }
         Event::Window {
             win_event:
