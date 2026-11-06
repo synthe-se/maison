@@ -191,8 +191,16 @@ MQEOF
 	rc-update add sshd default 2>/dev/null || true
 	rc-update add chronyd default 2>/dev/null || true
 
-	# Ensure sshd allows root login by key only (never by password)
-	sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+	# sshd: keys only, never a password, as a drop-in (read before sshd_config's own lines, so it
+	# wins). musl sshd without PAM let "*" shadow accounts (root) in with any password over 256
+	# characters while passwords were on (sshhole.com, 2026-11). Same as
+	# deploy/ssh/00-keys-only.conf, which deploy.sh upgrade keeps in place.
+	mkdir -p /etc/ssh/sshd_config.d
+	cat > /etc/ssh/sshd_config.d/00-keys-only.conf <<'SSHD'
+	PasswordAuthentication no
+	KbdInteractiveAuthentication no
+	PermitRootLogin prohibit-password
+	SSHD
 	sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 	# motd
