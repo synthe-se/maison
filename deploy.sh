@@ -62,6 +62,7 @@ REMOTE_LAYOUT=(
   "${REMOTE_WEB_DIR}"
   deploy/openrc
   deploy/mosquitto
+  deploy/ssh
   mosquitto/certs
   matter-trust
   cache/tempo
@@ -334,6 +335,7 @@ push_to_pi() {
   rsync_pi -avz "${ROOT_DIR}/deploy/openrc/cloudflared-maison" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
   rsync_pi -avz "${ROOT_DIR}/deploy/openrc/maison-mqtt-firewall" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
   rsync_pi -avz "${ROOT_DIR}/deploy/mosquitto/maison.conf" "${PI_HOST}:${PI_APP_DIR}/deploy/mosquitto/"
+  rsync_pi -avz "${ROOT_DIR}/deploy/ssh/00-keys-only.conf" "${PI_HOST}:${PI_APP_DIR}/deploy/ssh/"
   log "Pushing the plugs' addresses (Mosquitto's firewall)"
   plug_addresses >"${scratch}/plugs.allow"
   rsync_pi -avz --chown=root:root --chmod=F644 "${scratch}/plugs.allow" "${PI_HOST}:${PI_APP_DIR}/deploy/mosquitto/plugs.allow"
@@ -393,6 +395,20 @@ upgrade_pi() {
   ssh_pi_with_state <<'EOF'
 apk update
 apk add --no-cache bash ca-certificates curl git ip6tables iptables logrotate mosquitto rsync
+apk upgrade --no-cache $(apk info | grep '^openssh')
+
+# sshd: keys only (deploy/ssh/00-keys-only.conf), checked before sshd reloads it
+if [ -f "${APP_DIR}/deploy/ssh/00-keys-only.conf" ] &&
+  ! cmp -s "${APP_DIR}/deploy/ssh/00-keys-only.conf" /etc/ssh/sshd_config.d/00-keys-only.conf; then
+  mkdir -p /etc/ssh/sshd_config.d
+  cp "${APP_DIR}/deploy/ssh/00-keys-only.conf" /etc/ssh/sshd_config.d/00-keys-only.conf
+  if sshd -t; then
+    rc-service sshd reload
+  else
+    rm -f /etc/ssh/sshd_config.d/00-keys-only.conf
+    printf '%s\n' 'Error: sshd rejected 00-keys-only.conf, left out.' >&2
+  fi
+fi
 
 mkdir -p /etc/mosquitto/conf.d /etc/mosquitto/certs/maison /var/log/mosquitto /var/log
 
