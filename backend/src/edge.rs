@@ -57,6 +57,11 @@ const BACKLOG: usize = 64;
 #[derive(Debug, Clone, Copy)]
 pub struct Edge;
 
+/// A request through the edge from a client of the house's own (`edge client`, never the
+/// proxy): reached from the LAN, with a certificate the house gave it.
+#[derive(Debug, Clone, Copy)]
+pub struct HouseClient;
+
 /// The listener's TLS, and the proxy's own check: the certificates the house's CA signed.
 #[derive(Clone)]
 pub struct EdgeTls {
@@ -239,6 +244,9 @@ pub async fn from_edge(mut request: axum::extract::Request, next: Next) -> Respo
     };
     if let Some(client) = client {
         request.extensions_mut().insert(ConnectInfo(client));
+    }
+    if peer.is_some_and(|p| !p.proxy) {
+        request.extensions_mut().insert(HouseClient);
     }
     request.extensions_mut().insert(Edge);
     next.run(request).await
@@ -514,7 +522,12 @@ mod tests {
                 get(
                     |ConnectInfo(peer): ConnectInfo<SocketAddr>,
                      request: axum::extract::Request| async move {
-                        format!("edge={} peer={}", is_edge(request.extensions()), peer.ip())
+                        let house = request.extensions().get::<HouseClient>().is_some();
+                        format!(
+                            "edge={} peer={} house={house}",
+                            is_edge(request.extensions()),
+                            peer.ip()
+                        )
                     },
                 ),
             )
@@ -599,11 +612,14 @@ mod tests {
         // a frame is no proxy: what it forwards is not believed, its TCP address is its own
         let port_who = who(house.clone()).await;
         let answer = get_through(port_who, frame_tls.clone(), "/who", "203.0.113.66").await;
-        assert!(answer.contains("edge=true peer=127.0.0.1"), "{answer}");
+        assert!(
+            answer.contains("edge=true peer=127.0.0.1 house=true"),
+            "{answer}"
+        );
         let proxy_tls = client_config(&proxy, Some(&proxy));
         let answer = get_through(port_who, proxy_tls, "/who", "203.0.113.66").await;
         assert!(
-            answer.contains("edge=true peer=203.0.113.66"),
+            answer.contains("edge=true peer=203.0.113.66 house=false"),
             "the proxy is: {answer}"
         );
         assert!(

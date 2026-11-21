@@ -10,7 +10,10 @@
 //!
 //! The admin pairs from the screen's own network: the same public address (an IPv6 one counts
 //! as its /64). A code sent from elsewhere (« type this code in Maison ») pairs nothing: a
-//! browser across the internet never becomes one of the house's screens. A house on IPv4 and
+//! browser across the internet never becomes one of the house's screens. A screen that asks
+//! through the edge with a client certificate the house gave it (`edge client`: a wall frame
+//! on the LAN, the edge listener reached from the LAN only) is in the house whatever its address
+//! says, and the admin pairs it from wherever they sign in. A house on IPv4 and
 //! IPv6 is two addresses, and the phone may take the family the screen did not: a screen's
 //! claim from its other family (its secret proves it is the screen) adds that address, and the
 //! admin may stand at either.
@@ -49,6 +52,8 @@ struct Pending {
     code: String,
     /// The screen's address in its other family (IPv4 or IPv6), once a claim came from it.
     also: Option<IpAddr>,
+    /// It asked with a client certificate of the house's edge: in the house, wherever the admin.
+    house: bool,
     /// Once an admin paired it: the token and the screen's name, for its next claim.
     granted: Option<(String, String)>,
 }
@@ -118,6 +123,12 @@ impl Pairings {
     /// A new pairing asked from `ip`: the screen's secret and the code it shows (`ABCD-EFGH`).
     /// `Err(seconds)` when the address asks too often.
     pub fn start(&self, ip: IpAddr) -> Result<(String, String), u64> {
+        self.start_from(ip, false)
+    }
+
+    /// `start`, saying whether the screen asked with a client certificate of the house's edge
+    /// (`house`): such a screen is in the house, wherever the admin pairs it from.
+    pub fn start_from(&self, ip: IpAddr, house: bool) -> Result<(String, String), u64> {
         self.starts.hit(ip)?;
         let secret = random_secret();
         let mut waits = lock(&self.waits);
@@ -133,6 +144,7 @@ impl Pairings {
             Pending {
                 code: code.clone(),
                 also: None,
+                house,
                 granted: None,
             },
         );
@@ -207,9 +219,9 @@ impl Pairings {
 }
 
 /// Whether an admin at `group` stands where the screen `h` waits: its first address, or the
-/// one its other family showed.
+/// one its other family showed; anywhere for a screen in the house (its edge certificate).
 fn from_here(h: &Held<Pending>, group: IpAddr) -> bool {
-    h.from == group || h.value.also == Some(group)
+    h.value.house || h.from == group || h.value.also == Some(group)
 }
 
 fn new_code() -> String {
@@ -279,6 +291,24 @@ mod tests {
             Ok(Claim::Gone),
             "handed once"
         );
+    }
+
+    /// A screen in the house (its edge certificate: the LAN) is paired by an admin signed in
+    /// from the house's public address; one that is not, from that address, is not.
+    #[test]
+    fn a_screen_in_the_house_is_paired_from_wherever_the_admin_is() {
+        let pairings = Pairings::default();
+        let (lan, public) = (ip("192.168.1.5"), ip("203.0.113.40"));
+        let (secret, code) = pairings.start_from(lan, true).unwrap();
+        assert_eq!(pairings.waiting(&code, public), Waiting::Here);
+        assert!(pairings.grant(&code, public, "maison_x".into(), "Salon".into()));
+        assert!(matches!(
+            pairings.claim(lan, &secret),
+            Ok(Claim::Paired { .. })
+        ));
+
+        let (_, elsewhere) = pairings.start_from(lan, false).unwrap();
+        assert_eq!(pairings.waiting(&elsewhere, public), Waiting::Elsewhere);
     }
 
     #[test]

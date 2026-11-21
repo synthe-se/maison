@@ -80,11 +80,12 @@ fn screen_cookie(
 async fn start(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    house: Option<axum::Extension<crate::edge::HouseClient>>,
     headers: HeaderMap,
 ) -> Result<Json<Answer<Pairing>>, AppError> {
     let (secret, code) = state
         .pairings
-        .start(client_ip(addr, &headers))
+        .start_from(client_ip(addr, &headers), house.is_some())
         .map_err(too_many)?;
     Ok(Answer::ok(Pairing {
         code,
