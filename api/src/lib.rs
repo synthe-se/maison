@@ -30,8 +30,37 @@ pub use jiff::tz::TimeZone as Tz;
 /// days). Said here and never as the system's zone: a host without tzdata says UTC. From the
 /// database jiff embeds, so the same on every host.
 pub static HOUSE_TZ: std::sync::LazyLock<Tz> = std::sync::LazyLock::new(|| {
-    Tz::get(HOUSE_TZ_NAME).expect("jiff embeds the time zone database (tzdb-bundle-always)")
+    // the embedded database, never the system's: a host with a zoneinfo jiff reads that one alone
+    // (the wall frame's lacked the zone: its app panicked at start), one without falls back
+    jiff::tz::TimeZoneDatabase::bundled()
+        .get(HOUSE_TZ_NAME)
+        .expect("jiff embeds the time zone database (tzdb-bundle-always)")
 });
 
 /// `HOUSE_TZ`'s IANA name, for a service asked for its times in the house's zone (Open-Meteo).
 pub const HOUSE_TZ_NAME: &str = "Europe/Paris";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The house's zone comes from the embedded database, whatever the host has (or lacks):
+    /// Paris is UTC+1 in winter, UTC+2 in summer.
+    #[test]
+    fn the_house_zone_is_the_embedded_paris() {
+        let offset = |date: &str| {
+            date.parse::<jiff::Timestamp>()
+                .unwrap()
+                .to_zoned_datetime(HOUSE_TZ.clone())
+                .offset()
+                .seconds()
+        };
+        assert_eq!(offset("2026-01-15T12:00:00Z"), 3600);
+        assert_eq!(offset("2026-07-15T12:00:00Z"), 7200);
+        assert!(
+            jiff::tz::TimeZoneDatabase::bundled()
+                .get(HOUSE_TZ_NAME)
+                .is_ok()
+        );
+    }
+}
