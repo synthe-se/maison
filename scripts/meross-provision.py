@@ -15,7 +15,7 @@ A plug blinking green/red broadcasts an open AP "Meross_XXXX" with itself at
 
     # 3. point it at the local broker + set the signing key, then push WiFi
     ./scripts/meross-provision.py provision \
-        --mqtt-host 192.168.1.103 \
+        --mqtt-host <the broker's address> \
         --key blabliblou \
         --ssid "MonSSID" --password "MonMotDePasse"
 
@@ -26,6 +26,13 @@ IP, append {name, ip, key} to meross-devices.json and restart the backend.
 Factory-mode messages are signed with the EMPTY key; after provisioning the
 plug expects the key you set here (use the same one as the existing plugs,
 see meross-devices.json).
+
+The broker moved (Maison on another host): `repoint` sends a provisioned plug,
+at its LAN address and signed with its key, the same key message with the new
+broker, no reset, no WiFi change; `info --key` reads back what it holds:
+
+    ./scripts/meross-provision.py --host <plug's address> repoint \
+        --mqtt-host <the broker's address> --key <its key>
 """
 
 import argparse
@@ -72,7 +79,7 @@ def send(host: str, method: str, namespace: str, payload: dict, key: str = "", t
 
 
 def cmd_info(args: argparse.Namespace) -> None:
-    answer = send(args.host, "GET", "Appliance.System.All", {})
+    answer = send(args.host, "GET", "Appliance.System.All", {}, getattr(args, "key", "") or "")
     system = answer["payload"]["all"]["system"]
     hardware, firmware = system["hardware"], system["firmware"]
     print(f"type:     {hardware.get('type')} {hardware.get('chipType', '')}")
@@ -93,11 +100,8 @@ def cmd_scan(args: argparse.Namespace) -> None:
         )
 
 
-def cmd_provision(args: argparse.Namespace) -> None:
-    print("[*] Reading device identity...")
-    cmd_info(args)
-
-    print(f"[*] Setting key + MQTT broker {args.mqtt_host}:{args.mqtt_port} ...")
+def set_key(args: argparse.Namespace, signed_with: str) -> None:
+    """The plug's key and its broker (Appliance.Config.Key), the message signed with `signed_with`."""
     send(
         args.host,
         "SET",
@@ -114,7 +118,26 @@ def cmd_provision(args: argparse.Namespace) -> None:
                 "userId": "",
             }
         },
+        signed_with,
     )
+
+
+def cmd_repoint(args: argparse.Namespace) -> None:
+    print("[*] Before:")
+    cmd_info(args)
+    print(f"[*] Broker -> {args.mqtt_host}:{args.mqtt_port} (key unchanged) ...")
+    set_key(args, signed_with=args.key)
+    time.sleep(5)
+    print("[*] After:")
+    cmd_info(args)
+
+
+def cmd_provision(args: argparse.Namespace) -> None:
+    print("[*] Reading device identity...")
+    cmd_info(args)
+
+    print(f"[*] Setting key + MQTT broker {args.mqtt_host}:{args.mqtt_port} ...")
+    set_key(args, signed_with="")
 
     wifi = {
         "ssid": base64.b64encode(args.ssid.encode()).decode(),
@@ -145,11 +168,12 @@ def main() -> None:
     parser.add_argument("--host", default="10.10.10.1", help="plug address in AP mode (default 10.10.10.1)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("info", help="read device identity (Appliance.System.All)")
+    info = sub.add_parser("info", help="read device identity (Appliance.System.All)")
+    info.add_argument("--key", default="", help="a provisioned plug's key (empty in AP mode)")
     sub.add_parser("scan", help="list WiFi networks the plug sees")
 
     provision = sub.add_parser("provision", help="set key + broker, then push WiFi credentials")
-    provision.add_argument("--mqtt-host", required=True, help="Mosquitto host the plug will connect to (the Pi)")
+    provision.add_argument("--mqtt-host", required=True, help="Mosquitto host the plug will connect to (Maison's)")
     provision.add_argument("--mqtt-port", type=int, default=8883)
     provision.add_argument("--key", required=True, help="signing key (same as meross-devices.json entries)")
     provision.add_argument("--ssid", required=True)
@@ -159,8 +183,13 @@ def main() -> None:
     provision.add_argument("--encryption", type=int, default=0)
     provision.add_argument("--cipher", type=int, default=0)
 
+    repoint = sub.add_parser("repoint", help="a provisioned plug, on the LAN: its broker moved (key and WiFi kept)")
+    repoint.add_argument("--mqtt-host", required=True, help="the broker's new address")
+    repoint.add_argument("--mqtt-port", type=int, default=8883)
+    repoint.add_argument("--key", required=True, help="the plug's key (meross-devices.json)")
+
     args = parser.parse_args()
-    {"info": cmd_info, "scan": cmd_scan, "provision": cmd_provision}[args.command](args)
+    {"info": cmd_info, "scan": cmd_scan, "provision": cmd_provision, "repoint": cmd_repoint}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,7 @@ dev-only goes in it (pass `PUBLIC_URL=http://localhost:5173` in the shell when d
 | `RTE_CLIENT_ID`, `RTE_CLIENT_SECRET` | optional: RTE's official Tempo API (free account on data.rte-france.com), else open data |
 | `SCENES_JSON_PATH` | optional: where the scenes are kept (default `scenes.json`); every state file has such a `*_JSON_PATH` |
 | `PHOTOS_DIR` | optional: where the wall frame's photos are kept (default `photos/`, 0700, made by the first one) |
+| `EDGE_LISTEN` | optional: the edge listener's address (`backend/src/edge.rs`), the public address without a tunnel on this host; its certificates in `EDGE_DIR` (default `edge/`) |
 | `PORT` | optional, default 3033 (`API_PORT` is read too); a value that does not parse is logged and the default used, like every numeric setting |
 
 Device addresses live in their own files: `devices.json` (Tuya, with local keys) and
@@ -93,6 +94,19 @@ the deploy), and each start rebuilds the firewall's rules from it. Logs:
 0640 (they name people, addresses and refusals), rotated daily and kept 14 days, compressed
 (logrotate): an incident noticed a week late can still be read. Every 401 and 403 is logged
 with its code, the path, who asked and the client's address.
+
+### The AirTies box (`DEPLOY_TARGET=box`)
+
+The backend also runs on the AirTies set-top box, whose image ([uplg/BCM7231B2](https://github.com/uplg/BCM7231B2),
+its Maison role) provides what this host needs and runs the services.
+
+```bash
+DEPLOY_TARGET=box ./deploy.sh all|build|push|start|stop|status|logs
+```
+
+`build` runs `make maison` in `AIRTIES_DIR` (default `../airties-upcycling`). With `EDGE_LISTEN`
+set, `EDGE_HOUSE_DIR` names the directory `maison-backend edge init` made for this host: its
+certificates are pushed to `EDGE_DIR`.
 
 ### A copy off the Pi (optional, not set up by deploy.sh)
 

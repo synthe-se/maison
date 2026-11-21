@@ -2,6 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# pi: the Raspberry Pi (Alpine, OpenRC, cloudflared). box: the AirTies box (its image runs the
+# services, airties-upcycling builds the backend).
+DEPLOY_TARGET="${DEPLOY_TARGET:-pi}"
+AIRTIES_DIR="${AIRTIES_DIR:-${ROOT_DIR}/../airties-upcycling}"
+# box: the edge's certificates for this host (`maison-backend edge init`'s first directory), when
+# EDGE_LISTEN is set
+EDGE_HOUSE_DIR="${EDGE_HOUSE_DIR:-}"
 PI_HOST="${PI_HOST:-}"
 PI_PASSWORD="${PI_PASSWORD:-}"
 PI_APP_DIR="${PI_APP_DIR:-/opt/maison}"
@@ -84,6 +91,10 @@ Commands:
   status   Show service status, dependency hints, and final URLs
 
 Environment:
+  DEPLOY_TARGET    pi (default) or box (the AirTies box: no upgrade, no tunnel, its image runs
+                   the services; the backend built by AIRTIES_DIR's `make maison`)
+  AIRTIES_DIR      box: the airties-upcycling checkout, default ../airties-upcycling
+  EDGE_HOUSE_DIR   box: the edge's certificates for this host (maison-backend edge init)
   PI_HOST          SSH target, required for push/upgrade/start/all/logs/status
   PI_PASSWORD      Optional SSH password used via sshpass when installed locally
   PI_APP_DIR       Remote app directory, default /opt/maison
@@ -172,7 +183,16 @@ remote_state_script() {
 LAYOUT="$1"
 STATE_DIRS="$2"
 shift 2
+EOF
+  # The box's image carries its accounts (maison in dialout); the Pi makes them
+  if [ "${DEPLOY_TARGET}" = pi ]; then
+    remote_accounts_script
+  fi
+  remote_layout_script
+}
 
+remote_accounts_script() {
+  cat <<'EOF'
 if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
   addgroup -S "${SERVICE_GROUP}"
 fi
@@ -190,7 +210,11 @@ fi
 if ! id -u "${TUNNEL_USER}" >/dev/null 2>&1; then
   adduser -S -D -H -h /var/empty -G "${TUNNEL_USER}" -s /sbin/nologin "${TUNNEL_USER}"
 fi
+EOF
+}
 
+remote_layout_script() {
+  cat <<'EOF'
 for dir in ${LAYOUT}; do
   mkdir -p "${APP_DIR}/${dir}"
 done
@@ -611,8 +635,183 @@ fi
 EOF
 }
 
+# ---- The AirTies box (DEPLOY_TARGET=box) ----
+# Its image (airties-upcycling, the Maison role) runs maison-run, mosquitto-run and clapier-run
+# from init: they start once the files below are there, and init restarts what exits. No rsync
+# there: files go over ssh, through tar or cat. The same layout under /opt/maison as on the Pi.
+
+BOX_BACKEND_BIN="${AIRTIES_DIR}/build_output/maison-backend"
+
+build_box() {
+  run_local bun install --cwd "${ROOT_DIR}/web" --frozen-lockfile
+  run_local bun run --cwd "${ROOT_DIR}/web" build
+  run_local make -C "${AIRTIES_DIR}" maison MAISON_DIR="${ROOT_DIR}"
+}
+
+# box_file <local file> <remote path> <owner:group> <mode>: replaced whole (a temp file, renamed)
+box_file() {
+  ssh_pi "set -eu; t=\"$2.new\"; mkdir -p \"\$(dirname \"$2\")\"; cat >\"\${t}\"; chown $3 \"\${t}\"; chmod $4 \"\${t}\"; mv \"\${t}\" \"$2\"" <"$1"
+}
+
+# box_tree <local dir> <remote dir>: the tree replaced whole (unpacked aside, then swapped)
+box_tree() {
+  COPYFILE_DISABLE=1 tar -C "$1" --no-xattrs -cf - . |
+    ssh_pi "set -eu; d=\"$2\"; rm -rf \"\${d}.new\"; mkdir -p \"\${d}.new\"; tar -C \"\${d}.new\" -xf -; rm -rf \"\${d}.old\"; if [ -e \"\${d}\" ]; then mv \"\${d}\" \"\${d}.old\"; fi; mv \"\${d}.new\" \"\${d}\"; rm -rf \"\${d}.old\"; chown -R root:root \"\${d}\""
+}
+
+push_to_box() {
+  require_host
+  if [ ! -f "${BOX_BACKEND_BIN}" ]; then
+    printf 'Missing backend artifact: %s\nRun DEPLOY_TARGET=box ./deploy.sh build first.\n' "${BOX_BACKEND_BIN}" >&2
+    exit 1
+  fi
+  if [ ! -d "${ROOT_DIR}/${REMOTE_WEB_DIR}" ]; then
+    printf 'Missing %s. Run DEPLOY_TARGET=box ./deploy.sh build first.\n' "${REMOTE_WEB_DIR}" >&2
+    exit 1
+  fi
+  ssh_pi 'mountpoint -q /opt' || { printf '%s\n' 'The box has no /opt (mtd6): its image is older than the Maison role.' >&2; exit 1; }
+
+  log "Preparing /opt/maison"
+  ssh_pi_with_state </dev/null
+
+  log "Pushing backend artifact"
+  box_file "${BOX_BACKEND_BIN}" "${PI_APP_DIR}/${REMOTE_BACKEND_DIR}/maison-backend" root:root 755
+  log "Pushing web bundle"
+  box_tree "${ROOT_DIR}/${REMOTE_WEB_DIR}" "${PI_APP_DIR}/${REMOTE_WEB_DIR}"
+
+  local scratch
+  scratch="$(mktemp -d)"
+  # shellcheck disable=SC2064 # the directory is known now
+  trap "rm -rf '${scratch}'" EXIT
+
+  # Secrets: root's, readable by the service's group only
+  if [ -f "${PI_ENV_FILE}" ]; then
+    log "Pushing env file"
+    grep -v '^CLOUDFLARE_TUNNEL_TOKEN=' "${PI_ENV_FILE}" >"${scratch}/env" || [ $? -eq 1 ]
+    box_file "${scratch}/env" "${PI_APP_DIR}/.env" "root:${PI_SERVICE_GROUP}" 640
+  else
+    warn "Env file not found at ${PI_ENV_FILE}; keeping remote .env untouched"
+  fi
+  local relative_path
+  for relative_path in "${RUNTIME_FILES[@]}"; do
+    if [ -f "${ROOT_DIR}/${relative_path}" ]; then
+      log "Pushing ${relative_path}"
+      box_file "${ROOT_DIR}/${relative_path}" "${PI_APP_DIR}/${relative_path}" "root:${PI_SERVICE_GROUP}" 640
+    fi
+  done
+
+  # The edge's certificates (edge.rs): the service's own directory, its key 0600
+  if [ -n "${EDGE_HOUSE_DIR}" ]; then
+    log "Pushing the edge's certificates"
+    for f in ca.pem cert.pem; do
+      box_file "${EDGE_HOUSE_DIR}/${f}" "${PI_APP_DIR}/edge/${f}" "${PI_SERVICE_USER}:${PI_SERVICE_GROUP}" 644
+    done
+    box_file "${EDGE_HOUSE_DIR}/key.pem" "${PI_APP_DIR}/edge/key.pem" "${PI_SERVICE_USER}:${PI_SERVICE_GROUP}" 600
+  elif [ -n "$(env_value EDGE_LISTEN)" ]; then
+    warn "EDGE_LISTEN is set but EDGE_HOUSE_DIR is not: the box keeps the edge certificates it has"
+  fi
+
+  log "Pushing Mosquitto's configuration, certificates and the plugs' addresses (its firewall)"
+  box_file "${ROOT_DIR}/deploy/mosquitto/maison.conf" /etc/mosquitto/maison.conf root:root 644
+  if [ -d "${ROOT_DIR}/mosquitto/certs" ]; then
+    # The CA private key never needs to leave this machine.
+    for f in ca.pem server.pem; do
+      box_file "${ROOT_DIR}/mosquitto/certs/${f}" "/etc/mosquitto/certs/maison/${f}" mosquitto:mosquitto 644
+    done
+    box_file "${ROOT_DIR}/mosquitto/certs/server-key.pem" /etc/mosquitto/certs/maison/server-key.pem mosquitto:mosquitto 600
+  else
+    warn "mosquitto/certs is missing locally; the TLS listener cannot start"
+  fi
+  plug_addresses >"${scratch}/plugs.allow"
+  box_file "${scratch}/plugs.allow" "${PI_APP_DIR}/deploy/mosquitto/plugs.allow" root:root 644
+
+  log "Pushing Matter attestation roots"
+  box_tree "${ROOT_DIR}/matter-trust" "${PI_APP_DIR}/matter-trust"
+
+  if [ -d "${ROOT_DIR}/cache/tempo" ]; then
+    log "Pushing the Tempo cache"
+    # What the box has learnt since (seasons, netload.json, weather.json) is newer and stays;
+    # model.json is fitted here (fit_tempo) and versioned: always this machine's.
+    COPYFILE_DISABLE=1 tar -C "${ROOT_DIR}/cache/tempo" --no-xattrs -cf - . |
+      ssh_pi "set -eu; d=${PI_APP_DIR}/cache/tempo; s=\$(mktemp -d); tar -C \"\${s}\" -xf -; mkdir -p \"\${d}\"; for f in \"\${s}\"/*; do n=\"\${d}/\${f##*/}\"; if [ ! -e \"\${n}\" ] || [ \"\${f##*/}\" = model.json ] || [ \"\${f}\" -nt \"\${n}\" ]; then cp \"\${f}\" \"\${n}\"; fi; done; rm -rf \"\${s}\""
+  fi
+
+  fix_state_ownership
+}
+
+start_box() {
+  log "Restarting the stack on the box"
+  ssh_pi_script <<'EOF'
+rm -f "${APP_DIR}/stopped"
+# init (inittab respawn) starts them again at once, from the files just pushed; mosquitto-run
+# rebuilds the plugs' firewall first
+killall maison-backend mosquitto 2>/dev/null || true
+port="$(grep -E '^PORT=' "${APP_DIR}/.env" | tail -n1 | cut -d'=' -f2-)" || true
+n=0
+until wget -q -O - "http://127.0.0.1:${port:-3033}/health" >/dev/null 2>&1; do
+  n=$((n + 1))
+  if [ "${n}" -ge 60 ]; then
+    printf '%s\n' 'maison: no /health after 60 s (DEPLOY_TARGET=box ./deploy.sh logs)' >&2
+    exit 1
+  fi
+  sleep 1
+done
+printf 'maison: healthy after %s s\n' "${n}"
+for p in mosquitto clapier; do
+  if pidof "${p}" >/dev/null; then printf '%s: running\n' "${p}"; else printf '%s: not running\n' "${p}"; fi
+done
+EOF
+}
+
+stop_box() {
+  log "Stopping the stack on the box"
+  ssh_pi_script <<'EOF'
+# the run scripts wait while this file exists
+touch "${APP_DIR}/stopped"
+killall maison-backend mosquitto 2>/dev/null || true
+nft delete table inet maison_mqtt 2>/dev/null || true
+printf '%s\n' 'maison, mosquitto: stopped (DEPLOY_TARGET=box ./deploy.sh start to restart)'
+EOF
+}
+
+logs_box() {
+  log "Following ${1:-stack} logs on the box"
+  ssh_pi "maison-logs ${1:-stack}"
+}
+
+status_box() {
+  log "Collecting deployment status from the box"
+  ssh_pi maison-status
+}
+
 COMMAND="${1:-all}"
 LOG_TARGET="${2:-stack}"
+
+if [ "${DEPLOY_TARGET}" = box ]; then
+  case "${COMMAND}" in
+    all) build_box; push_to_box; start_box ;;
+    build) build_box ;;
+    push) push_to_box ;;
+    start) start_box ;;
+    stop) stop_box ;;
+    logs) logs_box "${LOG_TARGET}" ;;
+    status) status_box ;;
+    upgrade)
+      printf '%s\n' 'The box has no package manager: its software comes with its image (airties-upcycling).' >&2
+      exit 1
+      ;;
+    help | -h | --help) usage ;;
+    *)
+      printf 'Unknown command: %s\n\n' "${COMMAND}" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+elif [ "${DEPLOY_TARGET}" != pi ]; then
+  printf 'DEPLOY_TARGET: pi or box, not %s\n' "${DEPLOY_TARGET}" >&2
+  exit 1
+fi
 
 case "${COMMAND}" in
   all)
