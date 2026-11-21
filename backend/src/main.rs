@@ -70,19 +70,35 @@ async fn main() {
         }
     };
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(until_stopped(stopped))
-    .await
-    .expect("server error");
-    if let Some(edge) = edge {
-        edge.await.expect("edge task").expect("edge server error");
+    let for_serving = stopped.clone();
+    let serving = async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(until_stopped(for_serving))
+        .await
+        .expect("server error");
+        if let Some(edge) = edge {
+            edge.await.expect("edge task").expect("edge server error");
+        }
+    };
+    // An event stream never ends by itself (a wall screen keeps one open): the connections
+    // still open SHUTDOWN_GRACE after the signal are dropped, and the state is saved all the same
+    let grace = async {
+        until_stopped(stopped).await;
+        tokio::time::sleep(SHUTDOWN_GRACE).await;
+    };
+    tokio::select! {
+        () = serving => {}
+        () = grace => tracing::warn!("connections still open after the grace: closed"),
     }
 
     state.shutdown().await;
 }
+
+/// How long open connections get to finish once the service is told to stop.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 const EDGE_USAGE: &str = "usage: maison-backend edge init <house dir> <proxy dir>
        maison-backend edge client <house dir> <client dir> <name>
