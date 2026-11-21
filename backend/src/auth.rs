@@ -151,10 +151,14 @@ pub fn cookie_name(config: &Config, which: CookieName) -> String {
 
 /// A named cookie's value from the request headers.
 pub fn cookie_value<'a>(headers: &'a HeaderMap, cookie_name: &str) -> Option<&'a str> {
+    // every Cookie header, not the first: over HTTP/2 the cookies may come one per header
+    // (RFC 9113 8.2.3), and the edge speaks HTTP/2 to the proxy. Reading the first alone lost
+    // the session whenever it was not in it: signed out at a restart, a new sign-in unseen.
     headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|value| value.to_str().ok())?
-        .split(';')
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
         .filter_map(|cookie| cookie.trim().split_once('='))
         .find_map(|(name, value)| (name == cookie_name).then_some(value))
 }
@@ -1000,6 +1004,23 @@ fn prune(tokens: &mut Tokens, now: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Over HTTP/2 the cookies may come one per header (RFC 9113 8.2.3): the session is found
+    /// in any of them, not only in the first.
+    #[test]
+    fn a_cookie_is_found_in_any_cookie_header() {
+        use axum::http::{HeaderValue, header::COOKIE};
+        let mut headers = HeaderMap::new();
+        headers.append(COOKIE, HeaderValue::from_static("theme=dark"));
+        headers.append(
+            COOKIE,
+            HeaderValue::from_static("__Host-session=abc; other=1"),
+        );
+        assert_eq!(cookie_value(&headers, "__Host-session"), Some("abc"));
+        assert_eq!(cookie_value(&headers, "theme"), Some("dark"));
+        assert_eq!(cookie_value(&headers, "other"), Some("1"));
+        assert_eq!(cookie_value(&headers, "missing"), None);
+    }
 
     #[tokio::test]
     async fn a_service_token_is_random_base64url_shown_once_and_its_use_dated_hourly() {

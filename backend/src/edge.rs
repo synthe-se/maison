@@ -409,6 +409,16 @@ mod tests {
 
     /// A GET over HTTP/2, the client offering h2 as Caddy and curl do: the answer's body.
     async fn h2_through(port: u16, config: Arc<ClientConfig>, path: &str) -> String {
+        h2_with(port, config, path, &[]).await
+    }
+
+    /// `h2_through`, with these headers too (each its own field, as HTTP/2 sends cookies).
+    async fn h2_with(
+        port: u16,
+        config: Arc<ClientConfig>,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> String {
         let mut config = (*config).clone();
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -424,10 +434,12 @@ mod tests {
         );
         let (mut client, connection) = h2::client::handshake(tls).await.unwrap();
         tokio::spawn(connection);
-        let request = axum::http::Request::get(format!("https://{SERVER_NAME}{path}"))
-            .header("x-forwarded-for", "203.0.113.20")
-            .body(())
-            .unwrap();
+        let mut request = axum::http::Request::get(format!("https://{SERVER_NAME}{path}"))
+            .header("x-forwarded-for", "203.0.113.20");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let request = request.body(()).unwrap();
         let (answer, _) = client.send_request(request, true).unwrap();
         let mut body = answer.await.unwrap().into_body();
         let mut text = Vec::new();
@@ -551,6 +563,52 @@ mod tests {
             .unwrap();
         });
         port
+    }
+
+    /// A browser's cookies over HTTP/2, one per header field: the session cookie is read
+    /// whatever field it came in (the backend once read the first alone: signed out).
+    #[tokio::test]
+    async fn cookies_split_over_http2_are_all_read() {
+        let root = crate::util::test_dir();
+        let (house, proxy) = (root.path().join("edge"), root.path().join("proxy"));
+        init(&house, &proxy).unwrap();
+        let app = Router::new()
+            .route(
+                "/session",
+                get(|request: axum::extract::Request| async move {
+                    crate::auth::cookie_value(request.headers(), "__Host-session")
+                        .unwrap_or("none")
+                        .to_string()
+                }),
+            )
+            .layer(axum::middleware::from_fn(from_edge));
+        let listener = EdgeListener::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            server_config(&house).unwrap(),
+        )
+        .await
+        .unwrap();
+        let port = axum::serve::Listener::local_addr(&listener)
+            .unwrap()
+            .addr
+            .port();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<EdgePeer>(),
+            )
+            .await
+            .unwrap();
+        });
+        let cookies = [("cookie", "theme=dark"), ("cookie", "__Host-session=abc")];
+        let answer = h2_with(
+            port,
+            client_config(&proxy, Some(&proxy)),
+            "/session",
+            &cookies,
+        )
+        .await;
+        assert_eq!(answer, "abc");
     }
 
     /// `edge client`: the new client checks the house by the `ca.pem` it was given and is let
