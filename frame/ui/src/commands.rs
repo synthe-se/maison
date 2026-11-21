@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use maison_api::paces;
 use serde::Serialize;
 use serde_json::Value;
@@ -254,7 +254,7 @@ pub struct Commands {
     /// The latest order given while its key's was on the wire, sent once it answers.
     waiting: HashMap<String, (Order, u64)>,
     /// Each toggle's last order that went through (an assumed state's only knowledge).
-    last: HashMap<String, (bool, DateTime<Utc>)>,
+    last: HashMap<String, (bool, Timestamp)>,
     generation: u64,
     tx: Sender<Done>,
     rx: Receiver<Done>,
@@ -445,7 +445,8 @@ impl Commands {
             let late_said = r.said;
             r.said = true;
             if !failed && let Some(target) = r.target {
-                self.last.insert(done.key.clone(), (target, Utc::now()));
+                self.last
+                    .insert(done.key.clone(), (target, Timestamp::now()));
             }
             if !failed {
                 // a success settles, past its limit too: the tile said « Pas de réponse », the
@@ -497,7 +498,7 @@ impl Commands {
     }
 
     /// The toggle's last order that went through: where it went, and when.
-    pub fn last(&self, key: &str) -> Option<(bool, DateTime<Utc>)> {
+    pub fn last(&self, key: &str) -> Option<(bool, Timestamp)> {
         self.last.get(key).copied()
     }
 

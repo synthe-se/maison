@@ -3,9 +3,8 @@
 //! Before 06:00 it says it as it is: yesterday's color is still in force (« Encore blanc
 //! jusqu'à 6:00 »), today's starts at 06:00.
 
-use chrono::NaiveDate;
-use chrono::{DateTime, Datelike, Duration, Timelike};
-use maison_api::Tz;
+use jiff::civil::Date;
+use jiff::{ToSpan, ZonedDateTime};
 use maison_api::meross::ConsumptionEntry;
 use maison_api::tempo::{
     Backtest, Calendar, Color, Forecast, ForecastDay, Hours, SeasonStock, Tariffs, Today, UNSURE,
@@ -24,13 +23,13 @@ pub use maison_api::tempo::{Period, PriceNow};
 
 /// What a kWh costs at `now`; `None` without prices or without the color in force
 /// (maison-api's `Today::price_at`, the backend's rule).
-pub fn price_now(now: &DateTime<Tz>, data: &Today) -> Option<PriceNow> {
-    data.price_at(now.with_timezone(&chrono::Utc))
+pub fn price_now(now: &ZonedDateTime, data: &Today) -> Option<PriceNow> {
+    data.price_at(now.timestamp())
 }
 
 /// The color a day had: from the season's calendar once it is actual, else from what /tempo
 /// says of yesterday and today (price.ts `colorOn`).
-pub fn color_on(day: NaiveDate, season: Option<&Calendar>, data: Option<&Today>) -> Option<Color> {
+pub fn color_on(day: Date, season: Option<&Calendar>, data: Option<&Today>) -> Option<Color> {
     season
         .and_then(|s| {
             s.calendar
@@ -60,7 +59,7 @@ pub struct MonthEstimate {
 /// `month`: « 2026-10 ».
 pub fn month_estimate(
     days: &[ConsumptionEntry],
-    color_of: impl Fn(NaiveDate) -> Option<Color>,
+    color_of: impl Fn(Date) -> Option<Color>,
     tariffs: &Tariffs,
     hours: &Hours,
     month: &str,
@@ -71,7 +70,7 @@ pub fn month_estimate(
         days: 0,
     };
     for d in days.iter().filter(|d| d.date.starts_with(month)) {
-        let Ok(day) = NaiveDate::parse_from_str(&d.date, "%Y-%m-%d") else {
+        let Ok(day) = d.date.parse::<Date>() else {
             continue;
         };
         let Some(color) = color_of(day) else {
@@ -159,7 +158,7 @@ pub fn next_line(
     data: &Today,
     current: Option<&PriceNow>,
     forecast: Option<&Forecast>,
-    now: &DateTime<Tz>,
+    now: &ZonedDateTime,
 ) -> String {
     if let Some(c) = current
         && !c.day_started
@@ -183,7 +182,9 @@ pub fn next_line(
     }
     let f = forecast.and_then(|f| f.days.iter().find(|d| d.date == data.tomorrow.date));
     let mut parts = Vec::new();
-    if now.hour() * 60 + now.minute() < ANNOUNCED_AT {
+    if u32::from(now.hour().unsigned_abs()) * 60 + u32::from(now.minute().unsigned_abs())
+        < ANNOUNCED_AT
+    {
         parts.push(w.s(k::TEMPO_ANNOUNCED_AT));
     }
     if let Some(f) = f {
@@ -198,7 +199,7 @@ pub fn next_line(
 }
 
 /// The Tempo tile, from what /tempo and /tempo/forecast said.
-pub fn tile(w: &Words, data: &Today, forecast: Option<&Forecast>, now: &DateTime<Tz>) -> Tile {
+pub fn tile(w: &Words, data: &Today, forecast: Option<&Forecast>, now: &ZonedDateTime) -> Tile {
     let current = price_now(now, data);
     let next = next_line(w, data, current.as_ref(), forecast, now);
     Tile::new(
@@ -261,7 +262,7 @@ pub fn period_color(w: &Words, period: Period, color: Color) -> String {
 
 /// One day of the week (ForecastCard): RTE's colour once published; else Maison's forecast,
 /// its probabilities as one bar, and how often it was right this far ahead.
-pub fn day_tile(w: &Words, d: &ForecastDay, today: NaiveDate) -> Tile {
+pub fn day_tile(w: &Words, d: &ForecastDay, today: Date) -> Tile {
     let parts = if d.official {
         vec![Part::Hint(w.s(k::TEMPO_OFFICIAL))]
     } else {
@@ -330,7 +331,7 @@ pub fn stock_tile(w: &Words, s: &SeasonStock, c: Color) -> Tile {
 
 /// TempoPrices: the price in force until when, the other period's, tomorrow's once published;
 /// then each colour's two rates.
-pub fn price_tiles(w: &Words, data: &Today, now: &DateTime<Tz>) -> Vec<Tile> {
+pub fn price_tiles(w: &Words, data: &Today, now: &ZonedDateTime) -> Vec<Tile> {
     let mut tiles = Vec::new();
     if let (Some(c), Some(t)) = (price_now(now, data), &data.tariffs) {
         let rates = t.of(c.color);
@@ -393,20 +394,23 @@ const FIRST_MONTH: i32 = 2014 * 12 + 8;
 /// Forecasts reach a week ahead: no month beyond that one.
 const FORECAST_DAYS: i64 = 7;
 
-fn month_index(day: NaiveDate) -> i32 {
-    day.year() * 12 + day.month0() as i32
+fn month_index(day: Date) -> i32 {
+    i32::from(day.year()) * 12 + crate::i18n::month0(day) as i32
 }
 
 /// A month of a season's days: RTE's, then the forecast's with their probability.
-pub fn month(w: &Words, index: i32, season: Option<&Calendar>, today: NaiveDate) -> Month {
+pub fn month(w: &Words, index: i32, season: Option<&Calendar>, today: Date) -> Month {
     let (year, month0) = (index.div_euclid(12), index.rem_euclid(12) as u32);
-    let first = NaiveDate::from_ymd_opt(year, month0 + 1, 1).unwrap_or(today);
-    let days = (1..=31)
-        .map_while(|d| first.with_day(d))
+    let first = i16::try_from(year)
+        .ok()
+        .and_then(|y| Date::new(y, month0 as i8 + 1, 1).ok())
+        .unwrap_or(today);
+    let days = (1..=first.days_in_month())
+        .filter_map(|d| first.with().day(d).build().ok())
         .map(|date| {
             let read = season.and_then(|s| s.calendar.iter().find(|d| d.date == date));
             Day {
-                day: date.day(),
+                day: u32::from(date.day().unsigned_abs()),
                 color: read.map(|d| d.color),
                 forecast: read.filter(|d| d.is_prediction).map(|d| {
                     let sure = d.confidence.unwrap_or(0.0);
@@ -419,16 +423,16 @@ pub fn month(w: &Words, index: i32, season: Option<&Calendar>, today: NaiveDate)
     Month {
         title: w.month_year(year, month0 as usize),
         weekdays: std::array::from_fn(|i| w.weekday_short(i)),
-        lead: first.weekday().num_days_from_monday() as usize,
+        lead: crate::i18n::weekday0(first),
         days,
     }
 }
 
 /// TempoCalendar: the way between months (to today's, always there), the month, what its colors
 /// count. At either end a button stays, not operable.
-fn calendar_parts(w: &Words, index: i32, c: Option<&Calendar>, today: NaiveDate) -> Vec<Part> {
+fn calendar_parts(w: &Words, index: i32, c: Option<&Calendar>, today: Date) -> Vec<Part> {
     let this = month_index(today);
-    let last = month_index(today + Duration::days(FORECAST_DAYS));
+    let last = month_index(today + FORECAST_DAYS.days());
     let go = |icon, label: String, to: i32, can: bool| {
         Button::new(icon, label, Act::Month(to)).unavailable(!can)
     };
@@ -510,7 +514,7 @@ pub fn page(cx: &mut Cx) -> Screen {
     let today = cx.live.want(&cx.sources.tempo);
     let forecast = cx.live.want(&cx.sources.forecast);
     let now = cx.house_now();
-    let day = now.date_naive();
+    let day = now.date();
     let shown = cx.month.unwrap_or_else(|| month_index(day));
     let season = season_of(shown.div_euclid(12), shown.rem_euclid(12) as u32);
     let source = cx.sources.calendar(&season).clone();
@@ -571,9 +575,7 @@ pub fn page(cx: &mut Cx) -> Screen {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
-    use chrono::TimeZone;
     use maison_api::Answer;
-    use maison_api::HOUSE_TZ;
 
     fn today(yesterday: &str, today: &str, tomorrow: &str) -> Today {
         let color = |c: &str| {
@@ -592,8 +594,8 @@ mod tests {
         serde_json::from_str::<Answer<Today>>(&json).unwrap().body
     }
 
-    fn at(h: u32, m: u32) -> DateTime<Tz> {
-        HOUSE_TZ.with_ymd_and_hms(2026, 11, 12, h, m, 0).unwrap()
+    fn at(h: i8, m: i8) -> ZonedDateTime {
+        crate::families::house_at(2026, 11, 12, h, m)
     }
 
     #[test]
@@ -658,7 +660,7 @@ mod tests {
         )
         .unwrap()
         .body;
-        let day = at(14, 0).date_naive();
+        let day = at(14, 0).date();
         let rte = day_tile(&w, &f.days[0], day);
         assert_eq!(rte.name, "Demain");
         assert_eq!(rte.state, "Bleu");
@@ -707,7 +709,7 @@ mod tests {
     #[test]
     fn a_month_is_its_days_rte_s_then_the_forecasts_today_marked() {
         let w = Words::new(Lang::Fr);
-        let day = at(14, 0).date_naive();
+        let day = at(14, 0).date();
         let c = calendar();
         let m = month(&w, month_index(day), Some(&c), day);
         assert_eq!(m.title, "Novembre 2026");
@@ -728,7 +730,7 @@ mod tests {
     #[test]
     fn the_calendar_goes_from_month_to_month_within_its_bounds() {
         let w = Words::new(Lang::Fr);
-        let day = at(14, 0).date_naive();
+        let day = at(14, 0).date();
         let this = month_index(day);
         let c = calendar();
         let parts = calendar_parts(&w, this, Some(&c), day);
@@ -770,7 +772,7 @@ mod tests {
     fn a_days_color_comes_from_the_season_then_from_what_tempo_says() {
         let d = today("WHITE", "RED", "");
         let c = calendar();
-        let date = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let date = |s: &str| s.parse::<Date>().unwrap();
         assert_eq!(
             color_on(date("2026-11-01"), Some(&c), Some(&d)),
             Some(Color::Red)

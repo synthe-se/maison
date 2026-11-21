@@ -23,7 +23,7 @@ use axum::{
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
-use chrono::{Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 use time::Duration as CookieDuration;
 
@@ -99,8 +99,10 @@ pub(crate) async fn open_session(
         issued_ms: now_ms(),
         auth_ms,
         sid: family.clone(),
-        exp: u64::try_from((Utc::now() + Duration::minutes(ACCESS_TOKEN_MINUTES)).timestamp())
-            .unwrap_or_default(),
+        exp: u64::try_from(
+            (Timestamp::now() + SignedDuration::from_mins(ACCESS_TOKEN_MINUTES)).as_second(),
+        )
+        .unwrap_or_default(),
     };
     let token = encode_token(&claims, state.config.jwt_secret.as_bytes())?;
     let refresh_token = random_secret();
@@ -110,7 +112,9 @@ pub(crate) async fn open_session(
             &refresh_token,
             RefreshEntry {
                 user_id: person.id.clone(),
-                expires_at: (Utc::now() + Duration::days(REFRESH_TOKEN_DAYS)).timestamp(),
+                expires_at: (Timestamp::now()
+                    + SignedDuration::from_hours(24 * REFRESH_TOKEN_DAYS))
+                .as_second(),
                 family: family.clone(),
                 auth_ms,
             },

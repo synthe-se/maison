@@ -4,7 +4,8 @@
 
 use std::borrow::Cow;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use jiff::Timestamp;
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -46,7 +47,7 @@ impl Color {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Day {
-    pub date: NaiveDate,
+    pub date: Date,
     /// `None` until RTE publishes it.
     pub color: Option<Color>,
 }
@@ -119,8 +120,8 @@ pub struct PriceNow {
 
 /// « HH:MM » as minutes after midnight (0 when it does not read).
 fn minutes(hhmm: &str) -> u32 {
-    chrono::NaiveTime::parse_from_str(hhmm, "%H:%M").map_or(0, |t| {
-        chrono::Timelike::hour(&t) * 60 + chrono::Timelike::minute(&t)
+    jiff::civil::Time::strptime("%H:%M", hhmm).map_or(0, |t| {
+        u32::try_from(t.hour()).unwrap_or(0) * 60 + u32::try_from(t.minute()).unwrap_or(0)
     })
 }
 
@@ -141,7 +142,7 @@ pub struct Tariffs {
     /// The yearly subscription, tax included (€).
     pub subscription: Option<f64>,
     /// When these prices came into force.
-    pub starts_on: NaiveDate,
+    pub starts_on: Date,
 }
 
 impl Tariffs {
@@ -167,7 +168,7 @@ pub struct Today {
     pub hours: Hours,
     pub stock: SeasonStock,
     /// When the colours were last fetched (`None`: only from the file so far).
-    pub last_updated: Option<DateTime<Utc>>,
+    pub last_updated: Option<Timestamp>,
     /// The last ask failed: what is shown is older.
     pub cached: bool,
 }
@@ -176,9 +177,10 @@ impl Today {
     /// What a kWh costs at `now` (read at the house): the colour in force (yesterday's
     /// until the peak hours start), peak or off-peak, until when. `None` without prices or
     /// without the colour in force.
-    pub fn price_at(&self, now: DateTime<Utc>) -> Option<PriceNow> {
-        let local = now.with_timezone(&crate::HOUSE_TZ);
-        let t = chrono::Timelike::hour(&local) * 60 + chrono::Timelike::minute(&local);
+    pub fn price_at(&self, now: Timestamp) -> Option<PriceNow> {
+        let local = now.to_zoned_datetime(crate::HOUSE_TZ.clone());
+        let t = u32::try_from(local.hour()).unwrap_or(0) * 60
+            + u32::try_from(local.minute()).unwrap_or(0);
         let (start, end) = (
             minutes(&self.hours.peak_start),
             minutes(&self.hours.peak_end),
@@ -236,7 +238,7 @@ pub struct Reliability {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForecastDay {
-    pub date: NaiveDate,
+    pub date: Date,
     /// Days after today.
     pub horizon: u32,
     /// RTE's colour, not a forecast.
@@ -282,7 +284,7 @@ pub struct HorizonScore {
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub version: String,
-    pub fitted_through: NaiveDate,
+    pub fitted_through: Date,
     /// How it did on past seasons, by horizon (what « reliability » is said from).
     pub backtest: Backtest,
 }
@@ -292,9 +294,9 @@ pub struct ModelInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Forecast {
-    pub issued: NaiveDate,
+    pub issued: Date,
     /// The day of the weather forecast used (older than today: Open-Meteo is down).
-    pub weather_issued: Option<NaiveDate>,
+    pub weather_issued: Option<Date>,
     pub stale: bool,
     pub model: Option<ModelInfo>,
     pub days: Vec<ForecastDay>,
@@ -307,7 +309,7 @@ pub struct Forecast {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarDay {
-    pub date: NaiveDate,
+    pub date: Date,
     pub color: Color,
     pub is_actual: bool,
     pub is_prediction: bool,
@@ -385,7 +387,7 @@ mod tests {
     }
 
     /// Paris is UTC+2 on 16 October 2026.
-    fn paris(hhmm: &str) -> DateTime<Utc> {
+    fn paris(hhmm: &str) -> Timestamp {
         format!("2026-10-16T{hhmm}:00+02:00").parse().unwrap()
     }
 

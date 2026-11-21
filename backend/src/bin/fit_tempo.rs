@@ -20,7 +20,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
-use chrono::{Duration, NaiveDate};
+use jiff::{civil::Date, ToSpan};
 use maison_api::tempo::Color;
 use maison_backend::{
     config::Config,
@@ -43,7 +43,7 @@ use maison_backend::{
         source::{Sources, Values},
         HORIZON, MODEL_FILE, NETLOAD_FILE,
     },
-    util::HOUSE_TZ,
+    util::HOUSE_TZ_NAME,
 };
 use serde_json::Value;
 
@@ -96,10 +96,10 @@ fn wind_sites() -> Vec<WeatherPoint> {
     .into()
 }
 
-type Daily = BTreeMap<NaiveDate, f64>;
+type Daily = BTreeMap<Date, f64>;
 type Failure = Box<dyn std::error::Error>;
 /// A backtest season: its first year, the model fitted before it, its days with a forecast.
-type Season = (i32, Model, Vec<(NaiveDate, Weather)>);
+type Season = (i32, Model, Vec<(Date, Weather)>);
 
 /// An hourly download: its file name, the API, the places, the variables, the weather model.
 struct Hourly<'a> {
@@ -144,12 +144,7 @@ impl Downloads {
     }
 
     /// Hourly `keys` at `places` from `url`, in chunks of a few years (the answers are big).
-    async fn hourly(
-        &self,
-        ask: Hourly<'_>,
-        from: NaiveDate,
-        to: NaiveDate,
-    ) -> Result<Vec<Value>, Failure> {
+    async fn hourly(&self, ask: Hourly<'_>, from: Date, to: Date) -> Result<Vec<Value>, Failure> {
         let Hourly {
             name,
             url,
@@ -160,11 +155,11 @@ impl Downloads {
         let mut bodies = Vec::new();
         let mut start = from;
         while start <= to {
-            let end = (start + Duration::days(4 * 365)).min(to);
+            let end = (start + (4 * 365).days()).min(to);
             let mut query = coordinates(places).to_vec();
             query.extend([
                 ("hourly", keys.join(",")),
-                ("timezone", HOUSE_TZ.name().into()),
+                ("timezone", HOUSE_TZ_NAME.into()),
                 ("start_date", start.to_string()),
                 ("end_date", end.to_string()),
             ]);
@@ -175,7 +170,7 @@ impl Downloads {
                 .get(&format!("{name}-{start}-{end}.json"), url, &query)
                 .await?;
             bodies.push(serde_json::from_str(&text)?);
-            start = end + Duration::days(1);
+            start = end + 1_i32.days();
         }
         Ok(bodies)
     }
@@ -259,19 +254,19 @@ struct Data {
 impl Data {
     /// What the weather service had to say on `issued`: past days as observed, coming ones
     /// as forecast that day.
-    fn weather(&self, issued: NaiveDate) -> Option<Weather> {
+    fn weather(&self, issued: Date) -> Option<Weather> {
         let mut weather = Weather {
             issued: Some(issued),
             ..Default::default()
         };
         for back in 0..3 {
-            let day = issued - Duration::days(back);
+            let day = issued - back.days();
             weather
                 .temperature
                 .insert(day, *self.temperature.get(&day)?);
         }
         for lead in 1..=HORIZON {
-            let day = issued + Duration::days(lead);
+            let day = issued + lead.days();
             let i = lead as usize - 1;
             weather
                 .temperature
@@ -284,13 +279,13 @@ impl Data {
     }
 
     /// The observed weather of a past day.
-    fn observed(&self, date: NaiveDate) -> Option<Weather> {
+    fn observed(&self, date: Date) -> Option<Weather> {
         let mut weather = Weather {
             issued: Some(date),
             ..Default::default()
         };
         for back in 0..3 {
-            let day = date - Duration::days(back);
+            let day = date - back.days();
             weather
                 .temperature
                 .insert(day, *self.temperature.get(&day)?);
@@ -300,18 +295,18 @@ impl Data {
     }
 
     /// RTE's normalised net consumption of a past day.
-    fn actual(&self, date: NaiveDate) -> Option<f64> {
+    fn actual(&self, date: Date) -> Option<f64> {
         let [c, w, s] = *self.net.load.get(&date)?;
         Some(self.net.levels(date)?.normalise(c - w - s))
     }
 }
 
 /// Fits on the days before `until`.
-fn fit(data: &Data, until: NaiveDate, base: &Model) -> Model {
+fn fit(data: &Data, until: Date, base: &Model) -> Model {
     let (mut xc, mut yc, mut xw, mut yw, mut xs, mut ys) =
         (vec![], vec![], vec![], vec![], vec![], vec![]);
     let first = season_bounds(FIRST_SEASON).0;
-    for date in first.iter_days().take_while(|d| *d < until) {
+    for date in first.series(1_i32.day()).take_while(|d| *d < until) {
         let (Some(weather), Some([c, w, s]), Some(levels)) = (
             data.observed(date),
             data.net.load.get(&date),
@@ -336,17 +331,17 @@ fn fit(data: &Data, until: NaiveDate, base: &Model) -> Model {
         consumption,
         wind,
         solar,
-        fitted_through: until - Duration::days(1),
+        fitted_through: until - 1_i32.days(),
         ..base.clone()
     }
 }
 
 /// The days a season's backtest forecasts from: every day with its weather forecast.
-fn issues(data: &Data, start_year: i32) -> Vec<(NaiveDate, Weather)> {
+fn issues(data: &Data, start_year: i32) -> Vec<(Date, Weather)> {
     let (first, last) = season_bounds(start_year);
     first
-        .iter_days()
-        .take_while(|d| *d <= last - Duration::days(HORIZON))
+        .series(1_i32.day())
+        .take_while(|d| *d <= last - HORIZON.days())
         .filter_map(|d| Some((d, data.weather(d)?)))
         .collect()
 }
@@ -364,7 +359,7 @@ struct Tally {
 }
 
 impl Tally {
-    fn add(&mut self, date: NaiveDate, actual: Color, predicted: Color, p: [f64; 3]) {
+    fn add(&mut self, date: Date, actual: Color, predicted: Color, p: [f64; 3]) {
         let ok = u32::from(actual == predicted);
         self.days += 1;
         self.right += ok;
@@ -448,7 +443,7 @@ async fn seasons(
     config: &Config,
     client: &reqwest::Client,
     out: &std::path::Path,
-    today: NaiveDate,
+    today: Date,
 ) -> Result<History, Failure> {
     let sources = Sources::from_config(config);
     let mut colors = History::new();
@@ -470,9 +465,9 @@ async fn gather(
     config: &Config,
     downloads: &Downloads,
     colors: History,
-    today: NaiveDate,
+    today: Date,
 ) -> Result<Data, Failure> {
-    let yesterday = today - Duration::days(1);
+    let yesterday = today - 1_i32.days();
     let odre = &config.tempo_odre_url;
     let mut load = BTreeMap::new();
     for (dataset, since) in [
@@ -480,7 +475,7 @@ async fn gather(
             "eco2mix-national-cons-def",
             season_bounds(FIRST_SEASON - 1).0,
         ),
-        ("eco2mix-national-tr", today - Duration::days(400)),
+        ("eco2mix-national-tr", today - 400_i32.days()),
     ] {
         let query = odre_query(&format!("date_heure >= '{since}T00:00:00Z'"));
         let text = downloads
@@ -498,7 +493,7 @@ async fn gather(
     }
 
     let (cities, wind_sites) = (cities(), wind_sites());
-    let from = season_bounds(FIRST_SEASON - 1).1 - Duration::days(5);
+    let from = season_bounds(FIRST_SEASON - 1).1 - 5_i32.days();
     let keys = |k: &str| vec![k.to_string()];
     let (temperature_keys, wind_keys) = (keys("temperature_2m"), keys("wind_speed_100m"));
     let ask = |name, url, places, keys, model| Hourly {
@@ -533,7 +528,7 @@ async fn gather(
             .map(|h| format!("{k}_previous_day{h}"))
             .collect::<Vec<_>>()
     };
-    let first_forecast: NaiveDate = FIRST_FORECAST.parse()?;
+    let first_forecast: Date = FIRST_FORECAST.parse()?;
     let (temperature_leads, wind_leads) = (leads("temperature_2m"), leads("wind_speed_100m"));
     let ftemps = downloads
         .hourly(
@@ -584,11 +579,11 @@ async fn gather(
 /// 4 and 5. The backtest on the full seasons with a week of forecasts every day (errors by
 /// horizon, then scores through the service's own `outlook`), and the model shipped, fitted
 /// on every day up to yesterday. Says which seasons the backtest ran on.
-fn backtest_and_fit(data: &Data, today: NaiveDate) -> (Model, String) {
-    let first_forecast: NaiveDate = FIRST_FORECAST.parse().expect("a date");
+fn backtest_and_fit(data: &Data, today: Date) -> (Model, String) {
+    let first_forecast: Date = FIRST_FORECAST.parse().expect("a date");
     let base = Model {
         version: today.to_string(),
-        fitted_through: today - Duration::days(1),
+        fitted_through: today - 1_i32.days(),
         cities: cities(),
         wind_sites: wind_sites(),
         rho: RHO,
@@ -635,7 +630,7 @@ fn errors_by_horizon(data: &Data, fitted: &[Season]) -> Vec<f64> {
                 continue;
             };
             for lead in 1..=HORIZON {
-                let date = *issue + Duration::days(lead);
+                let date = *issue + lead.days();
                 if let (true, Some(day), Some(actual)) =
                     (is_winter(date), weather.day(date), data.actual(date))
                 {

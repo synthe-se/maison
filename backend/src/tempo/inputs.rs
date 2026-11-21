@@ -8,7 +8,10 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime};
+use jiff::{
+    civil::{Date, DateTime},
+    SignedDuration, Timestamp, ToSpan,
+};
 use maison_api::tempo::DAY_START_HOUR;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,7 +22,7 @@ use super::forecast::{
 use crate::{
     error::{AppError, Refusal},
     net::fetch_json,
-    util::{house_time, HOUSE_TZ},
+    util::{house_time, HOUSE_TZ, HOUSE_TZ_NAME},
 };
 
 /// The weather model the forecast was fitted and replayed with.
@@ -32,7 +35,7 @@ const KEEP_DAYS: i64 = 400;
 /// One place's hourly values, at Paris local times.
 #[derive(Debug, Clone, Default)]
 pub struct Series {
-    pub times: Vec<NaiveDateTime>,
+    pub times: Vec<DateTime>,
     pub values: Vec<Option<f64>>,
 }
 
@@ -58,7 +61,7 @@ pub fn parse_hourly(body: &Value, key: &str) -> Result<Vec<Series>, AppError> {
                     .iter()
                     .map(|t| {
                         t.as_str()
-                            .and_then(|t| NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M").ok())
+                            .and_then(|t| DateTime::strptime("%Y-%m-%dT%H:%M", t).ok())
                             .ok_or_else(bad)
                     })
                     .collect::<Result<_, _>>()?,
@@ -69,18 +72,18 @@ pub fn parse_hourly(body: &Value, key: &str) -> Result<Vec<Series>, AppError> {
 }
 
 /// The Tempo day a local time belongs to: [`DAY_START_HOUR`] to the next one.
-pub fn tempo_day_of(local: NaiveDateTime) -> NaiveDate {
-    (local - Duration::hours(i64::from(DAY_START_HOUR))).date()
+pub fn tempo_day_of(local: DateTime) -> Date {
+    (local - SignedDuration::from_hours(i64::from(DAY_START_HOUR))).date()
 }
 
 /// Per day (`day_of` a time), each place's mean of `f(value)`; days missing hours anywhere
 /// are left out.
 fn daily_means(
     series: &[Series],
-    day_of: fn(NaiveDateTime) -> NaiveDate,
+    day_of: fn(DateTime) -> Date,
     f: fn(f64) -> f64,
-) -> BTreeMap<NaiveDate, Vec<f64>> {
-    let mut sums: BTreeMap<NaiveDate, Vec<(f64, usize)>> = BTreeMap::new();
+) -> BTreeMap<Date, Vec<f64>> {
+    let mut sums: BTreeMap<Date, Vec<(f64, usize)>> = BTreeMap::new();
     for (place, s) in series.iter().enumerate() {
         for (time, value) in s.times.iter().zip(&s.values) {
             if let Some(value) = value {
@@ -99,7 +102,7 @@ fn daily_means(
 }
 
 /// The cities' mean temperature per calendar day, weighted by population.
-pub fn daily_temperature(series: &[Series], cities: &[WeatherPoint]) -> BTreeMap<NaiveDate, f64> {
+pub fn daily_temperature(series: &[Series], cities: &[WeatherPoint]) -> BTreeMap<Date, f64> {
     let total: f64 = cities.iter().map(|c| c.weight).sum();
     daily_means(series, |t| t.date(), |t| t)
         .into_iter()
@@ -118,7 +121,7 @@ pub fn daily_temperature(series: &[Series], cities: &[WeatherPoint]) -> BTreeMap
 }
 
 /// The sites' mean wind power (0 to 1) per Tempo day.
-pub fn daily_wind_power(series: &[Series]) -> BTreeMap<NaiveDate, f64> {
+pub fn daily_wind_power(series: &[Series]) -> BTreeMap<Date, f64> {
     daily_means(series, tempo_day_of, wind_power)
         .into_iter()
         .map(|(day, means)| (day, means.iter().sum::<f64>() / means.len() as f64))
@@ -145,19 +148,15 @@ pub fn coordinates(places: &[WeatherPoint]) -> [(&'static str, String); 2] {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Weather {
     /// The day it was forecast (the horizons, hence the errors, count from it).
-    pub issued: Option<NaiveDate>,
-    pub temperature: BTreeMap<NaiveDate, f64>,
-    pub wind_power: BTreeMap<NaiveDate, f64>,
+    pub issued: Option<Date>,
+    pub temperature: BTreeMap<Date, f64>,
+    pub wind_power: BTreeMap<Date, f64>,
 }
 
 impl Weather {
     /// A day's inputs, when the weather covers it and the two days before.
-    pub fn day(&self, date: NaiveDate) -> Option<DayWeather> {
-        let t = |back: i64| {
-            self.temperature
-                .get(&(date - Duration::days(back)))
-                .copied()
-        };
+    pub fn day(&self, date: Date) -> Option<DayWeather> {
+        let t = |back: i64| self.temperature.get(&(date - back.days())).copied();
         Some(DayWeather {
             date,
             temperature: effective_temperature(t(0)?, t(1)?, t(2)?),
@@ -172,7 +171,7 @@ pub async fn fetch_weather(
     client: &reqwest::Client,
     url: &str,
     model: &Model,
-    today: NaiveDate,
+    today: Date,
 ) -> Result<Weather, AppError> {
     let ask = |places: &[WeatherPoint], key: &'static str| {
         let mut query = coordinates(places).to_vec();
@@ -180,7 +179,7 @@ pub async fn fetch_weather(
             ("hourly", key.to_string()),
             ("past_days", "3".into()),
             ("forecast_days", "9".into()),
-            ("timezone", HOUSE_TZ.name().into()),
+            ("timezone", HOUSE_TZ_NAME.into()),
             ("models", WEATHER_MODEL.into()),
         ]);
         async move {
@@ -205,7 +204,7 @@ pub async fn fetch_weather(
 /// One éCO2mix row (MW over the quarter of an hour; a gap is null).
 #[derive(Debug, Deserialize)]
 pub struct OdreRow {
-    pub date_heure: DateTime<FixedOffset>,
+    pub date_heure: Timestamp,
     pub consommation: Option<f64>,
     pub eolien: Option<f64>,
     pub solaire: Option<f64>,
@@ -213,20 +212,20 @@ pub struct OdreRow {
 
 /// éCO2mix rows as Tempo days' means `[consumption, wind, solar]`; days with fewer than 22
 /// hours of data (today, a gap) are left out.
-pub fn tempo_days(rows: &[OdreRow]) -> BTreeMap<NaiveDate, [f64; 3]> {
+pub fn tempo_days(rows: &[OdreRow]) -> BTreeMap<Date, [f64; 3]> {
     // sums, rows, and the hours seen (a bit each)
-    let mut days: BTreeMap<NaiveDate, ([f64; 3], usize, u32)> = BTreeMap::new();
+    let mut days: BTreeMap<Date, ([f64; 3], usize, u32)> = BTreeMap::new();
     for row in rows {
         let (Some(c), Some(w), Some(s)) = (row.consommation, row.eolien, row.solaire) else {
             continue;
         };
-        let local = row.date_heure.with_timezone(&HOUSE_TZ).naive_local();
+        let local = HOUSE_TZ.to_datetime(row.date_heure);
         let day = days.entry(tempo_day_of(local)).or_default();
         day.0[0] += c;
         day.0[1] += w;
         day.0[2] += s;
         day.1 += 1;
-        day.2 |= 1 << chrono::Timelike::hour(&local);
+        day.2 |= 1 << local.hour();
     }
     days.into_iter()
         .filter(|(_, (_, _, hours))| hours.count_ones() >= 22)
@@ -236,7 +235,7 @@ pub fn tempo_days(rows: &[OdreRow]) -> BTreeMap<NaiveDate, [f64; 3]> {
 
 /// When the Tempo day `day` starts ([`DAY_START_HOUR`] at the house), in UTC (where ODRE's
 /// rows start it).
-pub fn tempo_day_start(day: NaiveDate) -> DateTime<chrono::Utc> {
+pub fn tempo_day_start(day: Date) -> Timestamp {
     house_time(day, DAY_START_HOUR, 0)
 }
 
@@ -245,9 +244,9 @@ pub async fn fetch_load(
     client: &reqwest::Client,
     url: &str,
     dataset: &str,
-    since: NaiveDate,
-) -> Result<BTreeMap<NaiveDate, [f64; 3]>, AppError> {
-    let start = tempo_day_start(since).format("%Y-%m-%dT%H:%M:%SZ");
+    since: Date,
+) -> Result<BTreeMap<Date, [f64; 3]>, AppError> {
+    let start = tempo_day_start(since).strftime("%Y-%m-%dT%H:%M:%SZ");
     let request = client
         .get(format!("{url}/{dataset}/exports/json"))
         .query(&odre_query(&format!("date_heure >= '{start}'")));
@@ -272,15 +271,15 @@ pub fn odre_query(since: &str) -> [(&'static str, String); 3] {
 /// cities' temperatures, by day.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetLoad {
-    pub load: BTreeMap<NaiveDate, [f64; 3]>,
-    pub temperature: BTreeMap<NaiveDate, f64>,
+    pub load: BTreeMap<Date, [f64; 3]>,
+    pub temperature: BTreeMap<Date, f64>,
 }
 
 impl NetLoad {
     /// The year before `day` (the day itself excluded: it is not over).
-    pub fn past_year(&self, day: NaiveDate) -> Vec<PastDay> {
+    pub fn past_year(&self, day: Date) -> Vec<PastDay> {
         self.load
-            .range(day - Duration::days(365)..day)
+            .range(day - 365_i32.days()..day)
             .map(|(date, [consumption, wind, solar])| PastDay {
                 consumption: *consumption,
                 wind: *wind,
@@ -290,22 +289,22 @@ impl NetLoad {
             .collect()
     }
 
-    pub fn levels(&self, day: NaiveDate) -> Option<Levels> {
+    pub fn levels(&self, day: Date) -> Option<Levels> {
         Levels::from_days(&self.past_year(day))
     }
 
     /// Adds days (finished ones only: before `today`), forgets those over [`KEEP_DAYS`] old.
     pub fn merge(
         &mut self,
-        load: BTreeMap<NaiveDate, [f64; 3]>,
-        temperature: &BTreeMap<NaiveDate, f64>,
-        today: NaiveDate,
+        load: BTreeMap<Date, [f64; 3]>,
+        temperature: &BTreeMap<Date, f64>,
+        today: Date,
     ) {
         self.load
             .extend(load.into_iter().filter(|(d, _)| *d < today));
         self.temperature
             .extend(temperature.range(..today).map(|(d, t)| (*d, *t)));
-        let oldest = today - Duration::days(KEEP_DAYS);
+        let oldest = today - KEEP_DAYS.days();
         self.load.retain(|d, _| *d >= oldest);
         self.temperature.retain(|d, _| *d >= oldest);
     }
@@ -322,11 +321,11 @@ mod tests {
     }
 
     fn hours(from: &str, values: &[f64]) -> Value {
-        let start = NaiveDateTime::parse_from_str(from, "%Y-%m-%dT%H:%M").unwrap();
+        let start = DateTime::strptime("%Y-%m-%dT%H:%M", from).unwrap();
         let times: Vec<String> = (0..values.len())
             .map(|i| {
-                (start + Duration::hours(i as i64))
-                    .format("%Y-%m-%dT%H:%M")
+                (start + SignedDuration::from_hours(i as i64))
+                    .strftime("%Y-%m-%dT%H:%M")
                     .to_string()
             })
             .collect();
@@ -372,10 +371,10 @@ mod tests {
     fn odre_rows_make_tempo_days() {
         // quarters of an hour from 06:00 Paris (05:00 UTC in winter) for 24 h, then a lone one
         let start = tempo_day_start(day(2026, 1, 10));
-        assert_eq!(start.to_rfc3339(), "2026-01-10T05:00:00+00:00");
+        assert_eq!(crate::util::rfc3339_utc(start), "2026-01-10T05:00:00+00:00");
         let rows: Vec<OdreRow> = (0..97)
             .map(|i| OdreRow {
-                date_heure: (start + Duration::minutes(15 * i)).fixed_offset(),
+                date_heure: start + SignedDuration::from_mins(15 * i),
                 consommation: Some(if i < 48 { 60_000.0 } else { 70_000.0 }),
                 eolien: Some(5_000.0),
                 solaire: if i == 3 { None } else { Some(0.0) },
@@ -395,12 +394,10 @@ mod tests {
     fn the_net_load_keeps_a_year_of_finished_days() {
         let today = day(2026, 10, 3);
         let mut net = NetLoad::default();
-        let load = (0..500)
-            .map(|i| (today - Duration::days(i), [50_000.0, 5_000.0, 1_000.0]))
+        let load = (0..500_i32)
+            .map(|i| (today - i.days(), [50_000.0, 5_000.0, 1_000.0]))
             .collect();
-        let temps = (0..500)
-            .map(|i| (today - Duration::days(i), 10.0))
-            .collect();
+        let temps = (0..500_i32).map(|i| (today - i.days(), 10.0)).collect();
         net.merge(load, &temps, today);
         assert!(!net.load.contains_key(&today), "today is not over");
         assert_eq!(net.load.len(), 400);

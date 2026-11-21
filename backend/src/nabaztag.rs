@@ -269,8 +269,10 @@ impl NabaztagManager {
                     Err(error) => warn!(%error, "tempo colors unavailable for the rabbit"),
                 }
             }
-            let tomorrow = house_time(house_today() + chrono::Duration::days(1), 0, 1);
-            let new_day = (tomorrow - chrono::Utc::now()).to_std().unwrap_or_default();
+            let tomorrow = house_time(house_today() + jiff::ToSpan::days(1_i32), 0, 1);
+            let new_day = (tomorrow - jiff::Timestamp::now())
+                .try_into()
+                .unwrap_or_default();
             tokio::select! {
                 changed = answers.changed() => {
                     if changed.is_err() {

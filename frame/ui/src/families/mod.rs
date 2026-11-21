@@ -18,7 +18,7 @@ pub mod tv;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp, ZonedDateTime};
 use maison_api::lamps::{HueLamp, LampList, LampStats, ZigbeeLamp};
 use maison_api::matter::Covers;
 use maison_api::meross::{Consumption, ElectricityAnswer, PlugList};
@@ -26,7 +26,7 @@ use maison_api::photos::PhotoList;
 use maison_api::scenes::SceneList;
 use maison_api::sun::{Side, SunNow, Where};
 use maison_api::tempo::{Calendar, Forecast, Today};
-use maison_api::{Answer, HOUSE_TZ, OfDevice, Tz, paces};
+use maison_api::{Answer, HOUSE_TZ, OfDevice, paces};
 
 use crate::client::Client;
 use crate::commands::{Commands, Outcome, Toast};
@@ -99,7 +99,7 @@ pub const TV: &str = "tv";
 pub const BOX: &str = maison_api::events::ANDROID_TV;
 
 fn until_sun(sun: Option<&maison_api::sun::NextSun>) -> Duration {
-    ms(paces::until_sun(sun, Utc::now().timestamp_millis()))
+    ms(paces::until_sun(sun, Timestamp::now().as_millisecond()))
 }
 
 impl Sources {
@@ -255,15 +255,15 @@ pub struct Cx<'a> {
 
 impl Cx<'_> {
     /// The house's clock now.
-    pub fn house_now(&self) -> DateTime<Tz> {
-        Utc::now().with_timezone(&HOUSE_TZ)
+    pub fn house_now(&self) -> ZonedDateTime {
+        Timestamp::now().to_zoned_datetime(HOUSE_TZ.clone())
     }
 
     /// When a value shown was read, on the house's clock.
-    pub fn read_at<T>(&self, v: &View<T>) -> Option<DateTime<Tz>> {
+    pub fn read_at<T>(&self, v: &View<T>) -> Option<ZonedDateTime> {
         let at = v.at?;
-        let ago = chrono::Duration::from_std(self.now.saturating_duration_since(at)).ok()?;
-        Some(self.house_now() - ago)
+        let ago = SignedDuration::try_from(self.now.saturating_duration_since(at)).ok()?;
+        self.house_now().checked_sub(ago).ok()
     }
 }
 
@@ -384,6 +384,15 @@ pub fn outcome(w: &Words, o: &Outcome, said: impl Fn(usize) -> String) -> Toast 
         ),
         warn: true,
     }
+}
+
+/// A moment on the house's clock (tests): `hour:minute` on that day.
+#[cfg(test)]
+pub fn house_at(year: i16, month: i8, day: i8, hour: i8, minute: i8) -> ZonedDateTime {
+    jiff::civil::date(year, month, day)
+        .at(hour, minute, 0, 0)
+        .to_zoned_datetime(HOUSE_TZ.clone())
+        .expect("a time the house's clock shows")
 }
 
 #[cfg(test)]

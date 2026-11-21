@@ -9,12 +9,33 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-/// The house's time zone (never `chrono::Local`: UTC on the Pi), said once in the API crate.
-pub use maison_api::HOUSE_TZ;
+/// The house's time zone (never `jiff::tz::TimeZone::system()`: UTC on the Pi), said once in
+/// the API crate.
+pub use maison_api::{HOUSE_TZ, HOUSE_TZ_NAME};
 
 /// Today, in the house.
-pub fn house_today() -> chrono::NaiveDate {
-    chrono::Utc::now().with_timezone(&HOUSE_TZ).date_naive()
+pub fn house_today() -> jiff::civil::Date {
+    house_date(jiff::Timestamp::now())
+}
+
+/// The house's calendar day at `at`.
+pub fn house_date(at: jiff::Timestamp) -> jiff::civil::Date {
+    HOUSE_TZ.to_datetime(at).date()
+}
+
+/// An instant as chrono's `to_rfc3339` said it (what the API's text times always were):
+/// `+00:00`, the fraction in 0, 3, 6 or 9 digits.
+pub fn rfc3339_utc(at: jiff::Timestamp) -> String {
+    let nanos = at.subsec_nanosecond();
+    let digits = match nanos {
+        0 => 0,
+        n if n % 1_000_000 == 0 => 3,
+        n if n % 1_000 == 0 => 6,
+        _ => 9,
+    };
+    jiff::fmt::temporal::DateTimePrinter::new()
+        .precision(Some(digits))
+        .timestamp_with_offset_to_string(&at, jiff::tz::Offset::UTC)
 }
 
 /// Bytes in lowercase hex, `sep` between them (« "" », « ":" » for a MAC, « " " » for a dump).
@@ -54,7 +75,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Now, in milliseconds since the epoch.
 pub fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    jiff::Timestamp::now().as_millisecond()
 }
 
 /// A short random id (64 bits, hex): records, ceremonies, temp files. Not a secret.
@@ -446,20 +467,23 @@ pub fn capped_backoff(
 
 /// `hours:minutes` on `day` at the house, as an instant (the first one, on the night the
 /// clocks go back; an hour later, for a time the clocks skip).
-pub fn house_time(
-    day: chrono::NaiveDate,
-    hours: u32,
-    minutes: u32,
-) -> chrono::DateTime<chrono::Utc> {
-    use chrono::TimeZone;
-    let mut local = day.and_hms_opt(hours, minutes, 0).unwrap_or_default();
-    for _ in 0..2 {
-        if let Some(at) = HOUSE_TZ.from_local_datetime(&local).earliest() {
-            return at.with_timezone(&chrono::Utc);
-        }
-        local += chrono::Duration::hours(1);
-    }
-    local.and_utc()
+pub fn house_time(day: jiff::civil::Date, hours: u32, minutes: u32) -> jiff::Timestamp {
+    let local = jiff::civil::DateTime::from_parts(
+        day,
+        jiff::civil::Time::new(
+            i8::try_from(hours).unwrap_or(0),
+            i8::try_from(minutes).unwrap_or(0),
+            0,
+            0,
+        )
+        .unwrap_or_default(),
+    );
+    // « compatible »: the earlier of two, the later offset across a gap (an hour on)
+    HOUSE_TZ.to_timestamp(local).unwrap_or_else(|_| {
+        jiff::tz::TimeZone::UTC
+            .to_timestamp(local)
+            .unwrap_or_default()
+    })
 }
 
 /// Hex digits (either case, two per byte, nothing else) as bytes; `None` for anything else.
@@ -509,25 +533,39 @@ mod device_helper_tests {
         assert_eq!(capped_backoff(base, u32::MAX, max), max, "no overflow");
     }
 
+    use super::rfc3339_utc as rfc3339;
+
+    #[test]
+    fn instants_read_as_chrono_wrote_them() {
+        let at = |s, n| jiff::Timestamp::new(s, n).unwrap();
+        assert_eq!(rfc3339(at(0, 0)), "1970-01-01T00:00:00+00:00");
+        assert_eq!(rfc3339(at(0, 120_000_000)), "1970-01-01T00:00:00.120+00:00");
+        assert_eq!(
+            rfc3339(at(0, 123_400_000)),
+            "1970-01-01T00:00:00.123400+00:00"
+        );
+        assert_eq!(rfc3339(at(0, 1)), "1970-01-01T00:00:00.000000001+00:00");
+    }
+
     #[test]
     fn house_times_are_paris_times() {
-        let day = |m, d| chrono::NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        let day = |m, d| jiff::civil::date(2026, m, d);
         assert_eq!(
-            house_time(day(1, 10), 6, 0).to_rfc3339(),
+            rfc3339(house_time(day(1, 10), 6, 0)),
             "2026-01-10T05:00:00+00:00"
         );
         assert_eq!(
-            house_time(day(7, 10), 0, 0).to_rfc3339(),
+            rfc3339(house_time(day(7, 10), 0, 0)),
             "2026-07-09T22:00:00+00:00"
         );
         // 02:30 does not exist on 29 March 2026: 03:30 summer time
         assert_eq!(
-            house_time(day(3, 29), 2, 30).to_rfc3339(),
+            rfc3339(house_time(day(3, 29), 2, 30)),
             "2026-03-29T01:30:00+00:00"
         );
         // 02:30 happens twice on 25 October 2026: the first
         assert_eq!(
-            house_time(day(10, 25), 2, 30).to_rfc3339(),
+            rfc3339(house_time(day(10, 25), 2, 30)),
             "2026-10-25T00:30:00+00:00"
         );
     }

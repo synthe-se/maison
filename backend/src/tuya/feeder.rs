@@ -8,8 +8,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{DateTime, NaiveDate};
-use maison_api::Tz;
+use jiff::{civil::Date, ZonedDateTime};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -165,7 +164,7 @@ pub struct Feeds(std::sync::Mutex<HashMap<String, FeedLog>>);
 #[derive(Debug, Clone, Copy)]
 struct FeedLog {
     last: Instant,
-    day: NaiveDate,
+    day: Date,
     portions: u32,
 }
 
@@ -183,7 +182,7 @@ impl Feeds {
             device,
             portions,
             Instant::now(),
-            chrono::Utc::now().with_timezone(&HOUSE_TZ),
+            &jiff::Timestamp::now().to_zoned_datetime(HOUSE_TZ.clone()),
         )
     }
 
@@ -192,11 +191,11 @@ impl Feeds {
         device: &str,
         portions: u8,
         now: Instant,
-        clock: DateTime<Tz>,
+        clock: &ZonedDateTime,
     ) -> Result<Claim, AppError> {
         let mut feeds = crate::util::lock(&self.0);
         let before = feeds.get(device).copied();
-        let today = clock.date_naive();
+        let today = clock.date();
         let mut log = before.map_or(
             FeedLog {
                 last: now,
@@ -244,14 +243,13 @@ impl Feeds {
 }
 
 /// Seconds from `clock` to the house's next midnight (1 at least).
-fn seconds_to_midnight(clock: DateTime<Tz>) -> u64 {
+fn seconds_to_midnight(clock: &ZonedDateTime) -> u64 {
     let next = clock
-        .date_naive()
-        .succ_opt()
-        .and_then(|day| day.and_hms_opt(0, 0, 0))
-        .and_then(|midnight| midnight.and_local_timezone(HOUSE_TZ).earliest());
+        .date()
+        .tomorrow()
+        .and_then(|day| day.to_zoned_datetime(HOUSE_TZ.clone()));
     next.map_or(3600, |next| {
-        u64::try_from((next - clock).num_seconds())
+        u64::try_from((next.timestamp() - clock.timestamp()).as_secs())
             .unwrap_or(1)
             .max(1)
     })
@@ -351,9 +349,11 @@ mod tests {
         }
     }
 
-    fn at(day: u32, hour: u32) -> DateTime<Tz> {
-        use chrono::TimeZone;
-        HOUSE_TZ.with_ymd_and_hms(2026, 3, day, hour, 0, 0).unwrap()
+    fn at(day: i8, hour: i8) -> ZonedDateTime {
+        jiff::civil::date(2026, 3, day)
+            .at(hour, 0, 0, 0)
+            .to_zoned_datetime(HOUSE_TZ.clone())
+            .unwrap()
     }
 
     fn retry_after(error: AppError) -> Option<u64> {
@@ -373,19 +373,19 @@ mod tests {
         let feeds = Feeds::default();
         let start = Instant::now();
         let after = |s: u64| start + Duration::from_secs(s);
-        feeds.claim_at("f", 12, start, at(10, 8)).unwrap();
-        let soon = feeds.claim_at("f", 1, after(2), at(10, 8)).unwrap_err();
+        feeds.claim_at("f", 12, start, &at(10, 8)).unwrap();
+        let soon = feeds.claim_at("f", 1, after(2), &at(10, 8)).unwrap_err();
         assert_eq!(retry_after(soon), Some(3), "the cooldown's rest");
-        feeds.claim_at("other", 1, after(2), at(10, 8)).unwrap();
+        feeds.claim_at("other", 1, after(2), &at(10, 8)).unwrap();
         let mut t = 0;
         for _ in 0..3 {
             t += FEED_COOLDOWN.as_secs();
-            feeds.claim_at("f", 12, after(t), at(10, 9)).unwrap();
+            feeds.claim_at("f", 12, after(t), &at(10, 9)).unwrap();
         }
         t += FEED_COOLDOWN.as_secs();
-        let full = feeds.claim_at("f", 1, after(t), at(10, 23)).unwrap_err();
+        let full = feeds.claim_at("f", 1, after(t), &at(10, 23)).unwrap_err();
         assert_eq!(retry_after(full), Some(3600), "until the house's midnight");
-        feeds.claim_at("f", 12, after(t), at(11, 0)).unwrap();
+        feeds.claim_at("f", 12, after(t), &at(11, 0)).unwrap();
     }
 
     /// An order the feeder did not take counts for nothing.
@@ -393,9 +393,9 @@ mod tests {
     fn a_feed_not_sent_is_given_back() {
         let feeds = Feeds::default();
         let now = Instant::now();
-        let claim = feeds.claim_at("f", 12, now, at(10, 8)).unwrap();
+        let claim = feeds.claim_at("f", 12, now, &at(10, 8)).unwrap();
         feeds.give_back(claim);
-        feeds.claim_at("f", 12, now, at(10, 8)).unwrap();
+        feeds.claim_at("f", 12, now, &at(10, 8)).unwrap();
     }
 
     #[test]

@@ -4,8 +4,7 @@
 //! Out of reach, the buttons stay, not operable, the state line saying why. The frame leaves
 //! renaming, the sun schedule and removal to the web app.
 
-use chrono::{DateTime, Duration as Days, Utc};
-use maison_api::Tz;
+use jiff::{Timestamp, ToSpan, ZonedDateTime};
 use maison_api::matter::{Cover, CoverMotion, PositionRequest, SkipRequest, SunEvent};
 
 use super::{Cx, SHUTTERS, loaded, outcome, stale};
@@ -54,7 +53,7 @@ pub fn describe(w: &Words, c: &Cover) -> String {
 }
 
 /// The next scheduled move: which, when, whether it will be skipped once.
-pub fn next_event(c: &Cover) -> Option<(SunEvent, DateTime<Utc>, bool)> {
+pub fn next_event(c: &Cover) -> Option<(SunEvent, Timestamp, bool)> {
     [
         c.next_open.map(|t| (SunEvent::Open, t, c.skip_next_open)),
         c.next_close
@@ -68,7 +67,7 @@ pub fn next_event(c: &Cover) -> Option<(SunEvent, DateTime<Utc>, bool)> {
 /// « Fermeture 20:24 », or « Fermeture de 20:24 sautée ».
 pub fn next_move(w: &Words, c: &Cover) -> Option<String> {
     let (event, t, skipped) = next_event(c)?;
-    let time = w.clock(t.with_timezone(&maison_api::HOUSE_TZ).time());
+    let time = w.clock(maison_api::HOUSE_TZ.to_datetime(t).time());
     let key = match (event, skipped) {
         (SunEvent::Open, true) => k::SHUTTERS_OPEN_SKIPPED,
         (SunEvent::Close, true) => k::SHUTTERS_CLOSE_SKIPPED,
@@ -79,10 +78,10 @@ pub fn next_move(w: &Words, c: &Cover) -> Option<String> {
 }
 
 /// « Ne pas fermer ce soir », « Ne pas ouvrir demain matin »: skipping the next move once.
-pub fn skip_label(w: &Words, event: SunEvent, t: DateTime<Utc>, now: &DateTime<Tz>) -> String {
-    let day = t.with_timezone(&now.timezone()).date_naive();
-    let today = now.date_naive();
-    let tomorrow = today + Days::days(1);
+pub fn skip_label(w: &Words, event: SunEvent, t: Timestamp, now: &ZonedDateTime) -> String {
+    let day = t.to_zoned_datetime(now.time_zone().clone()).date();
+    let today = now.date();
+    let tomorrow = today + 1_i32.days();
     w.s(match event {
         SunEvent::Close if day == today => k::SHUTTERS_SKIP_CLOSE_TONIGHT,
         SunEvent::Close if day == tomorrow => k::SHUTTERS_SKIP_CLOSE_TOMORROW,
@@ -114,7 +113,7 @@ fn position(value: f64) -> serde_json::Value {
     })
 }
 
-pub fn tile(w: &Words, c: &Cover, now: &DateTime<Tz>) -> Tile {
+pub fn tile(w: &Words, c: &Cover, now: &ZonedDateTime) -> Tile {
     let off = !c.online;
     let button = |icon: Icon, label: &str, order: Order| {
         Button::new(Some(icon), label, Act::Order(order)).unavailable(off)
@@ -202,7 +201,7 @@ fn all_closing(w: &Words, o: &Outcome) -> Option<Toast> {
 pub fn shutters_group(
     w: &Words,
     v: &View<Vec<Cover>>,
-    now: &DateTime<Tz>,
+    now: &ZonedDateTime,
     stale: Option<(String, Button)>,
 ) -> Group {
     let covers = v.data.as_deref().map(Vec::as_slice).unwrap_or_default();
@@ -257,9 +256,8 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
-    use chrono::TimeZone;
+    use maison_api::Answer;
     use maison_api::matter::Covers;
-    use maison_api::{Answer, HOUSE_TZ};
 
     const COVERS: &str = r#"{"success":true,"covers":[{"id":"c1","name":"Salon","endpoint":1,"online":true,"openPercent":40,"targetOpenPercent":100,"motion":"opening","vendorId":4874,"productId":1,"schedule":{"openAtSunrise":true,"closeAtSunset":true,"sunriseOffsetMin":0,"sunsetOffsetMin":60},"nextOpen":"2026-11-13T06:12:00Z","nextClose":"2026-11-12T17:42:00Z","skipNextOpen":false,"skipNextClose":false},{"id":"c2","name":"Chambre","endpoint":1,"online":false,"openPercent":null,"targetOpenPercent":null,"motion":null,"vendorId":null,"productId":null,"schedule":{"openAtSunrise":false,"closeAtSunset":false,"sunriseOffsetMin":0,"sunsetOffsetMin":0},"nextOpen":null,"nextClose":null,"skipNextOpen":false,"skipNextClose":false}]}"#;
 
@@ -270,8 +268,8 @@ mod tests {
             .covers
     }
 
-    fn now() -> DateTime<Tz> {
-        HOUSE_TZ.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap()
+    fn now() -> ZonedDateTime {
+        crate::families::house_at(2026, 11, 12, 15, 0)
     }
 
     #[test]

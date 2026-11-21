@@ -423,7 +423,7 @@ async fn fetch_status(
     id: &str,
 ) -> Result<Map<String, Value>, String> {
     // the protocol's `t` is a u32 of seconds: a clock past 2106 sends none
-    let now = u32::try_from(chrono::Utc::now().timestamp()).ok();
+    let now = u32::try_from(jiff::Timestamp::now().as_second()).ok();
 
     let payload = Payload::Struct(PayloadStruct {
         gw_id: Some(id.to_string()),

@@ -4,8 +4,7 @@
 //! device, a plug drawing power in red peak hours). The same reads as the groups (the same
 //! sources: no request of its own); a summary that never reorders them.
 
-use chrono::DateTime;
-use maison_api::Tz;
+use jiff::ZonedDateTime;
 use maison_api::matter::Cover;
 use maison_api::meross::Plug;
 use maison_api::tempo::{Color, Period, PriceNow};
@@ -71,7 +70,7 @@ pub fn shutter_chip(w: &Words, covers: &[Cover]) -> Option<Chip> {
                 .map(|e| (c, e))
         })
         .min_by_key(|(_, (_, at, _))| *at)?;
-    let time = w.clock(at.with_timezone(&maison_api::HOUSE_TZ).time());
+    let time = w.clock(maison_api::HOUSE_TZ.to_datetime(at).time());
     let key = if event == SunEvent::Open {
         k::SHUTTERS_WILL_OPEN
     } else {
@@ -129,7 +128,7 @@ pub fn plug_chip(
 }
 
 /// The chips, from what the groups read.
-pub fn chips(cx: &mut Cx, now: &DateTime<Tz>) -> Vec<Chip> {
+pub fn chips(cx: &mut Cx, now: &ZonedDateTime) -> Vec<Chip> {
     let w = cx.words;
     let mut out = Vec::new();
     let price = cx

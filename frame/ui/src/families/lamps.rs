@@ -5,8 +5,7 @@
 //! A lamp with more to set opens its page (LampPage, ZigbeeLampPage): its white, a Zigbee lamp's
 //! colors and effects. Renaming stays the web app's.
 
-use chrono::DateTime;
-use maison_api::Tz;
+use jiff::{Timestamp, ZonedDateTime};
 use maison_api::lamps::{
     BrightnessRequest, ColorRequest, EffectRequest, HueLamp, LampList, PowerRequest,
     TemperatureRequest, ZigbeeLamp,
@@ -85,7 +84,7 @@ pub fn from_zigbee(l: &ZigbeeLamp) -> Lamp {
 }
 
 /// Line 2: « Allumée, 80 % », « Éteinte », « Injoignable depuis 12 min ».
-pub fn state(w: &Words, l: &Lamp, now: &DateTime<Tz>) -> String {
+pub fn state(w: &Words, l: &Lamp, now: &ZonedDateTime) -> String {
     if l.connecting {
         return w.s(k::LAMPS_CONNECTING);
     }
@@ -93,8 +92,8 @@ pub fn state(w: &Words, l: &Lamp, now: &DateTime<Tz>) -> String {
         let seen = l
             .last_seen
             .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.with_timezone(&now.timezone()));
+            .and_then(|s| s.parse::<Timestamp>().ok())
+            .map(|d| d.to_zoned_datetime(now.time_zone().clone()));
         return w.unreachable_since(seen, now);
     }
     if l.is_on {
@@ -132,7 +131,7 @@ fn brightness(value: f64) -> serde_json::Value {
     })
 }
 
-pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Tile {
+pub fn tile(w: &Words, d: Driver, l: &Lamp, now: &ZonedDateTime) -> Tile {
     let mut parts = Vec::new();
     if l.reachable && l.is_on {
         parts.push(Part::Slider(Slider {
@@ -183,7 +182,7 @@ fn all_off_said(w: &Words, o: &Outcome) -> Option<Toast> {
 pub fn lamps_group(
     w: &Words,
     families: &[(Driver, &View<Vec<Lamp>>)],
-    now: &DateTime<Tz>,
+    now: &ZonedDateTime,
     stale: Option<(String, Button)>,
 ) -> Option<Group> {
     if families.is_empty() {
@@ -304,7 +303,7 @@ pub fn rgb_to_xy(rgb: [u8; 3]) -> (f32, f32) {
 }
 
 /// Why a lamp's white and colors cannot act now (lamp.ts `lampWhy`); `None` when they can.
-fn why(w: &Words, l: &Lamp, now: &DateTime<Tz>) -> Option<String> {
+fn why(w: &Words, l: &Lamp, now: &ZonedDateTime) -> Option<String> {
     if !l.reachable {
         return Some(state(w, l, now));
     }
@@ -356,7 +355,7 @@ fn light(d: Driver, l: &Lamp, action: &str, body: &impl serde::Serialize) -> Ord
 }
 
 /// What a lamp's page sets, each out of reach while it cannot act, saying why.
-pub fn lamp_groups(w: &Words, d: Driver, l: &Lamp, now: &DateTime<Tz>) -> Vec<Group> {
+pub fn lamp_groups(w: &Words, d: Driver, l: &Lamp, now: &ZonedDateTime) -> Vec<Group> {
     let why = why(w, l, now);
     let off = why.is_some();
     let mut groups = vec![Group::new(
@@ -514,15 +513,14 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
-    use chrono::TimeZone;
-    use maison_api::{Answer, HOUSE_TZ};
+    use maison_api::Answer;
 
     fn view(lamps: Vec<Lamp>) -> View<Vec<Lamp>> {
         View::ready(lamps)
     }
 
-    fn now() -> DateTime<Tz> {
-        HOUSE_TZ.with_ymd_and_hms(2026, 11, 12, 20, 0, 0).unwrap()
+    fn now() -> ZonedDateTime {
+        crate::families::house_at(2026, 11, 12, 20, 0)
     }
 
     const HUE_LIST: &str = r#"{"success":true,"lamps":[{"id":"aa:bb","name":"Salon","address":"AA:BB","model":"LCA001","manufacturer":"Signify","firmware":"1.0","connected":true,"connecting":false,"reachable":true,"state":{"isOn":true,"brightness":80,"temperature":null,"temperatureMin":null,"temperatureMax":null},"lastSeen":null}],"total":1,"connected":1,"reachable":1,"message":"ok"}"#;

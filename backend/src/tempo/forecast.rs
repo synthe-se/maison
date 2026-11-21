@@ -11,7 +11,7 @@
 //!
 //! Pure and allocation-free in the loop: a refresh is far under 100 ms on the Pi 1.
 
-use chrono::{Datelike, NaiveDate};
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
 use maison_api::tempo::Color;
@@ -60,7 +60,7 @@ pub struct Model {
     pub version: String,
     /// The last day of data it learnt from.
     #[serde(alias = "fitted_through")]
-    pub fitted_through: NaiveDate,
+    pub fitted_through: Date,
     pub cities: Vec<WeatherPoint>,
     #[serde(alias = "wind_sites")]
     pub wind_sites: Vec<WeatherPoint>,
@@ -104,16 +104,16 @@ pub const WIND_FEATURES: usize = 3;
 pub const SOLAR_FEATURES: usize = 5;
 
 /// The year as two harmonics: [cos, sin, cos 2, sin 2].
-fn harmonics(date: NaiveDate) -> [f64; 4] {
-    let w = 2.0 * std::f64::consts::PI * f64::from(date.ordinal()) / 365.25;
+fn harmonics(date: Date) -> [f64; 4] {
+    let w = 2.0 * std::f64::consts::PI * f64::from(date.day_of_year()) / 365.25;
     [w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin()]
 }
 
 /// What drives the day's consumption: the weekday, holidays, the Christmas week and
 /// August, heating and cooling degrees (from a smoothed temperature: buildings lag).
-pub fn consumption_features(date: NaiveDate, temperature: f64) -> [f64; CONSUMPTION_FEATURES] {
+pub fn consumption_features(date: Date, temperature: f64) -> [f64; CONSUMPTION_FEATURES] {
     let mut f = [0.0; CONSUMPTION_FEATURES];
-    f[date.weekday().num_days_from_monday() as usize] = 1.0;
+    f[date.weekday().to_monday_zero_offset() as usize] = 1.0;
     let flag = |b: bool| if b { 1.0 } else { 0.0 };
     f[7] = flag(is_holiday(date));
     f[8] = flag((date.month() == 12 && date.day() >= 24) || (date.month() == 1 && date.day() == 1));
@@ -134,7 +134,7 @@ pub fn wind_features(power: f64) -> [f64; WIND_FEATURES] {
 }
 
 /// Solar production: its seasonal curve (a day's sun is not forecast well enough to help).
-pub fn solar_features(date: NaiveDate) -> [f64; SOLAR_FEATURES] {
+pub fn solar_features(date: Date) -> [f64; SOLAR_FEATURES] {
     let [c1, s1, c2, s2] = harmonics(date);
     [1.0, c1, s1, c2, s2]
 }
@@ -225,7 +225,7 @@ impl Levels {
 /// A day ahead as the weather sees it.
 #[derive(Debug, Clone, Copy)]
 pub struct DayWeather {
-    pub date: NaiveDate,
+    pub date: Date,
     /// [`effective_temperature`] over the cities.
     pub temperature: f64,
     /// [`wind_power`] over the sites.
@@ -311,14 +311,16 @@ impl Rng {
 }
 
 /// A seed per day: the forecast stays the same all day for the same inputs.
-pub fn seed(date: NaiveDate) -> u64 {
-    date.num_days_from_ce() as u64
+pub fn seed(date: Date) -> u64 {
+    // days from the common era, 1 January of year 1 being 1 (chrono's `num_days_from_ce`)
+    (date - jiff::civil::date(1, 1, 1)).get_days() as u64 + 1
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::tempo::rules::tests::day;
+    use jiff::ToSpan;
 
     pub(crate) fn model() -> Model {
         let mut consumption = vec![0.0; CONSUMPTION_FEATURES];
@@ -380,7 +382,7 @@ pub(crate) mod tests {
 
     fn week(x: f64, sigma: f64) -> Vec<Ahead> {
         day(2026, 1, 12)
-            .iter_days()
+            .series(1_i32.day())
             .take(7)
             .map(|date| Ahead {
                 rules: DayRules::new(date),

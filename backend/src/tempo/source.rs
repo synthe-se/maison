@@ -9,7 +9,7 @@
 
 use std::{collections::BTreeMap, time::Instant};
 
-use chrono::{Duration, NaiveDate};
+use jiff::{civil::Date, ToSpan};
 use maison_api::tempo::Color;
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -85,7 +85,7 @@ impl Sources {
         &self,
         client: &reqwest::Client,
         start_year: i32,
-        today: NaiveDate,
+        today: Date,
     ) -> Result<History, AppError> {
         let current = season_bounds(start_year).0 <= today && today <= season_bounds(start_year).1;
         let mut failure = AppError::from(Refusal::ServiceUnreachable);
@@ -146,13 +146,13 @@ async fn public_season(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CouleurDay {
-    date_jour: NaiveDate,
+    date_jour: Date,
     /// 1 blue, 2 white, 3 red, 0 not known yet.
     code_jour: u8,
 }
 
 impl CouleurDay {
-    fn color(&self) -> Option<(NaiveDate, Color)> {
+    fn color(&self) -> Option<(Date, Color)> {
         let color = match self.code_jour {
             1 => Color::Blue,
             2 => Color::White,
@@ -214,10 +214,10 @@ struct RteDay {
 }
 
 /// Midnight in Paris, as RTE's API wants its bounds.
-fn paris_midnight(day: NaiveDate) -> String {
+fn paris_midnight(day: Date) -> String {
     house_time(day, 0, 0)
-        .with_timezone(&HOUSE_TZ)
-        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_zoned_datetime(HOUSE_TZ.clone())
+        .strftime("%Y-%m-%dT%H:%M:%S%:z")
         .to_string()
 }
 
@@ -245,10 +245,10 @@ impl Official {
         &self,
         client: &reqwest::Client,
         start_year: i32,
-        today: NaiveDate,
+        today: Date,
     ) -> Result<History, AppError> {
         let (first, last) = season_bounds(start_year);
-        let end = (last + Duration::days(1)).min(today + Duration::days(2));
+        let end = (last + 1_i32.days()).min(today + 2_i32.days());
         let request = client
             .get(format!(
                 "{}/open_api/tempo_like_supply_contract/v1/tempo_like_calendars",
@@ -291,7 +291,7 @@ struct EdfSeason {
 pub async fn edf_season(
     client: &reqwest::Client,
     url: &str,
-    day: NaiveDate,
+    day: Date,
 ) -> Result<(Quotas, [u32; 3]), AppError> {
     let request = client.get(format!("{url}/saisons/search")).query(&[
         ("option", "TEMPO".to_string()),

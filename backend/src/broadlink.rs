@@ -10,7 +10,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rbroadlink::{network::WirelessConnection, traits::DeviceTrait, Device};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{watch, Mutex, RwLock};
@@ -91,7 +91,7 @@ pub struct StoredClimateState {
     pub settings: Option<mitsubishi_ir::ClimateSettings>,
     pub host: String,
     pub model: Option<String>,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -119,8 +119,8 @@ pub struct BroadlinkCodeEntry {
     pub packet_base64: String,
     pub packet_length: usize,
     pub tags: Vec<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -436,7 +436,7 @@ impl BroadlinkManager {
     ) -> Result<BroadlinkCodeEntry, AppError> {
         let packet = decode_packet(&request.packet_base64)?;
         let details = request.details;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let normalized_command = normalize_lookup_value(&details.command);
         let normalized_brand = details.brand.as_deref().map(normalize_lookup_value);
         let normalized_model = details.model.as_deref().map(normalize_lookup_value);
@@ -619,7 +619,7 @@ impl BroadlinkManager {
             settings,
             host: host.to_string(),
             model: model.map(str::to_string),
-            updated_at: Utc::now(),
+            updated_at: Timestamp::now(),
         });
         persist_climate_state(self.climate_state_path.as_path(), state.as_ref()).await;
         self.climate_state.send_replace(state);
@@ -638,7 +638,7 @@ impl BroadlinkManager {
         if model.is_some() {
             current.model = model.map(str::to_string);
         }
-        current.updated_at = Utc::now();
+        current.updated_at = Timestamp::now();
         let state = Some(current);
         persist_climate_state(self.climate_state_path.as_path(), state.as_ref()).await;
         self.climate_state.send_replace(state);

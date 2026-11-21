@@ -756,7 +756,7 @@ mod tests {
             Duration::from_secs(1),
         );
         let mut commands = Commands::new(client, Arc::new(|| {}));
-        let now_tz = chrono::Utc::now().with_timezone(&HOUSE_TZ);
+        let now_tz = jiff::Timestamp::now().to_zoned_datetime(HOUSE_TZ.clone());
         let dark = lamp("2", false);
         let late_tile = crate::families::lamps::tile(&words, HUE_DRIVER, &dark, &now_tz);
         let Lead::Toggle { turn_on, .. } = &late_tile.lead else {
@@ -789,7 +789,7 @@ mod tests {
         };
         let house = Screen::House {
             time: "19:05".into(),
-            date: words.long_date(now_tz.date_naive()),
+            date: words.long_date(now_tz.date()),
             now: vec![Chip {
                 text: "2 lampes allumées".into(),
                 warn: false,

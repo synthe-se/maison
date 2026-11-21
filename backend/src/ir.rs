@@ -32,8 +32,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
+use jiff::Timestamp;
 use maison_api::lamps::{HueLamp, ZigbeeLamp};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -485,7 +485,7 @@ pub struct IrEventLog {
     pub code: u16,
     pub value: i32,
     pub mapped: bool,
-    pub received_at: DateTime<Utc>,
+    pub received_at: Timestamp,
 }
 
 /// Work queued for one key, run after the key's earlier presses.
@@ -626,7 +626,7 @@ impl IrManager {
             code,
             value,
             mapped,
-            received_at: Utc::now(),
+            received_at: Timestamp::now(),
         };
         recent.events.push_back(event.clone());
         // nobody listening is fine

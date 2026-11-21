@@ -687,7 +687,7 @@ fn build_packet(
     payload: serde_json::Value,
 ) -> MerossRequestPacket<'static> {
     let message_id = Uuid::new_v4().simple().to_string();
-    let timestamp = chrono::Utc::now().timestamp();
+    let timestamp = jiff::Timestamp::now().as_second();
     let timestamp_ms = now_ms() % 1000;
     let sign = compute_sign(&message_id, key, timestamp);
 

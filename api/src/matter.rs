@@ -1,7 +1,7 @@
 //! The shutters over Matter (`/api/matter/covers`): positions are « how open », 100 = open,
 //! 0 = closed; `None` until the switch is calibrated.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,8 +40,8 @@ pub struct Cover {
     pub product_id: Option<u16>,
     pub schedule: SunSchedule,
     /// When the schedule will next open / close it (none without a place or a schedule).
-    pub next_open: Option<DateTime<Utc>>,
-    pub next_close: Option<DateTime<Utc>>,
+    pub next_open: Option<Timestamp>,
+    pub next_close: Option<Timestamp>,
     /// The next opening / closing will not happen (they stay in `next_open` / `next_close`).
     pub skip_next_open: bool,
     pub skip_next_close: bool,

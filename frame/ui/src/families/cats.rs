@@ -12,8 +12,7 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-use chrono::{DateTime, TimeZone};
-use maison_api::Tz;
+use jiff::{Timestamp, ZonedDateTime};
 use maison_api::cats::{
     FeedRequest, FountainUvSettingsRequest, LitterActions, LitterBoxSettingsRequest,
     MAX_FEED_PORTIONS,
@@ -555,7 +554,7 @@ pub fn fountain_upkeep(w: &Words, id: &str, name: &str, connected: bool, s: &Val
 
 /// The feeder's last meal in words (« 2 portions, 08:00 »), from its report; `None` without one
 /// (alerts.ts `lastMeal`).
-pub fn last_meal(w: &Words, s: &Value, now: &DateTime<Tz>) -> Option<String> {
+pub fn last_meal(w: &Words, s: &Value, now: &ZonedDateTime) -> Option<String> {
     let p = &s["history"]["parsed"];
     let count_of = p["count"].as_str()?.parse::<usize>().ok()?;
     let at = p["timestamp"]
@@ -563,7 +562,9 @@ pub fn last_meal(w: &Words, s: &Value, now: &DateTime<Tz>) -> Option<String> {
         .parse::<i64>()
         .ok()
         .filter(|t| *t > 0)?;
-    let at = now.timezone().timestamp_opt(at, 0).single()?;
+    let at = Timestamp::from_second(at)
+        .ok()?
+        .to_zoned_datetime(now.time_zone().clone());
     Some(w.t(
         k::FEEDER_LAST_MEAL_VALUE,
         &[
@@ -577,7 +578,7 @@ pub fn last_meal(w: &Words, s: &Value, now: &DateTime<Tz>) -> Option<String> {
 }
 
 /// The feeder's report (FeederPanel): what powers it, its last meal.
-pub fn feeder_facts(w: &Words, s: &Value, now: &DateTime<Tz>) -> Vec<Tile> {
+pub fn feeder_facts(w: &Words, s: &Value, now: &ZonedDateTime) -> Vec<Tile> {
     let mut tiles = Vec::new();
     if let Some(power) = s["system"]["poweredBy"].as_str() {
         tiles.push(fact(
@@ -973,13 +974,11 @@ mod tests {
 
     #[test]
     fn the_feeder_says_its_power_and_its_last_meal() {
-        use maison_api::HOUSE_TZ;
         let w = Words::new(Lang::Fr);
-        let now = HOUSE_TZ.with_ymd_and_hms(2026, 10, 2, 9, 0, 0).unwrap();
-        let at = HOUSE_TZ
-            .with_ymd_and_hms(2026, 10, 2, 8, 0, 0)
-            .unwrap()
-            .timestamp();
+        let now = crate::families::house_at(2026, 10, 2, 9, 0);
+        let at = crate::families::house_at(2026, 10, 2, 8, 0)
+            .timestamp()
+            .as_second();
         let s = v(&format!(
             r#"{{"system":{{"poweredBy":"AC Power"}},"history":{{"parsed":{{"count":"2","timestamp":"{at}"}}}}}}"#
         ));

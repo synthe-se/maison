@@ -9,8 +9,7 @@
 //! the unit its whole state; the order keeps the running timer. Off, a choice does what the
 //! remote does: such a frame is the unit's whole state, so it starts with that setting.
 
-use chrono::DateTime;
-use maison_api::Tz;
+use jiff::{Timestamp, ZonedDateTime};
 use maison_api::climate::{
     self, FANS, FIRST_ON_COMMAND, MODES, OFF_COMMAND, STOP_CHOICES_MIN, SendRequest, VANES,
 };
@@ -126,14 +125,14 @@ fn changed(settings: &Value, change: impl FnOnce(&mut Value)) -> Sent {
 
 /// The tile, from the blaster found (if any) and the last order the server kept
 /// (`/broadlink/mitsubishi/state`'s `state`, null before the first).
-pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &DateTime<Tz>) -> Tile {
+pub fn tile(w: &Words, host: Option<&str>, last: &Value, now: &ZonedDateTime) -> Tile {
     let power = last["power"].as_bool().unwrap_or(false);
     let settings = last.get("settings").filter(|s| s.is_object());
     let temperature = settings.and_then(|s| s["temperature"].as_u64());
     let when = last["updatedAt"]
         .as_str()
-        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| w.when(&t.with_timezone(&now.timezone()), now));
+        .and_then(|t| t.parse::<Timestamp>().ok())
+        .map(|t| w.when(&t.to_zoned_datetime(now.time_zone().clone()), now));
     let state = match (last.is_object(), power, when) {
         (true, true, Some(when)) => w.t(k::CLIMATE_LAST_ON, &[("when", when.into())]),
         (true, false, Some(when)) => w.t(k::CLIMATE_LAST_OFF, &[("when", when.into())]),
@@ -359,16 +358,15 @@ pub fn group(cx: &mut Cx) -> Option<Group> {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
-    use chrono::TimeZone;
-    use maison_api::{Answer, HOUSE_TZ};
+    use maison_api::Answer;
 
     /// The backend's answer to `/broadlink/mitsubishi/state`, its body.
     fn state(json: &str) -> Value {
         serde_json::from_str::<Answer<Value>>(json).unwrap().body
     }
 
-    fn now() -> DateTime<Tz> {
-        HOUSE_TZ.with_ymd_and_hms(2026, 10, 16, 19, 0, 0).unwrap()
+    fn now() -> ZonedDateTime {
+        crate::families::house_at(2026, 10, 16, 19, 0)
     }
 
     const ON: &str = r#"{"success":true,"state":{"power":true,"lastCommand":"state-cool-21-fan-auto-vane-auto-wide-center-stopin-180","lastOnCommand":"state-cool-21-fan-auto-vane-auto-wide-center-stopin-180","settings":{"mode":"cool","temperature":21,"fan":"auto","vane":"auto","wide":"center","econo":false,"stopInMinutes":180},"host":"192.168.1.60","model":"msz-hj5va","updatedAt":"2026-10-16T16:50:00Z"},"message":"ok"}"#;

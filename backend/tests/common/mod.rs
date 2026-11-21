@@ -91,7 +91,7 @@ pub fn token_for(person: &str) -> String {
 
 /// A token for `person` whose last passkey sign-in was `age_ms` ago.
 pub fn token_signed_in_ago(person: &str, age_ms: i64) -> String {
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = jiff::Timestamp::now().as_millisecond();
     let claims = Claims {
         user_id: person.to_string(),
         issued_ms: now,

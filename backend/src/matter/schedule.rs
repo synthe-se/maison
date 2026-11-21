@@ -4,59 +4,59 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp, ToSpan};
 
 use super::{CoverCommand, CoverConfig};
 use crate::{
     sun::{self, Place},
-    util::HOUSE_TZ,
+    util::house_date,
 };
 
 pub use maison_api::matter::SunSchedule;
 
 pub(super) const MAX_SUN_OFFSET_MIN: i16 = 180;
 
-pub(super) fn offset(minutes: i16) -> TimeDelta {
-    TimeDelta::minutes(i64::from(minutes))
+pub(super) fn offset(minutes: i16) -> SignedDuration {
+    SignedDuration::from_mins(i64::from(minutes))
 }
 
 /// Two times of one event (an opening, a closing) closer than this are the same occurrence:
 /// the next one is a day away. A skip names its occurrence by time; this much slack lets it
 /// survive a moved place or offset (a few minutes, three hours at most).
-const SAME_EVENT: TimeDelta = TimeDelta::hours(12);
+const SAME_EVENT: SignedDuration = SignedDuration::from_hours(12);
 
 /// Whether `at` is the occurrence a skip set for `skipped` names.
-pub(super) fn same_event(skipped: DateTime<Utc>, at: DateTime<Utc>) -> bool {
+pub(super) fn same_event(skipped: Timestamp, at: Timestamp) -> bool {
     (at - skipped).abs() < SAME_EVENT
 }
 
 /// A skip whose occurrence is over at `now` (passed while the Pi was down or its clock not
 /// trusted): it would otherwise skip nothing, forever.
-pub(super) fn skip_over(skipped: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+pub(super) fn skip_over(skipped: Timestamp, now: Timestamp) -> bool {
     now - skipped >= SAME_EVENT
 }
 
 /// How far back the scheduler looks, whatever its last look: the Pi boots on the time it
 /// last saw (swclock, no RTC) and NTP then steps the clock weeks ahead, which must not
 /// replay every sunrise and sunset in between.
-const CATCH_UP: TimeDelta = TimeDelta::minutes(5);
+const CATCH_UP: SignedDuration = SignedDuration::from_mins(5);
 
 /// The command the schedule sends now: the latest whose time fell in (since, now], looking
 /// back `CATCH_UP` at most (the shutter only needs its last order).
 pub(super) fn due(
     schedule: &SunSchedule,
     place: &Place,
-    since: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> Option<(CoverCommand, DateTime<Utc>)> {
+    since: Timestamp,
+    now: Timestamp,
+) -> Option<(CoverCommand, Timestamp)> {
     let since = since.max(now - CATCH_UP);
     let mut out = Vec::new();
     // yesterday too: a late sunset plus an offset can fall after local midnight (the first
     // day there is has no yesterday)
-    let since_day = since.with_timezone(&HOUSE_TZ).date_naive();
-    let first = since_day.pred_opt().unwrap_or(since_day);
-    let last = now.with_timezone(&HOUSE_TZ).date_naive();
-    for day in first.iter_days().take_while(|d| *d <= last) {
+    let since_day = house_date(since);
+    let first = since_day.yesterday().unwrap_or(since_day);
+    let last = house_date(now);
+    for day in first.series(1_i32.day()).take_while(|d| *d <= last) {
         let (rise, set) = sun::sun_times(place, day);
         let events = [
             (
@@ -86,13 +86,13 @@ pub(super) fn due(
 
 /// How long a schedule order is retried (Wi-Fi off at sunset: the shutters still close when
 /// it comes back, but not hours later).
-pub(super) const RETRY_FOR: TimeDelta = TimeDelta::minutes(30);
+pub(super) const RETRY_FOR: SignedDuration = SignedDuration::from_mins(30);
 
 /// A schedule order not sent yet: the event and when it fell due.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Order {
     pub(super) command: CoverCommand,
-    pub(super) at: DateTime<Utc>,
+    pub(super) at: Timestamp,
 }
 
 /// What one look of the scheduler found: the orders to send, the events skipped.
@@ -105,7 +105,7 @@ pub(super) struct Look {
 /// clock is not trusted) and, per cover, the one order still to send.
 #[derive(Debug, Default)]
 pub(super) struct ScheduleState {
-    last_tick: Option<DateTime<Utc>>,
+    last_tick: Option<Timestamp>,
     pub(super) pending: BTreeMap<u64, Order>,
 }
 
@@ -116,7 +116,7 @@ impl ScheduleState {
     /// order (a skipped one leaves none); one older than `RETRY_FOR` is dropped.
     pub(super) fn tick(
         &mut self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         trusted: bool,
         place: Option<&Place>,
         covers: &[CoverConfig],
@@ -205,7 +205,7 @@ pub(super) mod tests {
 
     pub(in crate::matter) use crate::sun::tests::paris;
 
-    pub(in crate::matter) fn utc(s: &str) -> DateTime<Utc> {
+    pub(in crate::matter) fn utc(s: &str) -> Timestamp {
         s.parse().unwrap()
     }
 
@@ -218,9 +218,9 @@ pub(super) mod tests {
 
     #[test]
     fn a_sunrise_between_two_looks_opens_once() {
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let day = jiff::civil::date(2026, 10, 2);
         let rise = sun::sun_times(&paris(), day).0.unwrap();
-        let look = TimeDelta::seconds(30);
+        let look = SignedDuration::from_secs(30);
         let fired = due(&BOTH, &paris(), rise - look, rise + look);
         assert_eq!(fired.map(|e| e.0), Some(CoverCommand::Open));
         // the next look does not repeat it
@@ -229,13 +229,13 @@ pub(super) mod tests {
 
     #[test]
     fn a_sunset_closes_and_its_offset_shifts_it() {
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let day = jiff::civil::date(2026, 10, 2);
         let set = sun::sun_times(&paris(), day).1.unwrap();
         let later = SunSchedule {
             sunset_offset_min: 30,
             ..BOTH
         };
-        let look = TimeDelta::seconds(30);
+        let look = SignedDuration::from_secs(30);
         assert_eq!(
             due(&BOTH, &paris(), set - look, set + look).map(|e| e.0),
             Some(CoverCommand::Close)
@@ -287,15 +287,18 @@ pub(super) mod tests {
     fn a_skip_names_one_occurrence() {
         let set = utc("2026-10-02T17:20:00Z");
         assert!(
-            same_event(set, set + TimeDelta::minutes(3)),
+            same_event(set, set + SignedDuration::from_mins(3)),
             "a moved place"
         );
-        assert!(same_event(set, set - TimeDelta::hours(3)), "a moved offset");
         assert!(
-            !same_event(set, set + TimeDelta::hours(24)),
+            same_event(set, set - SignedDuration::from_hours(3)),
+            "a moved offset"
+        );
+        assert!(
+            !same_event(set, set + SignedDuration::from_hours(24)),
             "the next day's is another"
         );
-        assert!(!skip_over(set, set + TimeDelta::hours(1)));
-        assert!(skip_over(set, set + TimeDelta::hours(12)));
+        assert!(!skip_over(set, set + SignedDuration::from_hours(1)));
+        assert!(skip_over(set, set + SignedDuration::from_hours(12)));
     }
 }

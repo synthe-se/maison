@@ -5,7 +5,8 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Timelike};
+use jiff::ZonedDateTime;
+use jiff::civil::{Date, Time};
 use serde::Deserialize;
 
 /// One const per key (generated from fr.json): `t(k::LAMPS_ON_PERCENT, …)`.
@@ -168,7 +169,7 @@ impl Words {
 
     /// A time of day as Intl writes `{hour: 'numeric', minute: '2-digit'}`: « 7:05 », « 19:05 »;
     /// « 7:05 PM » in English (the web app's `clock`; the day periods typed from CLDR's en).
-    pub fn clock(&self, t: NaiveTime) -> String {
+    pub fn clock(&self, t: Time) -> String {
         let (h, m) = (t.hour(), t.minute());
         match self.lang {
             Lang::Fr => format!("{h}:{m:02}"),
@@ -186,19 +187,19 @@ impl Words {
 
     /// « 08:00 » as the backend writes a time of day, in the reader's format (`hhmm`).
     pub fn hhmm(&self, text: &str) -> String {
-        match NaiveTime::parse_from_str(text, "%H:%M") {
+        match Time::strptime("%H:%M", text) {
             Ok(t) => self.clock(t),
             Err(_) => text.to_string(),
         }
     }
 
     /// A moment: its time today, else its day and time (« 12 nov., 19:05 »), the web's `when`.
-    pub fn when<Tz: TimeZone>(&self, at: &DateTime<Tz>, now: &DateTime<Tz>) -> String {
+    pub fn when(&self, at: &ZonedDateTime, now: &ZonedDateTime) -> String {
         let clock = self.clock(at.time());
-        if at.date_naive() == now.date_naive() {
+        if at.date() == now.date() {
             return clock;
         }
-        let (d, m) = (at.day(), at.month0() as usize);
+        let (d, m) = (at.day(), month0(at.date()));
         match self.lang {
             Lang::Fr => format!("{d} {}, {clock}", MONTHS_FR[m]),
             Lang::En => format!("{} {d}, {clock}", MONTHS_EN[m]),
@@ -206,14 +207,14 @@ impl Words {
     }
 
     /// « Aujourd'hui », « Demain », else the weekday (« samedi »): the web's `dayLabel`.
-    pub fn day_label(&self, day: NaiveDate, today: NaiveDate) -> String {
+    pub fn day_label(&self, day: Date, today: Date) -> String {
         if day == today {
             return self.s(k::DAY_TODAY);
         }
-        if today.succ_opt() == Some(day) {
+        if today.tomorrow().ok() == Some(day) {
             return self.s(k::DAY_TOMORROW);
         }
-        let i = day.weekday().num_days_from_monday() as usize;
+        let i = weekday0(day);
         match self.lang {
             Lang::Fr => WEEKDAYS_FR[i].to_string(),
             Lang::En => WEEKDAYS_EN[i].to_string(),
@@ -222,12 +223,8 @@ impl Words {
 
     /// « jeu. 12 nov. », « Thu, Nov 12 »: the web's `shortDay` (Intl's short weekday, day,
     /// short month).
-    pub fn short_day(&self, day: NaiveDate) -> String {
-        let (i, d, m) = (
-            day.weekday().num_days_from_monday() as usize,
-            day.day(),
-            day.month0() as usize,
-        );
+    pub fn short_day(&self, day: Date) -> String {
+        let (i, d, m) = (weekday0(day), day.day(), month0(day));
         match self.lang {
             Lang::Fr => format!("{} {d} {}", WEEKDAYS_SHORT_FR[i], MONTHS_FR[m]),
             Lang::En => format!("{}, {} {d}", WEEKDAYS_SHORT_EN[i], MONTHS_EN[m]),
@@ -235,12 +232,8 @@ impl Words {
     }
 
     /// « samedi 31 octobre », « samedi 1er novembre », « Saturday, October 31 »: the clock's date.
-    pub fn long_date(&self, day: NaiveDate) -> String {
-        let (i, d, m) = (
-            day.weekday().num_days_from_monday() as usize,
-            day.day(),
-            day.month0() as usize,
-        );
+    pub fn long_date(&self, day: Date) -> String {
+        let (i, d, m) = (weekday0(day), day.day(), month0(day));
         match self.lang {
             Lang::Fr if d == 1 => format!("{} 1er {}", WEEKDAYS_FR[i], MONTHS_LONG_FR[m]),
             Lang::Fr => format!("{} {d} {}", WEEKDAYS_FR[i], MONTHS_LONG_FR[m]),
@@ -311,15 +304,11 @@ impl Words {
 
     /// « Injoignable depuis 12 min » within the hour, then since when it was last heard, or
     /// « Injoignable » when it never answered (format.ts `unreachableSince`).
-    pub fn unreachable_since<Tz: TimeZone>(
-        &self,
-        at: Option<DateTime<Tz>>,
-        now: &DateTime<Tz>,
-    ) -> String {
+    pub fn unreachable_since(&self, at: Option<ZonedDateTime>, now: &ZonedDateTime) -> String {
         let Some(at) = at else {
             return self.s(k::STATE_UNREACHABLE);
         };
-        let minutes = ((now.clone() - at.clone()).num_seconds() as f64 / 60.0)
+        let minutes = ((now.timestamp() - at.timestamp()).as_secs() as f64 / 60.0)
             .round()
             .max(1.0) as u64;
         if minutes < 60 {
@@ -432,6 +421,16 @@ const WEEKDAYS_SHORT_EN: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", 
 
 /// The key of a refusal's words: `code_<code>` for every code (errors.ts `CODE_WORDS`, the same
 /// convention; a test checks each one has its words).
+/// The day's weekday, Monday 0: the index in the weekdays' names.
+pub fn weekday0(day: Date) -> usize {
+    day.weekday().to_monday_zero_offset().unsigned_abs().into()
+}
+
+/// The day's month, January 0: the index in the months' names.
+pub fn month0(day: Date) -> usize {
+    (day.month().unsigned_abs() - 1).into()
+}
+
 fn code_key(code: maison_api::codes::Code) -> String {
     format!("code_{}", code.as_str())
 }
@@ -501,7 +500,7 @@ mod tests {
     #[test]
     fn days_are_said_as_the_web_app_says_them() {
         let (fr, en) = (Words::new(Lang::Fr), Words::new(Lang::En));
-        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let d = |s: &str| s.parse::<Date>().unwrap();
         // 12 November 2026 is a Thursday
         let today = d("2026-11-12");
         assert_eq!(fr.day_label(today, today), "Aujourd’hui");
@@ -552,18 +551,16 @@ mod tests {
 
     #[test]
     fn times_and_durations_as_the_web_app_says_them() {
-        use chrono::TimeZone;
         let fr = Words::new(Lang::Fr);
         let en = Words::new(Lang::En);
-        let t = NaiveTime::from_hms_opt(19, 5, 0).unwrap();
+        let t = jiff::civil::time(19, 5, 0, 0);
         assert_eq!(fr.clock(t), "19:05");
         assert_eq!(en.clock(t), "7:05 PM");
         assert_eq!(fr.hhmm("06:00"), "6:00");
         assert_eq!(en.hhmm("00:30"), "12:30 AM");
-        let tz = maison_api::HOUSE_TZ;
-        let now = tz.with_ymd_and_hms(2026, 11, 12, 20, 0, 0).unwrap();
-        let earlier = tz.with_ymd_and_hms(2026, 11, 12, 19, 5, 0).unwrap();
-        let yesterday = tz.with_ymd_and_hms(2026, 11, 11, 19, 5, 0).unwrap();
+        let now = crate::families::house_at(2026, 11, 12, 20, 0);
+        let earlier = crate::families::house_at(2026, 11, 12, 19, 5);
+        let yesterday = crate::families::house_at(2026, 11, 11, 19, 5);
         assert_eq!(fr.when(&earlier, &now), "19:05");
         assert_eq!(fr.when(&yesterday, &now), "11 nov., 19:05");
         assert_eq!(en.when(&yesterday, &now), "Nov 11, 7:05 PM");
@@ -583,7 +580,7 @@ mod tests {
         );
         assert_eq!(fr.duration(2 * 86_400 + 4 * 3600), "2\u{a0}j 4\u{a0}h");
         assert_eq!(fr.unreachable_since(None, &now), "Injoignable");
-        let ten = tz.with_ymd_and_hms(2026, 11, 12, 19, 50, 0).unwrap();
+        let ten = crate::families::house_at(2026, 11, 12, 19, 50);
         assert_eq!(
             fr.unreachable_since(Some(ten), &now),
             "Injoignable depuis 10\u{a0}min"

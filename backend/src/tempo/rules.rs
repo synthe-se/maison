@@ -11,13 +11,16 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use jiff::{
+    civil::{Date, Weekday},
+    ToSpan,
+};
 use maison_api::tempo::Color;
 
 use crate::error::{AppError, Refusal};
 
 /// A season's colours by day, in date order.
-pub type History = BTreeMap<NaiveDate, Color>;
+pub type History = BTreeMap<Date, Color>;
 
 /// The CRE's yearly quotas; EDF's season answer overrides them when it says otherwise.
 pub const RED_DAYS: u32 = 22;
@@ -31,16 +34,17 @@ const RED_THRESHOLD: (f64, f64, f64) = (3.15, 0.010, 0.031);
 const WHITE_THRESHOLD: (f64, f64, f64) = (4.00, 0.015, 0.026);
 
 /// The first year of the season `date` falls in (September starts it).
-pub fn season_start_year(date: NaiveDate) -> i32 {
+pub fn season_start_year(date: Date) -> i32 {
+    let year = i32::from(date.year());
     if date.month() >= 9 {
-        date.year()
+        year
     } else {
-        date.year() - 1
+        year - 1
     }
 }
 
 /// The first and last days of the season starting in `start_year`.
-pub fn season_bounds(start_year: i32) -> (NaiveDate, NaiveDate) {
+pub fn season_bounds(start_year: i32) -> (Date, Date) {
     (ymd(start_year, 9, 1), ymd(start_year + 1, 8, 31))
 }
 
@@ -50,7 +54,7 @@ pub fn season_name(start_year: i32) -> String {
 }
 
 /// The season `today` falls in.
-pub fn current_season(today: NaiveDate) -> String {
+pub fn current_season(today: Date) -> String {
     season_name(season_start_year(today))
 }
 
@@ -58,7 +62,7 @@ pub fn current_season(today: NaiveDate) -> String {
 /// first season to the current one; its first year. Anything else is refused (the coded
 /// `invalid`, with the seasons there are as its detail) before it reaches a source, a file
 /// name or a day-by-day loop.
-pub fn parse_season(season: &str, today: NaiveDate) -> Result<i32, AppError> {
+pub fn parse_season(season: &str, today: Date) -> Result<i32, AppError> {
     let invalid = || {
         AppError::from(Refusal::Invalid).with_detail(serde_json::json!({
             "first": season_name(FIRST_SEASON),
@@ -84,7 +88,7 @@ pub fn parse_season(season: &str, today: NaiveDate) -> Result<i32, AppError> {
 /// How many days the season starting in `start_year` has (365, 366 in a leap season).
 pub fn season_days(start_year: i32) -> u32 {
     let (first, last) = season_bounds(start_year);
-    (last - first).num_days() as u32 + 1
+    (last - first).get_days() as u32 + 1
 }
 
 /// The season's blue days: what the year leaves after the white and red ones (300, 301 in a
@@ -95,16 +99,21 @@ pub fn blue_days(start_year: i32, red: u32, white: u32) -> u32 {
 }
 
 /// RTE's « jour Tempo »: 1 on 1 September.
-pub fn tempo_day(date: NaiveDate) -> i32 {
-    (date - season_bounds(season_start_year(date)).0).num_days() as i32 + 1
+pub fn tempo_day(date: Date) -> i32 {
+    (date - season_bounds(season_start_year(date)).0).get_days() + 1
 }
 
-fn ymd(year: i32, month: u32, day: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(year, month, day).expect("a real date")
+fn ymd(year: i32, month: u32, day: u32) -> Date {
+    let (Ok(year), Ok(month), Ok(day)) =
+        (i16::try_from(year), i8::try_from(month), i8::try_from(day))
+    else {
+        panic!("a real date: {year}-{month}-{day}");
+    };
+    Date::new(year, month, day).expect("a real date")
 }
 
 /// Easter Sunday (the anonymous Gregorian computus).
-fn easter(year: i32) -> NaiveDate {
+fn easter(year: i32) -> Date {
     let (a, b, c) = (year % 19, year / 100, year % 100);
     let (d, e) = (b / 4, b % 4);
     let f = (b + 8) / 25;
@@ -119,7 +128,7 @@ fn easter(year: i32) -> NaiveDate {
 }
 
 /// A national public holiday in France (Alsace-Moselle's own are not: RTE reds them).
-pub fn is_holiday(date: NaiveDate) -> bool {
+pub fn is_holiday(date: Date) -> bool {
     let fixed = [
         (1, 1),
         (5, 1),
@@ -133,25 +142,27 @@ pub fn is_holiday(date: NaiveDate) -> bool {
     if fixed.contains(&(date.month(), date.day())) {
         return true;
     }
-    let easter = easter(date.year());
-    [1, 39, 50]
+    let easter = easter(i32::from(date.year()));
+    [1_i32, 39, 50]
         .iter()
-        .any(|days| easter + Duration::days(*days) == date)
+        .any(|days| easter + (*days).days() == date)
 }
 
 /// November to March: the red days' period, the winter the colours are decided in.
-pub fn is_winter(date: NaiveDate) -> bool {
+pub fn is_winter(date: Date) -> bool {
     matches!(date.month(), 11 | 12 | 1 | 2 | 3)
 }
 
 /// Whether the calendar lets the day be red.
-pub fn red_allowed(date: NaiveDate) -> bool {
-    is_winter(date) && !matches!(date.weekday(), Weekday::Sat | Weekday::Sun) && !is_holiday(date)
+pub fn red_allowed(date: Date) -> bool {
+    is_winter(date)
+        && !matches!(date.weekday(), Weekday::Saturday | Weekday::Sunday)
+        && !is_holiday(date)
 }
 
 /// Whether the calendar lets the day be white.
-pub fn white_allowed(date: NaiveDate) -> bool {
-    date.weekday() != Weekday::Sun
+pub fn white_allowed(date: Date) -> bool {
+    date.weekday() != Weekday::Sunday
 }
 
 /// The season's quotas (EDF's, else the CRE's).
@@ -167,7 +178,7 @@ impl Quotas {
     pub fn checked(red: u32, white: u32, start_year: i32) -> Option<Self> {
         let (first, last) = season_bounds(start_year);
         let red_days = first
-            .iter_days()
+            .series(1_i32.day())
             .take_while(|d| *d <= last)
             .filter(|d| red_allowed(*d))
             .count() as u32;
@@ -196,7 +207,7 @@ pub struct Stock {
 impl Stock {
     /// The stock before `day`, from the season's colours up to the day before (a missing
     /// day counts as blue).
-    pub fn before(history: &History, quotas: Quotas, day: NaiveDate) -> Self {
+    pub fn before(history: &History, quotas: Quotas, day: Date) -> Self {
         let first = season_bounds(season_start_year(day)).0;
         let mut stock = Self {
             red: quotas.red,
@@ -208,7 +219,7 @@ impl Stock {
         }
         // the run is calendar days: a gap (the weekend) ends it
         stock.red_run = (1..=MAX_RED_RUN as i64)
-            .take_while(|back| history.get(&(day - Duration::days(*back))) == Some(&Color::Red))
+            .take_while(|back| history.get(&(day - (*back).days())) == Some(&Color::Red))
             .count() as u32;
         stock
     }
@@ -233,7 +244,7 @@ impl Stock {
 /// forecast decides each day hundreds of times.
 #[derive(Debug, Clone, Copy)]
 pub struct DayRules {
-    pub date: NaiveDate,
+    pub date: Date,
     red_ok: bool,
     white_ok: bool,
     day: f64,
@@ -243,10 +254,10 @@ pub struct DayRules {
 }
 
 impl DayRules {
-    pub fn new(date: NaiveDate) -> Self {
+    pub fn new(date: Date) -> Self {
         let start = season_start_year(date);
-        let left = |last: NaiveDate, allowed: fn(NaiveDate) -> bool| {
-            date.iter_days()
+        let left = |last: Date, allowed: fn(Date) -> bool| {
+            date.series(1_i32.day())
                 .take_while(|d| *d <= last)
                 .filter(|d| allowed(*d))
                 .count() as u32
@@ -300,7 +311,7 @@ impl DayRules {
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+    pub(crate) fn day(y: i32, m: u32, d: u32) -> Date {
         ymd(y, m, d)
     }
 
@@ -493,7 +504,7 @@ pub(crate) mod tests {
         let history = season(2025);
         let mut reds = 0;
         for date in day(2026, 3, 13)
-            .iter_days()
+            .series(1_i32.day())
             .take_while(|d| *d <= day(2026, 3, 31))
         {
             let stock = Stock::before(&history, Quotas::default(), date);

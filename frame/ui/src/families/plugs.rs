@@ -4,8 +4,8 @@
 //! warning style. A plug that does not answer is not asked (its tile stays, saying since when).
 //! Its row opens its page (PlugPage): volts, amps, watts, its last days, the month's estimate.
 
-use chrono::{DateTime, Datelike, TimeZone};
-use maison_api::Tz;
+use jiff::civil::Date;
+use jiff::{Timestamp, ZonedDateTime};
 use maison_api::meross::{Consumption, ElectricityRaw, Plug, ToggleRequest};
 use maison_api::tempo::{Calendar, Today, season_of};
 
@@ -81,7 +81,7 @@ pub fn tile(
     plug: &Plug,
     power: Option<f64>,
     price: Option<&PriceNow>,
-    now: &DateTime<Tz>,
+    now: &ZonedDateTime,
 ) -> Tile {
     let toggle = |on: bool| {
         Order::one(
@@ -104,8 +104,9 @@ pub fn tile(
     };
     let state = if !plug.is_online {
         let at = (plug.last_ping > 0)
-            .then(|| now.timezone().timestamp_millis_opt(plug.last_ping).single())
-            .flatten();
+            .then(|| Timestamp::from_millisecond(plug.last_ping).ok())
+            .flatten()
+            .map(|at| at.to_zoned_datetime(now.time_zone().clone()));
         w.unreachable_since(at, now)
     } else if plug.is_on {
         nudge.clone().unwrap_or_else(|| w.s(k::STATE_ON))
@@ -224,7 +225,7 @@ pub struct Reads<'a> {
 }
 
 /// A plug's days, newest first (the last week), with the month's estimate above them.
-fn consumption(w: &Words, c: &Consumption, r: &Reads, now: &DateTime<Tz>) -> Option<Group> {
+fn consumption(w: &Words, c: &Consumption, r: &Reads, now: &ZonedDateTime) -> Option<Group> {
     if c.consumption.is_empty() {
         return None;
     }
@@ -234,12 +235,14 @@ fn consumption(w: &Words, c: &Consumption, r: &Reads, now: &DateTime<Tz>) -> Opt
         .rev()
         .take(7)
         .map(|d| {
-            let day = chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")
+            let day = d
+                .date
+                .parse::<Date>()
                 .map_or_else(|_| d.date.clone(), |day| w.short_day(day));
             (day, kwh(w, f64::from(d.value) / 1000.0))
         })
         .collect();
-    let month = now.format("%Y-%m").to_string();
+    let month = now.strftime("%Y-%m").to_string();
     let estimate = r.today.and_then(|t| {
         let e = month_estimate(
             &c.consumption,
@@ -294,7 +297,7 @@ pub fn plug_groups(
     plug: &Plug,
     r: &Reads,
     price: Option<&PriceNow>,
-    now: &DateTime<Tz>,
+    now: &ZonedDateTime,
 ) -> Vec<Group> {
     let power = r.electricity.map(ElectricityRaw::watts);
     let mut head = tile(w, plug, power, price, now).open(None);
@@ -360,7 +363,10 @@ pub fn page(cx: &mut Cx, id: &str) -> Screen {
     let days = cx.live.want(&source).data;
     let source = cx
         .sources
-        .calendar(&season_of(now.year(), now.month0()))
+        .calendar(&season_of(
+            i32::from(now.year()),
+            crate::i18n::month0(now.date()) as u32,
+        ))
         .clone();
     let season = cx.live.want(&source).data;
     let reads = Reads {
@@ -380,15 +386,14 @@ mod tests {
     use super::*;
     use crate::i18n::Lang;
     use crate::ui::model::Lead;
-    use chrono::TimeZone;
+    use maison_api::Answer;
     use maison_api::meross::{ElectricityAnswer, PlugList};
     use maison_api::tempo::Color;
-    use maison_api::{Answer, HOUSE_TZ};
 
     const PLUGS: &str = r#"{"success":true,"devices":[{"id":"p1","name":"Bouilloire","ip":"192.168.1.20","isOnline":true,"isOn":true,"lastPing":1763000000000},{"id":"p2","name":"Lampe bureau","ip":"192.168.1.21","isOnline":false,"isOn":false,"lastPing":0}],"total":2,"message":"ok"}"#;
 
-    fn now() -> DateTime<Tz> {
-        HOUSE_TZ.with_ymd_and_hms(2026, 11, 12, 18, 0, 0).unwrap()
+    fn now() -> ZonedDateTime {
+        crate::families::house_at(2026, 11, 12, 18, 0)
     }
 
     fn red_peak() -> PriceNow {

@@ -2,7 +2,7 @@
 //! its light ([`Light`]), the driver's live record of it ([`DiscoveredDevice`]) and the
 //! snapshot the driver shares with the manager ([`ZigbeeDevice`]).
 
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio::time::Instant;
 
@@ -288,10 +288,8 @@ impl From<&DiscoveredDevice> for ZigbeeDevice {
 /// When `instant` was, by the wall clock, to the second. Read from the clock each time: the
 /// Pi has no RTC and NTP steps its clock after boot.
 fn wall_clock(instant: Instant) -> String {
-    let at = Utc::now() - chrono::Duration::from_std(instant.elapsed()).unwrap_or_default();
-    DateTime::from_timestamp(at.timestamp(), 0)
-        .unwrap_or(at)
-        .to_rfc3339()
+    let at = Timestamp::now() - SignedDuration::try_from(instant.elapsed()).unwrap_or_default();
+    crate::util::rfc3339_utc(Timestamp::from_second(at.as_second()).unwrap_or(at))
 }
 
 /// The id of a device in the API: its EUI64's hex digits, lowercase; the node id when the

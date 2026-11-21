@@ -590,7 +590,7 @@ async fn an_old_session_signs_in_again_after_its_thirty_days() {
     let mut tokens: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let day = 86_400_000i64;
     for entry in tokens["live"].as_object_mut().unwrap().values_mut() {
-        entry["authMs"] = json!(chrono::Utc::now().timestamp_millis() - 31 * day);
+        entry["authMs"] = json!(jiff::Timestamp::now().as_millisecond() - 31 * day);
     }
     std::fs::write(path, tokens.to_string()).unwrap();
     // a fresh process reads it (a restart)

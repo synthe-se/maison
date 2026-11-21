@@ -52,7 +52,7 @@ mod schedule;
 pub use maison_api::matter::{Cover, CoverMotion, SunSchedule};
 use schedule::{clock_trusted, offset, Look, ScheduleState, MAX_SUN_OFFSET_MIN};
 
-type Time = chrono::DateTime<chrono::Utc>;
+type Time = jiff::Timestamp;
 
 const WINDOW_COVERING: u32 = 0x0102;
 const CMD_UP_OR_OPEN: u32 = 0x00;
@@ -170,7 +170,7 @@ impl Covers {
     /// disk too.
     fn load(path: &Path) -> Result<JsonConfig<Self>, AppError> {
         let mut covers = store::read_json::<Self>(path, Corrupt::Fail)?;
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         if covers.0.iter().any(|cover| cover.past_skip(now)) {
             for cover in &mut covers.0 {
                 cover.expire_skips(now);
@@ -314,7 +314,7 @@ impl MatterManager {
     pub async fn list(&self) -> Vec<Cover> {
         self.follow_covers().await;
         let covers = self.inner.covers.get().await.0;
-        let next = self.sun_times(chrono::Utc::now()).await;
+        let next = self.sun_times(jiff::Timestamp::now()).await;
         let views = covers.into_iter().map(|cover| self.current(cover, next));
         futures::future::join_all(views).await
     }
@@ -323,7 +323,7 @@ impl MatterManager {
         let cover = self.cover(id).await?;
         self.follow_covers().await;
         Ok(self
-            .current(cover, self.sun_times(chrono::Utc::now()).await)
+            .current(cover, self.sun_times(jiff::Timestamp::now()).await)
             .await)
     }
 
@@ -405,7 +405,7 @@ impl MatterManager {
             })
             .await?;
         self.follow_covers().await;
-        let next = self.sun_times(chrono::Utc::now()).await;
+        let next = self.sun_times(jiff::Timestamp::now()).await;
         let view = read_cover(&controller, cover, next).await;
         self.publish().await;
         Ok(view)
@@ -423,7 +423,7 @@ impl MatterManager {
         let controller = self.controller().await?;
         invoke(&controller, &cover, command).await?;
         // a fresh read: the order's target, at once, whatever the subscription says yet
-        let next = self.sun_times(chrono::Utc::now()).await;
+        let next = self.sun_times(jiff::Timestamp::now()).await;
         Ok(read_cover(&controller, cover, next).await)
     }
 
@@ -460,7 +460,7 @@ impl MatterManager {
         event: CoverCommand,
         skip: bool,
     ) -> Result<Cover, AppError> {
-        self.skip_at(id, event, skip, chrono::Utc::now()).await
+        self.skip_at(id, event, skip, jiff::Timestamp::now()).await
     }
 
     /// `set_skip` as seen at `now` (the tests' clock).
@@ -534,7 +534,7 @@ impl MatterManager {
     /// The cover as its switch says, or as kept when the controller is down: a saved change
     /// is not reported as failed because the switch cannot be asked.
     async fn view(&self, cover: CoverConfig) -> Cover {
-        self.view_at(cover, chrono::Utc::now()).await
+        self.view_at(cover, jiff::Timestamp::now()).await
     }
 
     async fn view_at(&self, cover: CoverConfig, now: Time) -> Cover {
@@ -563,7 +563,7 @@ impl MatterManager {
     /// without a place.
     pub async fn sun_now(&self) -> Option<NextSun> {
         let place = self.place().await?;
-        Some(sun::next(&place, chrono::Utc::now()).api())
+        Some(sun::next(&place, jiff::Timestamp::now()).api())
     }
 
     pub async fn set_place(&self, place: Place) -> Result<Place, AppError> {
@@ -599,7 +599,7 @@ impl MatterManager {
     /// The covers' subscriptions are kept up on the way.
     pub async fn run_schedule(&self) {
         self.follow_covers().await;
-        self.schedule_tick(chrono::Utc::now(), clock_trusted(), |cover, command| {
+        self.schedule_tick(jiff::Timestamp::now(), clock_trusted(), |cover, command| {
             let manager = self.clone();
             async move {
                 let controller = manager.controller().await?;
@@ -759,7 +759,7 @@ impl MatterManager {
     /// heard (no network), when they changed.
     async fn publish(&self) {
         let covers = self.inner.covers.get().await.0;
-        let next = self.sun_times(chrono::Utc::now()).await;
+        let next = self.sun_times(jiff::Timestamp::now()).await;
         let views = covers
             .iter()
             .map(|cover| {
@@ -1285,7 +1285,7 @@ mod tests {
 
     async fn look(
         manager: &MatterManager,
-        now: chrono::DateTime<chrono::Utc>,
+        now: jiff::Timestamp,
         trusted: bool,
         switch: &FakeSwitch,
     ) {
@@ -1307,18 +1307,18 @@ mod tests {
     /// Looks every 30 s over `from..to`.
     async fn looks(
         manager: &MatterManager,
-        from: chrono::DateTime<chrono::Utc>,
-        to: chrono::DateTime<chrono::Utc>,
+        from: jiff::Timestamp,
+        to: jiff::Timestamp,
         switch: &FakeSwitch,
     ) {
         let mut now = from;
         while now <= to {
             look(manager, now, true, switch).await;
-            now += chrono::TimeDelta::seconds(30);
+            now += jiff::SignedDuration::from_secs(30);
         }
     }
 
-    fn sunset(day: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
+    fn sunset(day: jiff::civil::Date) -> jiff::Timestamp {
         sun::sun_times(&paris(), day).1.unwrap()
     }
 
@@ -1326,12 +1326,12 @@ mod tests {
     async fn a_failed_order_is_retried_until_it_goes_through() {
         let (_dir, manager) = manager_with_one_cover(BOTH).await;
         let switch = FakeSwitch::default();
-        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        let set = sunset(jiff::civil::date(2026, 10, 2));
         switch.set_offline(true);
         looks(
             &manager,
-            set - chrono::TimeDelta::minutes(1),
-            set + chrono::TimeDelta::minutes(10),
+            set - jiff::SignedDuration::from_mins(1),
+            set + jiff::SignedDuration::from_mins(10),
             &switch,
         )
         .await;
@@ -1341,8 +1341,8 @@ mod tests {
         switch.set_offline(false);
         looks(
             &manager,
-            set + chrono::TimeDelta::minutes(11),
-            set + chrono::TimeDelta::minutes(20),
+            set + jiff::SignedDuration::from_mins(11),
+            set + jiff::SignedDuration::from_mins(20),
             &switch,
         )
         .await;
@@ -1353,11 +1353,11 @@ mod tests {
     async fn a_failed_order_is_given_up_after_half_an_hour() {
         let (_dir, manager) = manager_with_one_cover(BOTH).await;
         let switch = FakeSwitch::default();
-        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        let set = sunset(jiff::civil::date(2026, 10, 2));
         switch.set_offline(true);
         looks(
             &manager,
-            set - chrono::TimeDelta::minutes(1),
+            set - jiff::SignedDuration::from_mins(1),
             set + RETRY_FOR,
             &switch,
         )
@@ -1366,8 +1366,8 @@ mod tests {
         switch.set_offline(false);
         looks(
             &manager,
-            set + RETRY_FOR + chrono::TimeDelta::seconds(30),
-            set + chrono::TimeDelta::hours(2),
+            set + RETRY_FOR + jiff::SignedDuration::from_secs(30),
+            set + jiff::SignedDuration::from_hours(2),
             &switch,
         )
         .await;
@@ -1381,18 +1381,18 @@ mod tests {
     #[tokio::test]
     async fn a_newer_event_or_a_person_replaces_a_pending_order() {
         let (_dir, manager) = manager_with_one_cover(BOTH).await;
-        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        let set = sunset(jiff::civil::date(2026, 10, 2));
         let old = Order {
             command: CoverCommand::Open,
-            at: set - chrono::TimeDelta::minutes(10),
+            at: set - jiff::SignedDuration::from_mins(10),
         };
         manager.inner.schedule.lock().await.pending.insert(1, old);
         let switch = FakeSwitch::default();
         switch.set_offline(true);
         looks(
             &manager,
-            set - chrono::TimeDelta::minutes(1),
-            set + chrono::TimeDelta::minutes(1),
+            set - jiff::SignedDuration::from_mins(1),
+            set + jiff::SignedDuration::from_mins(1),
             &switch,
         )
         .await;
@@ -1422,22 +1422,34 @@ mod tests {
     async fn nothing_fires_before_the_clock_is_trusted() {
         let (_dir, manager) = manager_with_one_cover(BOTH).await;
         let switch = FakeSwitch::default();
-        let set = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        let set = sunset(jiff::civil::date(2026, 10, 2));
         // swclock's stale time around a sunset, then NTP: neither is replayed
-        let mut now = set - chrono::TimeDelta::minutes(2);
-        while now <= set + chrono::TimeDelta::minutes(2) {
+        let mut now = set - jiff::SignedDuration::from_mins(2);
+        while now <= set + jiff::SignedDuration::from_mins(2) {
             look(&manager, now, false, &switch).await;
-            now += chrono::TimeDelta::seconds(30);
+            now += jiff::SignedDuration::from_secs(30);
         }
-        look(&manager, set + chrono::TimeDelta::minutes(3), true, &switch).await;
-        look(&manager, set + chrono::TimeDelta::minutes(4), true, &switch).await;
+        look(
+            &manager,
+            set + jiff::SignedDuration::from_mins(3),
+            true,
+            &switch,
+        )
+        .await;
+        look(
+            &manager,
+            set + jiff::SignedDuration::from_mins(4),
+            true,
+            &switch,
+        )
+        .await;
         assert!(switch.sent().is_empty(), "{:?}", switch.sent());
         // trusted from then on: the next event fires
-        let next = sunset(chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap());
+        let next = sunset(jiff::civil::date(2026, 10, 3));
         looks(
             &manager,
-            next - chrono::TimeDelta::minutes(1),
-            next + chrono::TimeDelta::minutes(1),
+            next - jiff::SignedDuration::from_mins(1),
+            next + jiff::SignedDuration::from_mins(1),
             &switch,
         )
         .await;
@@ -1460,11 +1472,11 @@ mod tests {
         }
     }
 
-    fn day(d: u32) -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap()
+    fn day(d: i8) -> jiff::civil::Date {
+        jiff::civil::date(2026, 10, d)
     }
 
-    fn sunrise(day: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
+    fn sunrise(day: jiff::civil::Date) -> jiff::Timestamp {
         sun::sun_times(&paris(), day).0.unwrap()
     }
 
@@ -1475,14 +1487,14 @@ mod tests {
     #[tokio::test]
     async fn a_skipped_closing_does_not_happen_and_the_skip_clears() {
         let (_dir, manager) = manager_with_one_cover(BOTH).await;
-        let minute = chrono::TimeDelta::minutes(1);
+        let minute = jiff::SignedDuration::from_mins(1);
         let set = sunset(day(2));
         let view = manager
             .skip_at(
                 &format_id(1),
                 CoverCommand::Close,
                 true,
-                set - chrono::TimeDelta::hours(2),
+                set - jiff::SignedDuration::from_hours(2),
             )
             .await
             .unwrap();
@@ -1540,7 +1552,7 @@ mod tests {
     async fn a_skip_set_back_to_false_lets_the_event_happen() {
         let (_dir, manager) = manager_with_one_cover(BOTH).await;
         let rise = sunrise(day(3));
-        let before = rise - chrono::TimeDelta::hours(3);
+        let before = rise - jiff::SignedDuration::from_hours(3);
         manager
             .skip_at(&format_id(1), CoverCommand::Open, true, before)
             .await
@@ -1553,8 +1565,8 @@ mod tests {
         let switch = FakeSwitch::default();
         looks(
             &manager,
-            rise - chrono::TimeDelta::minutes(1),
-            rise + chrono::TimeDelta::minutes(1),
+            rise - jiff::SignedDuration::from_mins(1),
+            rise + jiff::SignedDuration::from_mins(1),
             &switch,
         )
         .await;
@@ -1569,7 +1581,7 @@ mod tests {
         let set = sunset(day(2));
         let stale = Order {
             command: CoverCommand::Close,
-            at: set - chrono::TimeDelta::minutes(5),
+            at: set - jiff::SignedDuration::from_mins(5),
         };
         manager.inner.schedule.lock().await.pending.insert(1, stale);
         manager
@@ -1580,7 +1592,7 @@ mod tests {
         switch.set_offline(true);
         look(
             &manager,
-            set - chrono::TimeDelta::seconds(10),
+            set - jiff::SignedDuration::from_secs(10),
             true,
             &switch,
         )
@@ -1594,8 +1606,8 @@ mod tests {
         // then the skipped sunset: nothing sent, nothing left to retry
         looks(
             &manager,
-            set + chrono::TimeDelta::seconds(20),
-            set + chrono::TimeDelta::minutes(5),
+            set + jiff::SignedDuration::from_secs(20),
+            set + jiff::SignedDuration::from_mins(5),
             &switch,
         )
         .await;
@@ -1606,8 +1618,8 @@ mod tests {
         let next = sunset(day(3));
         looks(
             &manager,
-            next - chrono::TimeDelta::minutes(1),
-            next + chrono::TimeDelta::minutes(1),
+            next - jiff::SignedDuration::from_mins(1),
+            next + jiff::SignedDuration::from_mins(1),
             &switch,
         )
         .await;
@@ -1617,7 +1629,7 @@ mod tests {
                 &format_id(1),
                 CoverCommand::Close,
                 true,
-                next + chrono::TimeDelta::minutes(1),
+                next + jiff::SignedDuration::from_mins(1),
             )
             .await
             .unwrap();
@@ -1676,7 +1688,7 @@ mod tests {
     /// evening still closes, and the stale skip goes.
     #[tokio::test]
     async fn a_skip_whose_time_passed_unseen_skips_nothing_else() {
-        let minute = chrono::TimeDelta::minutes(1);
+        let minute = jiff::SignedDuration::from_mins(1);
         for clock in ["down", "untrusted"] {
             let (_dir, manager) = manager_with_one_cover(BOTH).await;
             let tonight = sunset(day(2));
@@ -1685,7 +1697,7 @@ mod tests {
                     &format_id(1),
                     CoverCommand::Close,
                     true,
-                    tonight - chrono::TimeDelta::hours(2),
+                    tonight - jiff::SignedDuration::from_hours(2),
                 )
                 .await
                 .unwrap();
@@ -1694,7 +1706,7 @@ mod tests {
                 let mut now = tonight - minute;
                 while now <= tonight + minute * 5 {
                     look(&manager, now, false, &switch).await;
-                    now += chrono::TimeDelta::seconds(30);
+                    now += jiff::SignedDuration::from_secs(30);
                 }
             }
             // back (and sure of the time) the next morning
@@ -1735,8 +1747,8 @@ mod tests {
     #[tokio::test]
     async fn a_past_skip_is_forgotten_on_load() {
         let dir = crate::util::test_dir();
-        let long_ago = chrono::Utc::now() - chrono::TimeDelta::days(2);
-        let soon = chrono::Utc::now() + chrono::TimeDelta::hours(2);
+        let long_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(48);
+        let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(2);
         let covers = serde_json::json!([{
             "nodeId": 1, "name": "Salon", "endpoint": 1, "vendorId": null, "productId": null,
             "skipOpenAt": long_ago, "skipCloseAt": soon,

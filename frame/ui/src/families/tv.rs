@@ -11,11 +11,11 @@
 
 use std::time::Duration;
 
-use chrono::DateTime;
+use jiff::ZonedDateTime;
 use maison_api::androidtv::{self, LaunchRequest, SHORTCUTS};
+use maison_api::paces;
 use maison_api::remote::{AndroidKey, SwitchState, TvKey};
 use maison_api::tv::{AmbilightRequest, KeyRequest, PowerRequest, VolumeRequest};
-use maison_api::{Tz, paces};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -186,7 +186,7 @@ fn waking(w: &Words) -> Part {
 }
 
 /// « Dernier ordre : allumer, à 19:05 », what an assumed state can say.
-fn last_order(w: &Words, (on, at): (bool, DateTime<Tz>)) -> String {
+fn last_order(w: &Words, (on, at): (bool, ZonedDateTime)) -> String {
     let key = if on {
         k::TV_LAST_ORDER_ON
     } else {
@@ -196,7 +196,7 @@ fn last_order(w: &Words, (on, at): (bool, DateTime<Tz>)) -> String {
 }
 
 /// The TV's row, from `/tv` (`{config, status}`) and its last order from here, if any.
-pub fn tv_tile(w: &Words, data: &Value, last: Option<(bool, DateTime<Tz>)>) -> Tile {
+pub fn tv_tile(w: &Words, data: &Value, last: Option<(bool, ZonedDateTime)>) -> Tile {
     let s = &data["status"];
     let configured = s["configured"].as_bool().unwrap_or(false);
     let assumed = assumed_on(s);
@@ -387,10 +387,10 @@ pub fn box_tile(w: &Words, data: &Value) -> Tile {
 }
 
 /// The TV's last power order from here, on the house's clock.
-fn last(cx: &Cx) -> Option<(bool, DateTime<Tz>)> {
+fn last(cx: &Cx) -> Option<(bool, ZonedDateTime)> {
     let now = cx.house_now();
     let (on, at) = cx.commands.last(&power_key())?;
-    Some((on, at.with_timezone(&now.timezone())))
+    Some((on, at.to_zoned_datetime(now.time_zone().clone())))
 }
 
 /// One volume level (PUT `{level}`, on release: the TV's server is not to be chased).
@@ -470,7 +470,7 @@ fn volume_tile(w: &Words, name: &str, volume: &Value) -> Option<Tile> {
 
 /// What the TV's page shows, from `/tv`: its tile; once it answers its volume and its pad; its
 /// input, and Ambilight while the set says it (`lounge` drifted: the way back to the image).
-pub fn tv_groups(w: &Words, data: &Value, last: Option<(bool, DateTime<Tz>)>) -> Vec<Group> {
+pub fn tv_groups(w: &Words, data: &Value, last: Option<(bool, ZonedDateTime)>) -> Vec<Group> {
     let s = &data["status"];
     let mut head = tv_tile(w, data, last).open(None);
     let name = head.name.clone();
@@ -819,14 +819,11 @@ mod tests {
 
     #[test]
     fn an_assumed_state_says_its_last_order_under_its_buttons() {
-        use chrono::TimeZone;
         let w = Words::new(Lang::Fr);
-        let at = maison_api::HOUSE_TZ
-            .with_ymd_and_hms(2026, 11, 12, 19, 5, 0)
-            .unwrap();
+        let at = crate::families::house_at(2026, 11, 12, 19, 5);
         let assumed =
             body(r#"{"success":true,"config":{},"status":{"configured":true,"power":"on"}}"#);
-        let t = tv_tile(&w, &assumed, Some((false, at)));
+        let t = tv_tile(&w, &assumed, Some((false, at.clone())));
         let [Part::Row(_), Part::Hint(h)] = &t.parts[..] else {
             panic!("{:?}", t.parts)
         };

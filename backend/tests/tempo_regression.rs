@@ -17,7 +17,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
+use jiff::{
+    civil::{Date, Weekday},
+    SignedDuration, Timestamp, ToSpan,
+};
 use serde_json::{json, Value};
 
 use maison_api::tempo::Color;
@@ -60,28 +63,29 @@ impl Stub {
 
 type Answer = Result<Json<Value>, StatusCode>;
 
-fn key(date: NaiveDate) -> String {
-    date.format("%Y-%m-%d").to_string()
+fn key(date: Date) -> String {
+    date.to_string()
 }
 
 /// A plausible colour: red on some winter weekdays, white on some others, blue otherwise.
-fn color(date: NaiveDate) -> &'static str {
-    let weekday = !matches!(date.weekday(), Weekday::Sat | Weekday::Sun);
+fn color(date: Date) -> &'static str {
+    let weekday = !matches!(date.weekday(), Weekday::Saturday | Weekday::Sunday);
     match date.month() {
-        12 | 1 | 2 if weekday && date.day().is_multiple_of(5) => "RED",
-        11..=12 | 1..=3 if date.weekday() != Weekday::Sun && date.day().is_multiple_of(3) => {
-            "WHITE"
-        }
+        12 | 1 | 2 if weekday && date.day() % 5 == 0 => "RED",
+        11..=12 | 1..=3 if date.weekday() != Weekday::Sunday && date.day() % 3 == 0 => "WHITE",
         _ => "BLUE",
     }
 }
 
 /// The season's days up to `last` (today, or tomorrow once published).
-fn season_days(season: &str, last: NaiveDate) -> Vec<NaiveDate> {
-    let start: i32 = season[..4].parse().unwrap();
-    let first = NaiveDate::from_ymd_opt(start, 9, 1).unwrap();
-    let end = NaiveDate::from_ymd_opt(start + 1, 8, 31).unwrap().min(last);
-    first.iter_days().take_while(|d| *d <= end).collect()
+fn season_days(season: &str, last: Date) -> Vec<Date> {
+    let start: i16 = season[..4].parse().unwrap();
+    let first = jiff::civil::date(start, 9, 1);
+    let end = jiff::civil::date(start + 1, 8, 31).min(last);
+    first
+        .series(1_i32.day())
+        .take_while(|d| *d <= end)
+        .collect()
 }
 
 async fn rte_season(State(stub): State<Stub>, Query(q): Query<HashMap<String, String>>) -> Answer {
@@ -99,7 +103,7 @@ async fn rte_light(State(stub): State<Stub>) -> Answer {
     stub.ask("rte", "rte/tempoLight")?;
     let today = house_today();
     Ok(Json(
-        json!({ "values": { key(today): color(today), key(today + Duration::days(1)): "WHITE" } }),
+        json!({ "values": { key(today): color(today), key(today + 1_i32.days()): "WHITE" } }),
     ))
 }
 
@@ -118,12 +122,12 @@ async fn rte_calendars(
         "rteapi",
         format!("rteapi/calendars?start_date={}", q["start_date"]),
     )?;
-    let first: NaiveDate = q["start_date"][..10].parse().unwrap();
-    let end: NaiveDate = q["end_date"][..10].parse().unwrap();
-    let last = (end - Duration::days(1)).min(house_today() + Duration::days(1));
+    let first: Date = q["start_date"][..10].parse().unwrap();
+    let end: Date = q["end_date"][..10].parse().unwrap();
+    let last = (end - 1_i32.days()).min(house_today() + 1_i32.days());
     // RTE's API answers newest first
     let mut values: Vec<Value> = first
-        .iter_days()
+        .series(1_i32.day())
         .take_while(|d| *d <= last)
         .map(|d| json!({ "start_date": format!("{}T00:00:00+01:00", key(d)), "value": if d > house_today() { "RED" } else { color(d) } }))
         .collect();
@@ -157,7 +161,7 @@ async fn fallback_season(
 async fn fallback_tomorrow(State(stub): State<Stub>) -> Answer {
     stub.ask("fallback", "fallback/tomorrow")?;
     Ok(Json(
-        json!({ "dateJour": key(house_today() + Duration::days(1)), "codeJour": 0, "libCouleur": "Inconnu" }),
+        json!({ "dateJour": key(house_today() + 1_i32.days()), "codeJour": 0, "libCouleur": "Inconnu" }),
     ))
 }
 
@@ -191,14 +195,14 @@ async fn odre(
         .split('\'')
         .nth(1)
         .unwrap()
-        .parse::<chrono::DateTime<Utc>>()
+        .parse::<Timestamp>()
         .unwrap();
-    let rows: Vec<Value> = std::iter::successors(Some(since), |t| Some(*t + Duration::minutes(15)))
-        .take_while(|t| *t < Utc::now())
+    let rows: Vec<Value> = std::iter::successors(Some(since), |t| Some(*t + SignedDuration::from_mins(15)))
+        .take_while(|t| *t < Timestamp::now())
         .enumerate()
         .map(|(i, t)| {
             let wave = (i as f64 / 96.0 / 58.0).sin();
-            json!({ "date_heure": t.to_rfc3339(), "consommation": 50_000.0 + 12_000.0 * wave, "eolien": 5_000.0, "solaire": 1_000.0 })
+            json!({ "date_heure": t.to_string(), "consommation": 50_000.0 + 12_000.0 * wave, "eolien": 5_000.0, "solaire": 1_000.0 })
         })
         .collect();
     Ok(Json(json!(rows)))
@@ -208,11 +212,11 @@ async fn odre(
 async fn meteo(State(stub): State<Stub>, Query(q): Query<HashMap<String, String>>) -> Answer {
     let variable = q["hourly"].clone();
     stub.ask("meteo", format!("meteo/{variable}"))?;
-    let first = house_today() - Duration::days(3);
+    let first = house_today() - 3_i32.days();
     let times: Vec<String> = (0..12 * 24)
         .map(|h| {
-            (first.and_hms_opt(0, 0, 0).unwrap() + Duration::hours(h))
-                .format("%Y-%m-%dT%H:%M")
+            (first.to_datetime(jiff::civil::Time::midnight()) + SignedDuration::from_hours(h))
+                .strftime("%Y-%m-%dT%H:%M")
                 .to_string()
         })
         .collect();
@@ -274,8 +278,8 @@ fn service(config: &Config) -> TempoService {
     TempoService::from_config(config).expect("tempo service should build")
 }
 
-fn tomorrow() -> NaiveDate {
-    house_today() + Duration::days(1)
+fn tomorrow() -> Date {
+    house_today() + 1_i32.days()
 }
 
 #[tokio::test]
@@ -291,7 +295,7 @@ async fn today_and_tomorrow_come_from_rte_then_from_memory() {
     assert_eq!(today.today.date, house_today());
     assert_eq!(today.today.color, Color::parse(color(house_today())));
     assert_eq!(today.tomorrow.color, Some(Color::White));
-    let yesterday = house_today() - Duration::days(1);
+    let yesterday = house_today() - 1_i32.days();
     assert_eq!(
         (today.yesterday.date, today.yesterday.color),
         (yesterday, Color::parse(color(yesterday)))
@@ -397,7 +401,7 @@ async fn the_forecast_covers_the_week() {
     assert_eq!(forecast.days.len(), 7);
     assert!(forecast.days[0].official && forecast.days[0].color == Color::White);
     for (i, day) in forecast.days.iter().enumerate() {
-        assert_eq!(day.date, house_today() + Duration::days(i as i64 + 1));
+        assert_eq!(day.date, house_today() + (i as i64 + 1).days());
         let p = day.probabilities;
         assert!((p.blue + p.white + p.red - 1.0).abs() < 1e-9);
         assert_eq!(day.official, i == 0);
@@ -431,13 +435,10 @@ async fn the_forecast_covers_the_week() {
 async fn open_meteo_down_uses_the_last_forecast() {
     let (config, stub) = stubbed("maison-tempo-old-weather").await;
     // a forecast from two days ago, the cold it said then
-    let issued = house_today() - Duration::days(2);
-    let temperature: BTreeMap<String, f64> = (-3..8)
-        .map(|i| (key(issued + Duration::days(i)), 2.0))
-        .collect();
-    let wind: BTreeMap<String, f64> = (0..8)
-        .map(|i| (key(issued + Duration::days(i)), 0.1))
-        .collect();
+    let issued = house_today() - 2_i32.days();
+    let temperature: BTreeMap<String, f64> =
+        (-3..8).map(|i| (key(issued + i.days()), 2.0)).collect();
+    let wind: BTreeMap<String, f64> = (0..8).map(|i| (key(issued + i.days()), 0.1)).collect();
     std::fs::write(
         tempo_dir(&config).join(WEATHER_FILE),
         json!({ "issued": key(issued), "temperature": temperature, "wind_power": wind })
@@ -449,10 +450,7 @@ async fn open_meteo_down_uses_the_last_forecast() {
     assert!(forecast.stale);
     assert_eq!(forecast.weather_issued, Some(issued));
     // it reaches 7 days after it was made: J+5 from today
-    assert_eq!(
-        forecast.days.last().unwrap().date,
-        issued + Duration::days(7)
-    );
+    assert_eq!(forecast.days.last().unwrap().date, issued + 7_i32.days());
     assert!(forecast.note.is_some());
 }
 

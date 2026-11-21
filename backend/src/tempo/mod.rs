@@ -16,7 +16,7 @@ pub mod tariffs;
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use jiff::{civil::Date, SignedDuration, Timestamp, ToSpan};
 use maison_api::tempo::{
     Color, Count, Day, Forecast, ForecastDay, ModelInfo, Reliability, SeasonStock, Tariffs, Today,
     HOURS,
@@ -30,7 +30,7 @@ use crate::{
     error::{AppError, Refusal},
     net::USER_AGENT,
     store::{self, Access, Corrupt},
-    util::{house_today, lock, HOUSE_TZ},
+    util::{house_date, house_today, lock},
 };
 use forecast::{expected, likeliest, seed, simulate, Ahead, Levels, Model};
 use inputs::{fetch_load, fetch_weather, NetLoad, Weather};
@@ -55,10 +55,10 @@ pub fn season_file(start_year: i32) -> String {
 /// A forced refresh asks every source again: at most this often (they are not ours).
 const FORCE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// A source that failed is asked again after this; so is tomorrow until RTE publishes it.
-const RETRY: Duration = Duration::minutes(15);
-const WEATHER_EVERY: Duration = Duration::hours(3);
-const LOAD_EVERY: Duration = Duration::hours(3);
-const TARIFFS_EVERY: Duration = Duration::hours(24);
+const RETRY: SignedDuration = SignedDuration::from_mins(15);
+const WEATHER_EVERY: SignedDuration = SignedDuration::from_hours(3);
+const LOAD_EVERY: SignedDuration = SignedDuration::from_hours(3);
+const TARIFFS_EVERY: SignedDuration = SignedDuration::from_hours(24);
 /// éCO2mix's dataset of the current months (the consolidated years come with `fit_tempo`).
 const LOAD_DATASET: &str = "eco2mix-national-tr";
 /// How far back a gap in `netload.json` is filled.
@@ -96,7 +96,7 @@ struct Inner {
 }
 
 /// An answer and the day it is for.
-type Last<T> = std::sync::Mutex<Option<(NaiveDate, T)>>;
+type Last<T> = std::sync::Mutex<Option<(Date, T)>>;
 
 /// Who answers: the caller, holding the refresh lock, or the last answer (a refresh runs).
 enum Turn<'a, T> {
@@ -107,13 +107,13 @@ enum Turn<'a, T> {
 /// When a source was last asked, and whether it answered.
 #[derive(Debug, Clone, Copy)]
 struct Asked {
-    at: DateTime<Utc>,
+    at: Timestamp,
     ok: bool,
 }
 
 impl Asked {
     /// Whether to ask again: `every` after an answer, [`RETRY`] after a failure.
-    fn due(asked: Option<Asked>, now: DateTime<Utc>, every: Duration) -> bool {
+    fn due(asked: Option<Asked>, now: Timestamp, every: SignedDuration) -> bool {
         asked.is_none_or(|a| now - a.at >= if a.ok { every } else { RETRY })
     }
 }
@@ -125,7 +125,7 @@ struct State {
     tariffs: Option<Tariffs>,
     tariffs_asked: Option<Asked>,
     /// EDF's quotas, asked once a day.
-    quotas: Option<(NaiveDate, Quotas)>,
+    quotas: Option<(Date, Quotas)>,
     weather: Option<Weather>,
     weather_asked: Option<Asked>,
     netload: Option<NetLoad>,
@@ -164,11 +164,11 @@ pub fn outlook(
     quotas: Quotas,
     weather: Option<&Weather>,
     levels: Option<Levels>,
-    today: NaiveDate,
+    today: Date,
 ) -> (Vec<ForecastDay>, Option<String>) {
-    let end = today + Duration::days(HORIZON);
+    let end = today + HORIZON.days();
     let mut days = Vec::new();
-    let mut start = today + Duration::days(1);
+    let mut start = today + 1_i32.days();
     while start <= end {
         let Some(color) = history.get(&start) else {
             break;
@@ -177,14 +177,14 @@ pub fn outlook(
         p[color.index()] = 1.0;
         days.push(ForecastDay {
             date: start,
-            horizon: (start - today).num_days() as u32,
+            horizon: (start - today).get_days() as u32,
             official: true,
             color: *color,
             probabilities: p.into(),
             confidence: 1.0,
             reliability: None,
         });
-        start += Duration::days(1);
+        start += 1_i32.days();
     }
     if start > end {
         return (days, None);
@@ -200,9 +200,9 @@ pub fn outlook(
     let issued = weather.issued.unwrap_or(today);
     let mut ahead = Vec::new();
     let mut horizons = Vec::new();
-    for date in start.iter_days().take_while(|d| *d <= end) {
+    for date in start.series(1_i32.day()).take_while(|d| *d <= end) {
         let Some(day) = weather.day(date) else { break };
-        let horizon = (date - issued).num_days().max(1) as u32;
+        let horizon = (date - issued).get_days().max(1) as u32;
         ahead.push(Ahead {
             rules: DayRules::new(date),
             x: expected(model, &levels, &day),
@@ -216,7 +216,7 @@ pub fn outlook(
         let color = likeliest(p);
         days.push(ForecastDay {
             date: a.rules.date,
-            horizon: (a.rules.date - today).num_days() as u32,
+            horizon: (a.rules.date - today).get_days() as u32,
             official: false,
             color,
             probabilities: (*p).into(),
@@ -324,11 +324,11 @@ impl TempoService {
     }
 
     async fn today_in(&self, state: &mut State, force: bool) -> Result<Today, AppError> {
-        let (now, today) = (Utc::now(), house_today());
+        let (now, today) = (Timestamp::now(), house_today());
         let history = self.current_season(state, today, now, force).await?;
         let quotas = self.quotas(state, today, &history).await;
         let tariffs = self.tariffs(state, today, now, force).await;
-        let yesterday = today - Duration::days(1);
+        let yesterday = today - 1_i32.days();
         // on 1 September, yesterday is the last season's
         let before = if season_start_year(yesterday) == season_start_year(today) {
             history.get(&yesterday).copied()
@@ -344,7 +344,7 @@ impl TempoService {
                 }
             }
         };
-        let day = |date: NaiveDate| Day {
+        let day = |date: Date| Day {
             date,
             color: history.get(&date).copied(),
         };
@@ -354,7 +354,7 @@ impl TempoService {
                 color: before,
             },
             today: day(today),
-            tomorrow: day(today + Duration::days(1)),
+            tomorrow: day(today + 1_i32.days()),
             tariffs,
             hours: HOURS,
             stock: season_stock(season_start_year(today), &history, quotas),
@@ -375,7 +375,7 @@ impl TempoService {
     }
 
     async fn forecast_in(&self, state: &mut State, force: bool) -> Result<Forecast, AppError> {
-        let (now, today) = (Utc::now(), house_today());
+        let (now, today) = (Timestamp::now(), house_today());
         let history = self.current_season(state, today, now, false).await?;
         let quotas = self.quotas(state, today, &history).await;
         let stock = season_stock(season_start_year(today), &history, quotas);
@@ -431,7 +431,7 @@ impl TempoService {
             None
         };
         let history = if current {
-            self.current_season(&mut state, today, Utc::now(), false)
+            self.current_season(&mut state, today, Timestamp::now(), false)
                 .await?
         } else {
             self.past_season(&mut state, start, today).await?
@@ -515,18 +515,16 @@ impl TempoService {
     async fn current_season(
         &self,
         state: &mut State,
-        today: NaiveDate,
-        now: DateTime<Utc>,
+        today: Date,
+        now: Timestamp,
         force: bool,
     ) -> Result<History, AppError> {
         let start = season_start_year(today);
         if let std::collections::hash_map::Entry::Vacant(entry) = state.seasons.entry(start) {
             entry.insert(self.read_season(start)?);
         }
-        let tomorrow_known = state.seasons[&start].contains_key(&(today + Duration::days(1)));
-        let asked_today = state
-            .current
-            .is_some_and(|a| a.at.with_timezone(&HOUSE_TZ).date_naive() == today);
+        let tomorrow_known = state.seasons[&start].contains_key(&(today + 1_i32.days()));
+        let asked_today = state.current.is_some_and(|a| house_date(a.at) == today);
         let due = force
             || !asked_today
             || state
@@ -564,7 +562,7 @@ impl TempoService {
         &self,
         state: &mut State,
         start: i32,
-        today: NaiveDate,
+        today: Date,
     ) -> Result<History, AppError> {
         if let Some(history) = state.seasons.get(&start) {
             return Ok(history.clone());
@@ -595,7 +593,7 @@ impl TempoService {
 
     /// EDF's quotas for the current season (once a day), checked against the colours
     /// counted; the CRE's when EDF does not answer.
-    async fn quotas(&self, state: &mut State, today: NaiveDate, history: &History) -> Quotas {
+    async fn quotas(&self, state: &mut State, today: Date, history: &History) -> Quotas {
         if let Some((day, quotas)) = state.quotas {
             if day == today {
                 return quotas;
@@ -629,8 +627,8 @@ impl TempoService {
     async fn tariffs(
         &self,
         state: &mut State,
-        today: NaiveDate,
-        now: DateTime<Utc>,
+        today: Date,
+        now: Timestamp,
         force: bool,
     ) -> Option<Tariffs> {
         if force || Asked::due(state.tariffs_asked, now, TARIFFS_EVERY) {
@@ -671,15 +669,15 @@ impl TempoService {
     }
 
     /// Yesterday's net consumption from ODRE, once the day is over (06:00 today).
-    async fn refresh_load(&self, state: &mut State, today: NaiveDate, now: DateTime<Utc>) {
-        let yesterday = today - Duration::days(1);
+    async fn refresh_load(&self, state: &mut State, today: Date, now: Timestamp) {
+        let yesterday = today - 1_i32.days();
         let last = self.netload(state).load.keys().next_back().copied();
         if last >= Some(yesterday) || !Asked::due(state.load_asked, now, LOAD_EVERY) {
             return;
         }
         let since = last
-            .map_or(today, |d| d + Duration::days(1))
-            .max(today - Duration::days(LOAD_REACH_DAYS));
+            .map_or(today, |d| d + 1_i32.days())
+            .max(today - LOAD_REACH_DAYS.days());
         let fetched = fetch_load(
             &self.inner.client,
             &self.inner.odre_url,
@@ -709,8 +707,8 @@ impl TempoService {
         &self,
         state: &mut State,
         model: &Model,
-        today: NaiveDate,
-        now: DateTime<Utc>,
+        today: Date,
+        now: Timestamp,
         force: bool,
     ) {
         let path = self.inner.dir.join(WEATHER_FILE);
@@ -729,7 +727,7 @@ impl TempoService {
         let every = if fresh {
             WEATHER_EVERY
         } else {
-            Duration::zero()
+            SignedDuration::ZERO
         };
         if !force && !Asked::due(state.weather_asked, now, every) {
             return;
@@ -758,7 +756,7 @@ impl TempoService {
 }
 
 /// Keeps `answer` as the last one for `day`.
-fn remember<T: Clone>(last: &Last<T>, day: NaiveDate, answer: &T) {
+fn remember<T: Clone>(last: &Last<T>, day: Date, answer: &T) {
     *lock(last) = Some((day, answer.clone()));
 }
 
@@ -782,20 +780,18 @@ mod tests {
         Levels::from_days(&days).unwrap()
     }
 
-    fn weather(issued: NaiveDate, temperature: f64, days: i64) -> Weather {
+    fn weather(issued: Date, temperature: f64, days: i64) -> Weather {
         Weather {
             issued: Some(issued),
             temperature: (-3..days)
-                .map(|i| (issued + Duration::days(i), temperature))
+                .map(|i| (issued + i.days(), temperature))
                 .collect(),
-            wind_power: (0..days)
-                .map(|i| (issued + Duration::days(i), 0.2))
-                .collect(),
+            wind_power: (0..days).map(|i| (issued + i.days(), 0.2)).collect(),
         }
     }
 
     /// The 2025-2026 season as RTE published it up to `last`.
-    fn known_until(last: NaiveDate) -> History {
+    fn known_until(last: Date) -> History {
         season(2025)
             .into_iter()
             .filter(|(d, _)| *d <= last)
@@ -805,7 +801,7 @@ mod tests {
     #[test]
     fn the_week_is_official_then_forecast() {
         let today = day(2026, 1, 12);
-        let history = known_until(today + Duration::days(1));
+        let history = known_until(today + 1_i32.days());
         let w = weather(today, -3.0, 9);
         let (days, note) = outlook(
             &model(),
@@ -842,7 +838,7 @@ mod tests {
     #[test]
     fn without_weather_or_levels_only_rte_s_days() {
         let today = day(2026, 1, 12);
-        let history = known_until(today + Duration::days(1));
+        let history = known_until(today + 1_i32.days());
         let (days, note) = outlook(
             &model(),
             &history,
@@ -869,7 +865,7 @@ mod tests {
         let today = day(2026, 1, 12);
         let history = known_until(today);
         // forecast three days ago, reaching J+5 only
-        let old = weather(today - Duration::days(3), 2.0, 9);
+        let old = weather(today - 3_i32.days(), 2.0, 9);
         let (days, note) = outlook(
             &model(),
             &history,
@@ -943,7 +939,7 @@ mod tests {
                 .is_err(),
             "forced: wait"
         );
-        remember(&last, house_today() - Duration::days(1), &7);
+        remember(&last, house_today() - 1_i32.days(), &7);
         assert!(
             tokio::time::timeout(wait, service.turn(false, &last))
                 .await

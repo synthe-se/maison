@@ -438,7 +438,7 @@ async fn an_admins_or_a_recovery_invitation_wants_a_recent_passkey_sign_in() {
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let hours =
-        (v["expiresMs"].as_i64().unwrap() - chrono::Utc::now().timestamp_millis()) / 3_600_000;
+        (v["expiresMs"].as_i64().unwrap() - jiff::Timestamp::now().as_millisecond()) / 3_600_000;
     assert!(
         (71..=72).contains(&hours),
         "an admin's link: three days ({hours} h)"

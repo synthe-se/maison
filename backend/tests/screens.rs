@@ -416,7 +416,7 @@ async fn the_place_says_when_the_sun_next_rises_and_sets() {
     let cookie = paired(&app, "Salon").await;
     let (s, _, v) = with_cookie(&app, Method::GET, "/api/matter/place", &cookie).await;
     assert_eq!(s, StatusCode::OK, "a screen reads it");
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = jiff::Timestamp::now().as_millisecond();
     let (rise, set) = (
         v["sun"]["sunriseMs"].as_i64().unwrap(),
         v["sun"]["sunsetMs"].as_i64().unwrap(),

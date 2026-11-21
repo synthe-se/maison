@@ -4,7 +4,7 @@
 //! The dataset writes its start dates year-day-month (`2026-01-08` is 1 August 2026: the
 //! prices change on the first of a month), its end dates the usual way.
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use serde::{Deserialize, Deserializer};
 
 use crate::error::AppError;
@@ -54,29 +54,29 @@ struct Row {
 
 /// A start date: year-day-month when it reads as the first of a month that way, else as
 /// written.
-pub fn start_date(text: &str) -> Option<NaiveDate> {
-    let mut parts = text.trim().splitn(3, '-').map(str::parse::<u32>);
+pub fn start_date(text: &str) -> Option<Date> {
+    let mut parts = text.trim().splitn(3, '-');
     let (year, second, third) = (
-        parts.next()?.ok()?,
-        parts.next()?.ok()?,
-        parts.next()?.ok()?,
+        parts.next()?.parse::<i16>().ok()?,
+        parts.next()?.parse::<i8>().ok()?,
+        parts.next()?.parse::<i8>().ok()?,
     );
     if second == 1 {
-        if let Some(date) = NaiveDate::from_ymd_opt(year as i32, third, 1) {
+        if let Ok(date) = Date::new(year, third, 1) {
             return Some(date);
         }
     }
-    NaiveDate::from_ymd_opt(year as i32, second, third)
+    Date::new(year, second, third).ok()
 }
 
 /// The prices in force on `today` from the dataset's latest row (`None` when it is over or
 /// incomplete).
-fn in_force(page: &Page, today: NaiveDate) -> Option<Tariffs> {
+fn in_force(page: &Page, today: Date) -> Option<Tariffs> {
     let row = page.data.first()?;
     let ended = row
         .DATE_FIN
         .as_deref()
-        .and_then(|d| d.parse::<NaiveDate>().ok())
+        .and_then(|d| d.parse::<Date>().ok())
         .is_some_and(|end| end < today);
     let price = |off_peak: Option<f64>, peak: Option<f64>| {
         Some(Price {
@@ -100,7 +100,7 @@ fn in_force(page: &Page, today: NaiveDate) -> Option<Tariffs> {
 pub async fn fetch(
     client: &reqwest::Client,
     url: &str,
-    today: NaiveDate,
+    today: Date,
 ) -> Result<Option<Tariffs>, AppError> {
     let request = client.get(url).header("Accept", "application/json");
     let page: Page = crate::net::fetch_json(request, "data.gouv").await?;
@@ -112,7 +112,7 @@ mod tests {
     use super::*;
     use crate::tempo::rules::tests::day;
 
-    fn parse(body: &str, today: NaiveDate) -> Result<Option<Tariffs>, serde_json::Error> {
+    fn parse(body: &str, today: Date) -> Result<Option<Tariffs>, serde_json::Error> {
         Ok(in_force(&serde_json::from_str(body)?, today))
     }
 

@@ -268,11 +268,10 @@ pub fn encode_mitsubishi_command(
 /// Current wall-clock time as 10-minute ticks since midnight, the unit used
 /// by the Mitsubishi clock/timer bytes.
 ///
-/// In the house's time zone (`util::HOUSE_TZ`), never `chrono::Local` (UTC on the Pi).
+/// In the house's time zone (`util::HOUSE_TZ`), never the system's (UTC on the Pi).
 pub fn current_clock_ticks() -> u8 {
-    use chrono::Timelike;
-    let now = chrono::Utc::now().with_timezone(&crate::util::HOUSE_TZ);
-    clock_ticks(now.hour() * 60 + now.minute())
+    let now = crate::util::HOUSE_TZ.to_datetime(jiff::Timestamp::now());
+    clock_ticks(u32::from(now.hour().unsigned_abs()) * 60 + u32::from(now.minute().unsigned_abs()))
 }
 
 /// Minutes since midnight as the unit's clock: 10-minute ticks (the minutes below ten

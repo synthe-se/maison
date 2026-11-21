@@ -22,8 +22,8 @@ use btleplug::{
     },
     platform::{Adapter, Manager as BleManager, Peripheral},
 };
-use chrono::{DateTime, Utc};
 use futures::StreamExt;
+use jiff::Timestamp;
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
@@ -86,7 +86,7 @@ struct LampRuntime {
     connected: bool,
     connecting: bool,
     reachable: bool,
-    last_seen: Option<DateTime<Utc>>,
+    last_seen: Option<Timestamp>,
     peripheral: Option<Peripheral>,
     characteristics: HueCharacteristics,
     connection_failures: u8,
@@ -139,9 +139,9 @@ impl LampRuntime {
 
     /// Whether a poll reads it now: connected, and either deaf to notifications or silent
     /// past [`LIVENESS_CHECK`].
-    fn due_for_poll(&self, now: DateTime<Utc>) -> bool {
+    fn due_for_poll(&self, now: Timestamp) -> bool {
         let silent = self.last_seen.is_none_or(|seen| {
-            now - seen >= chrono::Duration::from_std(LIVENESS_CHECK).unwrap_or_default()
+            now - seen >= jiff::SignedDuration::try_from(LIVENESS_CHECK).unwrap_or_default()
         });
         self.connected && (!self.notifying || silent)
     }
@@ -167,7 +167,7 @@ impl LampRuntime {
             connecting: self.connecting,
             reachable: self.reachable,
             state: self.state.clone(),
-            last_seen: self.last_seen.map(|value| value.to_rfc3339()),
+            last_seen: self.last_seen.map(crate::util::rfc3339_utc),
         }
     }
 }
@@ -366,7 +366,7 @@ impl HueManager {
             lamp.state = state.clone();
             lamp.connected = true;
             lamp.reachable = true;
-            lamp.last_seen = Some(Utc::now());
+            lamp.last_seen = Some(Timestamp::now());
         }
 
         Ok(Some(state))
@@ -660,7 +660,7 @@ impl HueManager {
             lamp.config.address = display_address;
             lamp.peripheral = Some(peripheral);
             lamp.reachable = true;
-            lamp.last_seen = Some(Utc::now());
+            lamp.last_seen = Some(Timestamp::now());
             if lamp.missing() {
                 connect_queue.push(stable_id.clone());
             }
@@ -688,7 +688,7 @@ impl HueManager {
     /// Reads the lamps a notification will not tell about: deaf ones every poll, the others
     /// once silent past [`LIVENESS_CHECK`] (are they still there?).
     async fn poll_connected_lamps(&self) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let lamp_ids = self
             .inner
             .lamps
@@ -733,7 +733,7 @@ impl HueManager {
                     lamp.connected = true;
                     lamp.connecting = false;
                     lamp.reachable = true;
-                    lamp.last_seen = Some(Utc::now());
+                    lamp.last_seen = Some(Timestamp::now());
                 }
             }
             CentralEvent::DeviceDisconnected(id) => {
@@ -751,7 +751,7 @@ impl HueManager {
                 };
                 if let Some(lamp) = self.inner.lamps.write().await.get_mut(&lamp_key) {
                     lamp.reachable = true;
-                    lamp.last_seen = Some(Utc::now());
+                    lamp.last_seen = Some(Timestamp::now());
                 }
             }
             CentralEvent::StateUpdate(_) => {}
@@ -804,7 +804,7 @@ impl HueManager {
             lamp.connected = true;
             lamp.connecting = false;
             lamp.reachable = true;
-            lamp.last_seen = Some(Utc::now());
+            lamp.last_seen = Some(Timestamp::now());
             lamp.peripheral = Some(ready.peripheral);
             lamp.characteristics = ready.characteristics;
             lamp.info = ready.info;
@@ -848,7 +848,7 @@ impl HueManager {
         };
         if let Some(lamp) = self.inner.lamps.write().await.get_mut(&lamp_key) {
             lamp.release();
-            lamp.last_seen = Some(Utc::now());
+            lamp.last_seen = Some(Timestamp::now());
         }
     }
 
@@ -1049,7 +1049,7 @@ impl HueManager {
             } else if uuid == uuid_str_key(CONTROL_UUID) {
                 refresh_full_state = true;
             }
-            lamp.last_seen = Some(Utc::now());
+            lamp.last_seen = Some(Timestamp::now());
             lamp.connected = true;
             lamp.reachable = true;
         }
