@@ -3,10 +3,11 @@
 //! scan, the availability check): a network going down is never lost in a side drain.
 
 use ezsp::{
+    Callback,
     ember::{device::Update as EmberDeviceUpdate, node::Type as EmberNodeType},
-    parameters, Callback,
+    parameters,
 };
-use tokio::time::{timeout, Instant};
+use tokio::time::{Instant, timeout};
 use tracing::{debug, info};
 
 use super::{
@@ -18,13 +19,13 @@ use super::{
     },
     driver::EZSP_COMMAND_TIMEOUT,
     error::DriverError,
-    network::{network_state_of, NetworkState},
+    network::{NetworkState, network_state_of},
     remotes::handle_remote_command,
     touchlink::handle_zll_callback,
     zcl::{
-        apply_lamp_frame, eui64_text, ACTIVE_EP_RSP_CLUSTER_ID, BASIC_CLUSTER_ID,
-        COLOR_CONTROL_CLUSTER_ID, DEVICE_ANNCE_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID,
-        ON_OFF_CLUSTER_ID, SIMPLE_DESC_RSP_CLUSTER_ID, ZDO_PROFILE_ID,
+        ACTIVE_EP_RSP_CLUSTER_ID, BASIC_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID,
+        DEVICE_ANNCE_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID,
+        SIMPLE_DESC_RSP_CLUSTER_ID, ZDO_PROFILE_ID, apply_lamp_frame, eui64_text,
     },
 };
 
@@ -120,10 +121,10 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
             if matches!(sent.ack_received(), Ok(false)) =>
         {
             let node_id = sent.index_or_destination();
-            if let Some(device) = context.device_mut(node_id) {
-                if device.lost() {
-                    info!(node_id = %Hex(node_id), eui64 = %device.info.eui64, "device marked unreachable after MAC delivery failure");
-                }
+            if let Some(device) = context.device_mut(node_id)
+                && device.lost()
+            {
+                info!(node_id = %Hex(node_id), eui64 = %device.info.eui64, "device marked unreachable after MAC delivery failure");
             }
             Some(DriverEvent::DeliveryFailed { node_id })
         }
@@ -283,10 +284,10 @@ async fn handle_incoming_cluster(
         | COLOR_CONTROL_CLUSTER_ID
         | BASIC_CLUSTER_ID => {
             debug!(node_id = %Hex(node_id), cluster_id = %Hex(cluster_id), payload = %crate::util::hex(payload, " "), "native zigbee lamp frame");
-            if let Some(device) = context.device_mut(node_id) {
-                if apply_lamp_frame(device, cluster_id, payload) {
-                    device.heard();
-                }
+            if let Some(device) = context.device_mut(node_id)
+                && apply_lamp_frame(device, cluster_id, payload)
+            {
+                device.heard();
             }
             None
         }

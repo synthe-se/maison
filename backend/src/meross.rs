@@ -15,7 +15,7 @@ use std::{
 
 use maison_api::meross::{Electricity, ElectricityRaw, Plug};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use uuid::Uuid;
 
 use crate::{
@@ -715,8 +715,8 @@ fn compute_sign(message_id: &str, key: &str, timestamp: i64) -> String {
 mod tests {
     use std::sync::Mutex as StdMutex;
 
-    use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
-    use serde_json::{json, Value};
+    use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+    use serde_json::{Value, json};
 
     use super::*;
 

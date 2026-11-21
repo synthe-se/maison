@@ -1,12 +1,13 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{get, post},
-    Json, Router,
 };
-use maison_api::{climate::SendRequest, Message};
+use maison_api::{Message, climate::SendRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    AppState,
     auth::{AdminUser, DeviceClient},
     broadlink::{
         BroadlinkCodeEntry, BroadlinkDiscoveredDevice, BroadlinkSecurityMode, CodeDetails,
@@ -16,7 +17,6 @@ use crate::{
     mitsubishi_ir::ClimateSettings,
     routes::{Answer, Reply},
     util::refused,
-    AppState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -303,7 +303,7 @@ async fn send_mitsubishi_command(
             return Err(refused(
                 Refusal::Invalid,
                 "send either a command or settings",
-            ))
+            ));
         }
     };
     Ok(Answer::ok(Done {

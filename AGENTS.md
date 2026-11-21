@@ -69,7 +69,7 @@ backend/src/
   routes/            one module per domain
   bin/               fit_tempo (build machine only), send_ir, atv_pair, decode_mitsubishi_ir, tuya_probe
 backend/tests/       integration tests (+ `live-runtime-tests` feature for real devices)
-api/                 maison-api (edition 2024): the API's types said once (screens, sun, tempo
+api/                 maison-api: the API's types said once (screens, sun, tempo
                      and `Today::price_at`, lamps, meross, matter, scenes, photos, remote; the request
                      bodies; `Answer`, `Message`, `OfDevice`, `DeviceRef`), `HOUSE_TZ` and `Tz`
                      (jiff's `TimeZone`, `tzdb-bundle-always`: the box and the frame have no tzdata),
@@ -205,7 +205,8 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
   `consistent-function-scoping` (helpers stay next to their use), `no-underscore-dangle`
   (a framework global). `bun run check` runs both, then type-checks `e2e/` (its tsconfig).
 - **Latest dependencies**, pinned exactly; git forks pinned by `rev`, never a branch.
-- **The backend is Rust edition 2021**: no let-chains there. `api/` and `frame/ui` are 2024.
+- **Every Rust crate is edition 2024** (backend, `api/`, `frame/ui`, `frame/tools`): let-chains
+  welcome; `cargo fmt` (it reads the edition from the manifest), never `rustfmt` by hand.
 - SvelteKit 3: imports are `#lib/...` with the file extension (`bun scripts/imports.fix.ts`);
   public build-time values come from `src/env.ts` (`defineEnvVars`) via `$app/env/public`;
   TypeScript 6 (7 is the native port: SvelteKit's sync needs the JS API it dropped). No service worker on purpose (`legacy.ts`

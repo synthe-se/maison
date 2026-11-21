@@ -14,11 +14,12 @@ use super::{
     error::DriverError,
     remotes::bind_remote_clusters,
     zcl::{
+        ACTIVE_EP_REQ_CLUSTER_ID, BASIC_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID,
+        LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID, PHILIPS_SPECIFIC_CLUSTER_ID,
+        SIMPLE_DESC_REQ_CLUSTER_ID, SimpleDescriptor, ZDO_PROFILE_ID,
         build_configure_reporting_payload, classify_device_type, is_preferred_light_endpoint,
         parse_active_ep_response, parse_device_announce, parse_simple_desc_response,
-        parse_zcl_header, reported_attributes, SimpleDescriptor, ACTIVE_EP_REQ_CLUSTER_ID,
-        BASIC_CLUSTER_ID, COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID,
-        PHILIPS_SPECIFIC_CLUSTER_ID, SIMPLE_DESC_REQ_CLUSTER_ID, ZDO_PROFILE_ID,
+        parse_zcl_header, reported_attributes,
     },
 };
 

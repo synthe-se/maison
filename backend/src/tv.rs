@@ -33,23 +33,24 @@
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
     net::TcpStream,
     sync::Mutex,
-    time::{timeout, Instant},
+    time::{Instant, timeout},
 };
 
 use crate::{
+    AppState,
     broadlink::BroadlinkManager,
     error::{AppError, Refusal},
     ir::{Resolve, SwitchState},
@@ -57,7 +58,6 @@ use crate::{
     net::{self, device_host, device_ipv4, unreachable},
     philips_ir,
     util::non_blank,
-    AppState,
 };
 
 const API_PORT: u16 = 1925;

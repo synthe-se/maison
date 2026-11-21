@@ -1,16 +1,16 @@
 use axum::{
+    Json, Router,
     extract::{Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use maison_api::tempo::{Forecast, Today};
 use serde::Deserialize;
 
 use crate::{
+    AppState,
     error::AppError,
     routes::{Answer, Reply},
     tempo::Calendar,
-    AppState,
 };
 
 #[derive(Deserialize)]

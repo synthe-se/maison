@@ -1,21 +1,21 @@
 use axum::{
-    extract::{multipart::MultipartError, DefaultBodyLimit, Multipart, Path, State},
-    http::{header, StatusCode},
+    Json, Router,
+    extract::{DefaultBodyLimit, Multipart, Path, State, multipart::MultipartError},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use maison_api::{
-    photos::{Added, PhotoList, MAX_PHOTO_BYTES, UPLOAD_FIELD},
     Message,
+    photos::{Added, MAX_PHOTO_BYTES, PhotoList, UPLOAD_FIELD},
 };
 
 use crate::{
+    AppState,
     auth::AdminUser,
     error::{AppError, Refusal},
     routes::{Answer, Reply},
     util::refused,
-    AppState,
 };
 
 /// One photo and its multipart wrapping: a photo over the limit is refused by its own check when

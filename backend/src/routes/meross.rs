@@ -1,19 +1,19 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::{get, post},
-    Json, Router,
 };
 use maison_api::{
-    meross::{Consumption, ElectricityAnswer, PlugList, ToggleRequest},
     OfDevice,
+    meross::{Consumption, ElectricityAnswer, PlugList, ToggleRequest},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    AppState,
     error::AppError,
     meross::MerossStatus,
     routes::{Answer, DeviceRef, Reply},
-    AppState,
 };
 
 /// What every plug answer says (`{success, device, message, ..}`), its own fields after.

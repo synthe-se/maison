@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The rabbit has no host in a fresh config: its action fails — which shows it was run.
 fn rabbit_failed(result: &Value) -> bool {

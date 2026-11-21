@@ -733,7 +733,7 @@ mod tests {
     }
 
     use super::*;
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     #[test]
     fn parses_state_command() {
@@ -969,10 +969,12 @@ mod tests {
             (level.fan, level.wide, level.econo, level.stop_in_minutes),
             (Fan::Level3, Some(WideVane::LeftMax), false, None)
         );
-        assert!(serde_json::from_value::<ClimateSettings>(
-            serde_json::json!({"mode": "turbo", "temperature": 20, "fan": "1", "vane": "low"})
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<ClimateSettings>(
+                serde_json::json!({"mode": "turbo", "temperature": 20, "fan": "1", "vane": "low"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

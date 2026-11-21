@@ -11,12 +11,12 @@ use super::{
     context::EzspContext,
     device::{Hex, ZigbeeDeviceType},
     zcl::{
-        build_brightness_command_payload, build_on_off_command_payload, parse_zcl_header,
         LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID, PHILIPS_SPECIFIC_CLUSTER_ID,
         ZCL_LEVEL_CONTROL_COMMAND_MOVE, ZCL_LEVEL_CONTROL_COMMAND_MOVE_WITH_ON_OFF,
         ZCL_LEVEL_CONTROL_COMMAND_STEP, ZCL_LEVEL_CONTROL_COMMAND_STEP_WITH_ON_OFF,
         ZCL_LEVEL_CONTROL_COMMAND_STOP, ZCL_LEVEL_CONTROL_COMMAND_STOP_WITH_ON_OFF,
-        ZCL_ON_OFF_COMMAND_OFF, ZCL_ON_OFF_COMMAND_ON,
+        ZCL_ON_OFF_COMMAND_OFF, ZCL_ON_OFF_COMMAND_ON, build_brightness_command_payload,
+        build_on_off_command_payload, parse_zcl_header,
     },
 };
 
@@ -164,10 +164,10 @@ async fn broadcast_power_to_all_lamps(context: &mut EzspContext, enabled: bool) 
                 |sequence| build_on_off_command_payload(enabled, sequence),
             )
             .await;
-        if context.note(lamp, "remote on/off", sent) {
-            if let Some(device) = context.device_mut(lamp) {
-                device.light.is_on = enabled;
-            }
+        if context.note(lamp, "remote on/off", sent)
+            && let Some(device) = context.device_mut(lamp)
+        {
+            device.light.is_on = enabled;
         }
     }
 }
@@ -207,12 +207,12 @@ async fn broadcast_brightness_step_to_all_lamps(context: &mut EzspContext, up: b
                 |sequence| build_brightness_command_payload(brightness, sequence),
             )
             .await;
-        if context.note(lamp, "remote brightness step", sent) {
-            if let Some(device) = context.device_mut(lamp) {
-                device.light.brightness = brightness;
-                device.light.is_on = true;
-                device.desired.brightness = Some(brightness);
-            }
+        if context.note(lamp, "remote brightness step", sent)
+            && let Some(device) = context.device_mut(lamp)
+        {
+            device.light.brightness = brightness;
+            device.light.is_on = true;
+            device.desired.brightness = Some(brightness);
         }
     }
 }

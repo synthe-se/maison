@@ -8,20 +8,20 @@
 use std::{
     net::IpAddr,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use rust_async_tuyapi::{mesparse::Message, tuyadevice::TuyaDevice, DpId, Payload, PayloadStruct};
-use serde_json::{json, Map, Value};
+use rust_async_tuyapi::{DpId, Payload, PayloadStruct, mesparse::Message, tuyadevice::TuyaDevice};
+use serde_json::{Map, Value, json};
 use tokio::{
-    sync::{mpsc, oneshot, watch, Notify},
+    sync::{Notify, mpsc, oneshot, watch},
     task::JoinHandle,
 };
 
-use super::{parse::merge_messages_into_dps, ManagedTuyaDevice, TuyaManager, DEVICE};
+use super::{DEVICE, ManagedTuyaDevice, TuyaManager, parse::merge_messages_into_dps};
 use crate::{error::AppError, net, util::capped_backoff};
 
 pub(super) const STATUS_TIMEOUT: Duration = Duration::from_millis(12_000);
@@ -194,10 +194,8 @@ impl TuyaManager {
             .await
             .get(&device_id)
             .is_some_and(|handle| handle.id == id);
-        if still_dead {
-            if let Err(error) = self.connect_device(&device_id).await {
-                tracing::warn!(%device_id, %error, "tuya device not connected after a worker panic");
-            }
+        if still_dead && let Err(error) = self.connect_device(&device_id).await {
+            tracing::warn!(%device_id, %error, "tuya device not connected after a worker panic");
         }
     }
 
@@ -393,7 +391,7 @@ impl TuyaManager {
                     return Err(net::unreachable(
                         DEVICE,
                         format!("{}: no answer to a command", device.config.name),
-                    ))
+                    ));
                 }
             }
             self.absorb(device, Map::from_iter([(dps, value)]), false)

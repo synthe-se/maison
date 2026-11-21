@@ -22,7 +22,7 @@ use std::{net::IpAddr, sync::Mutex, time::Duration};
 
 use crate::{
     passkey::Limiter,
-    util::{hash_secret, ip_group, lock, random_secret, Bounded, Caps, Held},
+    util::{Bounded, Caps, Held, hash_secret, ip_group, lock, random_secret},
 };
 
 /// How long a screen waits for an admin.
@@ -258,10 +258,11 @@ mod tests {
         let (secret, code) = pairings.start(frame).unwrap();
         assert_eq!(code.len(), CODE_LEN + 1);
         assert_eq!(code.as_bytes()[CODE_LEN / 2], b'-');
-        assert!(code
-            .chars()
-            .filter(|c| *c != '-')
-            .all(|c| CODE_ALPHABET.contains(&(c as u8))));
+        assert!(
+            code.chars()
+                .filter(|c| *c != '-')
+                .all(|c| CODE_ALPHABET.contains(&(c as u8)))
+        );
         assert_eq!(pairings.claim(frame, &secret), Ok(Claim::Waiting));
 
         // typed by hand: lowercase, without the dash

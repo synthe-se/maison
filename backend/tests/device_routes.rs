@@ -6,7 +6,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn test_app() -> axum::Router {
     common::app(common::isolated_config("maison-rust-device-routes"))

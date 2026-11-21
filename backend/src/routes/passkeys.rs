@@ -19,13 +19,13 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
+    Json, Router,
     extract::{ConnectInfo, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{
     CreationChallengeResponse, CredentialID, Passkey, PublicKeyCredential,
@@ -33,18 +33,18 @@ use webauthn_rs::prelude::{
 };
 
 use crate::{
-    auth::{recent_passkey, AdminUser, AuthUser, AuthenticatedUser},
+    AppState,
+    auth::{AdminUser, AuthUser, AuthenticatedUser, recent_passkey},
     error::{AppError, Refusal},
-    passkey::{client_ip, device_label, invite_lifetime_ms, Ceremony, PasskeyState, Via},
+    passkey::{Ceremony, PasskeyState, Via, client_ip, device_label, invite_lifetime_ms},
     people::{
-        slug, Invite, PasskeyInfo, People, PersonInfo, Removed, Role, StoredInvite, StoredPasskey,
+        Invite, PasskeyInfo, People, PersonInfo, Removed, Role, StoredInvite, StoredPasskey, slug,
     },
     routes::{
-        auth::{end_previous, end_sessions, open_session, opened_by},
         Answer, Reply, SimpleResponse,
+        auth::{end_previous, end_sessions, open_session, opened_by},
     },
     util::{hash_secret, now_ms, random_id, random_secret},
-    AppState,
 };
 
 pub fn router() -> Router<AppState> {

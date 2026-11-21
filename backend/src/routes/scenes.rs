@@ -1,18 +1,18 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::{get, post, put},
-    Json, Router,
 };
-use maison_api::{remote::KeyResponse, scenes::SceneList, Message};
+use maison_api::{Message, remote::KeyResponse, scenes::SceneList};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    AppState,
     auth::AdminUser,
     error::{AppError, Refusal},
     ir::{self, IrAction},
     routes::{Answer, Reply},
     scenes::Scene,
-    AppState,
 };
 
 #[derive(Debug, Serialize)]

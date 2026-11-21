@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use maison_api::tempo::Color;
 
-use super::rules::{is_holiday, DayRules, Stock};
+use super::rules::{DayRules, Stock, is_holiday};
 
 /// RTE's temperature correction of the normalisation (γ, k).
 const GAMMA: f64 = -0.1176;

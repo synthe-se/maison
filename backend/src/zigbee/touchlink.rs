@@ -6,19 +6,19 @@
 use std::time::Duration;
 
 use ezsp::{
+    Zll,
     ember::{
         node::Type as EmberNodeType,
         zll::{self, InitialSecurityState as ZllInitialSecurityState, Network as ZllNetwork},
     },
     ezsp::zll::NetworkOperation as ZllNetworkOperation,
     parameters::zll::handler::Handler as ZllHandler,
-    Zll,
 };
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use super::{
-    callbacks::{on_callback, DriverEvent},
+    callbacks::{DriverEvent, on_callback},
     context::EzspContext,
     device::Hex,
     error::DriverError,

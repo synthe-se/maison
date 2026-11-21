@@ -1,24 +1,24 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::{get, post},
-    Json, Router,
 };
 use maison_api::{
-    lamps::{ColorRequest, EffectRequest, ZigbeeLamp},
     Message,
+    lamps::{ColorRequest, EffectRequest, ZigbeeLamp},
 };
 use serde::Serialize;
 
 use crate::{
+    AppState,
     auth::AdminUser,
     error::AppError,
     lamps::{LampState, LampStats},
     routes::{
-        lamps::{self, changed, Changed, LampBackend},
         Answer, Reply,
+        lamps::{self, Changed, LampBackend, changed},
     },
     zigbee::{ZigbeeManager, ZigbeePairingStatus},
-    AppState,
 };
 
 impl LampBackend for ZigbeeManager {

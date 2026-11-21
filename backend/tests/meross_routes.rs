@@ -5,10 +5,10 @@
 mod common;
 
 use axum::{
-    http::{Method, StatusCode},
     Router,
+    http::{Method, StatusCode},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Port 1 on the loopback: not a device address, so never dialled.
 const LOOPBACK: &str = "127.0.0.1:1";

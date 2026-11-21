@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -115,13 +115,15 @@ mod tests {
         std::fs::create_dir(&blocked_path).expect("dir");
         assert!(blocked.set(vec![2]).await.is_err());
         assert!(blocked.get().await.is_empty(), "memory follows the disk");
-        assert!(blocked
-            .update(|v| {
-                v.push(3);
-                Ok(())
-            })
-            .await
-            .is_err());
+        assert!(
+            blocked
+                .update(|v| {
+                    v.push(3);
+                    Ok(())
+                })
+                .await
+                .is_err()
+        );
         assert!(blocked.get().await.is_empty(), "memory follows the disk");
     }
 
@@ -131,13 +133,15 @@ mod tests {
         let path = dir.path().join("x.json");
         let config = JsonConfig::<Vec<u8>>::load(&path).expect("loads");
         assert!(config.set(vec![0]).await.is_err());
-        assert!(config
-            .update(|v| {
-                v.push(0);
-                Ok(())
-            })
-            .await
-            .is_err());
+        assert!(
+            config
+                .update(|v| {
+                    v.push(0);
+                    Ok(())
+                })
+                .await
+                .is_err()
+        );
         assert!(config.get().await.is_empty());
         assert!(!path.exists(), "nothing refused reaches the disk");
         std::fs::write(&path, "[0]").expect("written");

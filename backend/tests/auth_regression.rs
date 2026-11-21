@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[tokio::test]
 async fn auth_verify_accepts_valid_token() {
@@ -377,9 +377,11 @@ async fn a_change_from_another_site_is_refused() {
         headers.get("cache-control").and_then(|v| v.to_str().ok()),
         Some("no-store")
     );
-    assert!(headers
-        .get("content-security-policy")
-        .is_some_and(|v| v.to_str().unwrap().contains("base-uri 'none'")));
+    assert!(
+        headers
+            .get("content-security-policy")
+            .is_some_and(|v| v.to_str().unwrap().contains("base-uri 'none'"))
+    );
 }
 
 #[tokio::test]

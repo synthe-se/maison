@@ -24,11 +24,11 @@
 use std::{sync::Arc, time::Duration};
 
 use rsa::{
+    BoxedUint, PrivateKey, PublicKey,
     pkcs1v15::SigningKey,
     pkcs8::{DecodePrivateKey, EncodePrivateKey},
-    signature::{hazmat::PrehashSigner, SignatureEncoding},
+    signature::{SignatureEncoding, hazmat::PrehashSigner},
     traits::PublicKeyParts,
-    BoxedUint, PrivateKey, PublicKey,
 };
 use sha1::Sha1;
 use tokio::{
@@ -412,7 +412,7 @@ impl AdbDevice {
                 A_CLSE if message.arg1 == local_id => {
                     return Err(protocol_error(format!(
                         "device refused to open {destination}"
-                    )))
+                    )));
                 }
                 _ => continue,
             }
@@ -433,7 +433,7 @@ impl AdbDevice {
             match message.command {
                 A_OKAY if message.arg1 == self.local_id => return Ok(()),
                 A_CLSE if message.arg1 == self.local_id => {
-                    return Err(protocol_error("device closed the stream mid-write"))
+                    return Err(protocol_error("device closed the stream mid-write"));
                 }
                 _ => continue,
             }
@@ -583,8 +583,8 @@ impl AdbDevice {
 #[cfg(test)]
 pub(crate) mod fake {
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;

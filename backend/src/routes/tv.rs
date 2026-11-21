@@ -1,21 +1,21 @@
 use axum::{
+    Json, Router,
     extract::State,
     routing::{get, post, put},
-    Json, Router,
 };
 use maison_api::{
-    tv::{AmbilightRequest, KeyRequest, PowerRequest, VolumeRequest},
     Message,
+    tv::{AmbilightRequest, KeyRequest, PowerRequest, VolumeRequest},
 };
 use serde::Serialize;
 
 use crate::{
+    AppState,
     auth::AdminUser,
     error::AppError,
     ir::Resolve,
     routes::{Answer, Reply},
     tv::{self, TvAmbilight, TvConfig, TvPower, TvStatus, TvVolume},
-    AppState,
 };
 
 #[derive(Debug, Serialize)]

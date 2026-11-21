@@ -34,7 +34,7 @@ use matter_controller::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{watch, Mutex, RwLock},
+    sync::{Mutex, RwLock, watch},
     task::JoinHandle,
 };
 
@@ -50,7 +50,7 @@ use crate::{
 mod schedule;
 
 pub use maison_api::matter::{Cover, CoverMotion, SunSchedule};
-use schedule::{clock_trusted, offset, Look, ScheduleState, MAX_SUN_OFFSET_MIN};
+use schedule::{Look, MAX_SUN_OFFSET_MIN, ScheduleState, clock_trusted, offset};
 
 type Time = jiff::Timestamp;
 
@@ -856,10 +856,10 @@ async fn follow(
                 tracing::warn!(node_id = %node_text(node_id), %error, attempts, "matter cover subscription refused");
             }
         }
-        if reading.send_if_modified(|r| std::mem::replace(&mut r.online, false)) {
-            if let Some(inner) = manager.upgrade() {
-                MatterManager { inner }.publish().await;
-            }
+        if reading.send_if_modified(|r| std::mem::replace(&mut r.online, false))
+            && let Some(inner) = manager.upgrade()
+        {
+            MatterManager { inner }.publish().await;
         }
         tokio::time::sleep(capped_backoff(
             SUBSCRIBE_RETRY,
@@ -1187,8 +1187,8 @@ fn operation_error(error: impl Into<CallError>) -> AppError {
 mod tests {
     use super::*;
     use schedule::{
-        tests::{paris, utc, BOTH},
         Order, RETRY_FOR,
+        tests::{BOTH, paris, utc},
     };
 
     #[test]
@@ -1652,10 +1652,12 @@ mod tests {
             ..BOTH
         })
         .await;
-        assert!(manager
-            .set_skip(&format_id(1), CoverCommand::Close, true)
-            .await
-            .is_err());
+        assert!(
+            manager
+                .set_skip(&format_id(1), CoverCommand::Close, true)
+                .await
+                .is_err()
+        );
         assert!(
             manager
                 .set_skip(&format_id(1), CoverCommand::Close, false)

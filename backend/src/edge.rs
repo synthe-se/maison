@@ -27,15 +27,15 @@ use std::{
 
 use axum::{extract::ConnectInfo, middleware::Next, response::Response};
 use rustls::{
-    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
-    server::WebPkiClientVerifier,
     RootCertStore, ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    server::WebPkiClientVerifier,
 };
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
 };
-use tokio_rustls::{server::TlsStream, TlsAcceptor};
+use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 use crate::store::{self, Access};
 
@@ -361,8 +361,8 @@ pub fn client(house: &Path, client: &Path, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{routing::get, Router};
-    use rustls::{pki_types::ServerName, ClientConfig};
+    use axum::{Router, routing::get};
+    use rustls::{ClientConfig, pki_types::ServerName};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::TlsConnector;
 
@@ -605,9 +605,11 @@ mod tests {
         };
         let port = serve(house.clone()).await;
         let frame_tls = client_config(&frame, Some(&frame));
-        assert!(get_through(port, frame_tls.clone(), "/who", "")
-            .await
-            .contains("edge=true"));
+        assert!(
+            get_through(port, frame_tls.clone(), "/who", "")
+                .await
+                .contains("edge=true")
+        );
 
         // a frame is no proxy: what it forwards is not believed, its TCP address is its own
         let port_who = who(house.clone()).await;
@@ -631,9 +633,11 @@ mod tests {
         // the frame's CA taken out of the house's ca.pem (the service restarted): refused
         std::fs::write(house.join(CA_FILE), &alone).unwrap();
         let port = serve(house.clone()).await;
-        assert!(!get_through(port, frame_tls, "/who", "")
-            .await
-            .contains("edge=true"));
+        assert!(
+            !get_through(port, frame_tls, "/who", "")
+                .await
+                .contains("edge=true")
+        );
         assert!(
             get_through(port, client_config(&proxy, Some(&proxy)), "/who", "")
                 .await

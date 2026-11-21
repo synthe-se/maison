@@ -236,10 +236,10 @@ fn parsed<T: std::str::FromStr>(
 }
 
 fn default_source_root() -> PathBuf {
-    if let Ok(current_dir) = env::current_dir() {
-        if looks_like_source_root(&current_dir) {
-            return current_dir;
-        }
+    if let Ok(current_dir) = env::current_dir()
+        && looks_like_source_root(&current_dir)
+    {
+        return current_dir;
     }
 
     if let Ok(current_exe) = env::current_exe() {

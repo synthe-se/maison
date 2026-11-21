@@ -1,7 +1,7 @@
 [package]
 name = "maison-backend"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 rust-version = "1.99.1"
 default-run = "maison-backend"
 # never on crates.io: cargo deny reads it as private (its path dependency, its unchosen license)

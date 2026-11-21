@@ -36,9 +36,10 @@ use futures::future::BoxFuture;
 use jiff::Timestamp;
 use maison_api::lamps::{HueLamp, ZigbeeLamp};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::{
+    AppState,
     error::{AppError, Refusal},
     json_config::{Checked, JsonConfig},
     matter::CoverCommand,
@@ -46,7 +47,6 @@ use crate::{
     routes::lamps::LampBackend,
     tv,
     util::refused,
-    AppState,
 };
 
 const RECENT_EVENTS_CAP: usize = 50;
@@ -278,10 +278,10 @@ async fn climate(
     model: &Option<String>,
     pressed: Option<Pressed>,
 ) -> Result<(), AppError> {
-    if let Some(Pressed { code, seq }) = pressed {
-        if state.ir.released(code, seq, CLIMATE_KEY_RELEASE).await {
-            tokio::time::sleep(AFTER_RELEASE).await;
-        }
+    if let Some(Pressed { code, seq }) = pressed
+        && state.ir.released(code, seq, CLIMATE_KEY_RELEASE).await
+    {
+        tokio::time::sleep(AFTER_RELEASE).await;
     }
     state
         .broadlink
@@ -1084,11 +1084,13 @@ mod tests {
                 );
             }
         }
-        assert!(validate_actions(&[IrAction::ZigbeeBrightness {
-            lamp: "aa".into(),
-            brightness: 1
-        }])
-        .is_ok());
+        assert!(
+            validate_actions(&[IrAction::ZigbeeBrightness {
+                lamp: "aa".into(),
+                brightness: 1
+            }])
+            .is_ok()
+        );
     }
 
     /// A climate action from a key waits for the key's release, not a fixed time: at once
@@ -1143,10 +1145,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_action() {
-        assert!(parse_keymap(
-            r#"{ "1": { "actions": [{ "action": "teleport", "target": "moon" }] } }"#
-        )
-        .is_err());
+        assert!(
+            parse_keymap(r#"{ "1": { "actions": [{ "action": "teleport", "target": "moon" }] } }"#)
+                .is_err()
+        );
     }
 
     /// A short window is what makes the D-pad usable; the clamp is what
@@ -1198,18 +1200,24 @@ mod tests {
         let never = || async { panic!("not asked for a forced state") };
         assert!(SwitchState::On.resolve(never).await.unwrap());
         assert!(!SwitchState::Off.resolve(never).await.unwrap());
-        assert!(!SwitchState::Toggle
-            .resolve(|| async { Ok(true) })
-            .await
-            .unwrap());
-        assert!(SwitchState::Toggle
-            .resolve(|| async { Ok(false) })
-            .await
-            .unwrap());
-        assert!(SwitchState::Toggle
-            .resolve(|| async { Err(Refusal::NotFound.into()) })
-            .await
-            .is_err());
+        assert!(
+            !SwitchState::Toggle
+                .resolve(|| async { Ok(true) })
+                .await
+                .unwrap()
+        );
+        assert!(
+            SwitchState::Toggle
+                .resolve(|| async { Ok(false) })
+                .await
+                .unwrap()
+        );
+        assert!(
+            SwitchState::Toggle
+                .resolve(|| async { Err(Refusal::NotFound.into()) })
+                .await
+                .is_err()
+        );
     }
 
     /// A failed save must not leave a binding that exists in memory only (and vanishes on

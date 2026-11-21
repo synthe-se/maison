@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::{dps, TuyaDeviceType, TuyaManager};
+use super::{TuyaDeviceType, TuyaManager, dps};
 use crate::store::{self, Access};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

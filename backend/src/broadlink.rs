@@ -9,11 +9,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jiff::Timestamp;
-use rbroadlink::{network::WirelessConnection, traits::DeviceTrait, Device};
+use rbroadlink::{Device, network::WirelessConnection, traits::DeviceTrait};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use uuid::Uuid;
 
 use crate::{
@@ -212,13 +212,13 @@ impl BroadlinkManager {
             store::read_json(climate_state_path, Corrupt::Reset)?;
 
         // Backfill parsed settings for files written before the field existed.
-        if let Some(state) = climate_state.as_mut() {
-            if state.settings.is_none() {
-                state.settings = state
-                    .last_on_command
-                    .as_deref()
-                    .and_then(mitsubishi_ir::parse_climate_settings);
-            }
+        if let Some(state) = climate_state.as_mut()
+            && state.settings.is_none()
+        {
+            state.settings = state
+                .last_on_command
+                .as_deref()
+                .and_then(mitsubishi_ir::parse_climate_settings);
         }
 
         Ok(Self {
@@ -986,10 +986,12 @@ mod tests {
             .record_climate_state("state-cool-21-fan-auto-vane-auto", "192.168.1.60", None)
             .await;
         assert!(climate.has_changed().unwrap());
-        assert!(climate
-            .borrow_and_update()
-            .as_ref()
-            .is_some_and(|s| s.power));
+        assert!(
+            climate
+                .borrow_and_update()
+                .as_ref()
+                .is_some_and(|s| s.power)
+        );
         manager
             .record_raw_climate_command("power", "192.168.1.60", Some("msz"))
             .await;

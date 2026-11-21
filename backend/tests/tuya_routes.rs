@@ -5,10 +5,10 @@
 mod common;
 
 use axum::{
-    http::{Method, StatusCode},
     Router,
+    http::{Method, StatusCode},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const FEEDER: &str = "feeder-1";
 const LITTER: &str = "litter-1";

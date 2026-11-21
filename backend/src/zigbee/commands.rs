@@ -3,16 +3,16 @@
 use std::time::Duration;
 
 use ezsp::{
-    ember::{network::Duration as NetworkDuration, Eui64},
-    ezsp::{decision, policy},
     Configuration, Networking, Security,
+    ember::{Eui64, network::Duration as NetworkDuration},
+    ezsp::{decision, policy},
 };
 use silizium::zigbee::security::man as security_man;
 use tracing::{info, warn};
 
 use super::{
     context::EzspContext,
-    device::{normalize_device_id, DiscoveredDevice, Hex, ZigbeeDeviceInfo},
+    device::{DiscoveredDevice, Hex, ZigbeeDeviceInfo, normalize_device_id},
     discovery::{
         configure_reporting, refresh_device_state, request_active_endpoints,
         should_probe_active_endpoints,
@@ -22,10 +22,10 @@ use super::{
     network::ZIGBEE_ALLIANCE09_LINK_KEY,
     touchlink::touchlink_scan,
     zcl::{
-        build_brightness_command_payload, build_color_temperature_command_payload,
-        build_color_xy_command_payload, build_on_off_command_payload, ZigbeeEffect,
         COLOR_CONTROL_CLUSTER_ID, COLOR_MODE_TEMPERATURE, COLOR_MODE_XY, IDENTIFY_CLUSTER_ID,
-        LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID,
+        LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID, ZigbeeEffect,
+        build_brightness_command_payload, build_color_temperature_command_payload,
+        build_color_xy_command_payload, build_on_off_command_payload,
     },
 };
 

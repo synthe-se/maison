@@ -48,14 +48,14 @@ use tokio::{
     time::timeout,
 };
 use tokio_rustls::{
+    TlsConnector,
     client::TlsStream,
     rustls::{
+        ClientConfig, DigitallySignedStruct, SignatureScheme,
         client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
         crypto::WebPkiSupportedAlgorithms,
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime},
-        ClientConfig, DigitallySignedStruct, SignatureScheme,
     },
-    TlsConnector,
 };
 
 use crate::{
@@ -585,20 +585,20 @@ fn outer_message(field: u32, build: impl FnOnce(&mut ProtoBuf)) -> Vec<u8> {
 fn expect_ok(payload: &[u8], step: &str) -> Result<(), AppError> {
     let mut reader = ProtoReader::new(payload);
     while let Some((field, value)) = reader.next_field() {
-        if field == 2 {
-            if let Field::Varint(status) = value {
-                return match status {
-                    200 => Ok(()),
-                    402 => Err(refused(
-                        Refusal::Invalid,
-                        "the TV rejected the pairing code",
-                    )),
-                    other => Err(unreachable(
-                        TV,
-                        format!("the TV refused {step} (status {other})"),
-                    )),
-                };
-            }
+        if field == 2
+            && let Field::Varint(status) = value
+        {
+            return match status {
+                200 => Ok(()),
+                402 => Err(refused(
+                    Refusal::Invalid,
+                    "the TV rejected the pairing code",
+                )),
+                other => Err(unreachable(
+                    TV,
+                    format!("the TV refused {step} (status {other})"),
+                )),
+            };
         }
     }
     Err(unreachable(
@@ -876,12 +876,11 @@ impl Session {
                                 return;
                             }
                             // remote_set_active answered: the session is usable
-                            if field == 2 {
-                                if let Some(ready) = ready.take() {
+                            if field == 2
+                                && let Some(ready) = ready.take() {
                                     // nobody waits any more: the caller gave up, the session goes on
                                     ready.send(()).ok();
                                 }
-                            }
                         }
                     }
 
@@ -998,9 +997,11 @@ mod tests {
         let mut past_64 = vec![0xff; 9];
         past_64.push(0x02);
         assert_eq!(ProtoReader::new(&past_64).varint(), None);
-        assert!(read_framed(&mut past_64.as_slice(), Duration::from_secs(1))
-            .await
-            .is_err());
+        assert!(
+            read_framed(&mut past_64.as_slice(), Duration::from_secs(1))
+                .await
+                .is_err()
+        );
         // a field number past u32 is malformed, not truncated
         let key = varint((u64::from(u32::MAX) + 1) << 3);
         assert!(ProtoReader::new(&key).next_field().is_none());

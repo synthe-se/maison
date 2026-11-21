@@ -1,29 +1,28 @@
 use std::collections::BTreeMap;
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use maison_api::{
+    Message, OfDevice,
     cats::{FeedRequest, FountainUvSettingsRequest, LitterBoxSettingsRequest},
     lamps::PowerRequest,
-    Message, OfDevice,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{
+    AppState,
     auth::AdminUser,
     error::{AppError, Refusal},
     routes::{Answer, DeviceRef, Reply},
     tuya::{
-        self, dps,
+        self, TuyaDeviceType, dps,
         feeder::{self, MealPlanEntry},
-        TuyaDeviceType,
     },
     util::{minutes_of_day, refused},
-    AppState,
 };
 
 const LITTER_MAX_CLEAN_DELAY_SECONDS: u64 = 1800;

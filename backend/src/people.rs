@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// What a name may be, said once in `util` (people, passkeys, screens and devices alike).
-pub use crate::util::{clean_name, MAX_NAME};
+pub use crate::util::{MAX_NAME, clean_name};
 
 /// An enum kept as one word (in `auth.json`, on the CLI): its words said once, in `as_str`,
 /// which serde and `FromStr` read.
@@ -784,11 +784,12 @@ mod tests {
         p.create_invite(invite("i1", "leonard", Role::Admin, "t"))
             .await
             .unwrap();
-        assert!(p
-            .invite_by_hash(&hash_secret("t"), 10)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            p.invite_by_hash(&hash_secret("t"), 10)
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert!(
             p.invite_by_hash(&hash_secret("t"), 1_000)
                 .await
@@ -813,11 +814,12 @@ mod tests {
                 .is_none(),
             "single use"
         );
-        assert!(p
-            .invite_by_hash(&hash_secret("t"), 10)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            p.invite_by_hash(&hash_secret("t"), 10)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(p.passkeys_of("leonard").await.unwrap().len(), 1);
     }
 
@@ -882,11 +884,12 @@ mod tests {
         );
         let (found, owner) = p.passkey_by_credential("c2").await.unwrap().unwrap();
         assert_eq!((found.id.as_str(), owner.id.as_str()), ("k2", "leonard"));
-        assert!(p
-            .rename_passkey("leonard", "k2", "iPhone")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            p.rename_passkey("leonard", "k2", "iPhone")
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(p.passkeys_of("leonard").await.unwrap()[0].name, "iPhone");
     }
 
@@ -935,11 +938,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((found.id.as_str(), found.scope), ("t1", Scope::Devices));
-        assert!(p
-            .token_by_hash(&hash_secret("other"))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            p.token_by_hash(&hash_secret("other"))
+                .await
+                .unwrap()
+                .is_none()
+        );
         p.token_used("t1", 42).await.unwrap();
         assert_eq!(p.tokens().await.unwrap()[0].last_used_ms, Some(42));
         let text = std::fs::read_to_string(dir.path().join("auth").join("auth.json")).unwrap();
@@ -1015,11 +1019,12 @@ mod tests {
             ["Salon", "Cuisine"],
             "unseen for longer than allowed"
         );
-        assert!(p
-            .revoke_idle_screens(2_000, 1_000)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            p.revoke_idle_screens(2_000, 1_000)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(p.revoke_token_of("s3", TokenKind::Screen).await.unwrap());
         let left: Vec<String> = p
             .tokens()

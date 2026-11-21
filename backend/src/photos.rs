@@ -11,9 +11,9 @@ use std::{
 };
 
 use axum::body::Bytes;
-use maison_api::photos::{is_id, Photo, MAX_PHOTOS, MAX_PHOTO_BYTES};
+use maison_api::photos::{MAX_PHOTO_BYTES, MAX_PHOTOS, Photo, is_id};
 use sha2::{Digest, Sha256};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 
 use crate::{
     error::{AppError, Refusal},

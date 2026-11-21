@@ -16,11 +16,11 @@ use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
 use crate::{
+    TempoService,
     error::{AppError, Refusal},
     json_config::{Checked, JsonConfig},
     net::{device_client, device_host, unreachable},
     util::{house_time, house_today, non_blank},
-    TempoService,
 };
 
 /// The colors are pushed again this often whatever happened: a rabbit that rebooted gets

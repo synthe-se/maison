@@ -1,17 +1,17 @@
 use axum::{
+    Json, Router,
     extract::State,
     routing::{get, post, put},
-    Json, Router,
 };
 use maison_api::nabaztag::{CommandRequest, TempoPushRequest};
 use serde::Serialize;
 
 use crate::{
+    AppState,
     auth::AdminUser,
     error::AppError,
     nabaztag::{NabaztagConfig, TempoPushResult},
     routes::{Answer, Reply, SimpleResponse},
-    AppState,
 };
 
 #[derive(Debug, Serialize)]

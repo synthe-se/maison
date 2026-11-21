@@ -8,15 +8,15 @@
 
 use std::{env, path::PathBuf};
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maison_backend::{
     broadlink::{self, BroadlinkCodeEntry},
     broadlink_ir,
     config::Config,
     mitsubishi_ir::{
-        self, MitsubishiFrame, Setting, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US,
-        MITSUBISHI_HDR_SPACE_US, MITSUBISHI_ONE_SPACE_US, MITSUBISHI_REPEAT_GAP_US,
-        MITSUBISHI_STATE_LEN, MITSUBISHI_ZERO_SPACE_US,
+        self, MITSUBISHI_BIT_MARK_US, MITSUBISHI_HDR_MARK_US, MITSUBISHI_HDR_SPACE_US,
+        MITSUBISHI_ONE_SPACE_US, MITSUBISHI_REPEAT_GAP_US, MITSUBISHI_STATE_LEN,
+        MITSUBISHI_ZERO_SPACE_US, MitsubishiFrame, Setting,
     },
     util,
 };
@@ -173,11 +173,7 @@ fn join_u32(values: &[u32]) -> String {
 }
 
 fn on_off(enabled: bool) -> &'static str {
-    if enabled {
-        "on"
-    } else {
-        "off"
-    }
+    if enabled { "on" } else { "off" }
 }
 
 fn direct_indirect_name(code: u8) -> &'static str {

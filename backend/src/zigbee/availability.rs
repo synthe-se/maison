@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use tokio::time::{timeout, Instant};
+use tokio::time::{Instant, timeout};
 use tracing::{debug, info, warn};
 
 use super::{
@@ -17,9 +17,9 @@ use super::{
     device::{DiscoveredDevice, Hex, Reporting, ZigbeeDeviceType},
     driver::EZSP_COMMAND_TIMEOUT,
     zcl::{
-        build_brightness_command_payload, build_color_temperature_command_payload,
-        build_color_xy_command_payload, COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID,
-        ON_OFF_CLUSTER_ID, REPORT_MAX_INTERVAL_S,
+        COLOR_CONTROL_CLUSTER_ID, LEVEL_CONTROL_CLUSTER_ID, ON_OFF_CLUSTER_ID,
+        REPORT_MAX_INTERVAL_S, build_brightness_command_payload,
+        build_color_temperature_command_payload, build_color_xy_command_payload,
     },
 };
 use crate::util::capped_backoff;
@@ -428,8 +428,10 @@ mod tests {
         let now = Instant::now();
         let mut lamp = DiscoveredDevice::test_lamp();
         lamp.last_seen = None;
-        assert!(due_for_ping(&lamp, now)
-            .is_some_and(|target| target.endpoint == 11 && target.was_reachable));
+        assert!(
+            due_for_ping(&lamp, now)
+                .is_some_and(|target| target.endpoint == 11 && target.was_reachable)
+        );
 
         lamp.last_seen = Some(now);
         assert!(due_for_ping(&lamp, now).is_none(), "heard just now");

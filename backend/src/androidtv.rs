@@ -30,9 +30,10 @@ use std::{
 use axum::body::Bytes;
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::{
+    AppState,
     adb::{self, AdbDevice, AdbKey},
     atvremote::{Identity, Pairing, Session},
     error::{AppError, Refusal},
@@ -40,7 +41,6 @@ use crate::{
     net::{self, device_host},
     store,
     util::{non_blank, refused},
-    AppState,
 };
 
 const DEFAULT_ADB_PORT: u16 = 5555;
@@ -337,10 +337,10 @@ impl AndroidTvManager {
     /// every host starts in.
     async fn remote_session(&self) -> Option<Session> {
         let mut slot = self.remote.lock().await;
-        if let Some(session) = slot.as_ref() {
-            if session.is_open() {
-                return Some(session.clone());
-            }
+        if let Some(session) = slot.as_ref()
+            && session.is_open()
+        {
+            return Some(session.clone());
         }
 
         if self.remote_backing_off() {
@@ -657,10 +657,8 @@ pub async fn launch_with_tv(
     package: &str,
     ensure_tv_on: bool,
 ) -> Result<(), AppError> {
-    if ensure_tv_on {
-        if let Err(error) = crate::tv::ensure_on(state).await {
-            tracing::debug!(%error, "could not power the TV on before launching");
-        }
+    if ensure_tv_on && let Err(error) = crate::tv::ensure_on(state).await {
+        tracing::debug!(%error, "could not power the TV on before launching");
     }
     state.androidtv.launch_app(package).await
 }
@@ -797,9 +795,11 @@ mod tests {
         assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         let mut nowhere = None;
-        assert!(shell_on(&mut nowhere, "127.0.0.1:1", &key, "x")
-            .await
-            .is_err());
+        assert!(
+            shell_on(&mut nowhere, "127.0.0.1:1", &key, "x")
+                .await
+                .is_err()
+        );
         assert!(nowhere.is_none());
     }
 

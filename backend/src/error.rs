@@ -2,7 +2,7 @@
 //! apps word it themselves and `401` means « not signed in » alone. Our own failures and the
 //! devices' or services' troubles are 5xx, said generically to the client, in full in the log.
 
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use thiserror::Error;
 use tracing::{error, warn};

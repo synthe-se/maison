@@ -4,22 +4,22 @@
 
 use std::{num::NonZero, sync::Arc, time::Duration};
 
-use ashv2::{ezsp::Receiver as AshEzspReceiver, start as start_ash, Payload};
+use ashv2::{Payload, ezsp::Receiver as AshEzspReceiver, start as start_ash};
 use ezsp::{
+    Callback, Client as EzspClient, Configuration, Connection as EzspConnection, Networking,
+    Security, Utilities,
     ember::{
+        Eui64,
         join::Method as EmberJoinMethod,
         key::Data as EmberKeyData,
         network::{Parameters as EmberNetworkParameters, Status as EmberNetworkStatus},
         security::initial,
-        Eui64,
     },
     ezsp::{config, decision, network::InitBitmask as NetworkInitBitmask, policy, value},
-    Callback, Client as EzspClient, Configuration, Connection as EzspConnection, Networking,
-    Security, Utilities,
 };
 use tokio::{
     sync::mpsc,
-    time::{timeout, Instant},
+    time::{Instant, timeout},
 };
 use tokio_serial::SerialPortBuilderExt;
 use tracing::{debug, info, warn};
@@ -29,9 +29,9 @@ use super::{
     config::ZigbeeConfig,
     context::{EzspContext, PipelineTasks},
     device::{DiscoveredDevice, Hex},
-    driver::{Shared, EZSP_COMMAND_TIMEOUT},
+    driver::{EZSP_COMMAND_TIMEOUT, Shared},
     error::DriverError,
-    zcl::{eui64_text, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID},
+    zcl::{DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID, eui64_text},
 };
 
 const EZSP_CHANNEL_SIZE: usize = 256;

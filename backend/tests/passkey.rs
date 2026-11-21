@@ -8,17 +8,17 @@ mod common;
 use std::collections::BTreeMap;
 
 use axum::{
-    http::{Method, StatusCode},
     Router,
+    http::{Method, StatusCode},
 };
 use maison_backend::config::Config;
 use passkey::authenticator::{Authenticator, UiHint, UserCheck, UserValidationMethod};
 use passkey::client::{Client, DefaultClientData};
 use passkey::crypto::rust_crypto::RustCryptoBackend;
+use passkey::types::Passkey;
 use passkey::types::ctap2::{Aaguid, Ctap2Error};
 use passkey::types::webauthn::{CredentialCreationOptions, CredentialRequestOptions};
-use passkey::types::Passkey;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use webauthn_rs::prelude::Url;
 
 const ORIGIN: &str = "https://maison.example.com";

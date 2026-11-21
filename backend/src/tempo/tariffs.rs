@@ -61,10 +61,10 @@ pub fn start_date(text: &str) -> Option<Date> {
         parts.next()?.parse::<i8>().ok()?,
         parts.next()?.parse::<i8>().ok()?,
     );
-    if second == 1 {
-        if let Ok(date) = Date::new(year, third, 1) {
-            return Some(date);
-        }
+    if second == 1
+        && let Ok(date) = Date::new(year, third, 1)
+    {
+        return Some(date);
     }
     Date::new(year, second, third).ok()
 }

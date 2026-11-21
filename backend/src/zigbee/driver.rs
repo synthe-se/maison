@@ -12,21 +12,21 @@ use std::{
 
 use tokio::{
     runtime,
-    sync::{mpsc, oneshot, watch, RwLock},
-    time::{interval, timeout, Instant, MissedTickBehavior},
+    sync::{RwLock, mpsc, oneshot, watch},
+    time::{Instant, MissedTickBehavior, interval, timeout},
 };
 use tracing::{debug, error, info, warn};
 
 use super::{
     availability::check_availability,
     callbacks::on_callback,
-    commands::{discover_devices, handle_command, DriverCommand},
+    commands::{DriverCommand, discover_devices, handle_command},
     config::ZigbeeConfig,
     context::EzspContext,
     device::{DiscoveredDevice, ZigbeeDevice, ZigbeeDeviceInfo},
     discovery::retry_pending_interviews,
     error::{DriverError, Link},
-    network::{bring_up, check_link, teardown_context, NetworkState},
+    network::{NetworkState, bring_up, check_link, teardown_context},
 };
 use crate::{
     error::{AppError, Refusal},
@@ -568,9 +568,11 @@ mod tests {
             None,
             "a refusal neither counts nor resets"
         );
-        assert!(errors
-            .record(&failed())
-            .is_some_and(|reason| reason.starts_with("5 consecutive")));
+        assert!(
+            errors
+                .record(&failed())
+                .is_some_and(|reason| reason.starts_with("5 consecutive"))
+        );
 
         let mut errors = ErrorCount::default();
         errors.record(&failed());

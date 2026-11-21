@@ -1,24 +1,24 @@
 use axum::{
-    extract::{rejection::JsonRejection, Path, Query, State},
-    routing::{get, post, put},
     Json, Router,
+    extract::{Path, Query, State, rejection::JsonRejection},
+    routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 
 use maison_api::{
+    Message,
     lamps::RenameRequest,
     matter::{Covers, OneCover, PositionRequest, SkipRequest, SunEvent},
     sun::Where,
-    Message,
 };
 
 use crate::{
+    AppState,
     auth::{AdminUser, SettingsClient},
     error::{AppError, Refusal},
     matter::{Cover, CoverCommand, SunSchedule},
     routes::{Answer, Reply},
     sun::Place,
-    AppState,
 };
 
 type CoverAnswer = Result<Json<Answer<OneCover>>, AppError>;

@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const DANCE: &str = r#"{ "207": { "actions": [{ "action": "nabaztag", "command": "dance 1" }] } }"#;
 

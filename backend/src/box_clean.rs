@@ -16,10 +16,10 @@ use maison_api::{
 };
 
 use crate::{
+    AppState,
     androidtv::AndroidTvManager,
     error::{AppError, Refusal},
     util::refused,
-    AppState,
 };
 
 /// The home that lets Google's go (`box/launcher`): never cut Google's without it.
@@ -190,10 +190,10 @@ pub async fn push_house(state: &AppState) {
     let sun = state.matter.sun_now().await;
     // asked, not watched: the watch stays empty until a client reads Tempo after a start
     let today = state.tempo.today(false).await.ok();
-    if let Some(command) = house_broadcast(sun.as_ref(), today.as_ref()) {
-        if let Err(error) = state.androidtv.shell(&command).await {
-            tracing::debug!(%error, "the box's home not told of the house");
-        }
+    if let Some(command) = house_broadcast(sun.as_ref(), today.as_ref())
+        && let Err(error) = state.androidtv.shell(&command).await
+    {
+        tracing::debug!(%error, "the box's home not told of the house");
     }
 }
 

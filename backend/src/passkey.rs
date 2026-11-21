@@ -26,7 +26,7 @@ use webauthn_rs::prelude::{
 use crate::{
     config::Config,
     error::AppError,
-    util::{ip_group, lock, random_secret, Bounded, Caps},
+    util::{Bounded, Caps, ip_group, lock, random_secret},
 };
 
 /// How long a ceremony may take, from options to answer; also the browser's timeout.

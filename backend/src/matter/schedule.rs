@@ -175,15 +175,16 @@ impl ScheduleState {
 }
 
 /// Whether the system clock can be acted on. Linux: the kernel's NTP state (`adjtimex`
-/// answers `TIME_ERROR` while `STA_UNSYNC` is set, i.e. until chrony has synchronised it;
-/// the Pi has no RTC and boots on swclock's saved time). Elsewhere (a dev Mac): trusted.
+/// answers `TIME_ERROR` while `STA_UNSYNC` is set, i.e. until the NTP daemon, chrony or
+/// BusyBox's ntpd, has synchronised it; the hosts have no RTC and boot on a saved time).
+/// Elsewhere (a dev Mac): trusted.
 #[cfg(target_os = "linux")]
 pub(super) fn clock_trusted() -> bool {
     // Only the return value is read: `modes` (the first field) is 0, so the kernel changes
     // nothing, and the buffer is larger than any libc's `struct timex`.
     #[repr(C, align(8))]
     struct Timex([u8; 512]);
-    extern "C" {
+    unsafe extern "C" {
         fn adjtimex(buf: *mut Timex) -> std::ffi::c_int;
     }
     const TIME_ERROR: std::ffi::c_int = 5;
@@ -257,20 +258,24 @@ pub(super) mod tests {
             close_at_sunset: false,
             ..BOTH
         };
-        assert!(due(
-            &open_only,
-            &paris(),
-            utc("2026-10-02T17:00:00Z"),
-            utc("2026-10-02T18:00:00Z")
-        )
-        .is_none());
-        assert!(due(
-            &SunSchedule::default(),
-            &paris(),
-            utc("2026-10-02T00:00:00Z"),
-            utc("2026-10-03T00:00:00Z")
-        )
-        .is_none());
+        assert!(
+            due(
+                &open_only,
+                &paris(),
+                utc("2026-10-02T17:00:00Z"),
+                utc("2026-10-02T18:00:00Z")
+            )
+            .is_none()
+        );
+        assert!(
+            due(
+                &SunSchedule::default(),
+                &paris(),
+                utc("2026-10-02T00:00:00Z"),
+                utc("2026-10-03T00:00:00Z")
+            )
+            .is_none()
+        );
     }
 
     #[test]

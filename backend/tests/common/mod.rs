@@ -9,17 +9,17 @@
 use std::{cell::RefCell, net::SocketAddr, path::PathBuf, sync::Arc, sync::OnceLock};
 
 use axum::{
-    body::{to_bytes, Body},
+    Router,
+    body::{Body, to_bytes},
     extract::connect_info::MockConnectInfo,
     http::{HeaderMap, Method, Request, StatusCode},
-    Router,
 };
 use maison_backend::{
-    auth::{encode_token, Claims},
+    auth::{Claims, encode_token},
     build_app_parts_from_config,
     config::{self, Config},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// The machine token the test config accepts on `/api/ir`.

@@ -10,8 +10,8 @@ mod store;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -27,23 +27,23 @@ use jiff::Timestamp;
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
-    time::{sleep, Duration},
+    time::{Duration, sleep},
 };
 use tracing::{debug, info, warn};
 
 use crate::{
     config::Config,
     error::{AppError, Refusal},
-    lamps::{self, brightness_of, level_of, HueLamp, LampState, LampStats, LampStore},
+    lamps::{self, HueLamp, LampState, LampStats, LampStore, brightness_of, level_of},
     net::address_key,
 };
 use ble::{
-    ble, build_control_command, is_hue_lamp, parse_temperature, to_temperature, uuid_key,
-    uuid_str_key, HueCharacteristics, BRIGHTNESS_UUID, CONTROL_UUID, POWER_UUID, TEMPERATURE_UUID,
+    BRIGHTNESS_UUID, CONTROL_UUID, HueCharacteristics, POWER_UUID, TEMPERATURE_UUID, ble,
+    build_control_command, is_hue_lamp, parse_temperature, to_temperature, uuid_key, uuid_str_key,
 };
 use store::{
-    dedupe_stored_lamps, fallback_lamp_name, lamp_display_address, lamp_matches_scan,
-    stable_lamp_id, StoredLampConfig,
+    StoredLampConfig, dedupe_stored_lamps, fallback_lamp_name, lamp_display_address,
+    lamp_matches_scan, stable_lamp_id,
 };
 
 /// Between two scans while a known lamp is missing.
@@ -338,10 +338,9 @@ impl HueManager {
         if matches!(
             ble(peripheral.is_connected(), "connection check", IO_TIMEOUT).await,
             Ok(true)
-        ) {
-            if let Err(error) = ble(peripheral.disconnect(), "disconnection", IO_TIMEOUT).await {
-                debug!(%error, "Hue lamp link not dropped cleanly");
-            }
+        ) && let Err(error) = ble(peripheral.disconnect(), "disconnection", IO_TIMEOUT).await
+        {
+            debug!(%error, "Hue lamp link not dropped cleanly");
         }
     }
 
@@ -551,10 +550,11 @@ impl HueManager {
                 async move {
                     // the radio listens only while a known lamp is missing (a new lamp is
                     // looked for when someone asks: `trigger_scan`)
-                    if manager.running() && manager.lamp_missing().await {
-                        if let Err(error) = manager.perform_scan(SCAN_DURATION).await {
-                            debug!(error = %error, "Hue periodic scan failed");
-                        }
+                    if manager.running()
+                        && manager.lamp_missing().await
+                        && let Err(error) = manager.perform_scan(SCAN_DURATION).await
+                    {
+                        debug!(error = %error, "Hue periodic scan failed");
                     }
                 }
             },
@@ -1054,10 +1054,8 @@ impl HueManager {
             lamp.reachable = true;
         }
 
-        if refresh_full_state {
-            if let Err(error) = self.refresh_lamp_state(&lamp_key).await {
-                debug!(lamp_id, %error, "Hue lamp state not read after its notification");
-            }
+        if refresh_full_state && let Err(error) = self.refresh_lamp_state(&lamp_key).await {
+            debug!(lamp_id, %error, "Hue lamp state not read after its notification");
         }
     }
 
@@ -1197,12 +1195,14 @@ mod tests {
         )
         .unwrap();
         let manager = manager(dir.path());
-        assert!(manager
-            .inner
-            .blacklisted_addresses
-            .read()
-            .await
-            .contains("aabbccddeeff"));
+        assert!(
+            manager
+                .inner
+                .blacklisted_addresses
+                .read()
+                .await
+                .contains("aabbccddeeff")
+        );
     }
 
     #[tokio::test]

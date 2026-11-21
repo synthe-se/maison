@@ -242,10 +242,10 @@ impl<V> Bounded<V> {
             (&same_prefix, self.caps.per_prefix),
         ];
         for (keep, cap) in limits {
-            if self.entries.values().filter(|h| keep(h)).count() >= cap {
-                if let Some(k) = self.oldest(keep) {
-                    gone.extend(self.entries.remove(&k).map(|h| h.value));
-                }
+            if self.entries.values().filter(|h| keep(h)).count() >= cap
+                && let Some(k) = self.oldest(keep)
+            {
+                gone.extend(self.entries.remove(&k).map(|h| h.value));
             }
         }
         if self.entries.len() >= self.caps.total {
@@ -342,9 +342,11 @@ mod tests {
             43,
             "32 bytes, base64url without padding"
         );
-        assert!(random_secret()
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert!(
+            random_secret()
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        );
         assert_ne!(random_secret(), random_secret());
         assert_eq!(hash_secret("a").len(), 64);
         assert!(constant_time_eq(b"abc", b"abc"));

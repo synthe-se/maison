@@ -9,16 +9,16 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::{
+    Router,
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
     routing::get,
-    Router,
 };
 use futures::Stream;
 use maison_api::events as names;
 use tokio::sync::{broadcast, watch};
 
-use crate::{supervised, AppState};
+use crate::{AppState, supervised};
 
 /// How many changes wait for a slow client before it is told « everything ».
 const BACKLOG: usize = 64;

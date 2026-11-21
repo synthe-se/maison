@@ -9,17 +9,17 @@
 
 use std::{collections::BTreeMap, time::Instant};
 
-use jiff::{civil::Date, ToSpan};
+use jiff::{ToSpan, civil::Date};
 use maison_api::tempo::Color;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use super::rules::{season_bounds, season_name, History, Quotas};
+use super::rules::{History, Quotas, season_bounds, season_name};
 use crate::{
     config::Config,
     error::{AppError, Refusal},
     net::fetch_json,
-    util::{house_time, HOUSE_TZ},
+    util::{HOUSE_TZ, house_time},
 };
 
 /// RTE's answers and the season files: `{"values": {"2026-01-29": "RED", …}}`. Other keys
@@ -224,10 +224,10 @@ fn paris_midnight(day: Date) -> String {
 impl Official {
     async fn token(&self, client: &reqwest::Client) -> Result<String, AppError> {
         let mut token = self.token.lock().await;
-        if let Some((value, expires)) = token.as_ref() {
-            if Instant::now() < *expires {
-                return Ok(value.clone());
-            }
+        if let Some((value, expires)) = token.as_ref()
+            && Instant::now() < *expires
+        {
+            return Ok(value.clone());
         }
         let request = client
             .post(format!("{}/token/oauth/", self.url))

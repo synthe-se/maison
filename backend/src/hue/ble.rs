@@ -7,7 +7,7 @@ use btleplug::{
     api::{Characteristic, Peripheral as _, PeripheralProperties},
     platform::Peripheral,
 };
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 
 use crate::{error::AppError, net};

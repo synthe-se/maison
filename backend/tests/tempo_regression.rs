@@ -12,21 +12,21 @@ use std::{
 };
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::{Method, StatusCode},
     routing::{get, post},
-    Json, Router,
 };
 use jiff::{
-    civil::{Date, Weekday},
     SignedDuration, Timestamp, ToSpan,
+    civil::{Date, Weekday},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use maison_api::tempo::Color;
 use maison_backend::{
     config::Config,
-    tempo::{current_season, rules::season_start_year, season_file, TempoService, WEATHER_FILE},
+    tempo::{TempoService, WEATHER_FILE, current_season, rules::season_start_year, season_file},
     util::house_today,
 };
 
@@ -466,10 +466,12 @@ async fn the_rabbit_gets_official_or_sure_colours() {
 async fn a_finished_season_is_read_from_its_file() {
     let (config, stub) = stubbed("maison-tempo-history").await;
     let calendar = service(&config).calendar(Some("2025-2026")).await.unwrap();
-    assert!(calendar
-        .calendar
-        .iter()
-        .any(|d| d.date.to_string() == "2026-01-29" && d.color == Color::Red));
+    assert!(
+        calendar
+            .calendar
+            .iter()
+            .any(|d| d.date.to_string() == "2026-01-29" && d.color == Color::Red)
+    );
     assert!(calendar.calendar.iter().all(|d| d.is_actual));
     assert_eq!(calendar.stock.red.remaining, 0);
     assert_eq!(

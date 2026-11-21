@@ -1,10 +1,10 @@
 //! What the devices say, read: their payloads merged into data points (DPS), and the data
 //! points of each device type named for the web.
 
-use rust_async_tuyapi::{mesparse::Message, Payload};
-use serde_json::{json, Map, Value};
+use rust_async_tuyapi::{Payload, mesparse::Message};
+use serde_json::{Map, Value, json};
 
-use super::{dps, TuyaDeviceType};
+use super::{TuyaDeviceType, dps};
 
 /// `messages`' data points over `current`.
 pub(super) fn merge_messages_into_dps(
@@ -340,14 +340,14 @@ mod tests {
             }
             // the legacy app read the feeder's DPS 14 as a fault, and this capture of a feeder
             // that was fine says `true`: DPS 14 is not read as a fault any more
-            if let Some(system) = legacy.get_mut("system").and_then(Value::as_object_mut) {
-                if kind == TuyaDeviceType::Feeder {
-                    assert_eq!(
-                        system.remove("faultStatus"),
-                        Some(Value::Bool(true)),
-                        "the capture that shows it"
-                    );
-                }
+            if let Some(system) = legacy.get_mut("system").and_then(Value::as_object_mut)
+                && kind == TuyaDeviceType::Feeder
+            {
+                assert_eq!(
+                    system.remove("faultStatus"),
+                    Some(Value::Bool(true)),
+                    "the capture that shows it"
+                );
             }
             assert_eq!(parsed, legacy, "{kind:?}");
         }

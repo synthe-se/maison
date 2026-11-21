@@ -6,21 +6,21 @@
 use std::future::Future;
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::{get, post},
-    Json, Router,
 };
 use maison_api::{
-    lamps::{BrightnessRequest, LampList, PowerRequest, RenameRequest, TemperatureRequest},
     Message,
+    lamps::{BrightnessRequest, LampList, PowerRequest, RenameRequest, TemperatureRequest},
 };
 use serde::Serialize;
 
 use crate::{
+    AppState,
     error::AppError,
     lamps::{self, Lamp, LampState, LampStats},
     routes::{Answer, Reply},
-    AppState,
 };
 
 /// A lamp family, as the shared routes drive it.

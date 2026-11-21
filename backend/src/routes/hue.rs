@@ -1,17 +1,17 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::post,
-    Json, Router,
 };
 use maison_api::Message;
 
 use crate::{
+    AppState,
     auth::AdminUser,
     error::AppError,
     hue::HueManager,
     lamps::{self, HueLamp, LampState, LampStats},
-    routes::{lamps::LampBackend, Answer},
-    AppState,
+    routes::{Answer, lamps::LampBackend},
 };
 
 impl LampBackend for HueManager {

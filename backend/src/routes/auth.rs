@@ -13,14 +13,14 @@
 use std::net::SocketAddr;
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::{
-        header::{HeaderName, SET_COOKIE, USER_AGENT},
         HeaderMap, HeaderValue,
+        header::{HeaderName, SET_COOKIE, USER_AGENT},
     },
     response::{AppendHeaders, IntoResponse, Response},
     routing::{delete, get, post},
-    Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use jiff::{SignedDuration, Timestamp};
@@ -28,17 +28,17 @@ use serde::Serialize;
 use time::Duration as CookieDuration;
 
 use crate::{
+    AppState,
     auth::{
-        cookie_name, cookie_value, decode_token, encode_token, AuthUser, AuthenticatedUser, Claims,
-        CookieName, Opened, RefreshEntry, SessionInfo, Taken, ACCESS_TOKEN_MINUTES,
-        REFRESH_TOKEN_DAYS, SESSION_MAX_DAYS,
+        ACCESS_TOKEN_MINUTES, AuthUser, AuthenticatedUser, Claims, CookieName, Opened,
+        REFRESH_TOKEN_DAYS, RefreshEntry, SESSION_MAX_DAYS, SessionInfo, Taken, cookie_name,
+        cookie_value, decode_token, encode_token,
     },
     error::{AppError, Refusal},
     passkey::client_ip,
     people::Person,
     routes::{Answer, Reply, SimpleResponse},
     util::{now_ms, random_secret},
-    AppState,
 };
 
 /// Who the session is: `{success, user}`.

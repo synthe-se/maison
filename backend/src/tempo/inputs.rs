@@ -9,20 +9,20 @@
 use std::collections::BTreeMap;
 
 use jiff::{
-    civil::{Date, DateTime},
     SignedDuration, Timestamp, ToSpan,
+    civil::{Date, DateTime},
 };
 use maison_api::tempo::DAY_START_HOUR;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::forecast::{
-    effective_temperature, wind_power, DayWeather, Levels, Model, PastDay, WeatherPoint,
+    DayWeather, Levels, Model, PastDay, WeatherPoint, effective_temperature, wind_power,
 };
 use crate::{
     error::{AppError, Refusal},
     net::fetch_json,
-    util::{house_time, HOUSE_TZ, HOUSE_TZ_NAME},
+    util::{HOUSE_TZ, HOUSE_TZ_NAME, house_time},
 };
 
 /// The weather model the forecast was fitted and replayed with.

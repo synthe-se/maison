@@ -7,10 +7,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() {
     // no .env is fine (the environment says it all); one that cannot be read or parsed is not
-    if let Err(error) = dotenvy::dotenv() {
-        if !error.not_found() {
-            eprintln!(".env could not be read: {error}");
-        }
+    if let Err(error) = dotenvy::dotenv()
+        && !error.not_found()
+    {
+        eprintln!(".env could not be read: {error}");
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -129,7 +129,9 @@ fn edge(args: &[String]) -> i32 {
         [client, house, dir, name] if client == "client" => {
             match maison_backend::edge::client(house.as_ref(), dir.as_ref(), name) {
                 Ok(()) => {
-                    println!("The edge's client « {name} »: {dir}; {house}/ca.pem trusts it (restart the service).");
+                    println!(
+                        "The edge's client « {name} »: {dir}; {house}/ca.pem trusts it (restart the service)."
+                    );
                     audit(&format!("edge client « {name} » made"));
                     0
                 }

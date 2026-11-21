@@ -20,14 +20,14 @@ use std::{
     net::Ipv4Addr,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, AtomicUsize},
         Arc,
+        atomic::{AtomicU64, AtomicUsize},
     },
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::sync::{oneshot, watch, RwLock};
+use tokio::sync::{RwLock, oneshot, watch};
 
 use crate::{
     error::{AppError, Refusal},
@@ -37,7 +37,7 @@ use crate::{
 };
 use cache::DeviceCache;
 use parse::parse_device_data;
-use worker::{Link, WorkerCommand, WorkerHandle, COMMAND_REPLY_TIMEOUT, STATUS_TIMEOUT};
+use worker::{COMMAND_REPLY_TIMEOUT, Link, STATUS_TIMEOUT, WorkerCommand, WorkerHandle};
 
 /// How the device library's errors name the device to the client (the detail is logged).
 const DEVICE: &str = "Tuya device";

@@ -4,17 +4,17 @@
 mod common;
 
 use axum::{
-    body::{to_bytes, Body},
-    http::{header, Method, Request, Response, StatusCode},
     Router,
+    body::{Body, to_bytes},
+    http::{Method, Request, Response, StatusCode, header},
 };
 use futures::StreamExt;
-use maison_api::photos::{MAX_PHOTOS, MAX_PHOTO_BYTES, UPLOAD_FIELD};
+use maison_api::photos::{MAX_PHOTO_BYTES, MAX_PHOTOS, UPLOAD_FIELD};
 use maison_backend::{
     auth::issue_service_token,
     people::{People, Scope, TokenKind},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const BOUNDARY: &str = "maison-photo-boundary";

@@ -43,10 +43,10 @@ use std::sync::Arc;
 
 use androidtv::AndroidTvManager;
 use auth::RefreshTokenStore;
+use axum::Router;
 use axum::http::header;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use broadlink::BroadlinkManager;
 use config::Config;
 use error::{AppError, Refusal};
@@ -575,10 +575,10 @@ fn cache_policy(path: &str, success: bool) -> &'static str {
 /// redacted, should one come.
 fn loggable_path(path: &str) -> std::borrow::Cow<'_, str> {
     for prefix in ["/api/invites/", "/invite/"] {
-        if let Some(rest) = path.strip_prefix(prefix) {
-            if rest.len() > 16 {
-                return format!("{prefix}…").into();
-            }
+        if let Some(rest) = path.strip_prefix(prefix)
+            && rest.len() > 16
+        {
+            return format!("{prefix}…").into();
         }
     }
     path.into()
@@ -787,13 +787,15 @@ mod guard_tests {
         );
         assert!(allowed(lan, &Method::GET, "/", &none).is_err());
         assert!(allowed(tunnel, &Method::GET, "/api/meross", &none).is_ok());
-        assert!(allowed(
-            Some("::ffff:127.0.0.1".parse().unwrap()),
-            &Method::GET,
-            "/x",
-            &none
-        )
-        .is_ok());
+        assert!(
+            allowed(
+                Some("::ffff:127.0.0.1".parse().unwrap()),
+                &Method::GET,
+                "/x",
+                &none
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -899,16 +901,20 @@ mod guard_tests {
             post(&[("sec-fetch-site", "same-site")]).is_err(),
             "a sibling subdomain is not this site"
         );
-        assert!(post(&[
-            ("origin", "https://evil.example"),
-            ("host", "home.kahn.studio")
-        ])
-        .is_err());
-        assert!(post(&[
-            ("origin", "https://home.kahn.studio"),
-            ("host", "home.kahn.studio")
-        ])
-        .is_ok());
+        assert!(
+            post(&[
+                ("origin", "https://evil.example"),
+                ("host", "home.kahn.studio")
+            ])
+            .is_err()
+        );
+        assert!(
+            post(&[
+                ("origin", "https://home.kahn.studio"),
+                ("host", "home.kahn.studio")
+            ])
+            .is_ok()
+        );
         assert!(post(&[]).is_ok(), "kird and curl say nothing");
         assert!(
             post(&[("origin", "https://home.kahn.studio")]).is_err(),
@@ -1009,8 +1015,8 @@ mod guard_tests {
 #[cfg(test)]
 mod every_tests {
     use std::sync::{
-        atomic::{AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicU32, Ordering},
     };
 
     #[tokio::test(start_paused = true)]

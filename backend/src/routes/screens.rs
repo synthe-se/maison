@@ -12,26 +12,26 @@
 use std::net::SocketAddr;
 
 use axum::{
+    Json, Router,
     extract::{ConnectInfo, Path, State},
-    http::{header::SET_COOKIE, HeaderMap},
+    http::{HeaderMap, header::SET_COOKIE},
     response::{AppendHeaders, IntoResponse},
     routing::{delete, get, post},
-    Json, Router,
 };
 use time::Duration as CookieDuration;
 
 use crate::{
+    AppState,
     auth::{
-        cookie_name, cookie_value, issue_service_token, recent_passkey, service_token, AdminUser,
-        CookieName,
+        AdminUser, CookieName, cookie_name, cookie_value, issue_service_token, recent_passkey,
+        service_token,
     },
     error::{AppError, Refusal},
     passkey::client_ip,
     people::{Scope, StoredToken, TokenKind},
-    routes::{auth::cookie, Answer, Reply, SimpleResponse},
-    screens::{Claim, Waiting, PAIRING_TTL, POLL},
+    routes::{Answer, Reply, SimpleResponse, auth::cookie},
+    screens::{Claim, PAIRING_TTL, POLL, Waiting},
     util::now_ms,
-    AppState,
 };
 
 // The answers and requests: the API crate's, shared with the frame.

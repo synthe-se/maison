@@ -7,16 +7,16 @@ mod common;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    extract::connect_info::MockConnectInfo,
-    http::{header, HeaderMap, Method, StatusCode},
     Router,
+    extract::connect_info::MockConnectInfo,
+    http::{HeaderMap, Method, StatusCode, header},
 };
 use maison_backend::{
     auth::issue_service_token,
     build_app_parts_from_config,
     people::{People, Scope, TokenKind},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const COOKIE: &str = "maison_screen";
 

@@ -1,20 +1,20 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post, put},
-    Json, Router,
 };
-use maison_api::{remote::KeyResponse, Message};
+use maison_api::{Message, remote::KeyResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    AppState,
     auth::{AdminUser, AuthenticatedUser, MachineClient},
     error::{AppError, Refusal},
     ir::{self, Described, IrAction, IrBinding, IrEventLog, Pressed},
     routes::{Answer, Reply},
     util::refused,
-    AppState,
 };
 
 /// One evdev key event as forwarded by kird from the STB:

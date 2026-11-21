@@ -16,12 +16,12 @@ pub mod tariffs;
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use jiff::{civil::Date, SignedDuration, Timestamp, ToSpan};
+use jiff::{SignedDuration, Timestamp, ToSpan, civil::Date};
 use maison_api::tempo::{
-    Color, Count, Day, Forecast, ForecastDay, ModelInfo, Reliability, SeasonStock, Tariffs, Today,
-    HOURS,
+    Color, Count, Day, Forecast, ForecastDay, HOURS, ModelInfo, Reliability, SeasonStock, Tariffs,
+    Today,
 };
-use tokio::sync::{watch, Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, watch};
 
 pub use rules::current_season;
 
@@ -32,11 +32,11 @@ use crate::{
     store::{self, Access, Corrupt},
     util::{house_date, house_today, lock},
 };
-use forecast::{expected, likeliest, seed, simulate, Ahead, Levels, Model};
-use inputs::{fetch_load, fetch_weather, NetLoad, Weather};
+use forecast::{Ahead, Levels, Model, expected, likeliest, seed, simulate};
+use inputs::{NetLoad, Weather, fetch_load, fetch_weather};
 use rules::{
-    blue_days, parse_season, season_bounds, season_name, season_start_year, DayRules, History,
-    Quotas, Stock,
+    DayRules, History, Quotas, Stock, blue_days, parse_season, season_bounds, season_name,
+    season_start_year,
 };
 use source::{Sources, Values};
 
@@ -594,10 +594,10 @@ impl TempoService {
     /// EDF's quotas for the current season (once a day), checked against the colours
     /// counted; the CRE's when EDF does not answer.
     async fn quotas(&self, state: &mut State, today: Date, history: &History) -> Quotas {
-        if let Some((day, quotas)) = state.quotas {
-            if day == today {
-                return quotas;
-            }
+        if let Some((day, quotas)) = state.quotas
+            && day == today
+        {
+            return quotas;
         }
         let previous = state.quotas.map(|(_, q)| q).unwrap_or_default();
         let quotas = match source::edf_season(&self.inner.client, &self.inner.edf_url, today).await
@@ -764,7 +764,7 @@ fn remember<T: Clone>(last: &Last<T>, day: Date, answer: &T) {
 mod tests {
     use super::*;
     use crate::tempo::{
-        forecast::{tests::model, PastDay},
+        forecast::{PastDay, tests::model},
         rules::tests::{day, season},
     };
 

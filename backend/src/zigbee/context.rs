@@ -5,12 +5,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use ezsp::{
+    Callback, Connection as EzspConnection, Messaging,
     ember::{
+        Eui64, NodeId,
         aps::{Frame as EzspApsFrame, Options as EzspApsOptions},
         message::Destination,
-        Eui64, NodeId,
     },
-    Callback, Connection as EzspConnection, Messaging,
 };
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 use tracing::warn;
@@ -23,8 +23,8 @@ use super::{
     remotes::RemotePresses,
     touchlink::TouchlinkScan,
     zcl::{
-        build_bind_request_payload, build_read_attributes_payload, parse_eui64,
         BIND_REQ_CLUSTER_ID, DEFAULT_SOURCE_ENDPOINT, HOME_AUTOMATION_PROFILE_ID, ZDO_PROFILE_ID,
+        build_bind_request_payload, build_read_attributes_payload, parse_eui64,
     },
 };
 

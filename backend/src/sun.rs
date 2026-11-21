@@ -5,7 +5,7 @@
 //! needs the network at the moment it acts: a shutter still opens at dawn when the internet
 //! is down.
 
-use jiff::{civil::Date, Timestamp};
+use jiff::{Timestamp, civil::Date};
 use serde::Deserialize;
 
 use crate::{error::AppError, util::HOUSE_TZ};

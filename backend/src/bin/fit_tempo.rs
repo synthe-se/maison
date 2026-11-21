@@ -20,28 +20,28 @@
 
 use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
-use jiff::{civil::Date, ToSpan};
+use jiff::{ToSpan, civil::Date};
 use maison_api::tempo::Color;
 use maison_backend::{
     config::Config,
     net,
     store::{self, Access},
     tempo::{
+        HORIZON, MODEL_FILE, NETLOAD_FILE,
         forecast::{
-            consumption_features, dot, expected, solar_features, wind_features, Backtest,
-            HorizonScore, Model, WeatherPoint, CONSUMPTION_FEATURES,
+            Backtest, CONSUMPTION_FEATURES, HorizonScore, Model, WeatherPoint,
+            consumption_features, dot, expected, solar_features, wind_features,
         },
         inputs::{
-            coordinates, daily_temperature, daily_wind_power, odre_query, parse_hourly, tempo_days,
-            NetLoad, OdreRow, Series, Weather, WEATHER_MODEL,
+            NetLoad, OdreRow, Series, WEATHER_MODEL, Weather, coordinates, daily_temperature,
+            daily_wind_power, odre_query, parse_hourly, tempo_days,
         },
         outlook,
         rules::{
-            is_winter, season_bounds, season_name, season_start_year, History, Quotas, FIRST_SEASON,
+            FIRST_SEASON, History, Quotas, is_winter, season_bounds, season_name, season_start_year,
         },
         season_file,
         source::{Sources, Values},
-        HORIZON, MODEL_FILE, NETLOAD_FILE,
     },
     util::HOUSE_TZ_NAME,
 };
@@ -325,7 +325,10 @@ fn fit(data: &Data, until: Date, base: &Model) -> Model {
     let (consumption, c_sd) = least_squares(&xc, &yc);
     let (wind, w_sd) = least_squares(&xw, &yw);
     let (solar, s_sd) = least_squares(&xs, &ys);
-    eprintln!("fit before {until}: {} days, residual sd consumption {c_sd:.4}, wind {w_sd:.4}, solar {s_sd:.4}", yc.len());
+    eprintln!(
+        "fit before {until}: {} days, residual sd consumption {c_sd:.4}, wind {w_sd:.4}, solar {s_sd:.4}",
+        yc.len()
+    );
     assert_eq!(consumption.len(), CONSUMPTION_FEATURES);
     Model {
         consumption,

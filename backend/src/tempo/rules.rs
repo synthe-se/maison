@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use jiff::{
-    civil::{Date, Weekday},
     ToSpan,
+    civil::{Date, Weekday},
 };
 use maison_api::tempo::Color;
 
@@ -36,11 +36,7 @@ const WHITE_THRESHOLD: (f64, f64, f64) = (4.00, 0.015, 0.026);
 /// The first year of the season `date` falls in (September starts it).
 pub fn season_start_year(date: Date) -> i32 {
     let year = i32::from(date.year());
-    if date.month() >= 9 {
-        year
-    } else {
-        year - 1
-    }
+    if date.month() >= 9 { year } else { year - 1 }
 }
 
 /// The first and last days of the season starting in `start_year`.

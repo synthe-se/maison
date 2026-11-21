@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::{
@@ -251,10 +251,12 @@ mod tests {
         assert!(store.load_blacklist().unwrap().is_empty());
 
         let mut guard = store.lock().await;
-        assert!(guard
-            .save_lamps(vec![lamp("b", "B"), lamp("a", "A")])
-            .await
-            .unwrap());
+        assert!(
+            guard
+                .save_lamps(vec![lamp("b", "B"), lamp("a", "A")])
+                .await
+                .unwrap()
+        );
         assert!(
             !guard
                 .save_lamps(vec![lamp("a", "A"), lamp("b", "B")])
@@ -262,10 +264,12 @@ mod tests {
                 .unwrap(),
             "same set, other order"
         );
-        assert!(guard
-            .save_lamps(vec![lamp("a", "A2"), lamp("b", "B")])
-            .await
-            .unwrap());
+        assert!(
+            guard
+                .save_lamps(vec![lamp("a", "A2"), lamp("b", "B")])
+                .await
+                .unwrap()
+        );
         let blacklist = HashSet::from(["y".to_string(), "x".to_string()]);
         assert!(guard.save_blacklist(&blacklist).await.unwrap());
         assert!(!guard.save_blacklist(&blacklist).await.unwrap());

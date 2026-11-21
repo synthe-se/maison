@@ -1,11 +1,11 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 
 use maison_api::sun::SunNow;
 
 use crate::{
-    routes::{Answer, Reply},
     AppState,
+    routes::{Answer, Reply},
 };
 
 #[derive(Debug, Serialize)]

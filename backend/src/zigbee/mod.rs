@@ -34,7 +34,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{watch, Mutex, RwLock},
+    sync::{Mutex, RwLock, watch},
     task::JoinHandle,
     time::Duration,
 };
@@ -50,7 +50,7 @@ use crate::{
 use commands::DriverCommand;
 use device::{Light, ZigbeeDevice, ZigbeeDeviceInfo, ZigbeeDeviceType};
 use driver::Driver;
-use zcl::{cie, ZigbeeEffect};
+use zcl::{ZigbeeEffect, cie};
 
 /// A failed save is tried again after this (a change of the devices tries it at once).
 const SAVE_RETRY: Duration = Duration::from_secs(30);

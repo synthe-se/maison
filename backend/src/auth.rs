@@ -35,21 +35,21 @@ use std::{
 
 use axum::{
     extract::{FromRef, FromRequestParts},
-    http::{header::AUTHORIZATION, request::Parts, Extensions, HeaderMap},
+    http::{Extensions, HeaderMap, header::AUTHORIZATION, request::Parts},
 };
 use jiff::Timestamp;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::{
+    AppState,
     config::Config,
     error::{AppError, Refusal},
     passkey::client_ip,
     people::{People, Person, Role, Scope, StoredToken, TokenKind},
     store::{self, Access, Corrupt},
     util::{constant_time_eq, hash_secret, lock, now_ms, random_id, random_secret},
-    AppState,
 };
 
 /// How recent the last passkey sign-in must be for what could hand the house to someone else:
@@ -181,7 +181,7 @@ fn note(parts: &Parts, who: impl FnOnce() -> String) {
 
 /// The peer's socket address: the server's (`ConnectInfo`), or the one a test mocks.
 pub fn peer_addr(extensions: &Extensions) -> Option<SocketAddr> {
-    use axum::extract::{connect_info::MockConnectInfo, ConnectInfo};
+    use axum::extract::{ConnectInfo, connect_info::MockConnectInfo};
     extensions
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0)
@@ -539,9 +539,10 @@ pub fn encode_token(claims: &Claims, secret: &[u8]) -> Result<String, jsonwebtok
 /// checked against RFC 4231's vectors; any other algorithm is refused.
 mod hs256 {
     use jsonwebtoken::{
+        Algorithm, AlgorithmFamily, DecodingKey, DecodingKeyKind, EncodingKey,
         crypto::{CryptoProvider, JwtSigner, JwtVerifier, KeyUtils},
         errors::{ErrorKind, Result},
-        signature, Algorithm, AlgorithmFamily, DecodingKey, DecodingKeyKind, EncodingKey,
+        signature,
     };
     use sha2::{Digest, Sha256};
 
@@ -1010,9 +1011,11 @@ mod tests {
             .unwrap();
         let secret = token.strip_prefix(SERVICE_TOKEN_PREFIX).expect("prefixed");
         assert_eq!(secret.len(), 43, "32 bytes, base64url without padding");
-        assert!(secret
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert!(
+            secret
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        );
         assert!(
             issue_service_token(&people, "achi", Scope::Devices, TokenKind::App)
                 .await
