@@ -18,14 +18,20 @@ backend/src/
                      `every()` / `supervised()` for background jobs (a panic is logged, the job
                      goes on; the JoinHandle aborts it), the app constructors
   config.rs          env → Config (paths under MAISON_SOURCE_ROOT, default the repo root)
+  edge.rs            the public address through a reverse proxy elsewhere (`EDGE_LISTEN`): TLS both
+                     ways (a client certificate one of its CAs signed), counted as the public
+                     address like loopback's cloudflared; X-Forwarded-For believed from the proxy
+                     alone (`edge init`'s certificate), any other client (`edge client`: a wall
+                     frame on the LAN) is its TCP address; HTTP/2 and HTTP/1.1
   error.rs           AppError; `Refusal` = `maison_api::codes::Code` (`AppError::from(Refusal::X)`,
                      `AppError::too_many(retry_s)`); `AppError::http` is for 5xx only
   store.rs           every JSON state file: read, atomic write, owner kept, `locked`
   util.rs            shared helpers: hex/unhex, random secrets, hashing, `clean_name`/`MAX_NAME`,
                      `lock` (a poisoned mutex taken anyway), `ip_group` (IPv4, IPv6 /64),
                      `Bounded` (a TTL map capped per address and prefix), `capped_backoff`,
-                     `refused(code, why)`, `house_time`, `minutes_of_day`, `HOUSE_TZ` =
-                     Europe/Paris (never `chrono::Local`, which is UTC on the Pi), `test_dir()`
+                     `refused(code, why)`, `house_time`, `house_date`, `minutes_of_day`,
+                     `rfc3339_utc`, `HOUSE_TZ` = Europe/Paris (jiff, its database embedded;
+                     never `TimeZone::system()`, which is UTC on the Pi), `test_dir()`
   auth.rs            sessions (JWT `sid`, ended sign-ins), AuthenticatedUser, AdminUser,
                      DeviceClient (a person, an app's bearer token, a screen's cookie),
                      SettingsClient (never a screen), MachineClient (IR token), `REAUTH_MS`
@@ -65,7 +71,8 @@ backend/src/
 backend/tests/       integration tests (+ `live-runtime-tests` feature for real devices)
 api/                 maison-api (edition 2024): the API's types said once (screens, sun, tempo
                      and `Today::price_at`, lamps, meross, matter, scenes, photos, remote; the request
-                     bodies; `Answer`, `Message`, `OfDevice`, `DeviceRef`), `HOUSE_TZ` and `Tz`,
+                     bodies; `Answer`, `Message`, `OfDevice`, `DeviceRef`), `HOUSE_TZ` and `Tz`
+                     (jiff's `TimeZone`, `tzdb-bundle-always`: the box and the frame have no tzdata),
                      and three tables: `codes.rs` (every refusal: code, status, message),
                      `paces.rs` (every read pace, and how long a gesture, a slider, a toast
                      take), `events.rs` (the event stream's names). `bin/shared-ts` writes the

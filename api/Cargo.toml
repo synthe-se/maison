@@ -7,8 +7,9 @@ description = "What Maison's HTTP API answers and reads, said once: the backend 
 publish = false
 
 [dependencies]
-chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"] }
-chrono-tz = "0.10.4"
+# time: instants, civil dates, the house's zone. tzdb-bundle-always: the box and the frame
+# carry no /usr/share/zoneinfo, the database comes in the binary
+jiff = { version = "1.0.2", features = ["serde", "tzdb-bundle-always"] }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]

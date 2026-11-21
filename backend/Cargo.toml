@@ -20,12 +20,13 @@ webauthn-rs = { version = "0.6.2", default-features = false, features = ["condit
 webauthn-rs-proto = "0.6.2"   # the same version webauthn-rs pins; for the options it builds
 # webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the Pi
 # carries it (cargo-zigbuild compiles it with zig cc)
-openssl = { version = "=0.10.81", features = ["vendored"] }
-axum = { version = "0.8.9", features = ["multipart"] }
+openssl = { version = "=0.10.82", features = ["vendored"] }
+# http2: the edge listener (edge.rs) speaks HTTP/2 to a client that offers it (its ALPN)
+axum = { version = "0.8.9", features = ["multipart", "http2"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.23.1"
 btleplug = { version = "0.13.5", optional = true }
-chrono = { version = "0.4.45", features = ["clock", "serde"] }
+jiff = { version = "1.0.2", features = ["serde"] }
 dotenvy = "0.15.7"
 # The uplg forks track upstream (PaulmannLighting) plus robustness fixes and
 # the EZSP <= v13 legacy importTransientKey wire format for the MG21 dongle.
@@ -33,17 +34,19 @@ dotenvy = "0.15.7"
 # crate itself resolves through [patch.crates-io] below so both the direct
 # dependency and ashv2's internal one use the same patched source.
 # the uplg forks (main = upstream + our fixes), pinned: `cargo update` must not follow a branch
-ashv2 = { git = "https://github.com/uplg/ashv2/", rev = "09ecfc8474d48389a32837a57bd0dd7ef5312afe", version = "15.0.0", features = ["ezsp"] }
-ezsp = "19.0.1"
+ashv2 = { git = "https://github.com/uplg/ashv2/", rev = "de9bcd2ec8a944da8d9d7995590e97646d6fc194", version = "16.1.0", features = ["ezsp"] }
+ezsp = "20.0.1"
 silizium = { version = "=3.1.0", features = ["le-stream"] }
 futures = "0.3.34"
-heapless = "=0.9.3"
+heapless = "=0.9.4"
 # HS256 only, through our own provider (auth.rs `hs256`): no crypto backend feature, so no
 # RSA/ECDSA/EdDSA (and no rsa 0.9, RUSTSEC-2023-0071) in the tree for a JWT we HMAC
-jsonwebtoken = { version = "=11.1.0", default-features = false }
+jsonwebtoken = { version = "=12.0.0", default-features = false }
 md5 = "0.8.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "query", "rustls", "form"] }
-rbroadlink = "0.4.2"
+# the uplg fork (upstream untouched since 2024): jiff for chrono, aes 0.9 + cbc, if-addrs,
+# every dependency at its latest; the wire unchanged (known-answer tests)
+rbroadlink = { git = "https://github.com/uplg/rbroadlink", rev = "713a5ef7a0225888ef466e2d0aab4851ea738b17" }
 # ADB (Android TV box): the device authenticates the client by having it sign
 # a 20-byte token with RSA-2048, so a pure-Rust RSA is needed to speak the
 # protocol without shipping the adb binary to the Pi.
@@ -56,10 +59,10 @@ rustls = "0.23.46"
 tokio-rustls = "0.26.6"
 x509-parser = "0.18.1"
 sha2 = "0.11.1"
-rsa = "0.10.0-rc.19"
+rsa = "0.10.0"
 sha1 = { version = "0.11.0", features = ["oid"] }
-rand = "0.10.3"
-rust-async-tuyapi = { git = "https://github.com/uplg/rust-async-tuyapi", rev = "6cd9180b296a04ef9e6751b594c6235aa79b7157" }
+rand = "0.10.4"
+rust-async-tuyapi = { git = "https://github.com/uplg/rust-async-tuyapi", rev = "7747808409c0d5147ed7a2a84f4801c48fbd9b6a" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
@@ -69,13 +72,12 @@ tokio-serial = "5.5.0"
 tower-http = { version = "0.7.1", features = ["cors", "fs", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-uuid = { version = "1.29.0", features = ["v4"] }
+uuid = { version = "1.29.3", features = ["v4"] }
 # Matter controller (Sonoff Orb-RBS shutter switch): commissioning over IP,
 # CASE sessions and the Interaction Model in pure Rust, on the ring already in
 # the tree. matter-codec supplies the TLV tags for command fields.
 matter-controller = "0.18.3"
 matter-codec = "0.3.2"
-sunrise = "3.0.0"
 
 [dev-dependencies]
 # paused time in tests (the Tuya worker lifecycle)
@@ -86,6 +88,12 @@ async-trait = "=0.1.92"
 public-suffix = "=0.1.3"
 tempfile = "3.27.0"
 tower = "0.5.3"
+# an HTTP/2 client: the edge listener tested over h2
+h2 = "0.4.20"
 
 [patch.crates-io]
-ezsp = { git = "https://github.com/uplg/ezsp", rev = "f773a444b0db12cf40acd34f22c653ea59ee6652" }
+ezsp = { git = "https://github.com/uplg/ezsp", rev = "3206991e9b836fef82c4eef5586549974ad44ec1" }
+# kanidm's main, pinned: rsa 0.10.0 (its PR #49, merged 2026-11-20, not on crates.io yet). The
+# crates.io 0.2.2 asks rsa for a feature rsa dropped after rc.19, holding the whole tree there.
+# Back to crates.io at its next release.
+crypto-glue = { git = "https://github.com/kanidm/crypto-glue", rev = "ba2793ad17f183a0b07a668f0aafbb55d62fdd4d" }

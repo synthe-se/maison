@@ -350,7 +350,7 @@ impl Identity {
         // The pairing hash wants the public numbers, so read them back out of
         // the key we just loaded rather than re-deriving them from the cert.
         let rsa_key = crate::adb::decode_key(&key_der)?;
-        let public = rsa::RsaPublicKey::from(&rsa_key);
+        let public = rsa::PublicKey::from(&rsa_key);
         let (modulus, exponent) = public_numbers(&public);
 
         Ok(Self {
@@ -390,7 +390,7 @@ fn stored_form(
 /// The trimming matters: the reference implementation formats them as
 /// uppercase hex without padding, so a leading zero byte here would change the
 /// hash and make every pairing attempt fail its checksum.
-fn public_numbers(public: &rsa::RsaPublicKey) -> (Vec<u8>, Vec<u8>) {
+fn public_numbers(public: &rsa::PublicKey) -> (Vec<u8>, Vec<u8>) {
     use rsa::traits::PublicKeyParts;
 
     let trim = |bytes: Box<[u8]>| {

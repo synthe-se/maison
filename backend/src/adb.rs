@@ -28,7 +28,7 @@ use rsa::{
     pkcs8::{DecodePrivateKey, EncodePrivateKey},
     signature::{hazmat::PrehashSigner, SignatureEncoding},
     traits::PublicKeyParts,
-    BoxedUint, RsaPrivateKey, RsaPublicKey,
+    BoxedUint, PrivateKey, PublicKey,
 };
 use sha1::Sha1;
 use tokio::{
@@ -184,20 +184,19 @@ async fn read_message_within(
 
 /// Generates a fresh 2048-bit key. Slow on an ARMv6 Pi (tens of seconds), so
 /// callers must run this off the async runtime and persist the result.
-pub fn generate_key() -> Result<RsaPrivateKey, AppError> {
-    RsaPrivateKey::new(&mut rand::rng(), RSA_BITS as usize)
+pub fn generate_key() -> Result<PrivateKey, AppError> {
+    PrivateKey::new(&mut rand::rng(), RSA_BITS as usize)
         .map_err(|error| internal("could not generate an ADB key", error))
 }
 
-pub fn encode_key(key: &RsaPrivateKey) -> Result<Vec<u8>, AppError> {
+pub fn encode_key(key: &PrivateKey) -> Result<Vec<u8>, AppError> {
     key.to_pkcs8_der()
         .map(|der| der.as_bytes().to_vec())
         .map_err(|error| internal("could not serialize the ADB key", error))
 }
 
-pub fn decode_key(der: &[u8]) -> Result<RsaPrivateKey, AppError> {
-    RsaPrivateKey::from_pkcs8_der(der)
-        .map_err(|error| internal("could not read the ADB key", error))
+pub fn decode_key(der: &[u8]) -> Result<PrivateKey, AppError> {
+    PrivateKey::from_pkcs8_der(der).map_err(|error| internal("could not read the ADB key", error))
 }
 
 /// Android's own public-key encoding, which is neither PKCS#1 nor SPKI: a
@@ -205,10 +204,10 @@ pub fn decode_key(der: &[u8]) -> Result<RsaPrivateKey, AppError> {
 /// values the device's Montgomery reduction needs precomputed — `n0inv` and
 /// `rr`. Base64 of that, then a space and a comment, is what `adbd` stores
 /// once the user accepts the prompt.
-pub fn android_public_key(key: &RsaPrivateKey, comment: &str) -> String {
+pub fn android_public_key(key: &PrivateKey, comment: &str) -> String {
     use base64::Engine as _;
 
-    let public = RsaPublicKey::from(key);
+    let public = PublicKey::from(key);
     let modulus = public.n();
 
     // rr = R^2 mod n, with R = 2^RSA_BITS — one of the two values the device's
@@ -269,11 +268,11 @@ pub fn android_public_key(key: &RsaPrivateKey, comment: &str) -> String {
 pub struct AdbKey(Arc<SigningKey<Sha1>>);
 
 impl AdbKey {
-    pub fn new(key: RsaPrivateKey) -> Self {
+    pub fn new(key: PrivateKey) -> Self {
         Self(Arc::new(SigningKey::new(key)))
     }
 
-    pub fn private_key(&self) -> &RsaPrivateKey {
+    pub fn private_key(&self) -> &PrivateKey {
         (*self.0).as_ref()
     }
 

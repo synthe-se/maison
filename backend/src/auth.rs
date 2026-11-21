@@ -37,7 +37,7 @@ use axum::{
     extract::{FromRef, FromRequestParts},
     http::{header::AUTHORIZATION, request::Parts, Extensions, HeaderMap},
 };
-use chrono::Utc;
+use jiff::Timestamp;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -518,7 +518,7 @@ pub fn decode_token(
     hs256::install();
     decode::<Claims>(
         token,
-        &DecodingKey::from_secret(secret),
+        &DecodingKey::from_secret(secret)?,
         &Validation::default(),
     )
 }
@@ -529,7 +529,7 @@ pub fn encode_token(claims: &Claims, secret: &[u8]) -> Result<String, jsonwebtok
     encode(
         &Header::default(),
         claims,
-        &EncodingKey::from_secret(secret),
+        &EncodingKey::from_secret(secret)?,
     )
 }
 
@@ -774,7 +774,7 @@ impl RefreshTokenStore {
             tracing::warn!(%error, "refresh tokens unreadable: everyone signs in again");
             Tokens::default()
         });
-        prune(&mut tokens, Utc::now().timestamp());
+        prune(&mut tokens, Timestamp::now().as_second());
         Self {
             inner: Arc::new(Mutex::new(tokens)),
             path: Some(Arc::new(path.to_path_buf())),
@@ -784,7 +784,7 @@ impl RefreshTokenStore {
     /// Changes the tokens through `f` (which says whether it changed anything): written first,
     /// then kept; a failed write leaves them as they were and is the caller's error.
     async fn edit<T>(&self, f: impl FnOnce(&mut Tokens, i64) -> (T, bool)) -> Result<T, AppError> {
-        let now = Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
         let mut tokens = self.inner.lock().await;
         let mut next = tokens.clone();
         let pruned = prune(&mut next, now);
@@ -955,7 +955,7 @@ impl RefreshTokenStore {
             .await
             .ended
             .get(sid)
-            .is_some_and(|until| *until > Utc::now().timestamp())
+            .is_some_and(|until| *until > Timestamp::now().as_second())
     }
 
     /// `user_id`'s open sign-ins, the latest first; `current` is the one of this request.
@@ -1115,7 +1115,7 @@ mod tests {
     fn entry(family: &str) -> RefreshEntry {
         RefreshEntry {
             user_id: "leonard".into(),
-            expires_at: Utc::now().timestamp() + 60,
+            expires_at: Timestamp::now().as_second() + 60,
             family: family.into(),
             auth_ms: 0,
         }
@@ -1205,7 +1205,7 @@ mod tests {
             .insert(
                 "old",
                 RefreshEntry {
-                    expires_at: Utc::now().timestamp() - 1,
+                    expires_at: Timestamp::now().as_second() - 1,
                     ..entry("g")
                 },
                 opened(),
