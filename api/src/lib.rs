@@ -6,6 +6,7 @@ pub mod androidtv;
 pub mod cats;
 pub mod climate;
 pub mod codes;
+pub mod edge;
 pub mod envelope;
 pub mod events;
 pub mod lamps;
@@ -21,10 +22,16 @@ pub mod sun;
 pub mod tempo;
 pub mod tv;
 
-/// The house's time zone's type (`HOUSE_TZ`'s): readers need no chrono-tz of their own.
-pub use chrono_tz::Tz;
 pub use envelope::{Answer, DeviceRef, Message, OfDevice};
+/// The house's time zone's type (`HOUSE_TZ`'s): readers need no jiff of their own for it.
+pub use jiff::tz::TimeZone as Tz;
 
 /// The house's time zone: a schedule « at sunset », a Tempo day (RTE's days are French
-/// days). Said here and never as `chrono::Local`: the Pi has no tzdata, its Local is UTC.
-pub const HOUSE_TZ: chrono_tz::Tz = chrono_tz::Europe::Paris;
+/// days). Said here and never as the system's zone: a host without tzdata says UTC. From the
+/// database jiff embeds, so the same on every host.
+pub static HOUSE_TZ: std::sync::LazyLock<Tz> = std::sync::LazyLock::new(|| {
+    Tz::get(HOUSE_TZ_NAME).expect("jiff embeds the time zone database (tzdb-bundle-always)")
+});
+
+/// `HOUSE_TZ`'s IANA name, for a service asked for its times in the house's zone (Open-Meteo).
+pub const HOUSE_TZ_NAME: &str = "Europe/Paris";

@@ -6,6 +6,7 @@ pub mod box_clean;
 pub mod broadlink;
 pub mod broadlink_ir;
 pub mod config;
+pub mod edge;
 pub mod error;
 pub mod events;
 #[cfg(feature = "bluetooth")]
@@ -403,6 +404,7 @@ async fn guard_request(request: axum::extract::Request, next: Next, gate: Gate) 
     let peer = auth::peer_addr(request.extensions()).map(|addr| addr.ip());
     match request_allowed(
         peer,
+        edge::is_edge(request.extensions()),
         request.method(),
         request.uri().path(),
         request.headers(),
@@ -423,33 +425,36 @@ fn is_tailscale(ip: std::net::IpAddr) -> bool {
     }
 }
 
-/// Three rules, before routing:
-/// - From the LAN (not loopback, where cloudflared and the dev proxy are), only `/health`,
+/// Three rules, before routing. The public address comes in on loopback (cloudflared, the dev
+/// proxy) or through the edge (`edge.rs`: a reverse proxy's TLS client certificate); the rest
+/// is the LAN.
+/// - From the LAN, only `/health`,
 ///   the IR bridge's `/api/ir/key`, and the device routes for an app's service token: over
 ///   Tailscale always, over the LAN's plain HTTP only with `ALLOW_LAN_TOKENS` (the token would
 ///   cross the Wi-Fi in clear). Everything else goes through the tunnel's HTTPS (`Use the
 ///   public address`). Passkeys cannot sign in over the LAN address anyway; this also keeps
 ///   people's sessions and cookies off cleartext HTTP.
-/// - The IR bridge's `/api/ir/key` comes from the house only: through the tunnel (loopback,
-///   with cloudflared's `CF-Connecting-IP`, or any proxy's forwarding header) it is refused,
-///   whatever the token (`lan_only`).
+/// - The IR bridge's `/api/ir/key` comes from the house only: through the edge, or the tunnel
+///   (loopback, with cloudflared's `CF-Connecting-IP`, or any proxy's forwarding header), it
+///   is refused, whatever the token (`lan_only`).
 /// - A request that changes something must come from this site: a browser says where it
 ///   comes from (`Sec-Fetch-Site`, else `Origin`, which must be `PUBLIC_URL`'s origin or
 ///   match `Host`; an `Origin` with neither is refused, fail closed); a sibling subdomain is
 ///   « same-site » but not this site. Clients that say nothing (kird, curl) pass.
 fn request_allowed(
     peer: Option<std::net::IpAddr>,
+    edge: bool,
     method: &axum::http::Method,
     path: &str,
     headers: &axum::http::HeaderMap,
     gate: &Gate,
 ) -> Result<(), Refusal> {
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let local = peer.is_none_or(|ip| ip.to_canonical().is_loopback());
+    let loopback = peer.is_none_or(|ip| ip.to_canonical().is_loopback());
     let forwarded = ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"]
         .iter()
         .any(|name| headers.contains_key(*name));
-    if path == "/api/ir/key" && local && forwarded {
+    if path == "/api/ir/key" && (edge || loopback && forwarded) {
         return Err(Refusal::LanOnly);
     }
     let encrypted = peer.is_some_and(is_tailscale);
@@ -458,7 +463,7 @@ fn request_allowed(
             && is_device_path(path)
             && (encrypted || gate.allow_lan_tokens)
     };
-    if !local && !matches!(path, "/health" | "/api/ir/key") && !machine() {
+    if !(loopback || edge) && !matches!(path, "/health" | "/api/ir/key") && !machine() {
         return Err(Refusal::UsePublicAddress);
     }
     if matches!(
@@ -723,7 +728,50 @@ mod guard_tests {
         path: &str,
         headers: &HeaderMap,
     ) -> Result<(), Refusal> {
-        request_allowed(peer, method, path, headers, &Gate::default())
+        request_allowed(peer, false, method, path, headers, &Gate::default())
+    }
+
+    /// Through the edge: the peer is the client's public address (the proxy said it), and the
+    /// request is the public address's, like the tunnel's.
+    #[test]
+    fn the_edge_is_the_public_address() {
+        let client = Some("203.0.113.9".parse().unwrap());
+        let forwarded = headers(&[("x-forwarded-for", "203.0.113.9")]);
+        let through_edge = |path| {
+            request_allowed(
+                client,
+                true,
+                &Method::GET,
+                path,
+                &forwarded,
+                &Gate::default(),
+            )
+        };
+        assert!(through_edge("/api/meross").is_ok());
+        assert!(through_edge("/").is_ok());
+        assert_eq!(
+            request_allowed(
+                client,
+                true,
+                &Method::POST,
+                "/api/ir/key",
+                &forwarded,
+                &Gate::default()
+            ),
+            Err(Refusal::LanOnly)
+        );
+        assert_eq!(
+            request_allowed(
+                client,
+                false,
+                &Method::GET,
+                "/api/meross",
+                &forwarded,
+                &Gate::default()
+            ),
+            Err(Refusal::UsePublicAddress),
+            "the same address, not through the edge: the LAN's rules"
+        );
     }
 
     #[test]
@@ -780,7 +828,9 @@ mod guard_tests {
             allow_lan_tokens: true,
             ..Gate::default()
         };
-        assert!(request_allowed(wifi, &Method::GET, "/api/meross", &service, &lan_ok).is_ok());
+        assert!(
+            request_allowed(wifi, false, &Method::GET, "/api/meross", &service, &lan_ok).is_ok()
+        );
         for tailscale in ["100.64.0.7", "100.127.255.1", "fd7a:115c:a1e0::5"] {
             assert!(
                 allowed(
@@ -870,7 +920,7 @@ mod guard_tests {
             ..Gate::default()
         };
         let with_public = |h: &[(&'static str, &str)]| {
-            request_allowed(local, &Method::POST, "/api/x", &headers(h), &public)
+            request_allowed(local, false, &Method::POST, "/api/x", &headers(h), &public)
         };
         assert!(
             with_public(&[("origin", "https://home.kahn.studio")]).is_ok(),

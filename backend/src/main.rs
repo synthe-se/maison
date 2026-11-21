@@ -16,6 +16,7 @@ async fn main() {
     match args.first().map(String::as_str) {
         Some("invite") => std::process::exit(invite(&args[1..]).await),
         Some("token") => std::process::exit(token(&args[1..]).await),
+        Some("edge") => std::process::exit(edge(&args[1..])),
         _ => {}
     }
     init_tracing();
@@ -33,15 +34,100 @@ async fn main() {
 
     tracing::info!(address = %listener.local_addr().expect("local addr"), "listening");
 
+    // One signal stops both listeners
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop.send(true);
+    });
+    let until_stopped = |mut stopped: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = stopped.wait_for(|stop| *stop).await;
+    };
+
+    // The edge (edge.rs): the same app, behind its TLS both ways and its layer
+    let edge = match state.config.edge_listen.as_deref() {
+        None => None,
+        Some(address) => {
+            let address: SocketAddr = address.parse().expect("EDGE_LISTEN: not an address");
+            let tls = maison_backend::edge::server_config(&state.config.edge_dir)
+                .expect("the edge's certificates (maison-backend edge init)");
+            let listener = maison_backend::edge::EdgeListener::bind(address, tls)
+                .await
+                .expect("edge bind failed");
+            tracing::info!(address = %address, "edge listening");
+            let app = app
+                .clone()
+                .layer(axum::middleware::from_fn(maison_backend::edge::from_edge));
+            let stopped = stopped.clone();
+            Some(tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<maison_backend::edge::EdgePeer>(),
+                )
+                .with_graceful_shutdown(until_stopped(stopped))
+                .await
+            }))
+        }
+    };
+
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(until_stopped(stopped))
     .await
     .expect("server error");
+    if let Some(edge) = edge {
+        edge.await.expect("edge task").expect("edge server error");
+    }
 
     state.shutdown().await;
+}
+
+const EDGE_USAGE: &str = "usage: maison-backend edge init <house dir> <proxy dir>
+       maison-backend edge client <house dir> <client dir> <name>
+  The edge's certificates (a reverse proxy elsewhere reaching EDGE_LISTEN): this host's in
+  <house dir> (EDGE_DIR: ca.pem, cert.pem, key.pem), the proxy's in <proxy dir> (client.pem,
+  client-key.pem, and ca.pem to trust this host by). A CA used once, its key never written:
+  run it again to replace both sides.
+  `client` adds another client (a wall frame on the LAN): its files in <client dir>, its own
+  one-use CA added to <house dir>'s ca.pem (remove it there to refuse that client alone). The
+  service reads ca.pem at its start.";
+
+/// `maison-backend edge init edge/ proxy/`.
+fn edge(args: &[String]) -> i32 {
+    match args {
+        [init, house, proxy] if init == "init" => {
+            match maison_backend::edge::init(house.as_ref(), proxy.as_ref()) {
+                Ok(()) => {
+                    println!("The edge's certificates: {house} (this host), {proxy} (the proxy).");
+                    audit("edge certificates made");
+                    0
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    1
+                }
+            }
+        }
+        [client, house, dir, name] if client == "client" => {
+            match maison_backend::edge::client(house.as_ref(), dir.as_ref(), name) {
+                Ok(()) => {
+                    println!("The edge's client « {name} »: {dir}; {house}/ca.pem trusts it (restart the service).");
+                    audit(&format!("edge client « {name} » made"));
+                    0
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    1
+                }
+            }
+        }
+        _ => {
+            eprintln!("{EDGE_USAGE}");
+            2
+        }
+    }
 }
 
 const INVITE_USAGE: &str = "usage: maison-backend invite <person> --name <Name> [--admin]
@@ -59,8 +145,8 @@ fn audit(event: &str) {
     let path = maison_backend::config::env_text("MAISON_LOG_FILE")
         .unwrap_or_else(|| SERVICE_LOG.to_string());
     let line = format!(
-        "{} WARN maison_backend::cli: {event} (by the CLI, as {})\n",
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        "{:.6} WARN maison_backend::cli: {event} (by the CLI, as {})\n",
+        jiff::Timestamp::now(),
         invoker()
     );
     if std::path::Path::new(&path).is_file() {
@@ -205,13 +291,9 @@ async fn token(args: &[String]) -> i32 {
             for t in tokens {
                 // the house's days, not UTC's
                 let day = |ms: i64| {
-                    chrono::DateTime::from_timestamp_millis(ms).map_or_else(
-                        || "?".into(),
-                        |d| {
-                            d.with_timezone(&maison_backend::util::HOUSE_TZ)
-                                .format("%Y-%m-%d")
-                                .to_string()
-                        },
+                    jiff::Timestamp::from_millisecond(ms).map_or_else(
+                        |_| "?".into(),
+                        |d| maison_backend::util::house_date(d).to_string(),
                     )
                 };
                 let used = t.last_used_ms.map_or_else(|| "never".into(), day);

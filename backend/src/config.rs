@@ -40,6 +40,12 @@ pub struct Config {
     /// A wall screen not seen for this many days is revoked (`SCREEN_IDLE_DAYS`, default 90;
     /// 0 keeps them forever): a frame thrown away or stolen stops opening the house.
     pub screen_idle_days: u32,
+    /// The edge's listener (`EDGE_LISTEN`, e.g. `0.0.0.0:3443`; unset: none): the public
+    /// address through a reverse proxy elsewhere, TLS both ways (`edge.rs`). Parsed at start,
+    /// where a typo stops the service rather than leave the house unreachable without a word.
+    pub edge_listen: Option<String>,
+    /// The edge's certificates (`EDGE_DIR`, default `edge/`, 0700): `maison-backend edge init`.
+    pub edge_dir: PathBuf,
     pub matter_state_dir: PathBuf,
     pub matter_trust_dir: PathBuf,
     pub matter_test_roots: bool,
@@ -159,6 +165,8 @@ impl Config {
             ir_api_token: var("IR_API_TOKEN"),
             allow_lan_tokens: flag("ALLOW_LAN_TOKENS", false),
             screen_idle_days: parsed(&var, "SCREEN_IDLE_DAYS", 90),
+            edge_listen: var("EDGE_LISTEN"),
+            edge_dir: path("EDGE_DIR", "edge"),
             // Matter fabric keys + commissioned covers. A directory, not a file: the
             // controller saves by temp-file + rename, so the service user must own the
             // directory itself.
