@@ -133,6 +133,12 @@ while root keeps none. Without it the image's default applies: `FRAME_TARGET=htt
 writes `/etc/maison-target`. `maison-wifi` hands the one that holds to the interface as
 `/run/maison-target`, its `target` credential (`systemctl restart maison-ui` runs it again); with
 neither, the interface says so in plain words.
+On the house's LAN the frame reaches Maison at its edge listener (`EDGE_LISTEN`), not out to the
+public address and back in: root's `/android-data/maison/edge` (0700) holds the frame's identity,
+`maison-backend edge client <EDGE_DIR> <dir> <name>`'s `ca.pem`, `client.pem`, `client-key.pem`,
+and the target is the edge's address (`https://<house>:<port>`). The interface (its `edge`
+credential, `frame/ui/src/edge.rs`) then trusts the edge's CA alone, presents its certificate, and
+asks the edge's name, sent to that address; an empty directory leaves it a client like any.
 The Wi-Fi takes the network joined on the frame (`wifi.conf`), else the ones Android knows (its own
 `wpa_supplicant.conf`).
 

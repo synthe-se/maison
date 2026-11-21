@@ -31,6 +31,9 @@ ExecStartPost=-+/bin/sh -c 'kill $$(pidof maison-loader) 2>/dev/null'
 # root's copy of the address, else the image's (maison-wifi; the initramfs adopts what install.sh
 # left, Android's shell-writable /data/local/tmp never read here)
 LoadCredential=target:/run/maison-target
+# its edge identity (maison-backend edge client), if root gave it one: the house reached on the LAN,
+# TLS both ways (frame/ui/src/edge.rs); maison-wifi makes the directory
+LoadCredential=edge:/android-data/maison/edge
 EnvironmentFile=-/run/maison-setup
 RuntimeDirectory=maison-ui
 # what it may reach

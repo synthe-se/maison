@@ -15,6 +15,7 @@ mod backlight;
 mod client;
 mod commands;
 mod config;
+mod edge;
 mod families;
 mod heartbeat;
 mod i18n;

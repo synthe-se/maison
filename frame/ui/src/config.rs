@@ -24,6 +24,7 @@ use std::path::PathBuf;
 
 use maison_frame_tools::wifi::SOCKET;
 
+use crate::edge::Edge;
 use crate::i18n::Lang;
 
 /// The frame's panel, portrait, in its pixels (the full screen's size before SDL says it).
@@ -43,6 +44,10 @@ pub struct Config {
     pub window: Option<(u32, u32)>,
     /// Touched while the app runs.
     pub heartbeat: Option<PathBuf>,
+    /// The house's edge identity (edge.rs): the systemd credential `edge` (a directory: its
+    /// `edge_ca.pem`, `edge_client.pem`, `edge_client-key.pem`), else `MAISON_EDGE` (a directory
+    /// of `ca.pem`…). With it the target is the house's edge listener, reached over the LAN.
+    pub edge: Option<Edge>,
 }
 
 /// The frame as its own Wi-Fi: that Wi-Fi and the page there, as far as told.
@@ -128,6 +133,13 @@ impl Config {
             scale,
             window,
             heartbeat: env("MAISON_HEARTBEAT").map(PathBuf::from),
+            edge: match (env("CREDENTIALS_DIRECTORY"), env("MAISON_EDGE")) {
+                (Some(dir), _) if PathBuf::from(&dir).join("edge_ca.pem").exists() => {
+                    Edge::load(&PathBuf::from(dir), "edge_")?
+                }
+                (_, Some(dir)) => Edge::load(&PathBuf::from(dir), "")?,
+                _ => None,
+            },
         })
     }
 }

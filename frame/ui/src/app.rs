@@ -120,7 +120,14 @@ impl App {
     pub fn new(config: &Config, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let client = config.origin.as_ref().map_or_else(
             || Client::nowhere(HTTP_WAIT),
-            |origin| Client::new(origin, &config.state_dir, HTTP_WAIT),
+            |origin| match &config.edge {
+                None => Client::new(origin, &config.state_dir, HTTP_WAIT),
+                Some(edge) => Client::through_edge(origin, &config.state_dir, HTTP_WAIT, edge)
+                    .unwrap_or_else(|why| {
+                        eprintln!("the edge: {why}");
+                        Client::nowhere(HTTP_WAIT)
+                    }),
+            },
         );
         let photos = Photos::new(&client, &config.state_dir, wake.clone());
         let wifi = Wifi::new(config.wifi_socket.clone(), wake.clone());
@@ -436,7 +443,7 @@ impl App {
         let paired = self.session.screen == Who::Paired;
         let photo = self.photos.on().map(str::to_owned);
         self.minute = (paired || photo.is_some()).then(|| {
-            let into = chrono::Utc::now().timestamp().rem_euclid(MINUTE);
+            let into = jiff::Timestamp::now().as_second().rem_euclid(MINUTE);
             now + Duration::from_secs((MINUTE - into) as u64)
         });
         self.live.begin();
@@ -470,7 +477,7 @@ impl App {
                         let now = cx.house_now();
                         Screen::House {
                             time: self.words.clock(now.time()),
-                            date: self.words.long_date(now.date_naive()),
+                            date: self.words.long_date(now.date()),
                             now: families::now::chips(&mut cx, &now),
                             groups: families::house(&mut cx),
                         }
@@ -882,6 +889,7 @@ mod tests {
             scale: 1.0,
             window: None,
             heartbeat: None,
+            edge: None,
         }
     }
 

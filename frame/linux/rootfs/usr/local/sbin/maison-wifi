@@ -15,6 +15,10 @@ hotspot=/run/maison-hotspot
 umask 077
 mkdir -p /etc/wpa_supplicant
 
+# the interface's edge identity (its `edge` credential, a directory): root's, set over SSH; empty,
+# the interface reaches its address as any client
+install -d -m 0700 /android-data/maison/edge
+
 # the interface's credential: empty, it says the frame has no address
 if [ -s "$target" ]; then
 	cat "$target" >/run/maison-target

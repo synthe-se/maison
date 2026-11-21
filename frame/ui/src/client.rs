@@ -16,6 +16,8 @@ use serde::de::DeserializeOwned;
 use ureq::Agent;
 use ureq::config::IpFamily;
 
+use crate::edge::{Edge, ToHouse};
+
 /// The cookie a paired screen holds, by the backend's names for it (`__Host-` over HTTPS).
 const COOKIE_NAMES: [&str; 2] = [COOKIE_SECURE, COOKIE];
 /// Where the cookie is kept, in the state directory: the origin that set it, then the cookie.
@@ -214,12 +216,14 @@ pub struct Client {
     api: String,
     jar: Arc<Jar>,
     timeout: Duration,
+    /// Through the house's edge (edge.rs): its identity and the house's address.
+    edge: Option<(Edge, String)>,
 }
 
 /// The agent every request goes through, over `family` (`Any` but for a waiting screen's
-/// claims, which prove both its addresses).
-fn agent(timeout: Duration, family: IpFamily) -> Agent {
-    Agent::config_builder()
+/// claims, which prove both its addresses); through `edge`, its TLS and the house's address.
+fn agent(timeout: Duration, family: IpFamily, edge: Option<&(Edge, String)>) -> Agent {
+    let builder = Agent::config_builder()
         .timeout_global(Some(timeout))
         .timeout_connect(Some(timeout.min(Duration::from_secs(5))))
         .max_redirects(0)
@@ -227,26 +231,54 @@ fn agent(timeout: Duration, family: IpFamily) -> Agent {
         .user_agent(concat!("maison-frame-ui/", env!("CARGO_PKG_VERSION")))
         // straight to Maison: no proxy from the environment sees the screen's cookie
         .proxy(None)
-        .ip_family(family)
-        .build()
-        .into()
+        .ip_family(family);
+    match edge.and_then(|(edge, house)| Some((edge, ToHouse::new(house).ok()?))) {
+        Some((edge, to_house)) => Agent::with_parts(
+            builder.tls_config(edge.tls()).build(),
+            ureq::unversioned::transport::DefaultConnector::default(),
+            to_house,
+        ),
+        None => builder.build().into(),
+    }
 }
 
 impl Client {
     /// `origin`: `https://maison.example`; the cookie kept in `state_dir`.
     pub fn new(origin: &str, state_dir: &Path, timeout: Duration) -> Self {
         Self {
-            agent: agent(timeout, IpFamily::Any),
+            agent: agent(timeout, IpFamily::Any, None),
             api: format!("{origin}/api"),
             jar: Arc::new(Jar::open(state_dir, origin)),
             timeout,
+            edge: None,
         }
+    }
+
+    /// The house reached at `origin` (`https://<house>:3443`) through its edge (edge.rs): the
+    /// requests ask the edge's name, sent to that address; the cookie kept for `origin`.
+    pub fn through_edge(
+        origin: &str,
+        state_dir: &Path,
+        timeout: Duration,
+        edge: &Edge,
+    ) -> Result<Self, String> {
+        let (asked, house) = crate::edge::through(origin)
+            .ok_or(format!("{origin}: the edge is reached over HTTPS"))?;
+        ToHouse::new(&house)?;
+        let edge = Some((edge.clone(), house));
+        Ok(Self {
+            agent: agent(timeout, IpFamily::Any, edge.as_ref()),
+            api: format!("{asked}/api"),
+            jar: Arc::new(Jar::open(state_dir, origin)),
+            timeout,
+            edge,
+        })
     }
 
     /// A client of no Maison, no cookie: the setup view's, which asks nothing.
     pub fn nowhere(timeout: Duration) -> Self {
         Self {
-            agent: agent(timeout, IpFamily::Any),
+            agent: agent(timeout, IpFamily::Any, None),
             api: String::new(),
             jar: Arc::new(Jar {
                 file: PathBuf::new(),
@@ -254,13 +286,14 @@ impl Client {
                 cookie: Mutex::new(None),
             }),
             timeout,
+            edge: None,
         }
     }
 
     /// The same client (its cookie too) over `family` alone.
     pub fn over(&self, family: IpFamily) -> Self {
         Self {
-            agent: agent(self.timeout, family),
+            agent: agent(self.timeout, family, self.edge.as_ref()),
             ..self.clone()
         }
     }
