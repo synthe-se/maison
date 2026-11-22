@@ -1,3 +1,6 @@
+// Named only so Cargo builds it from source (`vendored`, backend/Cargo.toml): no code here calls it.
+use openssl as _;
+
 pub mod adb;
 pub mod androidtv;
 pub mod atvremote;
