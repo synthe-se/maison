@@ -199,10 +199,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.origin.as_deref(), Some("https://maison.example"));
-        assert_eq!(
-            c.state_dir,
-            PathBuf::from("/data/maison/ui/maison-ui")
-        );
+        assert_eq!(c.state_dir, PathBuf::from("/data/maison/ui/maison-ui"));
         assert_eq!(c.lang, Lang::Fr);
         assert!(!c.rotate);
         assert_eq!(c.scale, 1.0);

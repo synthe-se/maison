@@ -1,4 +1,4 @@
-// A wall screen (the frame, frame/android and frame/linux), paired as a TV signs in: signed out,
+// A wall screen (the frame, frame/android, and Maison on frame-kernel), paired as a TV signs in: signed out,
 // its browser asks for a code; an admin, signed in on their phone, gives it from « Mon compte »;
 // the screen opens by itself, its language and the sun's theme from its address (the frame's WPE
 // says en-US and light), the house's pages with nobody signed in. No token in its address, its

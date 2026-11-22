@@ -4,7 +4,7 @@
 // given from an admin's phone), shows the house, and a finger acts on it: a lamp toggled, its
 // brightness slid, a plug turned off, a shutter closed, the column scrolled, every device's page,
 // the remotes' keys, a reset asked first, Maison gone and back, the Wi-Fi lost and joined again from
-// the panel (a fake maison-wifid, the protocol of frame/tools/src/wifi.rs), the family's photos
+// the panel (a fake frame-wifid, the protocol of frame-kernel's tools/src/wifi.rs), the family's photos
 // taking over when nobody is there. Its own window is nowhere (SDL's
 // dummy driver, software rendering). Pictures land in SHOTS.
 //
@@ -162,7 +162,7 @@ const proxy = createServer(async (req, res) => {
 await new Promise<void>((r) => proxy.listen(0, r));
 const port = (proxy.address() as AddressInfo).port;
 
-// maison-wifid, faked: what the app reads over its socket, what it asked
+// frame-wifid, faked: what the app reads over its socket, what it asked
 type Join = { state: 'idle' } | { state: 'joining' | 'joined'; ssid: string } | { state: 'failed'; ssid: string; why: 'password' };
 const wifi = {
 	status: { connected: 'Salon' as string | null, configured: true, lost: false, hotspot: false, join: { state: 'idle' } as Join },

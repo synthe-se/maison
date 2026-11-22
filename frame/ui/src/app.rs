@@ -1631,7 +1631,7 @@ mod tests {
         assert!(button.is_none() && !warn, "calm, and nothing to do");
     }
 
-    /// An app whose `maison-wifid` is `f`, once it heard that the frame is `status`.
+    /// An app whose `frame-wifid` is `f`, once it heard that the frame is `status`.
     fn with_wifi(name: &str, f: &crate::wifi::tests::Fake, status: Status) -> App {
         *f.status.lock().unwrap() = status;
         let mut c = config("http://127.0.0.1:9", temp_dir(name));

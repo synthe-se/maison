@@ -1,4 +1,4 @@
-//! The frame's Wi-Fi, on its own screen: what `maison-wifid` says of it (one thread, over its socket:
+//! The frame's Wi-Fi, on its own screen: what `frame-wifid` says of it (one thread, over its socket:
 //! the app stays unprivileged), the networks in range, one chosen, its password typed, joined. It
 //! opens by itself on a frame with no network, or that lost its own (`Status::lost`: 10 minutes), and
 //! leaves by itself when one is back; a door or Maison's silence offer it by hand. The socket read
