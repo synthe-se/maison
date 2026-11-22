@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 const RM4: BroadlinkDevice = {
-	host: '192.168.1.73',
+	host: '192.168.1.32',
 	mac: 'aa',
 	modelCode: 1,
 	friendlyModel: 'RM4 Pro',

@@ -5,7 +5,7 @@
 //!
 //! The file is the truth, read on every use and replaced whole (`store::write_json`) under
 //! an OS lock (`store::locked`): the server and `maison-backend invite` (run as root on the
-//! Pi) both edit it. It lives in a directory the service user owns (`auth/`: the temp file
+//! host) both edit it. It lives in a directory the service user owns (`auth/`: the temp file
 //! is made there); the replacement keeps the owner. An empty or torn file is an error,
 //! never « nobody ».
 
@@ -225,6 +225,13 @@ struct Book {
     tokens: Vec<StoredToken>,
 }
 
+impl Book {
+    /// A person's passkeys.
+    fn of<'a>(&'a self, person: &'a str) -> impl Iterator<Item = &'a StoredPasskey> {
+        self.passkeys.iter().filter(move |k| k.person == person)
+    }
+}
+
 /// Why a passkey could not be removed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Removed {
@@ -304,7 +311,7 @@ impl People {
                     id: p.id.clone(),
                     name: p.name.clone(),
                     role: p.role,
-                    passkeys: b.passkeys.iter().filter(|k| k.person == p.id).count(),
+                    passkeys: b.of(&p.id).count(),
                 })
                 .collect()
         })
@@ -330,12 +337,9 @@ impl People {
     /// Every session of the person issued until now is over.
     pub async fn end_sessions(&self, id: &str, now_ms: i64) -> Result<(), AppError> {
         let id = id.to_string();
-        self.edit(move |b| match b.people.iter_mut().find(|p| p.id == id) {
-            Some(p) => {
-                p.not_before_ms = now_ms;
-                ((), true)
-            }
-            None => ((), false),
+        self.edit(move |b| {
+            let person = b.people.iter_mut().find(|p| p.id == id);
+            ((), person.map(|p| p.not_before_ms = now_ms).is_some())
         })
         .await
     }
@@ -347,25 +351,12 @@ impl People {
 
     /// The credential ids a person already has (not to register twice on one device).
     pub async fn credential_ids_of(&self, person: &str) -> Result<Vec<String>, AppError> {
-        self.read(|b| {
-            b.passkeys
-                .iter()
-                .filter(|k| k.person == person)
-                .map(|k| k.credential_id.clone())
-                .collect()
-        })
-        .await
+        self.read(|b| b.of(person).map(|k| k.credential_id.clone()).collect())
+            .await
     }
 
     pub async fn passkeys_of(&self, person: &str) -> Result<Vec<PasskeyInfo>, AppError> {
-        self.read(|b| {
-            b.passkeys
-                .iter()
-                .filter(|k| k.person == person)
-                .map(info)
-                .collect()
-        })
-        .await
+        self.read(|b| b.of(person).map(info).collect()).await
     }
 
     /// The passkey with this credential id, and whose it is.
@@ -450,7 +441,7 @@ impl People {
     pub async fn delete_passkey(&self, person: &str, id: &str) -> Result<Removed, AppError> {
         let (person, id) = (person.to_string(), id.to_string());
         self.edit(move |b| {
-            let mine = b.passkeys.iter().filter(|k| k.person == person).count();
+            let mine = b.of(&person).count();
             match b
                 .passkeys
                 .iter()
@@ -685,12 +676,9 @@ impl People {
     /// The token was used at `now_ms`.
     pub async fn token_used(&self, id: &str, now_ms: i64) -> Result<(), AppError> {
         let id = id.to_string();
-        self.edit(move |b| match b.tokens.iter_mut().find(|t| t.id == id) {
-            Some(t) => {
-                t.last_used_ms = Some(now_ms);
-                ((), true)
-            }
-            None => ((), false),
+        self.edit(move |b| {
+            let token = b.tokens.iter_mut().find(|t| t.id == id);
+            ((), token.map(|t| t.last_used_ms = Some(now_ms)).is_some())
         })
         .await
     }

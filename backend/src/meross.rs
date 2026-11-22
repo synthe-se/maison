@@ -7,6 +7,7 @@
 //! too. The list as it changes is said on a watch channel (`MerossManager::subscribe`).
 //! No MQTT client (AGENTS.md): Mosquitto is only there for the plugs' firmware.
 
+use crate::error::OrRefused;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -479,9 +480,7 @@ impl MerossManager {
     }
 
     fn get_device(&self, device_id: &str) -> Result<&MerossManagedDevice, AppError> {
-        self.devices
-            .get(device_id)
-            .ok_or_else(|| Refusal::NotFound.into())
+        self.devices.get(device_id).or_not_found()
     }
 
     /// What a request to the plug did to its reading: an answer, online now; none (not a

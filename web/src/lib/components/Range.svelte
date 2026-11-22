@@ -160,8 +160,8 @@
 	}
 </script>
 
-<div class="range">
-	<div class="head" class:sr-only={hideLabel}>
+<div class="range stack">
+	<div class="between" class:sr-only={hideLabel}>
 		<span id="{id}-label">{label}</span>
 		<output for="{id}-thumb" class="value">{valueText(draft)}</output>
 	</div>
@@ -191,23 +191,11 @@
 		</Slider.Thumb>
 	</Slider.Root>
 	{#if ends}
-		<div class="ends" aria-hidden="true"><span>{ends[0]}</span><span>{ends[1]}</span></div>
+		<div class="ends between" aria-hidden="true"><span>{ends[0]}</span><span>{ends[1]}</span></div>
 	{/if}
 </div>
 
 <style>
-	.range {
-		display: grid;
-		gap: var(--s-2);
-	}
-	.head,
-	.ends {
-		display: flex;
-		justify-content: space-between;
-		gap: var(--s-3);
-		font: var(--t-secondary);
-		color: var(--ink-muted);
-	}
 	.ends {
 		font: var(--t-meta);
 	}
@@ -254,10 +242,6 @@
 		border: 2px solid var(--accent);
 		box-shadow: var(--shadow);
 		cursor: grab;
-	}
-	.range :global(.range-thumb:focus-visible) {
-		outline: var(--focus-ring);
-		outline-offset: var(--focus-offset);
 	}
 	/* unreachable or off: the last known value, greyed */
 	.range:has(:global([aria-disabled='true'])) .value {

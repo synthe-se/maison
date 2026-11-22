@@ -77,7 +77,7 @@ const tone = (percent: number) => (percent < 34 ? m.lamps_tone_warm() : percent 
 export const HUE = 'hue-lamp';
 export const ZIGBEE = 'zigbee-lamp';
 
-// Whether the server said it runs without Bluetooth (the Pi): its Hue list is always empty, never
+// Whether the server said it runs without Bluetooth (the host): its Hue list is always empty, never
 // polled (every view of the list reads the stats too: once, they have no pace).
 let hueOff = false;
 

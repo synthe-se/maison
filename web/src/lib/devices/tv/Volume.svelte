@@ -25,7 +25,7 @@
 </script>
 
 <Section title={m.tv_volume()}>
-	<div class="keys">
+	<div class="keys line">
 		<Key k="volume_down" fire={keys.volume_down} {reason} />
 		{#if volume}<span class="level" aria-hidden="true">{level ?? volume.current}</span>{/if}
 		<Key k="volume_up" fire={keys.volume_up} {reason} />
@@ -51,11 +51,6 @@
 
 <style>
 	/* − 18 + : two 56 px keys either side of the value (§ 7), mute after them */
-	.keys {
-		display: flex;
-		align-items: center;
-		gap: var(--s-2);
-	}
 	.level {
 		min-width: 3ch;
 		text-align: center;

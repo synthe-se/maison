@@ -76,7 +76,7 @@ describe('session', () => {
 		expect(session.status).toBe('unreachable');
 	});
 
-	it('is unreachable on the tunnel’s 502 while the Pi restarts', async () => {
+	it('is unreachable on the proxy’s 502 while the host restarts', async () => {
 		scriptFetch(new Response('<html>Bad gateway</html>', { status: 502 }));
 		await session.verify();
 		expect(session.status).toBe('unreachable');

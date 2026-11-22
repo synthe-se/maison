@@ -3,8 +3,8 @@
 //! families it may have changed read again. Making and editing scenes stays in the web app;
 //! with none, the group is not shown (the web app's « Créer » is an admin's).
 
+use maison_api::actions::RunResponse;
 use maison_api::codes::Code;
-use maison_api::remote::KeyResponse;
 use maison_api::scenes::Scene;
 
 use super::{Cx, HUE, MEROSS, SCENES, SHUTTERS, ZIGBEE};
@@ -22,7 +22,7 @@ pub fn icon_of(s: &Scene) -> Icon {
 }
 
 /// How a run went (scenes.ts `sayRun`): each failure by what its refusal's code means.
-pub fn said(w: &Words, name: &str, r: &KeyResponse) -> Toast {
+pub fn said(w: &Words, name: &str, r: &RunResponse) -> Toast {
     let mut failed: Vec<String> = Vec::new();
     for f in r.failures() {
         let code = f.code.as_deref().and_then(Code::parse);
@@ -63,7 +63,7 @@ fn run_said(w: &Words, o: &Outcome) -> Option<Toast> {
     let name = o.done.first().or(o.failed.first())?;
     // refused or unreachable: nothing here, the order says what its refusal means
     let answer = o.answer.as_ref()?;
-    match serde_json::from_value::<KeyResponse>(answer.clone()) {
+    match serde_json::from_value::<RunResponse>(answer.clone()) {
         Ok(r) => Some(said(w, name, &r)),
         // an answer that does not read
         Err(_) => Some(Toast {
@@ -134,8 +134,8 @@ mod tests {
         assert_eq!(o.posts[0].1.path, "/scenes/nuit/run");
         assert!(scenes_group(&w, &[]).is_none());
 
-        let went = |ok: bool, code: Option<&str>| maison_api::remote::ActionResult {
-            action: maison_api::remote::IrAction::Nabaztag {
+        let went = |ok: bool, code: Option<&str>| maison_api::actions::ActionResult {
+            action: maison_api::actions::Action::Nabaztag {
                 command: "ping".into(),
             },
             ok,
@@ -144,7 +144,7 @@ mod tests {
         let ok = said(
             &w,
             "Nuit",
-            &KeyResponse::ran(vec![went(true, None), went(true, None)]),
+            &RunResponse::ran(vec![went(true, None), went(true, None)]),
         );
         assert_eq!(
             ok,
@@ -156,7 +156,7 @@ mod tests {
         let partial = said(
             &w,
             "Nuit",
-            &KeyResponse::ran(vec![went(true, None), went(false, Some("not_found"))]),
+            &RunResponse::ran(vec![went(true, None), went(false, Some("not_found"))]),
         );
         assert!(partial.warn);
         assert_eq!(
@@ -169,7 +169,7 @@ mod tests {
         let twice = said(
             &w,
             "Nuit",
-            &KeyResponse::ran(vec![
+            &RunResponse::ran(vec![
                 went(false, Some("not_found")),
                 went(false, Some("not_found")),
             ]),

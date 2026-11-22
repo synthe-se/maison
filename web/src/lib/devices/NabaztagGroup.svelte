@@ -1,7 +1,6 @@
 <script lang="ts">
 	// The rabbit (garenne firmware, « Garenne » in the house): reachable or not, whether it shows
-	// Tempo, a way to push today's color again, and its tai chi (the choreography the remote's
-	// « Taichi » key plays too). Out of reach, both buttons stay, not operable, the state line
+	// Tempo, a way to push today's color again, and its tai chi. Out of reach, both buttons stay, not operable, the state line
 	// saying why. Its place is kept while it is first asked and when the server does not
 	// answer; nothing at all once the server says no rabbit is set.
 	import { m } from '#lib/paraglide/messages.js';

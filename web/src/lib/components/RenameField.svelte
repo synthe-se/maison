@@ -77,8 +77,9 @@
 
 <form class="field rename" onsubmit={submit} novalidate>
 	<label for="{id}-name" class:sr-only={hideLabel}>{label}</label>
-	<div class="row">
+	<div class="row cluster">
 		<input
+			class="field-grow"
 			id="{id}-name"
 			bind:this={input}
 			value={text}
@@ -96,15 +97,6 @@
 </form>
 
 <style>
-	.row {
-		display: flex;
-		gap: var(--s-2);
-		flex-wrap: wrap;
-	}
-	.row input {
-		flex: 1 1 12rem;
-		min-width: 0;
-	}
 	.row .btn {
 		min-height: var(--control-h);
 	}

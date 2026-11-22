@@ -1,6 +1,6 @@
 // What the shutter views read, each under one key: every shutter, read slowly at rest and
 // every second while a motor runs (so the position follows the travel), and the house's place
-// for the sun schedule. One value for the group, the « Maintenant » strip and the remote's
+// for the sun schedule. One value for the group, the « Maintenant » strip and the scenes'
 // pickers. The place also says when the sun next rises and sets: read again just after, the
 // wall screens' theme (SunTheme) follows it.
 

@@ -7,7 +7,6 @@
 	import { live } from '#lib/live.svelte.ts';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, gate, pending } from '#lib/gesture.svelte.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Loaded from '#lib/components/Loaded.svelte';
 	import { androidTvApi, type CleanWhy } from './api.ts';
@@ -30,8 +29,7 @@
 	const noHome = $derived(cleanup.data?.launcher === false);
 
 	function run(action: 'clean' | 'restore', done: string) {
-		haptic(CONFIRM);
-		return g.run(
+		return g.committed(
 			() => androidTvApi.clean(action),
 			(r) => {
 				cleanup.update(() => r);
@@ -42,7 +40,7 @@
 	}
 </script>
 
-<section class="cleanup" aria-labelledby="{id}-title">
+<section class="stack" aria-labelledby="{id}-title">
 	<h3 id="{id}-title">{m.box_clean_title()}</h3>
 	<Loaded value={cleanup}>
 		<p class="hint">{m.box_clean_count({ cut, total: packages.length })}</p>
@@ -68,10 +66,6 @@
 </section>
 
 <style>
-	.cleanup {
-		display: grid;
-		gap: var(--s-2);
-	}
 	ul {
 		display: grid;
 		gap: var(--s-1);

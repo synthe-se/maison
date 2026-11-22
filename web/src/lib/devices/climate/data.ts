@@ -1,5 +1,5 @@
 // What the air conditioning views read, each under one key, once (docs/ux.md § 4): the IR
-// blaster found on the network (the dashboard tile and the remote's pickers share it), the
+// blaster found on the network (the dashboard tile and the scenes' pickers share it), the
 // last order the house sent, and the blaster's learned codes.
 
 import { source } from '#lib/live.svelte.ts';

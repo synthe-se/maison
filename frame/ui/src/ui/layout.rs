@@ -355,29 +355,37 @@ impl P<'_, '_, '_, '_> {
         r: f32,
         color: Rgba,
     ) -> Result<(), Error> {
-        if !self.visible(y, h) {
+        let Some((x, y, w, h)) = self.on_panel((x, y, w, h)) else {
             return Ok(());
+        };
+        let r = self.d(r);
+        self.d.rounded(x, y, w, h, r, color)
+    }
+
+    /// A box in CSS px as the panel's pixels, its far edges rounded on their own (two boxes
+    /// that touch stay touching); `None` when none of it is on the panel.
+    fn on_panel(&self, (x, y, w, h): (f32, f32, f32, f32)) -> Option<(i32, i32, i32, i32)> {
+        if !self.visible(y, h) {
+            return None;
         }
         let (x0, y0, x1, y1) = (self.d(x), self.y(y), self.d(x + w), self.y(y + h));
-        let r = self.d(r);
-        self.d.rounded(x0, y0, x1 - x0, y1 - y0, r, color)
+        Some((x0, y0, x1 - x0, y1 - y0))
     }
 
     /// A box with a 1 px line around (a tile, a button): `(x, y, w, h)` in CSS px.
     pub fn framed(
         &mut self,
-        (x, y, w, h): (f32, f32, f32, f32),
+        area: (f32, f32, f32, f32),
         r: f32,
         fill: Rgba,
         line: Rgba,
     ) -> Result<(), Error> {
-        if !self.visible(y, h) {
+        let Some(area) = self.on_panel(area) else {
             return Ok(());
-        }
-        let (x0, y0, x1, y1) = (self.d(x), self.y(y), self.d(x + w), self.y(y + h));
+        };
         let r = self.d(r);
         let t = (self.s().round() as i32).max(1);
-        self.d.ringed((x0, y0, x1 - x0, y1 - y0), r, t, fill, line)
+        self.d.ringed(area, r, t, fill, line)
     }
 
     /// A disc of diameter `d` at (x, y); with `ring`, a ring of that width in `ring.1` around.

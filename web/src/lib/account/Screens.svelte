@@ -85,7 +85,7 @@
 		<a class="btn" href="/photos">{m.photos_title()}</a>
 	</div>
 	<Sheet open={pairing} title={m.screens_pair()} onclose={close} {draft}>
-		<form class="pair" onsubmit={(e) => (e.preventDefault(), void pair())} novalidate>
+		<form class="pair stack loose" onsubmit={(e) => (e.preventDefault(), void pair())} novalidate>
 			<TextField
 				label={m.screens_code()}
 				bind:input={codeField}
@@ -139,10 +139,6 @@
 </Group>
 
 <style>
-	.pair {
-		display: grid;
-		gap: var(--s-4);
-	}
 	.pair :global(.code) {
 		text-transform: uppercase;
 		letter-spacing: 0.1em;

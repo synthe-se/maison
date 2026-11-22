@@ -958,8 +958,8 @@ mod tests {
         assert_eq!(TOAST_WARN, Duration::from_millis(paces::WALL_WARNING_MS));
     }
 
-    #[test]
-    fn the_finger_that_wakes_the_dimmed_panel_does_nothing_else() {
+    /// An app whose whole panel opens Tempo, dimmed since the instant given.
+    fn dimmed() -> (App, Instant) {
         let mut app = alone();
         app.drawn(
             drawing(
@@ -976,6 +976,12 @@ mod tests {
         );
         let asleep = app.touched + crate::backlight::DIM_AFTER;
         app.tick(asleep);
+        (app, asleep)
+    }
+
+    #[test]
+    fn the_finger_that_wakes_the_dimmed_panel_does_nothing_else() {
+        let (mut app, asleep) = dimmed();
         app.finger_down(400.0, 600.0, asleep);
         app.finger_up(400.0, 600.0, asleep + FRAME);
         assert_eq!(app.view, View::House, "the waking tap opened nothing");
@@ -1064,22 +1070,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_wake_lets_the_next_finger_act() {
-        let mut app = alone();
-        app.drawn(
-            drawing(
-                vec![Hit {
-                    x: 0.0,
-                    y: 0.0,
-                    w: 800.0,
-                    h: 1280.0,
-                    what: Target::Act(Act::Open(View::Tempo)),
-                }],
-                1280.0,
-            ),
-            1280.0,
-        );
-        let asleep = app.touched + crate::backlight::DIM_AFTER;
-        app.tick(asleep);
+        let (mut app, asleep) = dimmed();
         app.finger_down(400.0, 600.0, asleep);
         app.finger_cancel(asleep);
         app.finger_down(400.0, 600.0, asleep + FRAME);
@@ -1644,6 +1635,16 @@ mod tests {
         app
     }
 
+    /// The Wi-Fi screen opened and a locked network chosen: its password is asked.
+    fn asked_a_password(app: &mut App, at: Instant) {
+        app.act(Act::Wifi(WifiAct::Open), at);
+        let choose = WifiAct::Choose {
+            ssid: "Autre".into(),
+            locked: true,
+        };
+        app.act(Act::Wifi(choose), at);
+    }
+
     fn lost() -> Status {
         Status {
             configured: true,
@@ -1718,12 +1719,7 @@ mod tests {
         let mut app = with_wifi("app-wifi-idle", &f, on_a_network());
         app.session = Session::idle(Who::Waiting);
         let t0 = app.touched;
-        app.act(Act::Wifi(WifiAct::Open), t0);
-        let choose = WifiAct::Choose {
-            ssid: "Autre".into(),
-            locked: true,
-        };
-        app.act(Act::Wifi(choose), t0);
+        asked_a_password(&mut app, t0);
         app.type_text("sel de mer");
         assert!(matches!(app.screen(t0), Screen::Password(_)));
         assert_eq!(app.next_wake(t0), Some(t0 + PAGE_IDLE));
@@ -1738,12 +1734,7 @@ mod tests {
         let f = fake();
         let mut app = with_wifi("app-wifi-key", &f, on_a_network());
         let t0 = app.touched;
-        app.act(Act::Wifi(WifiAct::Open), t0);
-        let choose = WifiAct::Choose {
-            ssid: "Autre".into(),
-            locked: true,
-        };
-        app.act(Act::Wifi(choose), t0);
+        asked_a_password(&mut app, t0);
         let key = Key::Char('a');
         app.drawn(
             drawing(vec![hit_of(Target::Act(Act::Keyboard(key)))], 1280.0),

@@ -78,7 +78,7 @@
 	}
 </script>
 
-<div class="place">
+<div class="stack">
 	<div class="head">
 		<span class="label" id="{id}-title">{m.place_title()}</span>
 		{#if place && !editing && session.admin}
@@ -110,10 +110,6 @@
 </div>
 
 <style>
-	.place {
-		display: grid;
-		gap: var(--s-2);
-	}
 	.head {
 		display: flex;
 		justify-content: space-between;

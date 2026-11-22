@@ -60,7 +60,7 @@ struct CleanRequest {
 }
 
 /// 96 MB covers any sideloaded app worth the name while staying survivable
-/// on a 512 MB Pi.
+/// on a 512 MB host.
 const APK_SIZE_LIMIT: usize = 96 * 1024 * 1024;
 
 pub fn router() -> Router<AppState> {
@@ -77,7 +77,7 @@ pub fn router() -> Router<AppState> {
         .route("/sleep", post(sleep))
         .route(
             "/apk",
-            // APKs are large and the Pi is small; cap the upload well under
+            // APKs are large and the host is small; cap the upload well under
             // what the box and the backend can hold at once.
             post(install_apk).layer(DefaultBodyLimit::max(APK_SIZE_LIMIT)),
         )

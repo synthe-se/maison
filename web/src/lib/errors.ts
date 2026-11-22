@@ -29,7 +29,6 @@ const CODE_WORDS: Record<Code, () => string> = {
 	pairing_elsewhere: m.code_pairing_elsewhere,
 	screen_exists: m.code_screen_exists,
 	too_many_attempts: m.code_too_many_attempts,
-	nested_scene: m.code_nested_scene,
 	too_many_actions: m.code_too_many_actions,
 	not_a_device: m.code_not_a_device,
 	invalid: m.code_invalid,
@@ -41,7 +40,6 @@ const CODE_WORDS: Record<Code, () => string> = {
 	internal: m.code_internal,
 	use_public_address: m.code_use_public_address,
 	cross_site: m.code_cross_site,
-	lan_only: m.code_lan_only,
 	too_large: m.code_too_large,
 	not_a_photo: m.code_not_a_photo,
 	too_many_photos: m.code_too_many_photos
@@ -75,7 +73,7 @@ export function errorText(e: unknown): string {
 	if (e instanceof ApiError) {
 		if (e.status === 403) return m.code_forbidden();
 		if (e.status === 404) return m.code_not_found();
-		// the tunnel's answer while the Pi restarts
+		// the proxy's answer while the host restarts
 		if (e.status === 502 || e.status === 503 || e.status === 504) return m.error_network();
 	}
 	return m.error_server();

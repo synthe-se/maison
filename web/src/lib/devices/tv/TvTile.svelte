@@ -27,7 +27,7 @@
 			>
 				{#snippet end()}
 					{#if tv.volume}
-						<div class="volume" role="group" aria-label={m.tv_volume()}>
+						<div class="line tight" role="group" aria-label={m.tv_volume()}>
 							<Key k="volume_down" size="small" fire={tv.keys.volume_down} />
 							<span class="level" aria-hidden="true">{tv.volume.muted ? m.common_no_value() : tv.shownLevel}</span>
 							<Key k="volume_up" size="small" fire={tv.keys.volume_up} />
@@ -43,11 +43,6 @@
 </Loaded>
 
 <style>
-	.volume {
-		display: flex;
-		align-items: center;
-		gap: var(--s-1);
-	}
 	.level {
 		min-width: 2.5ch;
 		text-align: center;

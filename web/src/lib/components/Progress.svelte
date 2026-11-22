@@ -16,8 +16,8 @@
 	const shown = $derived(Math.min(max, Math.max(0, Math.round(value))));
 </script>
 
-<div class="progress">
-	<div class="head">
+<div class="progress stack tight">
+	<div class="between">
 		<span id="{id}-label">{label}</span>
 		<span class="value" aria-hidden="true">{valueText}</span>
 	</div>
@@ -27,17 +27,6 @@
 </div>
 
 <style>
-	.progress {
-		display: grid;
-		gap: var(--s-1);
-	}
-	.head {
-		display: flex;
-		justify-content: space-between;
-		gap: var(--s-3);
-		font: var(--t-secondary);
-		color: var(--ink-muted);
-	}
 	.value {
 		font-variant-numeric: tabular-nums;
 	}

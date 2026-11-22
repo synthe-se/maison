@@ -23,7 +23,7 @@
 	let { id, title, fact, actions, value, heading = $bindable(), children }: Props = $props();
 </script>
 
-<section class="group" aria-labelledby={id}>
+<section class="group stack roomy" aria-labelledby={id}>
 	<div class="group-head">
 		<h2 {id} class="group-title" tabindex="-1" bind:this={heading}>{title}</h2>
 		{#if fact}<span class="fact">{fact}</span>{/if}

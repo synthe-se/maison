@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn device_addresses_accept_lan_devices_only() {
         for good in [
-            "192.168.1.52",
+            "192.168.1.31",
             "10.0.0.3",
             "172.16.4.1",
             "172.31.255.254",
@@ -196,8 +196,8 @@ mod tests {
         }
         assert_eq!(device_host("Rabbit.LOCAL").unwrap(), "rabbit.local");
         assert_eq!(
-            device_address("192.168.1.153:5555").unwrap(),
-            ("192.168.1.153".into(), Some(5555))
+            device_address("192.168.1.30:5555").unwrap(),
+            ("192.168.1.30".into(), Some(5555))
         );
         assert_eq!(
             device_address("tv.local:1925").unwrap(),
@@ -241,8 +241,8 @@ mod tests {
         );
         assert!(device_ipv4("rabbit.local").is_err(), "IPv4 only");
         assert_eq!(
-            device_ipv4("192.168.1.73").unwrap(),
-            Ipv4Addr::new(192, 168, 1, 73)
+            device_ipv4("192.168.1.32").unwrap(),
+            Ipv4Addr::new(192, 168, 1, 32)
         );
     }
 
@@ -290,9 +290,8 @@ mod tests {
         assert_eq!(fine["a"], 1);
     }
 
-    /// A device that redirects is not followed: the 3xx comes back as the answer.
-    #[tokio::test]
-    async fn device_clients_never_follow_a_redirect() {
+    /// What a device client gets from a device that answers `raw` to its one request.
+    async fn answered(raw: &'static [u8]) -> reqwest::Response {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -300,38 +299,29 @@ mod tests {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut buffer = [0u8; 1024];
             let _ = socket.read(&mut buffer).await;
-            let _ = socket
-                .write_all(b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/\r\nContent-Length: 0\r\n\r\n")
-                .await;
+            let _ = socket.write_all(raw).await;
         });
-        let client = device_client(Duration::from_secs(2)).unwrap();
-        let response = client
+        device_client(Duration::from_secs(2))
+            .unwrap()
             .get(format!("http://{address}/"))
             .send()
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    /// A device that redirects is not followed: the 3xx comes back as the answer.
+    #[tokio::test]
+    async fn device_clients_never_follow_a_redirect() {
+        let response = answered(
+            b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
         assert_eq!(response.status(), 302);
     }
 
     #[tokio::test]
     async fn an_answer_past_the_cap_is_refused() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buffer = [0u8; 1024];
-            let _ = socket.read(&mut buffer).await;
-            let _ = socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789")
-                .await;
-        });
-        let client = device_client(Duration::from_secs(2)).unwrap();
-        let response = client
-            .get(format!("http://{address}/"))
-            .send()
-            .await
-            .unwrap();
+        let response = answered(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789").await;
         let error = read_capped(response, 4, "Plug").await.unwrap_err();
         assert_eq!(error.to_string(), "Plug answered too much");
     }

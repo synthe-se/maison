@@ -52,15 +52,6 @@ async fn admin(
     common::send_authed(app, method, path, body).await
 }
 
-async fn member(
-    app: &Router,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    common::send(app, method, path, Some(&common::member_token()), body).await
-}
-
 #[tokio::test]
 async fn the_routes_need_a_signed_in_person() {
     let app = app();
@@ -71,7 +62,7 @@ async fn the_routes_need_a_signed_in_person() {
 #[tokio::test]
 async fn the_list_shows_every_device_with_its_cached_values() {
     let app = app();
-    let (status, body) = member(&app, Method::GET, "/api/devices", None).await;
+    let (status, body) = common::send_member(&app, Method::GET, "/api/devices", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], 3);
     let devices = body["devices"].as_array().unwrap();
@@ -99,7 +90,7 @@ async fn the_unused_routes_are_gone() {
         (Method::POST, "/api/devices/reconnect".to_string()),
         (Method::GET, format!("/api/devices/{FEEDER}/status")),
     ] {
-        let (status, _) = member(&app, method, &path, None).await;
+        let (status, _) = common::send_member(&app, method, &path, None).await;
         assert!(
             status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
             "{path}: {status}"
@@ -111,7 +102,7 @@ async fn the_unused_routes_are_gone() {
 async fn the_dps_scan_is_for_admins_and_checks_its_range() {
     let app = app();
     let path = format!("/api/devices/{FEEDER}/scan-dps");
-    let (status, body) = member(&app, Method::GET, &path, None).await;
+    let (status, body) = common::send_member(&app, Method::GET, &path, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "forbidden");
 
@@ -182,13 +173,13 @@ async fn bad_requests_are_refused_before_reaching_the_device() {
         ),
     ];
     for (path, body, code) in cases {
-        let (status, answer) = member(&app, Method::POST, &path, Some(body)).await;
+        let (status, answer) = common::send_member(&app, Method::POST, &path, Some(body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
         assert_eq!(answer["code"], code, "{path}");
         assert_eq!(answer["success"], false);
     }
     // a factory reset is an admin's, on its own route
-    let (status, answer) = member(
+    let (status, answer) = common::send_member(
         &app,
         Method::POST,
         &format!("/api/devices/{LITTER}/litter-box/settings"),
@@ -200,7 +191,7 @@ async fn bad_requests_are_refused_before_reaching_the_device() {
         (StatusCode::FORBIDDEN, Some("forbidden"))
     );
     let reset = format!("/api/devices/{LITTER}/litter-box/factory-reset");
-    let (status, answer) = member(&app, Method::POST, &reset, None).await;
+    let (status, answer) = common::send_member(&app, Method::POST, &reset, None).await;
     assert_eq!(
         (status, answer["code"].as_str()),
         (StatusCode::FORBIDDEN, Some("forbidden"))
@@ -217,7 +208,7 @@ async fn bad_requests_are_refused_before_reaching_the_device() {
         json!({ "daysOfWeek": ["Monday"], "time": "08:00", "portion": 1, "status": "Maybe" }),
     ] {
         let path = format!("/api/devices/{FEEDER}/feeder/meal-plan");
-        let (status, _) = member(
+        let (status, _) = common::send_member(
             &app,
             Method::POST,
             &path,
@@ -254,14 +245,14 @@ async fn a_route_for_another_device_type_is_refused() {
         ),
     ];
     for (method, path, code) in cases {
-        let (status, answer) = member(&app, method, &path, None).await;
+        let (status, answer) = common::send_member(&app, method, &path, None).await;
         assert_eq!(
             (status, answer["code"].as_str()),
             (StatusCode::BAD_REQUEST, Some(code)),
             "{path}"
         );
     }
-    let (status, answer) = member(
+    let (status, answer) = common::send_member(
         &app,
         Method::POST,
         "/api/devices/nope/fountain/reset/pump",
@@ -281,14 +272,14 @@ async fn commands_to_an_unreachable_device_fail_with_503() {
         format!("/api/devices/{LITTER}/litter-box/clean"),
         format!("/api/devices/{FOUNTAIN}/fountain/reset/water"),
     ] {
-        let (status, answer) = member(&app, Method::POST, &path, None).await;
+        let (status, answer) = common::send_member(&app, Method::POST, &path, None).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
         assert!(
             answer["error"].as_str().unwrap().contains("unreachable"),
             "nothing about the session: {answer}"
         );
     }
-    let (status, _) = member(
+    let (status, _) = common::send_member(
         &app,
         Method::POST,
         &format!("/api/devices/{FOUNTAIN}/connect"),
@@ -301,7 +292,8 @@ async fn commands_to_an_unreachable_device_fail_with_503() {
 #[tokio::test]
 async fn connections_can_be_dropped_and_started_again() {
     let app = app();
-    let (status, body) = member(&app, Method::POST, "/api/devices/disconnect", None).await;
+    let (status, body) =
+        common::send_member(&app, Method::POST, "/api/devices/disconnect", None).await;
     assert_eq!(
         (status, body),
         (
@@ -309,7 +301,7 @@ async fn connections_can_be_dropped_and_started_again() {
             json!({ "success": true, "message": "All devices disconnected" })
         )
     );
-    let (status, body) = member(
+    let (status, body) = common::send_member(
         &app,
         Method::POST,
         &format!("/api/devices/{FEEDER}/disconnect"),
@@ -318,6 +310,7 @@ async fn connections_can_be_dropped_and_started_again() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["message"], format!("Device {FEEDER} disconnected"));
-    let (status, _) = member(&app, Method::POST, "/api/devices/nope/disconnect", None).await;
+    let (status, _) =
+        common::send_member(&app, Method::POST, "/api/devices/nope/disconnect", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

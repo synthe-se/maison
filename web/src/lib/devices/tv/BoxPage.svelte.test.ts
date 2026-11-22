@@ -14,7 +14,7 @@ import BoxPage from './BoxPage.svelte';
 /** The tile is named after the box (its model), not after its group. */
 const TITLE = () => 'LEAP-S1';
 
-function boxStatus(over: Partial<AndroidTvStatus> = {}, config: AndroidTvConfig = { host: '192.168.1.153' }): AndroidTvStatusResponse {
+function boxStatus(over: Partial<AndroidTvStatus> = {}, config: AndroidTvConfig = { host: '192.168.1.30' }): AndroidTvStatusResponse {
 	return {
 		success: true,
 		config,
@@ -184,10 +184,10 @@ describe('BoxPage', () => {
 		await expect.element(page.getByText(m.android_tv_configure_hint())).toBeVisible();
 		await expect.element(page.getByRole('group', { name: m.android_tv_apps() })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: m.android_tv_pair() })).not.toBeInTheDocument();
-		await userEvent.fill(page.getByLabelText(m.android_tv_host()).element(), '192.168.1.153');
+		await userEvent.fill(page.getByLabelText(m.android_tv_host()).element(), '192.168.1.30');
 		await page.getByRole('button', { name: m.common_save() }).click();
 		await expect.poll(() => reads(calls)).toBe(2);
-		expect(sent(calls)).toEqual([['PUT', '/api/androidtv/config', { host: '192.168.1.153' }]]);
+		expect(sent(calls)).toEqual([['PUT', '/api/androidtv/config', { host: '192.168.1.30' }]]);
 	});
 
 	it('paired: a chip says so, and the settings say the keys are fast', async () => {

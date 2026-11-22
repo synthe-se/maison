@@ -80,9 +80,6 @@ export const BROADLINK_SEARCH_FOR_MS = 120000;
 /** The last climate order (only Maison changes it). */
 export const CLIMATE_STATE_MS = 60000;
 
-/** The remote's recent keys, while a key is being captured. */
-export const IR_CAPTURE_MS = 1000;
-
 /** The TV and the box: as slowly as the TV allows (JointSPACE dies of being asked). */
 export const TV_MS = 60000;
 

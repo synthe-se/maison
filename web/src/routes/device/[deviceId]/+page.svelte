@@ -55,7 +55,7 @@
 			</ul>
 			<!-- keyed: another device's page starts from its own state -->
 			{#key device.id}
-				<div class="panels">
+				<div class="stack loose">
 					{#if device.type === 'feeder'}
 						<FeederPanel id={device.id} {device} />
 					{:else if device.type === 'fountain'}
@@ -74,9 +74,5 @@
 <style>
 	.settings {
 		margin-bottom: var(--s-4);
-	}
-	.panels {
-		display: grid;
-		gap: var(--s-4);
 	}
 </style>

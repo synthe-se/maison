@@ -1,7 +1,7 @@
-// What a remote button or a scene can do: the action types the editors edit, their one label
-// map, their one summary builder, and the devices offered in the pickers. The backend knows
-// more types (tv_key, androidtv_key…) that the editors do not edit: they are kept as they
-// are, summarised by their name, and never block a save.
+// What a scene can do: the action types its editor edits, their one label map, their one
+// summary builder, and the devices offered in the pickers. The backend knows more types
+// (tv_key, androidtv_key…) that the editor does not edit: they are kept as they are,
+// summarised by their name, and never block a save.
 
 import { m } from '#lib/paraglide/messages.js';
 import { live } from '#lib/live.svelte.ts';
@@ -11,71 +11,63 @@ import { TAICHI } from '#lib/devices/nabaztag/api.ts';
 import type { BroadlinkCode, BroadlinkDevice } from '#lib/devices/climate/api.ts';
 import type { HueLamp, ZigbeeLamp } from '#lib/devices/lamps/api.ts';
 import type { MerossPlug } from '#lib/devices/meross/api.ts';
-import type { Scene } from '#lib/devices/scenes/api.ts';
 import type { Shutter } from '#lib/devices/shutters/api.ts';
 import { hue, zigbee } from '#lib/devices/lamps/lamp.ts';
 import { covers as coverList } from '#lib/devices/shutters/data.ts';
 import { plugs as plugList } from '#lib/devices/meross/data.ts';
 import { blasters, codes as codeList } from '#lib/devices/climate/data.ts';
 import { box as boxData } from '#lib/devices/tv/data.ts';
-import { scenes as sceneList } from '#lib/devices/scenes/data.ts';
 import { buildClimateCommand, parseClimateCommand } from '#lib/devices/climate/command.ts';
 import { degrees, FAN_LABEL, MODE_LABEL, VANE_LABEL } from '#lib/devices/climate/labels.ts';
 import { DEFAULT_SETTINGS } from '#lib/devices/climate/form.ts';
 import { boxApps } from '#lib/devices/tv/apps.ts';
 import { codeText } from '#lib/errors.ts';
-import type { ActionResult, IrAction, IrBinding, IrCoverCommand, IrSwitchState } from './api.ts';
+import type { ActionResult, Action, CoverCommand, SwitchState } from './api.ts';
 
-export type ActionType = IrAction['action'];
+export type ActionType = Action['action'];
 
 /** The one label map of the action types, in the order of the picker. */
 export const ACTION_TYPES: Record<ActionType, () => string> = {
 	nabaztag: m.nabaztag_name,
-	zigbee_power: m.remote_action_types_zigbee_power,
-	zigbee_brightness: m.remote_action_types_zigbee_brightness,
-	hue_power: m.remote_action_types_hue_power,
-	hue_brightness: m.remote_action_types_hue_brightness,
-	cover: m.remote_action_types_cover,
-	broadlink_code: m.remote_action_types_broadlink_code,
-	meross_power: m.remote_action_types_meross_power,
-	climate_toggle: m.remote_action_types_climate_toggle,
-	climate_off: m.remote_action_types_climate_off,
-	climate_on: m.remote_action_types_climate_on,
-	tv_power: m.remote_action_types_tv_power,
-	androidtv_app: m.remote_action_types_androidtv_app,
-	scene: m.remote_action_types_scene
+	zigbee_power: m.action_type_zigbee_power,
+	zigbee_brightness: m.action_type_zigbee_brightness,
+	hue_power: m.action_type_hue_power,
+	hue_brightness: m.action_type_hue_brightness,
+	cover: m.action_type_cover,
+	broadlink_code: m.action_type_broadlink_code,
+	meross_power: m.action_type_meross_power,
+	climate_toggle: m.action_type_climate_toggle,
+	climate_off: m.action_type_climate_off,
+	climate_on: m.action_type_climate_on,
+	tv_power: m.action_type_tv_power,
+	androidtv_app: m.action_type_androidtv_app
 };
 
-/** What a scene may hold: everything but another scene (the backend refuses nesting). */
-export const SCENE_TYPES = (Object.keys(ACTION_TYPES) as ActionType[]).filter((t) => t !== 'scene');
-
-export const SWITCH_STATES: Record<IrSwitchState, () => string> = {
-	toggle: m.remote_fields_toggle,
+export const SWITCH_STATES: Record<SwitchState, () => string> = {
+	toggle: m.action_fields_toggle,
 	on: m.action_turn_on,
 	off: m.action_turn_off
 };
 
 /** What a `cover` action can ask, in the picker's order, worded as the shutter tile words it. */
-export const COVER_COMMANDS: Record<IrCoverCommand, () => string> = {
+export const COVER_COMMANDS: Record<CoverCommand, () => string> = {
 	close: m.shutters_close_action,
 	open: m.shutters_open_action,
 	stop: m.common_stop,
-	position: m.remote_fields_cover_position
+	position: m.action_fields_cover_position
 };
 
 export const NABAZTAG_PRESETS = [TAICHI, 'dance 1', 'ping', 'stop'];
 
-/** Zigbee brightness, as the backend takes it (a u8 capped at the ZCL maximum). */
-export const BRIGHTNESS_MAX = 254;
-
-/** Hue brightness, as the backend takes it: a percentage, 1 at the least. */
-export const HUE_BRIGHTNESS = { min: 1, max: 100 } as const;
+/** A lamp's brightness, Zigbee or Hue, as the backend takes it (`actions::validate`): a
+ * percentage, 1 at the least (0 is off). */
+export const BRIGHTNESS = { min: 1, max: 100 } as const;
 
 /** Where a new Hue brightness or shutter position starts: halfway. */
 export const HALF = 50;
 
-/** An action the configurator edits (the others are carried through untouched). */
-export function isEditable(a: { action: string }): a is IrAction {
+/** An action the editor edits (the others are carried through untouched). */
+export function isEditable(a: { action: string }): a is Action {
 	return a.action in ACTION_TYPES;
 }
 
@@ -88,7 +80,6 @@ export interface Sources {
 	hosts: BroadlinkDevice[];
 	codes: BroadlinkCode[];
 	apps: AndroidApp[];
-	scenes: Scene[];
 }
 
 /**
@@ -106,7 +97,6 @@ export function liveSources(): { readonly current: Sources } {
 	const hosts = live(blasters);
 	const codes = live(codeList);
 	const box = live(boxData);
-	const scenes = live(sceneList);
 	return {
 		get current() {
 			return {
@@ -116,35 +106,34 @@ export function liveSources(): { readonly current: Sources } {
 				plugs: plugs.data?.devices ?? [],
 				hosts: hosts.data?.devices ?? [],
 				codes: codes.data?.codes ?? [],
-				apps: boxApps(box.data?.config),
-				scenes: scenes.data?.scenes ?? []
+				apps: boxApps(box.data?.config)
 			};
 		}
 	};
 }
 
 /** A lamp of either family (Zigbee, Hue). */
-const SUMMARY_LAMP: Record<IrSwitchState, (p: { lamp: string }) => string> = {
-	on: m.remote_summary_lamp_on,
-	off: m.remote_summary_lamp_off,
-	toggle: m.remote_summary_lamp_toggle
+const SUMMARY_LAMP: Record<SwitchState, (p: { lamp: string }) => string> = {
+	on: m.action_summary_lamp_on,
+	off: m.action_summary_lamp_off,
+	toggle: m.action_summary_lamp_toggle
 };
-const SUMMARY_MEROSS: Record<IrSwitchState, (p: { device: string }) => string> = {
-	on: m.remote_summary_meross_on,
-	off: m.remote_summary_meross_off,
-	toggle: m.remote_summary_meross_toggle
-};
-
-const SUMMARY_TV: Record<IrSwitchState, () => string> = {
-	on: m.remote_summary_tv_on,
-	off: m.remote_summary_tv_off,
-	toggle: m.remote_summary_tv_toggle
+const SUMMARY_MEROSS: Record<SwitchState, (p: { device: string }) => string> = {
+	on: m.action_summary_meross_on,
+	off: m.action_summary_meross_off,
+	toggle: m.action_summary_meross_toggle
 };
 
-const SUMMARY_COVER: Record<Exclude<IrCoverCommand, 'position'>, (p: { cover: string }) => string> = {
-	open: m.remote_summary_cover_open,
-	close: m.remote_summary_cover_close,
-	stop: m.remote_summary_cover_stop
+const SUMMARY_TV: Record<SwitchState, () => string> = {
+	on: m.action_summary_tv_on,
+	off: m.action_summary_tv_off,
+	toggle: m.action_summary_tv_toggle
+};
+
+const SUMMARY_COVER: Record<Exclude<CoverCommand, 'position'>, (p: { cover: string }) => string> = {
+	open: m.action_summary_cover_open,
+	close: m.action_summary_cover_close,
+	stop: m.action_summary_cover_stop
 };
 
 const nameOf = (list: { id: string; name: string }[], id: string) => list.find((x) => x.id === id)?.name ?? id;
@@ -152,33 +141,30 @@ const hostOf = (s: Sources, host: string) => s.hosts.find((h) => h.host === host
 
 /** One line per action, with the devices' real names. */
 export function summarize(a: { action: string }, s: Sources): string {
-	if (!isEditable(a)) return m.remote_summary_other({ action: a.action });
+	if (!isEditable(a)) return m.action_summary_other({ action: a.action });
 	switch (a.action) {
 		case 'nabaztag':
-			return m.remote_summary_nabaztag({ command: a.command });
+			return m.action_summary_nabaztag({ command: a.command });
 		case 'zigbee_power':
 			return SUMMARY_LAMP[a.state]({ lamp: nameOf(s.lamps, a.lamp) });
 		case 'zigbee_brightness':
-			return m.remote_summary_lamp_brightness({
-				lamp: nameOf(s.lamps, a.lamp),
-				brightness: m.remote_brightness_value({ value: a.brightness })
-			});
+			return m.action_summary_lamp_brightness({ lamp: nameOf(s.lamps, a.lamp), brightness: percent(a.brightness / 100) });
 		case 'hue_power':
 			return SUMMARY_LAMP[a.state]({ lamp: nameOf(s.hueLamps, a.lamp) });
 		case 'hue_brightness':
-			return m.remote_summary_lamp_brightness({ lamp: nameOf(s.hueLamps, a.lamp), brightness: percent(a.brightness / 100) });
+			return m.action_summary_lamp_brightness({ lamp: nameOf(s.hueLamps, a.lamp), brightness: percent(a.brightness / 100) });
 		case 'cover': {
 			const cover = nameOf(s.covers, a.cover);
 			return a.command === 'position'
-				? m.remote_summary_cover_position({ cover, position: m.shutters_open_percent({ percent: a.position ?? 0 }) })
+				? m.action_summary_cover_position({ cover, position: m.shutters_open_percent({ percent: a.position ?? 0 }) })
 				: SUMMARY_COVER[a.command]({ cover });
 		}
 		case 'climate_off':
-			return m.remote_summary_climate_off({ host: hostOf(s, a.host) });
+			return m.action_summary_climate_off({ host: hostOf(s, a.host) });
 		case 'climate_on':
-			return m.remote_summary_climate_on({ host: hostOf(s, a.host) });
+			return m.action_summary_climate_on({ host: hostOf(s, a.host) });
 		case 'broadlink_code':
-			return m.remote_summary_broadlink({
+			return m.action_summary_broadlink({
 				host: hostOf(s, a.host),
 				code: nameOf(s.codes, a.codeId)
 			});
@@ -186,10 +172,10 @@ export function summarize(a: { action: string }, s: Sources): string {
 			return SUMMARY_MEROSS[a.state]({ device: nameOf(s.plugs, a.device) });
 		case 'climate_toggle': {
 			const c = parseClimateCommand(a.onCommand);
-			return m.remote_summary_climate({
+			return m.action_summary_climate({
 				host: hostOf(s, a.host),
 				settings: c
-					? m.remote_summary_climate_settings({
+					? m.action_summary_climate_settings({
 							mode: MODE_LABEL[c.mode](),
 							temperature: degrees(c.temperature),
 							fan: FAN_LABEL[c.fan](),
@@ -201,21 +187,19 @@ export function summarize(a: { action: string }, s: Sources): string {
 		case 'tv_power':
 			return SUMMARY_TV[a.state]();
 		case 'androidtv_app':
-			return m.remote_summary_androidtv_app({ app: s.apps.find((x) => x.package === a.package)?.label ?? a.package });
-		case 'scene':
-			return m.remote_summary_scene({ scene: nameOf(s.scenes, a.scene) });
+			return m.action_summary_androidtv_app({ app: s.apps.find((x) => x.package === a.package)?.label ?? a.package });
 	}
 }
 
 /** A new action of a type, on the first device offered. */
-export function defaultAction(type: ActionType, s: Sources): IrAction {
+export function defaultAction(type: ActionType, s: Sources): Action {
 	switch (type) {
 		case 'nabaztag':
 			return { action: 'nabaztag', command: '' };
 		case 'zigbee_power':
 			return { action: 'zigbee_power', lamp: s.lamps[0]?.id ?? '', state: 'toggle' };
 		case 'zigbee_brightness':
-			return { action: 'zigbee_brightness', lamp: s.lamps[0]?.id ?? '', brightness: 127 };
+			return { action: 'zigbee_brightness', lamp: s.lamps[0]?.id ?? '', brightness: HALF };
 		case 'hue_power':
 			return { action: 'hue_power', lamp: s.hueLamps[0]?.id ?? '', state: 'toggle' };
 		case 'hue_brightness':
@@ -240,8 +224,6 @@ export function defaultAction(type: ActionType, s: Sources): IrAction {
 			return { action: 'tv_power', state: 'on', switchToBox: true };
 		case 'androidtv_app':
 			return { action: 'androidtv_app', package: s.apps[0]?.package ?? '' };
-		case 'scene':
-			return { action: 'scene', scene: s.scenes[0]?.id ?? '' };
 	}
 }
 
@@ -270,43 +252,27 @@ function isComplete(a: { action: string }): boolean {
 			return true;
 		case 'androidtv_app':
 			return a.package.length > 0;
-		case 'scene':
-			return a.scene.length > 0;
 	}
 }
 
-/** How one action went, in words (`/ir/test`, a scene's run): what it was, with the devices'
+/** How one action went, in words (a scene's run): what it was, with the devices'
  * names, and when it failed, why (its refusal's words). */
 export function outcome(r: ActionResult, s: Sources): { ok: boolean; what: string; why: string } {
 	return { ok: r.ok, what: summarize(r.action, s), why: r.ok ? '' : (codeText(r.code) ?? m.error_server()) };
 }
 
-/** What is wrong with an editor's actions, in words ('' when nothing): none at all, more than
+/** What is wrong with the editor's actions, in words ('' when nothing): none at all, more than
  * `max` (a scene's limit), or one still to fill. */
 export function actionsProblem(rows: Row[], max = Infinity): string {
-	if (rows.length === 0) return m.remote_missing_actions();
+	if (rows.length === 0) return m.actions_missing();
 	if (rows.length > max) return m.scenes_too_many({ count: max });
-	return rows.every((r) => isComplete(r.action)) ? '' : m.remote_incomplete_actions();
+	return rows.every((r) => isComplete(r.action)) ? '' : m.actions_incomplete();
 }
 
-/** One action of an editor's list, with a stable key for its row. */
-export type Row = { id: number; action: IrAction };
+/** One action of the editor's list, with a stable key for its row. */
+export type Row = { id: number; action: Action };
 let nextRow = 0;
 /** A row for `action`, with its own key. */
-export const toRow = (action: IrAction): Row => ({ id: nextRow++, action });
+export const toRow = (action: Action): Row => ({ id: nextRow++, action });
 /** Rows for `actions`, each with its own key. */
-export const toRows = (actions: IrAction[]): Row[] => actions.map(toRow);
-
-/** A remote key's binding as its form holds it (the key itself aside). */
-export interface BindingForm {
-	label: string;
-	repeat: boolean;
-	actions: Row[];
-}
-
-/** The form for `binding` (an empty one without). */
-export const bindingForm = (binding?: IrBinding): BindingForm => ({
-	label: binding?.label ?? '',
-	repeat: binding?.repeat ?? false,
-	actions: toRows(binding?.actions ?? [])
-});
+export const toRows = (actions: Action[]): Row[] => actions.map(toRow);

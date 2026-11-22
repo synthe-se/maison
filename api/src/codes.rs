@@ -77,8 +77,6 @@ codes! {
     ScreenExists = ("screen_exists", 409, "A screen already has this name");
     /// Too many tries: wait `Retry-After` seconds.
     TooManyAttempts = ("too_many_attempts", 429, "Too many attempts");
-    /// A scene that would run another.
-    NestedScene = ("nested_scene", 400, "A scene cannot run a scene");
     /// More actions than a scene holds.
     TooManyActions = ("too_many_actions", 400, "Too many actions");
     /// Not a device's address on the house's network (a private IPv4 or a `.local` name).
@@ -101,8 +99,6 @@ codes! {
     UsePublicAddress = ("use_public_address", 403, "Use the public address");
     /// A change asked from another site (a page elsewhere, a sibling subdomain).
     CrossSite = ("cross_site", 403, "Cross-site request refused");
-    /// From the house's own network only (the IR bridge), never through the tunnel.
-    LanOnly = ("lan_only", 403, "From the house's network only");
     /// A request body too large for its route.
     TooLarge = ("too_large", 413, "Too large");
     /// An upload that is not a whole JPEG.

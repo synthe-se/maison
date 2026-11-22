@@ -15,8 +15,7 @@
 
 	const views: { href: string; label: () => string; icon: IconName; match: (p: string) => boolean }[] = [
 		{ href: '/', label: m.nav_home, icon: 'house', match: (p) => p === '/' || /^\/(device|hue-lamp|zigbee-lamp|meross)\//.test(p) },
-		{ href: '/tempo-predictions', label: m.nav_tempo, icon: 'zap', match: (p) => p.startsWith('/tempo') },
-		{ href: '/remote', label: m.nav_remote, icon: 'radio', match: (p) => p.startsWith('/remote') }
+		{ href: '/tempo-predictions', label: m.nav_tempo, icon: 'zap', match: (p) => p.startsWith('/tempo') }
 	];
 	const THEME_LABEL: Record<Theme, () => string> = { system: m.theme_system, light: m.theme_light, dark: m.theme_dark, sun: m.theme_sun };
 	const name = $derived(session.user?.name ?? '');
@@ -136,10 +135,6 @@
 		background: var(--accent-wash);
 		color: var(--accent);
 		font: var(--t-meta);
-	}
-	:global(.panel .who-title) {
-		font: var(--t-group);
-		margin: 0;
 	}
 
 	/* the bottom bar: navigation only, always visible, under 600 px */

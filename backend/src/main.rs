@@ -6,8 +6,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-    // no .env is fine (the environment says it all); one that cannot be read or parsed is not
-    if let Err(error) = dotenvy::dotenv()
+    // The settings: MAISON_SOURCE_ROOT's .env when a root is named (a host, a test's throwaway
+    // root: never another house's file found above the working directory), else the nearest
+    // one. None is fine (the environment says it all); one that cannot be read or parsed is not
+    let loaded = match std::env::var_os("MAISON_SOURCE_ROOT") {
+        Some(root) => dotenvy::from_path(std::path::Path::new(&root).join(".env")),
+        None => dotenvy::dotenv().map(drop),
+    };
+    if let Err(error) = loaded
         && !error.not_found()
     {
         eprintln!(".env could not be read: {error}");
@@ -179,7 +185,7 @@ fn audit(event: &str) {
     }
 }
 
-/// Who runs the CLI (root, on the Pi), for the log line.
+/// Who runs the CLI (root, on the host), for the log line.
 fn invoker() -> String {
     std::env::var("SUDO_USER")
         .or_else(|_| std::env::var("USER"))
@@ -216,7 +222,7 @@ async fn invite(args: &[String]) -> i32 {
     };
     let config = maison_backend::config::Config::from_env();
     let Some(public_url) = config.public_url.as_deref() else {
-        eprintln!("Set PUBLIC_URL (or CLOUDFLARE_PUBLIC_HOSTNAME): the link points there.");
+        eprintln!("Set PUBLIC_URL: the link points there.");
         return 1;
     };
     if let Err(error) = maison_backend::passkey::relying_party(public_url) {

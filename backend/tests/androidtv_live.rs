@@ -58,7 +58,7 @@ async fn remote_v2_beats_adb_on_latency() {
 
     let _guard = common::serial().lock().await;
     let root = common::workspace_root();
-    let host = "192.168.1.153";
+    let host = "192.168.1.30";
 
     let mut identity = Identity::load_or_create(&root.join("atv-identity")).expect("identity");
     let session = Session::connect(host, &mut identity)

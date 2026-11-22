@@ -140,9 +140,7 @@ const template = await sheet.innerText();
 check('the template is filled from the house’s devices', template.includes('Lave-linge'));
 check(
 	'…the AC off and the shutters closed too',
-	template.includes(fr.remote_action_types_climate_off()) &&
-		template.includes('Volet salon') &&
-		template.includes(fr.shutters_close_action()),
+	template.includes(fr.action_type_climate_off()) && template.includes('Volet salon') && template.includes(fr.shutters_close_action()),
 	template
 );
 await sheet.getByRole('button', { name: fr.common_save() }).click();

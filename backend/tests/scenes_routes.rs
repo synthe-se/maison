@@ -1,11 +1,7 @@
-//! /api/scenes: who may make and run them, what a scene may hold, and that a scene runs on
-//! the remote keys' engine (from the dashboard, the configurator's test and a key).
+//! /api/scenes: who may make and run them, what a scene may hold, and that a run answers
+//! each of its actions.
 
 mod common;
-
-use std::sync::{Arc, Mutex, OnceLock};
-
-use tokio::sync::Notify;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -23,14 +19,11 @@ fn scene(name: &str, actions: Value) -> Value {
     json!({ "name": name, "icon": "film", "actions": actions })
 }
 
-/// The app on a fresh root, with a `scenes.json` and an `ir-keymap.json` when given.
-fn test_app(scenes: Option<Value>, keymap: Option<Value>) -> axum::Router {
+/// The app on a fresh root, with a `scenes.json` when given.
+fn test_app(scenes: Option<Value>) -> axum::Router {
     let config = common::isolated_config("maison-rust-scenes-tests");
     if let Some(scenes) = scenes {
         std::fs::write(&config.scenes_path, scenes.to_string()).expect("scenes written");
-    }
-    if let Some(keymap) = keymap {
-        std::fs::write(&config.ir_keymap_path, keymap.to_string()).expect("keymap written");
     }
     common::app(config)
 }
@@ -41,7 +34,7 @@ async fn put(app: &axum::Router, id: &str, body: Value) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn made_listed_in_order_replaced_and_removed() {
-    let app = test_app(None, None);
+    let app = test_app(None);
     let member = common::member_token();
     let (status, body) = common::send(&app, Method::GET, "/api/scenes", Some(&member), None).await;
     assert_eq!(
@@ -79,7 +72,7 @@ async fn made_listed_in_order_replaced_and_removed() {
 
 #[tokio::test]
 async fn what_a_scene_may_hold() {
-    let app = test_app(None, None);
+    let app = test_app(None);
     let too_many = Value::Array(vec![ping()[0].clone(); 21]);
     let twenty = Value::Array(vec![ping()[0].clone(); 20]);
     for (id, body, code) in [
@@ -101,17 +94,16 @@ async fn what_a_scene_may_hold() {
             ),
             "invalid",
         ),
-        (
-            "cinema",
-            scene("Cinéma", json!([{ "action": "scene", "scene": "nuit" }])),
-            "nested_scene",
-        ),
     ] {
         let (status, answer) = put(&app, id, body.clone()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{id} {body}: {answer}");
         assert_eq!(answer["success"], json!(false));
         assert_eq!(answer["code"], json!(code), "{body}");
     }
+    let nested = scene("Cinéma", json!([{ "action": "scene", "scene": "nuit" }]));
+    let (status, answer) = put(&app, "cinema", nested).await;
+    assert!(status.is_client_error(), "a scene runs no scene: {answer}");
+    assert_eq!(answer["code"], json!("invalid"));
     let (status, _) = put(&app, "cinema", scene("Cinéma", twenty)).await;
     assert_eq!(status, StatusCode::OK, "twenty is the most");
     let (_, body) = common::send_authed(&app, Method::GET, "/api/scenes", None).await;
@@ -125,10 +117,9 @@ async fn what_a_scene_may_hold() {
 /// Members see and run the scenes; making them is an admin's.
 #[tokio::test]
 async fn members_run_admins_make() {
-    let app = test_app(
-        Some(json!([{ "id": "cinema", "name": "Cinéma", "icon": "film", "actions": ping() }])),
-        None,
-    );
+    let app = test_app(Some(
+        json!([{ "id": "cinema", "name": "Cinéma", "icon": "film", "actions": ping() }]),
+    ));
     let member = common::member_token();
     for (method, path, body) in [
         (Method::PUT, "/api/scenes/nuit", Some(scene("Nuit", ping()))),
@@ -173,129 +164,10 @@ async fn members_run_admins_make() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// The configurator's test runs a `scene` action like a key would: the scene's actions,
-/// in the same answer as a scene's own run; a scene gone is one failed result.
-#[tokio::test]
-async fn a_scene_action_runs_the_scene() {
-    let actions = json!([ping()[0], ping()[0]]);
-    let app = test_app(
-        Some(json!([{ "id": "cinema", "name": "Cinéma", "icon": "film", "actions": actions }])),
-        None,
-    );
-    let test = |scene: &str| json!({ "actions": [{ "action": "scene", "scene": scene }] });
-    let (status, body) =
-        common::send_authed(&app, Method::POST, "/api/ir/test", Some(test("cinema"))).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let (_, run) = common::send_authed(&app, Method::POST, "/api/scenes/cinema/run", None).await;
-    assert_eq!(body, run, "one engine, one answer");
-    assert_eq!(body["results"].as_array().unwrap().len(), 2);
-
-    let (status, body) =
-        common::send_authed(&app, Method::POST, "/api/ir/test", Some(test("gone"))).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body["results"],
-        json!([{ "action": { "action": "scene", "scene": "gone" }, "ok": false, "code": "not_found" }])
-    );
-
-    let (status, _) =
-        common::send_authed(&app, Method::POST, "/api/ir/test", Some(test("Not An Id"))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let binding = json!({ "actions": [{ "action": "scene", "scene": "cinema" }] });
-    let (status, body) =
-        common::send_authed(&app, Method::PUT, "/api/ir/keymap/60", Some(binding)).await;
-    assert_eq!(status, StatusCode::OK, "a key may run a scene: {body}");
-}
-
-/// What the app logs, kept for the test to read (a key's actions run after its answer: the
-/// log is where their results go), and a bell rung at each line.
-struct Captured {
-    text: Mutex<Vec<u8>>,
-    written: Notify,
-}
-
-impl Captured {
-    /// The first line logged that holds every one of `words`, once it is.
-    async fn line_with(&self, words: &[&str]) -> String {
-        loop {
-            let written = self.written.notified();
-            tokio::pin!(written);
-            // listening before the look: a line written after it rings
-            written.as_mut().enable();
-            let text = String::from_utf8_lossy(&self.text.lock().unwrap()).to_string();
-            if let Some(line) = text.lines().find(|l| words.iter().all(|w| l.contains(w))) {
-                return line.to_string();
-            }
-            written.await;
-        }
-    }
-}
-
-fn captured_log() -> Arc<Captured> {
-    static LOG: OnceLock<Arc<Captured>> = OnceLock::new();
-    LOG.get_or_init(|| {
-        let log = Arc::new(Captured {
-            text: Mutex::new(Vec::new()),
-            written: Notify::new(),
-        });
-        let sink = log.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(move || Sink(sink.clone()))
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("one subscriber per test binary");
-        log
-    })
-    .clone()
-}
-
-struct Sink(Arc<Captured>);
-
-impl std::io::Write for Sink {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.text.lock().unwrap().extend_from_slice(bytes);
-        self.0.written.notify_waiters();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn a_remote_key_bound_to_a_scene_runs_it() {
-    let log = captured_log();
-    let app = test_app(
-        Some(json!([{ "id": "cinema", "name": "Cinéma", "icon": "film", "actions": ping() }])),
-        Some(json!({ "4242": { "actions": [{ "action": "scene", "scene": "cinema" }] } })),
-    );
-    let (status, body) = common::send(
-        &app,
-        Method::POST,
-        "/api/ir/key",
-        Some(common::TEST_IR_TOKEN),
-        Some(json!({ "code": 4242, "value": 1 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    let fired = log.line_with(&["IR key fired", "code=4242"]);
-    let line = tokio::time::timeout(std::time::Duration::from_secs(10), fired)
-        .await
-        .expect("the key's actions ran");
-    assert!(
-        line.contains("Nabaztag") && line.contains("ok: false"),
-        "the scene's action ran: {line}"
-    );
-}
-
 /// « Je pars » as the web's template makes it (lamps, Hue lamps, plugs, the AC off, the
-/// shutters closed) is a scene like any other: saved, run from the dashboard, and from a key.
+/// shutters closed) is a scene like any other: saved, and run from the dashboard.
 #[tokio::test]
 async fn leaving_turns_off_the_ac_and_closes_the_shutters() {
-    let log = captured_log();
     let leave = json!([
         { "action": "zigbee_power", "lamp": "zb-1", "state": "off" },
         { "action": "hue_power", "lamp": "aabbccddeeff", "state": "off" },
@@ -303,10 +175,7 @@ async fn leaving_turns_off_the_ac_and_closes_the_shutters() {
         { "action": "climate_off", "host": "8.8.8.8" },
         { "action": "cover", "cover": "00000000000000aa", "command": "close" }
     ]);
-    let app = test_app(
-        None,
-        Some(json!({ "4343": { "actions": [{ "action": "scene", "scene": "je-pars" }] } })),
-    );
+    let app = test_app(None);
     let (status, body) = put(
         &app,
         "je-pars",
@@ -325,23 +194,5 @@ async fn leaving_turns_off_the_ac_and_closes_the_shutters() {
         results[4],
         json!({ "action": leave[4], "ok": false, "code": "not_found" }),
         "no such shutter"
-    );
-
-    let (status, _) = common::send(
-        &app,
-        Method::POST,
-        "/api/ir/key",
-        Some(common::TEST_IR_TOKEN),
-        Some(json!({ "code": 4343, "value": 1 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    let fired = log.line_with(&["IR key fired", "code=4343"]);
-    let line = tokio::time::timeout(std::time::Duration::from_secs(10), fired)
-        .await
-        .expect("the key's actions ran");
-    assert!(
-        line.contains("Cover") && line.contains("8.8.8.8"),
-        "the scene's actions ran: {line}"
     );
 }

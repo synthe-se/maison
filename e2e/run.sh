@@ -2,7 +2,8 @@
 # One scenario against the real Rust backend on a throwaway root: no real device files
 # (nothing on the LAN is touched), the built web app served by the backend. On localhost:
 # passkeys need a secure context and a domain (never an IP). Accounts come from invitations
-# made with `maison-backend invite`, as on the Pi (lib.ts `invitation`).
+# made with `maison-backend invite`, as on a host (lib.ts `invitation`). MAISON_SOURCE_ROOT names
+# the throwaway root, so the backend reads no .env but that root's: never this checkout's.
 # Needs: `cargo build --manifest-path backend/Cargo.toml` and `cd web && bun run build` first.
 set -eu
 cd "$(dirname "$0")"

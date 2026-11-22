@@ -30,13 +30,13 @@ pub(super) fn same_event(skipped: Timestamp, at: Timestamp) -> bool {
     (at - skipped).abs() < SAME_EVENT
 }
 
-/// A skip whose occurrence is over at `now` (passed while the Pi was down or its clock not
+/// A skip whose occurrence is over at `now` (passed while the host was down or its clock not
 /// trusted): it would otherwise skip nothing, forever.
 pub(super) fn skip_over(skipped: Timestamp, now: Timestamp) -> bool {
     now - skipped >= SAME_EVENT
 }
 
-/// How far back the scheduler looks, whatever its last look: the Pi boots on the time it
+/// How far back the scheduler looks, whatever its last look: the host boots on the time it
 /// last saw (swclock, no RTC) and NTP then steps the clock weeks ahead, which must not
 /// replay every sunrise and sunset in between.
 const CATCH_UP: SignedDuration = SignedDuration::from_mins(5);
@@ -280,7 +280,7 @@ pub(super) mod tests {
 
     #[test]
     fn a_clock_stepped_weeks_ahead_replays_nothing() {
-        // the Pi booted on 14 August (swclock), then NTP jumped to 2 October at 21:25 UTC
+        // the host booted on 14 August (swclock), then NTP jumped to 2 October at 21:25 UTC
         let since = utc("2026-08-14T20:43:37Z");
         assert!(due(&BOTH, &paris(), since, utc("2026-10-02T21:25:44Z")).is_none());
         // an event a minute before the jump is still kept, alone

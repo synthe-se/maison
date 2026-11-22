@@ -3,8 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The tai chi choreography: the rabbit's button on the dashboard and the remote's « Taichi »
-/// key send it (`POST /api/nabaztag/ctl`, checked by the backend's allow-list).
+/// The tai chi choreography: the rabbit's button on the dashboard sends it (`POST /api/nabaztag/ctl`, checked by the backend's allow-list).
 pub const TAICHI: &str = "chor taichi";
 
 /// `POST /api/nabaztag/ctl`.

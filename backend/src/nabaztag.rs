@@ -8,6 +8,7 @@
 //! tomorrow's as the ear position ([`NabaztagManager::follow_tempo`]: when
 //! Tempo's answer changes, when the day turns, and every hour).
 
+use crate::error::OrRefused;
 use std::{path::Path, sync::Arc, time::Duration};
 
 use maison_api::tempo::Color;
@@ -147,10 +148,7 @@ impl NabaztagManager {
     /// Checked where it came in (the file by `Checked`, the environment by `new`).
     /// No host yet (`NABAZTAG_HOST` or the file): the coded `not_configured`.
     async fn host(&self) -> Result<String, AppError> {
-        self.config()
-            .await
-            .host
-            .ok_or_else(|| Refusal::NotConfigured.into())
+        self.config().await.host.or_not_configured()
     }
 
     /// Sends one garenne control command to the rabbit. Fire-and-forget by
@@ -391,10 +389,7 @@ mod tests {
     async fn refusals_are_coded() {
         let dir = crate::util::test_dir();
         let manager = NabaztagManager::new(&dir.path().join("nabaztag.json"), None).unwrap();
-        let code = |error: AppError| match error {
-            AppError::Coded { code, .. } => code,
-            other => panic!("uncoded: {other}"),
-        };
+        let code = |error: AppError| error.code();
         assert_eq!(
             code(manager.send_command("conf x").await.unwrap_err()),
             "invalid"

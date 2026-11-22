@@ -224,20 +224,29 @@ impl Words {
     /// « jeu. 12 nov. », « Thu, Nov 12 »: the web's `shortDay` (Intl's short weekday, day,
     /// short month).
     pub fn short_day(&self, day: Date) -> String {
-        let (i, d, m) = (weekday0(day), day.day(), month0(day));
-        match self.lang {
-            Lang::Fr => format!("{} {d} {}", WEEKDAYS_SHORT_FR[i], MONTHS_FR[m]),
-            Lang::En => format!("{}, {} {d}", WEEKDAYS_SHORT_EN[i], MONTHS_EN[m]),
-        }
+        let fr = (&WEEKDAYS_SHORT_FR, &MONTHS_FR, "1");
+        self.dated(day, fr, (&WEEKDAYS_SHORT_EN, &MONTHS_EN))
     }
 
     /// « samedi 31 octobre », « samedi 1er novembre », « Saturday, October 31 »: the clock's date.
     pub fn long_date(&self, day: Date) -> String {
+        let fr = (&WEEKDAYS_FR, &MONTHS_LONG_FR, "1er");
+        self.dated(day, fr, (&WEEKDAYS_EN, &MONTHS_LONG_EN))
+    }
+
+    /// A weekday, a day and a month in each language's order, from the tables given; French
+    /// says the first of a month its own way (`first`).
+    fn dated(
+        &self,
+        day: Date,
+        (fr_days, fr_months, first): (&[&str; 7], &[&str; 12], &str),
+        (en_days, en_months): (&[&str; 7], &[&str; 12]),
+    ) -> String {
         let (i, d, m) = (weekday0(day), day.day(), month0(day));
         match self.lang {
-            Lang::Fr if d == 1 => format!("{} 1er {}", WEEKDAYS_FR[i], MONTHS_LONG_FR[m]),
-            Lang::Fr => format!("{} {d} {}", WEEKDAYS_FR[i], MONTHS_LONG_FR[m]),
-            Lang::En => format!("{}, {} {d}", WEEKDAYS_EN[i], MONTHS_LONG_EN[m]),
+            Lang::Fr if d == 1 => format!("{} {first} {}", fr_days[i], fr_months[m]),
+            Lang::Fr => format!("{} {d} {}", fr_days[i], fr_months[m]),
+            Lang::En => format!("{}, {} {d}", en_days[i], en_months[m]),
         }
     }
 

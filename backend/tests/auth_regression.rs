@@ -385,7 +385,7 @@ async fn a_change_from_another_site_is_refused() {
 }
 
 #[tokio::test]
-async fn the_lan_reaches_only_the_ir_bridge() {
+async fn the_lan_reaches_only_health() {
     let app = maison_backend::build_app_parts_from_config(std::sync::Arc::new(
         common::isolated_config("maison-auth"),
     ))
@@ -397,13 +397,6 @@ async fn the_lan_reaches_only_the_ir_bridge() {
     let (s, _, _) =
         common::respond(&app, common::request(Method::GET, "/health", None, None)).await;
     assert_eq!(s, StatusCode::OK);
-    let mut key = common::request(Method::POST, "/api/ir/key", None, Some(json!({})));
-    key.headers_mut().insert(
-        "authorization",
-        format!("Bearer {}", common::TEST_IR_TOKEN).parse().unwrap(),
-    );
-    let (s, _, _) = common::respond(&app, key).await;
-    assert_ne!(s, StatusCode::FORBIDDEN, "the IR bridge passes the guard");
 }
 
 #[tokio::test]
@@ -586,53 +579,6 @@ async fn a_change_whose_origin_is_not_this_site_is_refused_without_a_host_too() 
     )
     .await;
     assert_eq!(s, StatusCode::OK, "PUBLIC_URL's origin");
-}
-
-#[tokio::test]
-async fn the_ir_bridge_is_refused_through_the_tunnel() {
-    let app = house();
-    let mut key = common::request(
-        Method::POST,
-        "/api/ir/key",
-        Some(common::TEST_IR_TOKEN),
-        Some(json!({"code": 1, "value": 1})),
-    );
-    key.headers_mut()
-        .insert("cf-connecting-ip", "203.0.113.9".parse().unwrap());
-    let (s, _, v) = common::respond(&app, key).await;
-    assert_eq!(
-        (s, v["code"].as_str()),
-        (StatusCode::FORBIDDEN, Some("lan_only"))
-    );
-}
-
-#[tokio::test]
-async fn wrong_machine_tokens_make_the_address_wait() {
-    let app = house();
-    for _ in 0..10 {
-        let (s, _) = common::send(
-            &app,
-            Method::POST,
-            "/api/ir/key",
-            Some("wrong"),
-            Some(json!({"code": 1, "value": 1})),
-        )
-        .await;
-        assert_eq!(s, StatusCode::UNAUTHORIZED);
-    }
-    let (s, v) = common::send(
-        &app,
-        Method::POST,
-        "/api/ir/key",
-        Some(common::TEST_IR_TOKEN),
-        Some(json!({"code": 1, "value": 1})),
-    )
-    .await;
-    assert_eq!(
-        (s, v["code"].as_str()),
-        (StatusCode::TOO_MANY_REQUESTS, Some("too_many_attempts")),
-        "even the right token waits"
-    );
 }
 
 #[tokio::test]

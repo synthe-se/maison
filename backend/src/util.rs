@@ -9,7 +9,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-/// The house's time zone (never `jiff::tz::TimeZone::system()`: UTC on the Pi), said once in
+/// The house's time zone (never `jiff::tz::TimeZone::system()`: UTC on the host), said once in
 /// the API crate.
 pub use maison_api::{HOUSE_TZ, HOUSE_TZ_NAME};
 
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn casing_offences_name_every_snake_or_non_ascii_key() {
-        let fine = serde_json::json!({ "peakStart": "06:00", "probabilities": { "BLUE": 1 }, "keymap": { "353": {} }, "x": [{ "a1": 1 }] });
+        let fine = serde_json::json!({ "peakStart": "06:00", "probabilities": { "BLUE": 1 }, "points": { "353": {} }, "x": [{ "a1": 1 }] });
         assert!(casing_offences(&fine).is_empty());
         let bad = serde_json::json!({ "peak_start": 1, "days": [{ "dateDébut": 1, "Name": 2 }], "ok": { "raw_dps": {} } });
         let mut offences = casing_offences(&bad);

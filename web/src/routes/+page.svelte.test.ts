@@ -35,9 +35,7 @@ describe('dashboard', () => {
 		for (let i = 1; i < els.length; i++)
 			expect(els[i - 1].compareDocumentPosition(els[i]) & Node.DOCUMENT_POSITION_FOLLOWING, order[i]).toBeTruthy();
 		await expect.element(page.getByRole('article', { name: 'Distributeur' })).toBeVisible();
-		// the remote's keymap has its own destination: not on the home
-		for (const name of [m.remote_title(), m.tv_title(), m.android_tv_title()]) await expect.element(h2(name)).not.toBeInTheDocument();
-		expect(document.querySelector('main a[href="/remote"], .dashboard a[href="/remote"]')).toBeNull();
+		for (const name of [m.tv_title(), m.android_tv_title()]) await expect.element(h2(name)).not.toBeInTheDocument();
 	});
 
 	it('leaves out what the house does not have (no rabbit)', async () => {

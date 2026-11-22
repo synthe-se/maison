@@ -1,7 +1,7 @@
 // What the interface remembers about itself: the theme, the toasts, and the two live regions
 // that say each outcome once (the layout mounts them, only their text changes).
 
-import { haptic, FAILURE } from '#lib/haptics.ts';
+import { CONFIRM, FAILURE, haptic } from '#lib/haptics.ts';
 import { errorText } from '#lib/errors.ts';
 import { stored, text as words } from '#lib/stored.ts';
 import { PUBLIC_THEME_KEY } from '$app/env/public';
@@ -54,6 +54,12 @@ class Ui {
 	say(text: string) {
 		this.polite = '';
 		queueMicrotask(() => (this.polite = text));
+	}
+
+	/** What was asked is done: felt, and said in a toast. */
+	done(text: string): number {
+		haptic(CONFIRM);
+		return this.toast(text);
 	}
 
 	/** A short message under the fingers, read once. Errors stay until dismissed. Returns its

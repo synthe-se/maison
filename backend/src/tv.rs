@@ -30,6 +30,7 @@
 //! off both go through infrared, whose receiver stays live at every depth and
 //! keeps working when the JointSPACE server has crashed. See `philips_ir`.
 
+use crate::error::OrRefused;
 use std::{
     path::Path,
     sync::{
@@ -51,9 +52,9 @@ use tokio::{
 
 use crate::{
     AppState,
+    actions::{Resolve, SwitchState},
     broadlink::BroadlinkManager,
-    error::{AppError, Refusal},
-    ir::{Resolve, SwitchState},
+    error::AppError,
     json_config::{Checked, JsonConfig},
     net::{self, device_host, device_ipv4, unreachable},
     philips_ir,
@@ -116,7 +117,7 @@ impl Endpoint {
 
 /// Remote-control keys accepted by `/6/input/key`: an enum, as `Endpoint`, so an unknown key
 /// name is a rejected request (a step towards a dead server), never sent.
-pub use maison_api::remote::TvKey;
+pub use maison_api::tv::TvKey;
 
 /// A key's wire name.
 trait Wire {
@@ -197,10 +198,10 @@ fn probe_from_error(kind: std::io::ErrorKind) -> Probe {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TvConfig {
-    /// TV address, e.g. `192.168.1.52`.
+    /// TV address, e.g. `192.168.1.31`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    /// Broadlink IR blaster that fronts the set, e.g. `192.168.1.73`. Without
+    /// Broadlink IR blaster that fronts the set, e.g. `192.168.1.32`. Without
     /// it the set cannot be powered on or off at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ir_blaster_host: Option<String>,
@@ -318,10 +319,7 @@ impl TvManager {
 
     /// Checked where it came in (`Checked`), not again here.
     async fn host(&self) -> Result<String, AppError> {
-        self.config()
-            .await
-            .host
-            .ok_or_else(|| Refusal::NotConfigured.into())
+        self.config().await.host.or_not_configured()
     }
 
     /// Waits out the inter-request gap, then reports the moment the caller may
@@ -581,11 +579,7 @@ impl TvManager {
 
     /// Fires one Philips RC5 power code through the configured blaster.
     async fn send_power_code(&self, command: u8) -> Result<(), AppError> {
-        let host = self
-            .config()
-            .await
-            .ir_blaster_host
-            .ok_or(Refusal::NotConfigured)?;
+        let host = self.config().await.ir_blaster_host.or_not_configured()?;
 
         // RC5 wants the toggle bit to flip between presses; a receiver seeing
         // it unchanged reads the second frame as a held key and drops it.
@@ -633,7 +627,7 @@ fn power_from_answer(answer: Result<serde_json::Value, AppError>) -> TvPower {
 }
 
 /// Switches the set on or off, or flips it; on, it is routed to the box when asked. The
-/// one way both the dashboard and the IR remote power the set.
+/// one way both the dashboard and a scene power the set.
 pub async fn tv_power(
     state: &AppState,
     switch: SwitchState,
@@ -810,8 +804,8 @@ mod tests {
 
         manager
             .set_config(TvConfig {
-                host: Some("192.168.1.52".to_string()),
-                ir_blaster_host: Some("192.168.1.73".to_string()),
+                host: Some("192.168.1.31".to_string()),
+                ir_blaster_host: Some("192.168.1.32".to_string()),
             })
             .await
             .expect("saved");
@@ -820,12 +814,12 @@ mod tests {
             .expect("reload")
             .config()
             .await;
-        assert_eq!(reloaded.host.as_deref(), Some("192.168.1.52"));
-        assert_eq!(reloaded.ir_blaster_host.as_deref(), Some("192.168.1.73"));
+        assert_eq!(reloaded.host.as_deref(), Some("192.168.1.31"));
+        assert_eq!(reloaded.ir_blaster_host.as_deref(), Some("192.168.1.32"));
 
         let rejected = manager
             .set_config(TvConfig {
-                host: Some("192.168.1.52".to_string()),
+                host: Some("192.168.1.31".to_string()),
                 ir_blaster_host: Some("nope".to_string()),
             })
             .await;
@@ -839,11 +833,11 @@ mod tests {
         let path = dir.path().join("tv.json");
         std::fs::write(
             &path,
-            r#"{"host": "192.168.1.52", "boxHost": "192.168.1.153", "boxWakeApp": "YouTube"}"#,
+            r#"{"host": "192.168.1.31", "boxHost": "192.168.1.30", "boxWakeApp": "YouTube"}"#,
         )
         .unwrap();
         let manager = TvManager::new(&path, test_broadlink(&dir)).expect("loads");
-        assert_eq!(manager.config().await.host.as_deref(), Some("192.168.1.52"));
+        assert_eq!(manager.config().await.host.as_deref(), Some("192.168.1.31"));
     }
 
     #[tokio::test]
@@ -852,7 +846,7 @@ mod tests {
         let manager =
             TvManager::new(&dir.path().join("tv.json"), test_broadlink(&dir)).expect("manager");
         let base = TvConfig {
-            host: Some("192.168.1.52".into()),
+            host: Some("192.168.1.31".into()),
             ..TvConfig::default()
         };
         let bad = [
@@ -861,7 +855,7 @@ mod tests {
                 ..base.clone()
             },
             TvConfig {
-                host: Some("192.168.1.52/6/system#".into()),
+                host: Some("192.168.1.31/6/system#".into()),
                 ..base.clone()
             },
             TvConfig {

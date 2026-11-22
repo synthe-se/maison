@@ -20,12 +20,12 @@ async fn configuring_devices_is_admin_only() {
         (
             Method::PUT,
             "/api/tv/config",
-            Some(json!({"host": "192.168.1.52"})),
+            Some(json!({"host": "192.168.1.31"})),
         ),
         (
             Method::PUT,
             "/api/androidtv/config",
-            Some(json!({"host": "192.168.1.153"})),
+            Some(json!({"host": "192.168.1.30"})),
         ),
         (Method::POST, "/api/androidtv/pair/start", None),
         (
@@ -117,7 +117,7 @@ async fn only_lan_devices_can_be_configured() {
     }
     // the box's DIAL app goes into a URL path
     for app_name in ["../x", "YouTube/../../admin", "a?b", "a b"] {
-        let body = json!({"host": "192.168.1.153", "wakeApp": app_name});
+        let body = json!({"host": "192.168.1.30", "wakeApp": app_name});
         assert_eq!(
             configure(&app, "/api/androidtv/config", body).await,
             StatusCode::BAD_REQUEST,
@@ -125,7 +125,7 @@ async fn only_lan_devices_can_be_configured() {
         );
     }
 
-    let good = json!({"host": "192.168.1.52", "irBlasterHost": "192.168.1.73"});
+    let good = json!({"host": "192.168.1.31", "irBlasterHost": "192.168.1.32"});
     assert_eq!(
         configure(&app, "/api/tv/config", good).await,
         StatusCode::OK
@@ -143,7 +143,7 @@ async fn only_lan_devices_can_be_configured() {
         configure(
             &app,
             "/api/androidtv/config",
-            json!({"host": "192.168.1.153", "port": 5555, "wakeApp": "YouTube"})
+            json!({"host": "192.168.1.30", "port": 5555, "wakeApp": "YouTube"})
         )
         .await,
         StatusCode::OK

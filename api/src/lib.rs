@@ -2,6 +2,7 @@
 //! backend serializes these types, the wall frame's native interface (`frame/ui`) deserializes
 //! them. JSON keys are camelCase English (`rename_all`), values keep their own spelling.
 
+pub mod actions;
 pub mod androidtv;
 pub mod cats;
 pub mod climate;
@@ -15,7 +16,6 @@ pub mod meross;
 pub mod nabaztag;
 pub mod paces;
 pub mod photos;
-pub mod remote;
 pub mod scenes;
 pub mod screens;
 pub mod sun;

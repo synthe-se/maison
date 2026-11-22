@@ -27,27 +27,18 @@ fn app(plugs: &[&str]) -> Router {
     common::app(config)
 }
 
-async fn member(
-    app: &Router,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    common::send(app, method, path, Some(&common::member_token()), body).await
-}
-
 #[tokio::test]
 async fn a_plug_off_the_network_reads_offline_and_refuses_commands() {
     let app = app(&[LOOPBACK]);
 
-    let (status, body) = member(&app, Method::GET, "/api/meross", None).await;
+    let (status, body) = common::send_member(&app, Method::GET, "/api/meross", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body,
         json!({ "success": true, "devices": [{ "id": LOOPBACK, "name": "Desk plug", "ip": LOOPBACK, "isOnline": false, "isOn": false, "lastPing": 0 }], "total": 1, "message": "Meross devices list retrieved" })
     );
 
-    let (status, body) = member(
+    let (status, body) = common::send_member(
         &app,
         Method::GET,
         &format!("/api/meross/{LOOPBACK}/status"),
@@ -62,7 +53,7 @@ async fn a_plug_off_the_network_reads_offline_and_refuses_commands() {
     assert_eq!(body["status"]["online"], json!(false));
     assert_eq!(body["status"]["electricity"], json!(null));
 
-    let (status, body) = member(
+    let (status, body) = common::send_member(
         &app,
         Method::POST,
         &format!("/api/meross/{LOOPBACK}/toggle"),
@@ -74,7 +65,7 @@ async fn a_plug_off_the_network_reads_offline_and_refuses_commands() {
         (StatusCode::SERVICE_UNAVAILABLE, Some(false))
     );
     for path in ["electricity", "consumption"] {
-        let (status, _) = member(
+        let (status, _) = common::send_member(
             &app,
             Method::GET,
             &format!("/api/meross/{LOOPBACK}/{path}"),
@@ -83,7 +74,7 @@ async fn a_plug_off_the_network_reads_offline_and_refuses_commands() {
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
     }
-    let (status, _) = member(
+    let (status, _) = common::send_member(
         &app,
         Method::POST,
         &format!("/api/meross/{LOOPBACK}/dnd"),
@@ -96,7 +87,7 @@ async fn a_plug_off_the_network_reads_offline_and_refuses_commands() {
 #[tokio::test]
 async fn unknown_plugs_bad_bodies_and_strangers_are_refused() {
     let app = app(&[]);
-    let (status, body) = member(
+    let (status, body) = common::send_member(
         &app,
         Method::POST,
         "/api/meross/10.0.0.1/toggle",
@@ -107,7 +98,7 @@ async fn unknown_plugs_bad_bodies_and_strangers_are_refused() {
         (status, body["code"].as_str()),
         (StatusCode::NOT_FOUND, Some("not_found"))
     );
-    let (status, _) = member(
+    let (status, _) = common::send_member(
         &app,
         Method::POST,
         "/api/meross/10.0.0.1/toggle",
@@ -118,12 +109,13 @@ async fn unknown_plugs_bad_bodies_and_strangers_are_refused() {
     let (status, _) = common::send(&app, Method::GET, "/api/meross", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     // the separate on/off routes are gone: toggle says which
-    let (status, _) = member(&app, Method::POST, "/api/meross/10.0.0.1/on", None).await;
+    let (status, _) =
+        common::send_member(&app, Method::POST, "/api/meross/10.0.0.1/on", None).await;
     assert!(
         status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
         "{status}"
     );
-    let (status, _) = member(&app, Method::GET, "/api/meross/stats", None).await;
+    let (status, _) = common::send_member(&app, Method::GET, "/api/meross/stats", None).await;
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,

@@ -18,7 +18,7 @@ maison-api = { path = "../api" }
 # passkeys (docs/passkeys.md): usernameless sign-in needs `conditional-ui`
 webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui"] }
 webauthn-rs-proto = "0.6.2"   # the same version webauthn-rs pins; for the options it builds
-# webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the Pi
+# webauthn-rs-core links OpenSSL: built from source, so the static musl binary for the host
 # carries it (cargo-zigbuild compiles it with zig cc)
 openssl = { version = "=0.10.82", features = ["vendored"] }
 # http2: the edge listener (edge.rs) speaks HTTP/2 to a client that offers it (its ALPN)
@@ -49,7 +49,7 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "q
 rbroadlink = { git = "https://github.com/uplg/rbroadlink", rev = "713a5ef7a0225888ef466e2d0aab4851ea738b17" }
 # ADB (Android TV box): the device authenticates the client by having it sign
 # a 20-byte token with RSA-2048, so a pure-Rust RSA is needed to speak the
-# protocol without shipping the adb binary to the Pi.
+# protocol without shipping the adb binary to the host.
 # Android TV Remote v2: mutual TLS with a self-signed client certificate we
 # generate ourselves, and the pairing secret is a SHA-256 over both public
 # keys — hence rcgen to mint the cert and x509-parser to read the TV's.

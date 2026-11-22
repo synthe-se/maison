@@ -273,7 +273,7 @@ pub struct Identity {
 
 impl Identity {
     /// Loads the stored identity, minting one on first use. Generation is
-    /// slow on an ARMv6 Pi, so callers should keep this off the async runtime.
+    /// slow on a small host, so callers should keep this off the async runtime.
     /// A torn file is replaced (pairing again is the price), never a dead end.
     pub fn load_or_create(path: &Path) -> Result<Self, AppError> {
         store::load_or_create_secret(

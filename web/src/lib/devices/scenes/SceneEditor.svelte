@@ -1,7 +1,6 @@
 <script lang="ts">
-	// One scene's form, in a sheet (an admin's): its name, its icon, its ordered actions (the
-	// remote configurator's own list, ActionList: a scene never holds another scene), saved
-	// whole; an existing scene can be deleted (confirmed: it cannot be undone, § 6).
+	// One scene's form, in a sheet (an admin's): its name, its icon, its ordered actions
+	// (ActionList), saved whole; an existing scene can be deleted (confirmed: it cannot be undone, § 6).
 	import { m } from '#lib/paraglide/messages.js';
 	import { MAX_ACTIONS, MAX_NAME } from '#lib/limits.ts';
 	import type { Draft } from '#lib/draft.svelte.ts';
@@ -10,12 +9,11 @@
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Select from '#lib/components/Select.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import ActionList from '#lib/devices/remote/ActionList.svelte';
-	import { SCENE_TYPES, type Sources, actionsProblem } from '#lib/devices/remote/actions.ts';
+	import ActionList from '#lib/devices/actions/ActionList.svelte';
+	import { type Sources, actionsProblem } from '#lib/devices/actions/actions.ts';
 	import { SCENE_ICONS, slug, type SceneForm } from './scenes.ts';
 
 	interface Props {
@@ -71,8 +69,7 @@
 		await saving.run(
 			() => scenesApi.save(saved),
 			() => {
-				haptic(CONFIRM);
-				ui.toast(m.scenes_saved({ name: saved.name }));
+				ui.done(m.scenes_saved({ name: saved.name }));
 				onsaved();
 			},
 			'',
@@ -120,14 +117,13 @@
 		bind:this={list}
 		bind:rows={form.rows}
 		{sources}
-		types={SCENE_TYPES}
 		problem={problemAt === 'actions' ? `${id}-problem` : undefined}
 		onedit={edited}
 	/>
 
 	<p class="form-error" id="{id}-problem">{problem || saving.error}</p>
 
-	<div class="foot">
+	<div class="foot actions">
 		{#if !isNew}
 			<ConfirmDialog
 				danger
@@ -153,12 +149,6 @@
 	.editor {
 		display: grid;
 		gap: var(--s-5);
-	}
-	.foot {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--s-2);
-		align-items: center;
 	}
 	.foot .grow {
 		flex: 1;

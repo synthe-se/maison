@@ -3,10 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::remote::AndroidKey;
-
 /// The apps worth a shortcut, `(package, label)`, when the box's settings name no favourites
-/// (`favoriteApps`): its tile's chips and the remote's pickers offer these.
+/// (`favoriteApps`): its tile's chips and the scenes' pickers offer these.
 pub const SHORTCUTS: &[(&str, &str)] = &[
     ("org.smarttube.beta", "SmartTube"),
     ("studio.kahn.iris.tv", "Iris"),
@@ -19,7 +17,7 @@ pub struct LaunchRequest {
     pub package: String,
     /// Power the television on and route it to the box first: launching an app on a set that
     /// is off or on another input is rarely what is meant.
-    #[serde(default = "crate::remote::default_true")]
+    #[serde(default = "crate::actions::default_true")]
     pub ensure_tv_on: bool,
 }
 
@@ -73,4 +71,36 @@ pub struct CleanedPackage {
 pub struct Cleanup {
     pub packages: Vec<CleanedPackage>,
     pub launcher: bool,
+}
+
+/// Remote-control keys, mapped to Android keycodes. An enum rather than a
+/// string so no caller can smuggle shell syntax into `input keyevent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AndroidKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    Ok,
+    Back,
+    Home,
+    Menu,
+    Search,
+    VolumeUp,
+    VolumeDown,
+    Mute,
+    PlayPause,
+    Play,
+    Pause,
+    Stop,
+    Next,
+    Previous,
+    Rewind,
+    FastForward,
+    ChannelUp,
+    ChannelDown,
+    Power,
+    Sleep,
+    Wakeup,
 }

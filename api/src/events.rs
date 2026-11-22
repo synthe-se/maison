@@ -31,8 +31,6 @@ events! {
     MEROSS = "meross";
     /// The last climate order.
     CLIMATE = "broadlink:climate-state";
-    /// A key of the remote was pressed.
-    IR_KEYS = "ir:recent";
     /// The Android TV box (its power).
     ANDROID_TV = "androidtv";
     /// The frame's photos (one added, one removed).

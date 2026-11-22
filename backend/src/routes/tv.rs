@@ -11,9 +11,9 @@ use serde::Serialize;
 
 use crate::{
     AppState,
+    actions::Resolve,
     auth::AdminUser,
     error::AppError,
-    ir::Resolve,
     routes::{Answer, Reply},
     tv::{self, TvAmbilight, TvConfig, TvPower, TvStatus, TvVolume},
 };

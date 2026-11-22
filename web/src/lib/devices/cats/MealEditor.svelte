@@ -87,7 +87,7 @@
 		<p class="form-error" id="{id}-error">{error}</p>
 	</div>
 
-	<div class="enabled">
+	<div class="enabled stack tight">
 		<Toggle label={m.meal_plan_enable_meal()} checked={form.enabled} onchange={(v) => (form.enabled = v)} />
 		<p class="hint">{m.meal_plan_disable_temporarily()}</p>
 	</div>
@@ -112,10 +112,6 @@
 	.days :global(.segmented .btn) {
 		padding: 0;
 		font: var(--t-meta);
-	}
-	.enabled {
-		display: grid;
-		gap: var(--s-1);
 	}
 	.enabled :global(.toggle) {
 		display: flex;

@@ -2,9 +2,8 @@
 	// The dashboard: « Maintenant » (a summary of the house that leads to the groups), the
 	// scenes, then the groups in a fixed order, the owner's (docs/ux.md § 5): Tempo, the lamps,
 	// the cats' corner, the air conditioning, the shutters, the plugs, the rabbit, then « Télé »
-	// (the TV and the box, little used) at the bottom; the IR remote's keymap has its own
-	// destination. Spatial memory: nothing reorders itself. Compact on a
-	// phone: each group one framed list of 56 px rows (docs/ux.md § 1).
+	// (the TV and the box, little used) at the bottom. Spatial memory: nothing reorders itself.
+	// Compact on a phone: each group one framed list of 56 px rows (docs/ux.md § 1).
 	import { m } from '#lib/paraglide/messages.js';
 	import PageHead from '#lib/components/PageHead.svelte';
 	import NowStrip from '#lib/devices/now/NowStrip.svelte';

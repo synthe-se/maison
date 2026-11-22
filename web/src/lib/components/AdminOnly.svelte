@@ -13,13 +13,8 @@
 {#if session.admin}
 	{@render children?.()}
 {:else if reason !== false}
-	<p class="hint admin-only"><Icon name="lock" size={14} />{reason ?? m.code_forbidden()}</p>
+	<p class="hint line"><Icon name="lock" size={14} />{reason ?? m.code_forbidden()}</p>
 {/if}
 
 <style>
-	.admin-only {
-		display: flex;
-		align-items: center;
-		gap: var(--s-2);
-	}
 </style>

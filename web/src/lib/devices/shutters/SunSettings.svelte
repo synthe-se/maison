@@ -31,7 +31,7 @@
 	}
 </script>
 
-<section class="sun" aria-labelledby="sun-{cover.id}">
+<section class="stack roomy" aria-labelledby="sun-{cover.id}">
 	<h4 id="sun-{cover.id}" class="label">{m.shutters_sun_title()}</h4>
 	<PlacePicker
 		place={place.data?.place ?? null}
@@ -85,10 +85,6 @@
 </section>
 
 <style>
-	.sun {
-		display: grid;
-		gap: var(--s-3);
-	}
 	.offset {
 		padding: var(--s-1) 0 var(--s-3) calc(var(--lead) + var(--s-3));
 		border-bottom: 1px solid var(--line);

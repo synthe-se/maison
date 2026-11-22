@@ -11,7 +11,7 @@ import BoxTile from './tv/BoxTile.svelte';
 const NAME = 'Philips 55PUS';
 const tvStatus = (over: Partial<TvStatus> = {}): TvStatusResponse => ({
 	success: true,
-	config: { host: '192.168.1.52' },
+	config: { host: '192.168.1.31' },
 	status: {
 		configured: true,
 		power: 'on',
@@ -23,7 +23,7 @@ const tvStatus = (over: Partial<TvStatus> = {}): TvStatusResponse => ({
 });
 const boxStatus = (over: Partial<AndroidTvStatus> = {}): AndroidTvStatusResponse => ({
 	success: true,
-	config: { host: '192.168.1.153' },
+	config: { host: '192.168.1.30' },
 	status: { configured: true, reachable: true, awake: true, currentApp: 'org.smarttube.beta', model: 'LEAP-S1', paired: true, ...over }
 });
 /** A keyboard activation of a key (a click with no pointer: sends once). */
@@ -34,15 +34,13 @@ const activate = (name: string) =>
 		.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
 
 describe('TvGroup (the dashboard group « Télé »)', () => {
-	it('the TV and the box under one title, each leading to its page; no remote keymap', async () => {
+	it('the TV and the box under one title, each leading to its page', async () => {
 		stubApi({ '/tv': tvStatus(), '/androidtv': boxStatus() });
 		const { container } = await render(TvGroup);
 		const group = page.getByRole('region', { name: m.tv_group_title() });
 		await expect.element(group.getByRole('link', { name: NAME })).toHaveAttribute('href', '/tv');
 		await expect.element(group.getByRole('link', { name: 'LEAP-S1' })).toHaveAttribute('href', '/androidtv');
 		expect(container.querySelectorAll('h2')).toHaveLength(1);
-		await expect.element(page.getByRole('link', { name: m.remote_title() })).not.toBeInTheDocument();
-		expect(container.querySelector('a[href="/remote"]')).toBeNull();
 	});
 
 	it('one device that cannot be read leaves the other one', async () => {

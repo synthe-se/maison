@@ -8,7 +8,6 @@
 	import { ui } from '#lib/ui.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Progress from '#lib/components/Progress.svelte';
 	import { sendPhotos, type Sending, type Sent } from './send.ts';
@@ -22,8 +21,7 @@
 
 	function outcome({ added, failed }: Sent) {
 		if (added) {
-			haptic(CONFIRM);
-			ui.toast(m.photos_added({ count: added }));
+			ui.done(m.photos_added({ count: added }));
 		}
 		// one warning per reason, however many photos it stopped
 		const reasons = new Map<string, string[]>();
@@ -104,12 +102,5 @@
 	}
 	.drop p {
 		margin: 0;
-	}
-	.file {
-		position: relative;
-	}
-	.file:focus-within {
-		outline: var(--focus-ring);
-		outline-offset: var(--focus-offset);
 	}
 </style>

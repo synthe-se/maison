@@ -459,9 +459,7 @@ fn straight_texture<'t>(
     creator: &'t TextureCreator<WindowContext>,
     pm: Pixmap,
 ) -> Result<Texture<'t>, Error> {
-    let (w, h) = (pm.width(), pm.height());
-    let mut data = pm.take();
-    for px in data.as_chunks_mut::<4>().0 {
+    repainted(creator, pm, |px| {
         let a = u16::from(px[3]);
         for c in &mut px[..3] {
             // a transparent pixel stays black
@@ -469,8 +467,7 @@ fn straight_texture<'t>(
                 .checked_div(a)
                 .map_or(0, |v| v.min(255) as u8);
         }
-    }
-    texture(creator, &data, w, h)
+    })
 }
 
 /// A white mask (tiny-skia's premultiplied pixels made straight: white, its coverage as
@@ -479,11 +476,18 @@ fn white_texture<'t>(
     creator: &'t TextureCreator<WindowContext>,
     pm: Pixmap,
 ) -> Result<Texture<'t>, Error> {
+    repainted(creator, pm, |px| px[..3].fill(255))
+}
+
+/// A pixmap as a texture, each of its RGBA pixels passed through `paint` first.
+fn repainted<'t>(
+    creator: &'t TextureCreator<WindowContext>,
+    pm: Pixmap,
+    paint: impl Fn(&mut [u8; 4]),
+) -> Result<Texture<'t>, Error> {
     let (w, h) = (pm.width(), pm.height());
     let mut data = pm.take();
-    for px in data.as_chunks_mut::<4>().0 {
-        px[..3].fill(255);
-    }
+    data.as_chunks_mut::<4>().0.iter_mut().for_each(paint);
     texture(creator, &data, w, h)
 }
 

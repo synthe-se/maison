@@ -26,30 +26,20 @@
 	let props: Props = $props();
 	const id = $props.id();
 	const locked = $derived(props.busy || !!props.reason);
+	/** What the two roots share (Bits types `single` and `multiple` apart: two elements). */
+	const root = $derived({ class: 'segmented', 'aria-labelledby': `${id}-label`, 'aria-describedby': props.describedby });
 </script>
 
-<div class="choices">
+<div class="choices stack">
 	<span class="label" class:sr-only={props.hideLabel} id="{id}-label">{props.label}</span>
 	{#if props.type === 'single'}
 		{@const p = props}
-		<ToggleGroup.Root
-			type="single"
-			class="segmented"
-			aria-labelledby="{id}-label"
-			aria-describedby={props.describedby}
-			bind:value={() => p.value ?? '', (v) => v && !locked && p.onchange(v as T)}
-		>
+		<ToggleGroup.Root type="single" {...root} bind:value={() => p.value ?? '', (v) => v && !locked && p.onchange(v as T)}>
 			{@render items()}
 		</ToggleGroup.Root>
 	{:else}
 		{@const p = props}
-		<ToggleGroup.Root
-			type="multiple"
-			class="segmented"
-			aria-labelledby="{id}-label"
-			aria-describedby={props.describedby}
-			bind:value={() => p.value, (v) => !locked && p.onchange(v as T[])}
-		>
+		<ToggleGroup.Root type="multiple" {...root} bind:value={() => p.value, (v) => !locked && p.onchange(v as T[])}>
 			{@render items()}
 		</ToggleGroup.Root>
 	{/if}
@@ -64,10 +54,6 @@
 {/snippet}
 
 <style>
-	.choices {
-		display: grid;
-		gap: var(--s-2);
-	}
 	.choices :global(.segmented) {
 		display: grid;
 		grid-auto-flow: column;

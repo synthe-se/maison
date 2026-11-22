@@ -1,7 +1,7 @@
 //! The wall frame's photos: JPEGs the browser already resized, kept as they came in a private
 //! directory (`photos/`, 0700, each file 0600 through `store.rs`), named by the SHA-256 of their
 //! bytes. The directory is the only index: there is nothing to fall out of step with it. This
-//! Pi never decodes a picture: what comes in is checked by its first and last bytes and its
+//! host never decodes a picture: what comes in is checked by its first and last bytes and its
 //! size, no more. A change is said on the event stream (`subscribe`).
 
 use std::{
@@ -113,7 +113,7 @@ impl PhotosManager {
     }
 
     /// Keeps `bytes`; the same bytes again are the photo already kept. Hashing and the fsyncs
-    /// run off the runtime: the Pi has one core.
+    /// run off the runtime: the host has one core.
     pub async fn add(&self, bytes: Bytes) -> Result<Photo, AppError> {
         if bytes.len() > MAX_PHOTO_BYTES {
             return Err(Refusal::TooLarge.into());

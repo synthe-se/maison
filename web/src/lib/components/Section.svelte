@@ -18,25 +18,16 @@
 	const id = $props.id();
 </script>
 
-<section class="section" class:tile aria-labelledby={id}>
-	<svelte:element this={`h${level}`} class={level === 2 ? 'group-title' : 'label'} {id} tabindex="-1" bind:this={heading}>
+<section class="section stack roomy" class:tile aria-labelledby={id}>
+	<svelte:element this={`h${level}`} class={level === 2 ? 'group-title line' : 'label line'} {id} tabindex="-1" bind:this={heading}>
 		{#if icon}<Icon name={icon} />{/if}{title}
 	</svelte:element>
 	{@render children()}
 </section>
 
 <style>
-	.section {
-		display: grid;
-		gap: var(--s-3);
-	}
 	.section.tile {
 		gap: var(--s-4);
-	}
-	.section > :first-child {
-		display: flex;
-		align-items: center;
-		gap: var(--s-2);
 	}
 	.section :global(.btn) {
 		min-height: var(--control-h);

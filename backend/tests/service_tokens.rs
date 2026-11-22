@@ -71,7 +71,6 @@ async fn a_service_token_never_administers() {
         (Method::GET, "/api/passkeys", None),
         (Method::POST, "/api/auth/verify", None),
         (Method::POST, "/api/auth/logout-everywhere", None),
-        (Method::GET, "/api/ir/keymap", None),
         (Method::POST, "/api/zigbee/lamps/pairing/start", None),
         (
             Method::PUT,

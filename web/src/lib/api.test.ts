@@ -7,7 +7,6 @@ import { hueLampsApi, zigbeeLampsApi } from './devices/lamps/api.ts';
 import { merossApi } from './devices/meross/api.ts';
 import { broadlinkApi } from './devices/climate/api.ts';
 import { tempoApi } from './devices/tempo/api.ts';
-import { irApi } from './devices/remote/api.ts';
 import { nabaztagApi } from './devices/nabaztag/api.ts';
 import { androidTvApi, tvApi } from './devices/tv/api.ts';
 import { shuttersApi } from './devices/shutters/api.ts';
@@ -179,10 +178,6 @@ const endpoints: [string, () => Promise<unknown>, string, unknown?][] = [
 	['tempo.forecast', () => tempoApi.forecast(), 'GET /tempo/forecast'],
 	['tempo.calendar', () => tempoApi.calendar(), 'GET /tempo/calendar'],
 	['tempo.calendar (a season)', () => tempoApi.calendar('2025-2026'), 'GET /tempo/calendar?season=2025-2026'],
-	['ir.keymap', () => irApi.keymap(), 'GET /ir/keymap'],
-	['ir.removeBinding', () => irApi.removeBinding(12), 'DELETE /ir/keymap/12'],
-	['ir.recent', () => irApi.recent(), 'GET /ir/recent'],
-	['ir.test', () => irApi.test([]), 'POST /ir/test', { actions: [] }],
 	['nabaztag.status', () => nabaztagApi.status(), 'GET /nabaztag'],
 	['people.remove', () => peopleApi.remove('alex'), 'DELETE /people/alex'],
 	['nabaztag.pushTempo (cached by default)', () => nabaztagApi.pushTempo(), 'POST /nabaztag/tempo/push', { forceRefresh: false }],
@@ -249,7 +244,7 @@ describe('a refusal as the server said it', () => {
 describe('path', () => {
 	it('encodes every interpolated value, so an id never breaks out of its segment', () => {
 		expect(path`/meross/${'a/b?c'}/status`).toBe('/meross/a%2Fb%3Fc/status');
-		expect(path`/ir/keymap/${12}`).toBe('/ir/keymap/12');
+		expect(path`/people/${12}`).toBe('/people/12');
 	});
 
 	it('is used by the wrappers', async () => {
@@ -270,15 +265,6 @@ describe('endpoints', () => {
 		expect(`${calls[0].init?.method} ${calls[0].url}`).toBe(`${method} /api${at}`);
 		// no body for a command without one
 		expect(calls[0].init?.body === undefined ? undefined : sentBody(calls[0])).toEqual(body);
-	});
-
-	it('sends an IR binding as the body itself', async () => {
-		const calls = stubFetch(() => jsonBody({ success: true }));
-		const binding = { name: 'Volume +', actions: [] } as unknown as Parameters<typeof irApi.setBinding>[1];
-		await irApi.setBinding(7, binding);
-		expect(calls[0].url).toBe('/api/ir/keymap/7');
-		expect(calls[0].init?.method).toBe('PUT');
-		expect(sentBody(calls[0])).toEqual(binding);
 	});
 
 	it('sends TV keys and config as given', async () => {

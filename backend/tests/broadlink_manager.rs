@@ -104,12 +104,12 @@ async fn setting_up_blasters_is_admin_only() {
         (
             Method::POST,
             "/api/broadlink/learn/ir",
-            Some(json!({"host": "192.168.1.73"})),
+            Some(json!({"host": "192.168.1.32"})),
         ),
         (
             Method::POST,
             "/api/broadlink/send",
-            Some(json!({"host": "192.168.1.73", "packetBase64": "AQ=="})),
+            Some(json!({"host": "192.168.1.32", "packetBase64": "AQ=="})),
         ),
         (
             Method::POST,
@@ -150,7 +150,7 @@ async fn blaster_addresses_outside_the_lan_are_refused() {
         "8.8.8.8",
         "169.254.169.254",
         "blaster.local",
-        "192.168.1.73:80",
+        "192.168.1.32:80",
     ] {
         let (status, body) = common::send_authed(
             &app,
@@ -189,10 +189,10 @@ async fn mitsubishi_takes_a_command_or_settings() {
     let app = test_app();
     let settings = json!({"mode": "cool", "temperature": 40, "fan": "auto", "vane": "swing"});
     for body in [
-        json!({"host": "192.168.1.73"}),
-        json!({"host": "192.168.1.73", "command": "state-off", "settings": settings}),
-        json!({"host": "192.168.1.73", "settings": settings}),
-        json!({"host": "192.168.1.73", "settings": {"mode": "turbo", "temperature": 20, "fan": "auto", "vane": "swing"}}),
+        json!({"host": "192.168.1.32"}),
+        json!({"host": "192.168.1.32", "command": "state-off", "settings": settings}),
+        json!({"host": "192.168.1.32", "settings": settings}),
+        json!({"host": "192.168.1.32", "settings": {"mode": "turbo", "temperature": 20, "fan": "auto", "vane": "swing"}}),
     ] {
         let (status, answer) = common::send_authed(
             &app,

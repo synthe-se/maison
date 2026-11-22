@@ -52,13 +52,15 @@ export function soonestMove(covers: Shutter[]): Shutter | undefined {
 		.toSorted((a, b) => sooner(a.next, b.next))[0]?.c;
 }
 
+/** A move said with its time: one sentence when it opens, another when it closes. */
+type Sentence = (at: { time: string }) => string;
+const worded = (e: Move, opens: Sentence, closes: Sentence) => (e.event === 'open' ? opens : closes)({ time: clock(new Date(e.at)) });
+
 /** The next move in words: « Fermeture 20:24 », or « Fermeture de 20:24 sautée ». */
 export function nextMove(c: Shutter): string | undefined {
 	const e = nextEvent(c);
 	if (!e) return undefined;
-	const time = clock(new Date(e.at));
-	if (e.skipped) return e.event === 'open' ? m.shutters_open_skipped({ time }) : m.shutters_close_skipped({ time });
-	return e.event === 'open' ? m.shutters_fact_open({ time }) : m.shutters_fact_close({ time });
+	return e.skipped ? worded(e, m.shutters_open_skipped, m.shutters_close_skipped) : worded(e, m.shutters_fact_open, m.shutters_fact_close);
 }
 
 /** « Ne pas fermer ce soir », « Ne pas ouvrir demain matin »: skipping the next move once. */
@@ -75,8 +77,11 @@ export function skipLabel(event: SunEvent, at: string): string {
 export function moveSentence(c: Shutter): string | undefined {
 	const e = nextEvent(c);
 	if (!e || e.skipped) return undefined;
-	const time = clock(new Date(e.at));
-	return e.event === 'open' ? m.shutters_will_open({ name: c.name, time }) : m.shutters_will_close({ name: c.name, time });
+	return worded(
+		e,
+		({ time }) => m.shutters_will_open({ name: c.name, time }),
+		({ time }) => m.shutters_will_close({ name: c.name, time })
+	);
 }
 
 /** The schedule with one event turned on or off (a newly enabled one gets its default offset). */

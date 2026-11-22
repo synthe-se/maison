@@ -15,6 +15,7 @@ pub mod feeder;
 mod parse;
 mod worker;
 
+use crate::error::OrRefused;
 use std::{
     collections::HashMap,
     net::Ipv4Addr,
@@ -375,9 +376,7 @@ impl TuyaManager {
     }
 
     fn device(&self, device_id: &str) -> Result<&ManagedTuyaDevice, AppError> {
-        self.devices
-            .get(device_id)
-            .ok_or_else(|| Refusal::NotFound.into())
+        self.devices.get(device_id).or_not_found()
     }
 
     /// The device, if it is of the `expected` type: another cannot do what was asked.
@@ -823,14 +822,8 @@ pub(crate) mod tests {
     /// Installs a worker for `f` the way `connect_device` does, connected, whose task
     /// panics: its id and its task.
     async fn panicking_worker(manager: &TuyaManager) -> (u64, tokio::task::JoinHandle<()>) {
-        let device = manager.device("f").unwrap();
-        let (handle, parts) = manager.new_worker(device);
-        let id = handle.id;
-        device.link.send_modify(|link| {
-            link.worker = Some(id);
-            link.connected = true;
-        });
-        manager.workers.write().await.insert("f".into(), handle);
+        let parts = connected(manager).await;
+        let id = link(manager, "f").worker.expect("its worker");
         let task = tokio::spawn(async move {
             let _parts = parts;
             panic!("a worker bug");
@@ -912,16 +905,12 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "device_unreachable: Device unreachable");
 
-        let code = |error: AppError| match error {
-            AppError::Coded { code, .. } => code,
-            other => panic!("not coded: {other}"),
-        };
         let error = manager
             .get_typed_status("l", TuyaDeviceType::Feeder, false)
             .await
             .unwrap_err();
-        assert_eq!(code(error), "unsupported", "a litter box feeds nothing");
+        assert_eq!(error.code(), "unsupported", "a litter box feeds nothing");
         let error = manager.get_status("nope", false).await.unwrap_err();
-        assert_eq!(code(error), "not_found");
+        assert_eq!(error.code(), "not_found");
     }
 }

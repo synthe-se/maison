@@ -138,7 +138,7 @@
 	<!-- Page Up / Page Down need the table to hold focus (APG date picker) -->
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 	<table tabindex="0" {onkeydown} aria-keyshortcuts="PageUp PageDown Shift+PageUp Shift+PageDown" aria-describedby="tempo-calendar-info">
-		<caption>{caption(month)}</caption>
+		<caption class="caption">{caption(month)}</caption>
 		<thead>
 			<tr>
 				{#each weekdays as w (w.long)}<th scope="col" abbr={w.long}>{w.short}</th>{/each}
@@ -207,11 +207,6 @@
 		max-width: 28rem;
 		border-collapse: collapse;
 		table-layout: fixed;
-	}
-	caption {
-		font: var(--t-label);
-		text-align: left;
-		padding-bottom: var(--s-2);
 	}
 	caption::first-letter {
 		text-transform: uppercase;

@@ -182,7 +182,7 @@ async fn read_message_within(
     Ok(Message::new(command, word(4), word(8), payload))
 }
 
-/// Generates a fresh 2048-bit key. Slow on an ARMv6 Pi (tens of seconds), so
+/// Generates a fresh 2048-bit key. Slow on a small host (tens of seconds), so
 /// callers must run this off the async runtime and persist the result.
 pub fn generate_key() -> Result<PrivateKey, AppError> {
     PrivateKey::new(&mut rand::rng(), RSA_BITS as usize)
@@ -234,7 +234,7 @@ pub fn android_public_key(key: &PrivateKey, comment: &str) -> String {
 
     // n0inv = -(n^-1) mod 2^32, the other precomputed value. Computed here
     // rather than taken from crypto-bigint's `mod_neg_inv`, which is sized to
-    // the platform's limb (64-bit on this laptop, 32-bit on the Pi) while the
+    // the platform's limb (64-bit on the build machine, 32-bit on a small host) while the
     // blob always wants 32. Newton's iteration doubles the correct bits each
     // round, so five rounds cover all 32.
     let n0 = modulus_words[0];
@@ -276,7 +276,7 @@ impl AdbKey {
         (*self.0).as_ref()
     }
 
-    /// Signs the box's token off the async runtime: RSA-2048 takes the Pi 1's single core
+    /// Signs the box's token off the async runtime: RSA-2048 takes a small host's single core
     /// for a noticeable while, and every (re)connect pays it.
     ///
     /// The 20-byte token *is* the SHA-1 digest, so it must be signed pre-hashed. Hashing
@@ -448,42 +448,47 @@ impl AdbDevice {
 
     async fn shell_capped(&mut self, command: &str, max: usize) -> Result<String, AppError> {
         let remote_id = self.open(&format!("shell:{command}")).await?;
-        let local_id = self.local_id;
         let mut output = Vec::new();
+        while let Some(payload) = self.next_payload(max - output.len()).await? {
+            output.extend_from_slice(&payload);
+        }
+        write_message(
+            &mut self.stream,
+            Message::new(A_CLSE, self.local_id, remote_id, Vec::new()),
+        )
+        .await?;
 
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    }
+
+    /// What the box writes next on our stream, acknowledged (every WRTE must be, or the device
+    /// stalls); `None` once it closes the stream. Other streams' messages are passed over. A
+    /// payload over `room` is refused before any acknowledgement.
+    async fn next_payload(&mut self, room: usize) -> Result<Option<Vec<u8>>, AppError> {
+        let local_id = self.local_id;
         loop {
             let message = read_message(&mut self.stream).await?;
             match message.command {
                 A_WRTE if message.arg1 == local_id => {
-                    if output.len() + message.payload.len() > max {
+                    if message.payload.len() > room {
                         return Err(protocol_error("the box printed too much"));
                     }
-                    output.extend_from_slice(&message.payload);
-                    // Every WRTE must be acknowledged or the device stalls.
                     write_message(
                         &mut self.stream,
                         Message::new(A_OKAY, local_id, message.arg0, Vec::new()),
                     )
                     .await?;
+                    return Ok(Some(message.payload));
                 }
-                A_CLSE if message.arg1 == local_id => {
-                    write_message(
-                        &mut self.stream,
-                        Message::new(A_CLSE, local_id, remote_id, Vec::new()),
-                    )
-                    .await?;
-                    break;
-                }
+                A_CLSE if message.arg1 == local_id => return Ok(None),
                 _ => continue,
             }
         }
-
-        Ok(String::from_utf8_lossy(&output).into_owned())
     }
 
     /// Pushes a file with the `sync:` service — the transport `adb push` uses —
     /// as its bytes arrive: an upload is passed on chunk by chunk, never held
-    /// whole (the Pi has 512 MB).
+    /// whole (the host has 512 MB).
     ///
     /// Sync framing is its own little protocol carried inside the stream: a
     /// four-byte id, a little-endian length, then the payload. `SEND` names
@@ -541,23 +546,10 @@ impl AdbDevice {
 
         // The verdict arrives as OKAY or FAIL in a WRTE.
         let mut verdict = Vec::new();
-        loop {
-            let message = read_message(&mut self.stream).await?;
-            match message.command {
-                A_WRTE if message.arg1 == local_id => {
-                    verdict.extend_from_slice(&message.payload);
-                    write_message(
-                        &mut self.stream,
-                        Message::new(A_OKAY, local_id, message.arg0, Vec::new()),
-                    )
-                    .await?;
-                    if verdict.len() >= 8 {
-                        break;
-                    }
-                }
-                A_CLSE if message.arg1 == local_id => break,
-                _ => continue,
-            }
+        while verdict.len() < 8
+            && let Some(payload) = self.next_payload(usize::MAX).await?
+        {
+            verdict.extend_from_slice(&payload);
         }
 
         write_message(
@@ -794,7 +786,7 @@ mod tests {
     #[ignore]
     async fn live_handshake_against_the_box() {
         let address =
-            std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.153:5555".to_string());
+            std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.30:5555".to_string());
         let key = live_key();
 
         let mut device = AdbDevice::connect(&address, &key)
@@ -814,7 +806,7 @@ mod tests {
     #[ignore]
     async fn live_push_round_trip() {
         let address =
-            std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.153:5555".to_string());
+            std::env::var("ADB_TEST_ADDRESS").unwrap_or_else(|_| "192.168.1.30:5555".to_string());
         let key = live_key();
 
         let mut device = AdbDevice::connect(&address, &key).await.expect("connect");

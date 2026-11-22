@@ -591,6 +591,23 @@ mod tests {
         )
     }
 
+    /// A `Live` on `origin` that wants the counter, its first read asked.
+    fn wanted(origin: &str) -> (Live, Arc<AtomicUsize>, Source<u32>) {
+        let (mut live, wakes) = live(origin);
+        let source = counter();
+        live.begin();
+        live.want(&source);
+        (live, wakes, source)
+    }
+
+    /// The same, its first read come and taken.
+    fn read_once(origin: &str) -> (Live, Arc<AtomicUsize>, Source<u32>) {
+        let (mut live, wakes, source) = wanted(origin);
+        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
+        live.take();
+        (live, wakes, source)
+    }
+
     fn counter() -> Source<u32> {
         Source::every("n:count", Duration::from_secs(3600), |c: &Client| {
             c.get::<serde_json::Value>("/n")
@@ -684,10 +701,7 @@ mod tests {
             3 => (200, vec![], r#"{"n":1}"#.into()),
             _ => (200, vec![], r#"{"n":2}"#.into()),
         });
-        let (mut live, wakes) = live(&stub.origin);
-        let source = counter();
-        live.begin();
-        live.want(&source);
+        let (mut live, wakes, source) = wanted(&stub.origin);
         let turn = |live: &mut Live, wanted: usize| {
             if wanted > 1 {
                 live.refresh("n:");
@@ -711,12 +725,7 @@ mod tests {
     #[test]
     fn a_source_nobody_shows_stops() {
         let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
-        let (mut live, wakes) = live(&stub.origin);
-        let source = counter();
-        live.begin();
-        live.want(&source);
-        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
-        live.take();
+        let (mut live, wakes, source) = read_once(&stub.origin);
         live.begin();
         live.sweep();
         live.refresh("n:");
@@ -741,12 +750,7 @@ mod tests {
             1 => (500, vec![], "{}".into()),
             _ => (401, vec![], "{}".into()),
         });
-        let (mut live, wakes) = live(&stub.origin);
-        let source = counter();
-        live.begin();
-        live.want(&source);
-        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
-        live.take();
+        let (mut live, wakes, source) = read_once(&stub.origin);
         live.refresh("n:");
         wait_until(|| wakes.load(Ordering::SeqCst) == 2);
         live.take();
@@ -804,12 +808,7 @@ mod tests {
     #[test]
     fn a_silent_read_is_no_old_value_until_its_time() {
         let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
-        let (mut live, wakes) = live(&stub.origin);
-        let source = counter();
-        live.begin();
-        live.want(&source);
-        wait_until(|| wakes.load(Ordering::SeqCst) == 1);
-        live.take();
+        let (mut live, _, source) = read_once(&stub.origin);
         live.entries.get_mut("n:count").unwrap().failure = Some(Failure::Unreachable("x".into()));
         let v = live.want(&source);
         assert!(
@@ -821,10 +820,7 @@ mod tests {
     #[test]
     fn the_first_answer_ends_it() {
         let stub = serve(|_| (200, vec![], r#"{"n":1}"#.into()));
-        let (mut live, wakes) = live(&stub.origin);
-        let source = counter();
-        live.begin();
-        live.want(&source);
+        let (mut live, wakes, _source) = wanted(&stub.origin);
         live.silent = Some((Instant::now() - GONE_AFTER, HashSet::new()));
         assert!(live.gone(Instant::now()));
         wait_until(|| wakes.load(Ordering::SeqCst) == 1);

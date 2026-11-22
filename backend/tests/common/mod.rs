@@ -22,9 +22,6 @@ use maison_backend::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The machine token the test config accepts on `/api/ir`.
-pub const TEST_IR_TOKEN: &str = "test-ir-token-of-32-characters-at-least";
-
 /// The repository root: the parent of the backend crate. Read only (the live tests'
 /// device files, the vendored Tempo data): a test writes under `temp_root`.
 pub fn workspace_root() -> PathBuf {
@@ -78,7 +75,6 @@ pub fn isolated_config(name: &str) -> Config {
         jwt_secret: jwt_secret(),
         auth_cookie_secure: false,
         disable_bluetooth: true,
-        ir_api_token: Some(TEST_IR_TOKEN.into()),
         public_url: None,
         ..defaults
     }
@@ -194,6 +190,16 @@ pub async fn send_authed(
     body: Option<Value>,
 ) -> (StatusCode, Value) {
     send(app, method, path, Some(&test_token()), body).await
+}
+
+/// One round trip as the test member.
+pub async fn send_member(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    send(app, method, path, Some(&member_token()), body).await
 }
 
 /// Serialises the tests of one binary that share a real device.

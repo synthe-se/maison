@@ -1,6 +1,6 @@
 <script lang="ts">
-	// The air conditioner's settings, said once (the dashboard's form, and a remote key's or a
-	// scene's « climate toggle » action): mode, fan and vane, the temperature, econo cooling.
+	// The air conditioner's settings, said once (the dashboard's form, and a scene's
+	// « climate toggle » action): mode, fan and vane, the temperature, econo cooling.
 	// Econo works in cooling only: it stays in place, unavailable, saying so, in any other mode,
 	// and switching to another mode turns it off.
 	import { m } from '#lib/paraglide/messages.js';

@@ -4,7 +4,7 @@
 //! code and the client has to prove it was read — so it lives in a small
 //! binary rather than in a test.
 //!
-//!     cargo run --bin atv_pair -- 192.168.1.153 [path/to/atv-identity]
+//!     cargo run --bin atv_pair -- 192.168.1.30 [path/to/atv-identity]
 //!
 //! The identity (the backend's own, `ATV_IDENTITY_PATH`, unless a path is given) is
 //! generated on first run and reused afterwards; pairing only has to happen once per host.

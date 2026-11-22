@@ -27,8 +27,8 @@ export class ApiError extends Error {
 	}
 }
 
-/** The code of a session renewal that got no answer to trust (network down, the tunnel's 502
- * while the Pi restarts): the session may be fine, the server is just not there to say so. */
+/** The code of a session renewal that got no answer to trust (network down, the proxy's 502
+ * while the host restarts): the session may be fine, the server is just not there to say so. */
 export const UNREACHABLE = 'unreachable';
 
 // Told when a request stays refused after the renewal: the session is over.

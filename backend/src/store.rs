@@ -5,7 +5,7 @@
 //!   cache may ask for [`Corrupt::Reset`]: the bad file is kept aside as `.corrupt` and
 //!   the default is used, loudly.
 //! - Writing: a unique temp file created 0600 (or 0644), written, `fsync`ed, renamed over
-//!   the old one, then the directory `fsync`ed: a power cut on the Pi's SD card leaves
+//!   the old one, then the directory `fsync`ed: a power cut on the host's flash leaves
 //!   either the old file or the new one. The temp file goes on error. The replaced file's
 //!   owner is kept (or the directory's, for a first one): root's CLI writes files the
 //!   service must still be able to write.
@@ -109,7 +109,7 @@ pub fn write_bytes(path: &Path, bytes: &[u8], access: Access) -> Result<(), AppE
     Ok(result?)
 }
 
-/// `write_json` off the async runtime: the fsyncs stall the Pi's single core otherwise (the
+/// `write_json` off the async runtime: the fsyncs stall the host's single core otherwise (the
 /// IR key path included). The value is serialised here, before leaving the caller's thread.
 pub async fn write_json_async<T: Serialize + ?Sized>(
     path: &Path,

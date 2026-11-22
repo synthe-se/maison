@@ -99,8 +99,7 @@ export class TvRemote {
 
 	/** Power, assumed state: two plain buttons. */
 	assumedPower = (on: boolean) => {
-		haptic(CONFIRM);
-		return this.g.run(() => this.#sendPower(on), undefined, on ? 'on' : 'off');
+		return this.g.committed(() => this.#sendPower(on), undefined, on ? 'on' : 'off');
 	};
 
 	async setVolume(level?: number, muted?: boolean) {

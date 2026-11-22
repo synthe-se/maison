@@ -2,6 +2,7 @@
 //! learning and sending codes, the learnt codes' file, and the Mitsubishi AC's last
 //! commanded state (IR is one-way: what was sent is the best knowledge of the unit's).
 
+use crate::error::OrRefused;
 use std::{
     net::Ipv4Addr,
     path::{Path, PathBuf},
@@ -11,7 +12,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jiff::Timestamp;
-use rbroadlink::{Device, network::WirelessConnection, traits::DeviceTrait};
+use rbroadlink::{Device, RemoteDevice, network::WirelessConnection, traits::DeviceTrait};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, watch};
 use uuid::Uuid;
@@ -495,7 +496,7 @@ impl BroadlinkManager {
                     .cloned()
             })
             .await
-            .ok_or(Refusal::NotFound)?;
+            .or_not_found()?;
 
         self.send_packet(
             host,
@@ -708,18 +709,26 @@ fn is_address_in_use_discovery_error(error: &str) -> bool {
         && message.contains("address in use")
 }
 
-fn learn_ir_blocking(host: Ipv4Addr, local_ip: Option<Ipv4Addr>) -> Result<Vec<u8>, AppError> {
-    let device =
-        Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
-    match device {
-        Device::Remote { remote } => remote
-            .learn_ir()
-            .map_err(|error| net::unreachable(BLASTER, error)),
+/// The blaster at `host`; an HVAC Broadlink is refused, the log saying what it was asked
+/// (`verb`: « learns », « sends »).
+fn remote_at(
+    host: Ipv4Addr,
+    local_ip: Option<Ipv4Addr>,
+    verb: &str,
+) -> Result<RemoteDevice, AppError> {
+    match Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))? {
+        Device::Remote { remote } => Ok(remote),
         Device::Hvac { .. } => Err(refused(
             Refusal::Unsupported,
-            format!("{host}: an HVAC Broadlink learns no IR"),
+            format!("{host}: an HVAC Broadlink {verb} no IR"),
         )),
     }
+}
+
+fn learn_ir_blocking(host: Ipv4Addr, local_ip: Option<Ipv4Addr>) -> Result<Vec<u8>, AppError> {
+    remote_at(host, local_ip, "learns")?
+        .learn_ir()
+        .map_err(|error| net::unreachable(BLASTER, error))
 }
 
 fn send_packet_blocking(
@@ -727,17 +736,9 @@ fn send_packet_blocking(
     local_ip: Option<Ipv4Addr>,
     packet: Vec<u8>,
 ) -> Result<(), AppError> {
-    let device =
-        Device::from_ip(host, local_ip).map_err(|error| net::unreachable(BLASTER, error))?;
-    match device {
-        Device::Remote { remote } => remote
-            .send_code(&packet)
-            .map_err(|error| net::unreachable(BLASTER, error)),
-        Device::Hvac { .. } => Err(refused(
-            Refusal::Unsupported,
-            format!("{host}: an HVAC Broadlink sends no IR"),
-        )),
-    }
+    remote_at(host, local_ip, "sends")?
+        .send_code(&packet)
+        .map_err(|error| net::unreachable(BLASTER, error))
 }
 
 fn decode_packet(packet_base64: &str) -> Result<Vec<u8>, AppError> {
@@ -784,6 +785,13 @@ fn is_mitsubishi_entry(entry: &BroadlinkCodeEntry) -> bool {
 mod tests {
     use super::*;
 
+    const CODES: &str = "broadlink-codes.json";
+
+    /// A manager whose files live in `dir` (its codes in [`CODES`]).
+    fn manager_in(dir: &Path) -> BroadlinkManager {
+        BroadlinkManager::new(&dir.join(CODES), &dir.join("climate-state.json")).expect("manager")
+    }
+
     #[test]
     fn normalize_lookup_value_trims_and_lowercases() {
         assert_eq!(normalize_lookup_value("  Cool_22_Auto "), "cool_22_auto");
@@ -803,10 +811,8 @@ mod tests {
     #[tokio::test]
     async fn save_code_normalizes_and_persists() {
         let dir = crate::util::test_dir();
-        let temp_root = dir.path();
-        let path = temp_root.join("broadlink-codes.json");
-        let climate_path = temp_root.join("climate-state.json");
-        let manager = BroadlinkManager::new(&path, &climate_path).expect("manager should build");
+        let path = dir.path().join(CODES);
+        let manager = manager_in(dir.path());
 
         let code = manager
             .save_code(SaveCodeRequest {
@@ -849,9 +855,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_saves_lose_no_code() {
         let dir = crate::util::test_dir();
-        let path = dir.path().join("broadlink-codes.json");
-        let manager =
-            BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
+        let path = dir.path().join(CODES);
+        let manager = manager_in(dir.path());
         let saves: Vec<_> = (0..16)
             .map(|n| {
                 let manager = manager.clone();
@@ -873,9 +878,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_save_is_not_kept() {
         let dir = crate::util::test_dir();
-        let path = dir.path().join("broadlink-codes.json");
-        let manager =
-            BroadlinkManager::new(&path, &dir.path().join("climate.json")).expect("manager");
+        let path = dir.path().join(CODES);
+        let manager = manager_in(dir.path());
         manager.save_code(code("first")).await.expect("saved");
         std::fs::remove_file(&path).expect("removed");
         std::fs::create_dir(&path).expect("a directory where the file goes");
@@ -908,11 +912,7 @@ mod tests {
     #[tokio::test]
     async fn a_code_needs_a_name_and_a_command() {
         let dir = crate::util::test_dir();
-        let manager = BroadlinkManager::new(
-            &dir.path().join("codes.json"),
-            &dir.path().join("climate.json"),
-        )
-        .unwrap();
+        let manager = manager_in(dir.path());
         let mut nameless = code("  ");
         let refused = manager.save_code(nameless.clone()).await.unwrap_err();
         assert!(matches!(
@@ -976,11 +976,7 @@ mod tests {
     #[tokio::test]
     async fn the_climate_state_is_said_at_each_order() {
         let dir = crate::util::test_dir();
-        let manager = BroadlinkManager::new(
-            &dir.path().join("codes.json"),
-            &dir.path().join("climate.json"),
-        )
-        .unwrap();
+        let manager = manager_in(dir.path());
         let mut climate = manager.subscribe_climate();
         manager
             .record_climate_state("state-cool-21-fan-auto-vane-auto", "192.168.1.60", None)
@@ -1012,11 +1008,7 @@ mod tests {
     #[tokio::test]
     async fn climate_state_is_recorded_and_reloaded() {
         let dir = crate::util::test_dir();
-        let temp_root = dir.path();
-        let codes_path = temp_root.join("broadlink-codes.json");
-        let climate_path = temp_root.join("climate-state.json");
-        let manager =
-            BroadlinkManager::new(&codes_path, &climate_path).expect("manager should build");
+        let manager = manager_in(dir.path());
 
         let on_command = "state-cool-21-fan-auto-vane-auto-wide-center-stopin-180";
         manager
@@ -1037,8 +1029,7 @@ mod tests {
         assert_eq!(settings.stop_in_minutes, Some(180));
 
         // A fresh manager reloads the persisted state from disk.
-        let reloaded =
-            BroadlinkManager::new(&codes_path, &climate_path).expect("manager should build");
+        let reloaded = manager_in(dir.path());
         let state = reloaded
             .climate_state()
             .await

@@ -1,6 +1,7 @@
 // Named only so Cargo builds it from source (`vendored`, backend/Cargo.toml): no code here calls it.
 use openssl as _;
 
+pub mod actions;
 pub mod adb;
 pub mod androidtv;
 pub mod atvremote;
@@ -17,7 +18,6 @@ pub mod hue;
 #[cfg(not(feature = "bluetooth"))]
 #[path = "hue_stub.rs"]
 pub mod hue;
-pub mod ir;
 pub mod json_config;
 pub mod lamps;
 pub mod matter;
@@ -54,7 +54,6 @@ use broadlink::BroadlinkManager;
 use config::Config;
 use error::{AppError, Refusal};
 use hue::HueManager;
-use ir::IrManager;
 use matter::MatterManager;
 use meross::MerossManager;
 use nabaztag::NabaztagManager;
@@ -76,14 +75,13 @@ pub struct AppState {
     /// `None` without a usable `PUBLIC_URL`: nobody can sign in (said in the log).
     pub(crate) passkeys: Option<Arc<PasskeyState>>,
     pub(crate) refresh_store: RefreshTokenStore,
-    /// Failed machine authentications (the IR bridge's token, unknown service tokens), per
+    /// Failed machine authentications (unknown service tokens), per
     /// address: past the limit, the address waits.
     pub(crate) auth_failures: Arc<Limiter>,
     /// Wall screens waiting for an admin to pair them.
     pub(crate) pairings: Arc<screens::Pairings>,
     pub(crate) broadlink: BroadlinkManager,
     pub(crate) hue: HueManager,
-    pub(crate) ir: IrManager,
     pub(crate) scenes: ScenesManager,
     pub(crate) matter: MatterManager,
     pub(crate) meross: MerossManager,
@@ -111,7 +109,6 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
     let broadlink =
         BroadlinkManager::new(&config.broadlink_codes_path, &config.climate_state_path)?;
     let hue = HueManager::new(config.as_ref())?;
-    let ir = IrManager::new(&config.ir_keymap_path)?;
     let scenes = ScenesManager::new(&config.scenes_path)?;
     let matter = MatterManager::new(config.as_ref())?;
     let meross = MerossManager::new(&config.meross_devices_path)?;
@@ -142,7 +139,6 @@ pub fn build_app_parts_from_config(config: Arc<Config>) -> Result<(Router, AppSt
         pairings: Arc::new(screens::Pairings::default()),
         broadlink,
         hue,
-        ir,
         scenes,
         matter,
         meross,
@@ -323,9 +319,8 @@ pub fn build_app(state: AppState) -> Router {
     // Every device and settings route needs someone signed in (or a service token), said
     // once here: a handler never has to remember it. Admin-only ones add `AdminUser`.
     // Outside: signing in and the sessions (`auth`, `passkeys`), the wall screens' pairing
-    // (`/screens`, whose handlers name their own extractor), `/health`, the signed-out
-    // `/api/sun` (day or night, for a page's theme) and the IR bridge (`ir`: its machine
-    // route, and the keymap behind `AuthenticatedUser`).
+    // (`/screens`, whose handlers name their own extractor), `/health` and the signed-out
+    // `/api/sun` (day or night, for a page's theme).
     let signed_in = DEVICE_ROUTES
         .into_iter()
         .fold(Router::<AppState>::new(), |router, (prefix, routes)| {
@@ -340,7 +335,6 @@ pub fn build_app(state: AppState) -> Router {
         .nest("/auth", routes::auth::router())
         .merge(routes::passkeys::router())
         .nest("/screens", routes::screens::router())
-        .nest("/ir", routes::ir::router())
         .merge(signed_in);
 
     let app = Router::<AppState>::new()
@@ -428,22 +422,18 @@ fn is_tailscale(ip: std::net::IpAddr) -> bool {
     }
 }
 
-/// Three rules, before routing. The public address comes in on loopback (cloudflared, the dev
+/// Two rules, before routing. The public address comes in on loopback (cloudflared, the dev
 /// proxy) or through the edge (`edge.rs`: a reverse proxy's TLS client certificate); the rest
 /// is the LAN.
-/// - From the LAN, only `/health`,
-///   the IR bridge's `/api/ir/key`, and the device routes for an app's service token: over
+/// - From the LAN, only `/health` and the device routes for an app's service token: over
 ///   Tailscale always, over the LAN's plain HTTP only with `ALLOW_LAN_TOKENS` (the token would
 ///   cross the Wi-Fi in clear). Everything else goes through the tunnel's HTTPS (`Use the
 ///   public address`). Passkeys cannot sign in over the LAN address anyway; this also keeps
 ///   people's sessions and cookies off cleartext HTTP.
-/// - The IR bridge's `/api/ir/key` comes from the house only: through the edge, or the tunnel
-///   (loopback, with cloudflared's `CF-Connecting-IP`, or any proxy's forwarding header), it
-///   is refused, whatever the token (`lan_only`).
 /// - A request that changes something must come from this site: a browser says where it
 ///   comes from (`Sec-Fetch-Site`, else `Origin`, which must be `PUBLIC_URL`'s origin or
 ///   match `Host`; an `Origin` with neither is refused, fail closed); a sibling subdomain is
-///   « same-site » but not this site. Clients that say nothing (kird, curl) pass.
+///   « same-site » but not this site. Clients that say nothing (curl) pass.
 fn request_allowed(
     peer: Option<std::net::IpAddr>,
     edge: bool,
@@ -454,19 +444,13 @@ fn request_allowed(
 ) -> Result<(), Refusal> {
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let loopback = peer.is_none_or(|ip| ip.to_canonical().is_loopback());
-    let forwarded = ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"]
-        .iter()
-        .any(|name| headers.contains_key(*name));
-    if path == "/api/ir/key" && (edge || loopback && forwarded) {
-        return Err(Refusal::LanOnly);
-    }
     let encrypted = peer.is_some_and(is_tailscale);
     let machine = || {
         auth::has_service_token(headers)
             && is_device_path(path)
             && (encrypted || gate.allow_lan_tokens)
     };
-    if !(loopback || edge) && !matches!(path, "/health" | "/api/ir/key") && !machine() {
+    if !(loopback || edge) && path != "/health" && !machine() {
         return Err(Refusal::UsePublicAddress);
     }
     if matches!(
@@ -667,14 +651,12 @@ fn inline_scripts(page: &str) -> impl Iterator<Item = &str> {
 
 impl AppState {
     pub fn validate_runtime_security(&self) -> Result<(), AppError> {
-        jwt_secret_problem(&self.config.jwt_secret)
-            .or_else(|| ir_token_problem(self.config.ir_api_token.as_deref()))
-            .map_or(Ok(()), |why| {
-                Err(AppError::http(
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Refusing to start: {why}"),
-                ))
-            })
+        jwt_secret_problem(&self.config.jwt_secret).map_or(Ok(()), |why| {
+            Err(AppError::http(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Refusing to start: {why}"),
+            ))
+        })
     }
 
     /// Before the process ends: the radios and the device sessions are closed cleanly.
@@ -701,15 +683,6 @@ fn jwt_secret_problem(secret: &str) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-/// Why `token` cannot open the IR route: it fires scenes, the AC, the TV and the shutters, so
-/// a guessable one is a remote control for anyone on the Wi-Fi. At least 32 characters; unset
-/// (or empty) turns the route off.
-fn ir_token_problem(token: Option<&str>) -> Option<&'static str> {
-    token.filter(|t| t.len() < 32).map(|_| {
-        "IR_API_TOKEN is shorter than 32 characters; set a random one in .env and kird.conf (openssl rand -hex 32), or leave it empty to turn the IR route off"
-    })
 }
 
 #[cfg(test)]
@@ -755,17 +728,6 @@ mod guard_tests {
         assert_eq!(
             request_allowed(
                 client,
-                true,
-                &Method::POST,
-                "/api/ir/key",
-                &forwarded,
-                &Gate::default()
-            ),
-            Err(Refusal::LanOnly)
-        );
-        assert_eq!(
-            request_allowed(
-                client,
                 false,
                 &Method::GET,
                 "/api/meross",
@@ -778,11 +740,10 @@ mod guard_tests {
     }
 
     #[test]
-    fn the_lan_reaches_only_health_and_the_ir_bridge() {
+    fn the_lan_reaches_only_health() {
         let lan = Some("192.168.1.20".parse().unwrap());
         let tunnel = Some("127.0.0.1".parse().unwrap());
         let none = HeaderMap::new();
-        assert!(allowed(lan, &Method::POST, "/api/ir/key", &none).is_ok());
         assert!(allowed(lan, &Method::GET, "/health", &none).is_ok());
         assert_eq!(
             allowed(lan, &Method::GET, "/api/meross", &none),
@@ -798,25 +759,6 @@ mod guard_tests {
                 &none
             )
             .is_ok()
-        );
-    }
-
-    #[test]
-    fn the_ir_bridge_is_refused_through_the_tunnel() {
-        let tunnel = Some("127.0.0.1".parse().unwrap());
-        let from_cloudflare = headers(&[("cf-connecting-ip", "203.0.113.9")]);
-        assert_eq!(
-            allowed(tunnel, &Method::POST, "/api/ir/key", &from_cloudflare),
-            Err(Refusal::LanOnly)
-        );
-        let proxied = headers(&[("x-forwarded-for", "203.0.113.9")]);
-        assert_eq!(
-            allowed(tunnel, &Method::POST, "/api/ir/key", &proxied),
-            Err(Refusal::LanOnly)
-        );
-        assert!(
-            allowed(tunnel, &Method::POST, "/api/ir/key", &HeaderMap::new()).is_ok(),
-            "kird on the Pi itself"
         );
     }
 
@@ -878,7 +820,6 @@ mod guard_tests {
             "/api/invites",
             "/api/passkeys",
             "/api/auth/verify",
-            "/api/ir/keymap",
             "/api/zigbeex",
             "/",
         ] {
@@ -907,38 +848,38 @@ mod guard_tests {
         assert!(
             post(&[
                 ("origin", "https://evil.example"),
-                ("host", "home.kahn.studio")
+                ("host", "home.example.com")
             ])
             .is_err()
         );
         assert!(
             post(&[
-                ("origin", "https://home.kahn.studio"),
-                ("host", "home.kahn.studio")
+                ("origin", "https://home.example.com"),
+                ("host", "home.example.com")
             ])
             .is_ok()
         );
-        assert!(post(&[]).is_ok(), "kird and curl say nothing");
+        assert!(post(&[]).is_ok(), "curl says nothing");
         assert!(
-            post(&[("origin", "https://home.kahn.studio")]).is_err(),
+            post(&[("origin", "https://home.example.com")]).is_err(),
             "an origin and no host to compare it with: refused"
         );
         assert!(post(&[("origin", "null")]).is_err());
         let public = Gate {
-            public_origin: Some("https://home.kahn.studio".into()),
+            public_origin: Some("https://home.example.com".into()),
             ..Gate::default()
         };
         let with_public = |h: &[(&'static str, &str)]| {
             request_allowed(local, false, &Method::POST, "/api/x", &headers(h), &public)
         };
         assert!(
-            with_public(&[("origin", "https://home.kahn.studio")]).is_ok(),
+            with_public(&[("origin", "https://home.example.com")]).is_ok(),
             "PUBLIC_URL's origin, no Host needed (HTTP/2)"
         );
         assert_eq!(
             with_public(&[
                 ("origin", "https://evil.example"),
-                ("host", "home.kahn.studio")
+                ("host", "home.example.com")
             ]),
             Err(Refusal::CrossSite)
         );
@@ -953,13 +894,6 @@ mod guard_tests {
             .is_ok(),
             "reads are harmless"
         );
-    }
-
-    #[test]
-    fn a_short_ir_token_is_refused_and_none_turns_the_route_off() {
-        assert!(ir_token_problem(Some("test-ir-token")).is_some());
-        assert!(ir_token_problem(Some(&"k".repeat(32))).is_none());
-        assert!(ir_token_problem(None).is_none());
     }
 
     #[test]

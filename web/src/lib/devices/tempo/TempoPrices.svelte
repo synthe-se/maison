@@ -22,7 +22,7 @@
 
 <Group id="tempo-prices-title" title={m.tempo_prices_title()}>
 	{#if current}
-		<div class="block">
+		<div class="stack">
 			<p class="eyebrow">{m.tempo_now()}</p>
 			<p class="now">
 				<Swatch color={current.color} />
@@ -44,7 +44,7 @@
 
 	{#if data.tariffs}
 		{@const t = data.tariffs}
-		<table>
+		<table class="figures">
 			<caption class="sr-only">{m.tempo_prices_title()}</caption>
 			<thead>
 				<tr>
@@ -56,7 +56,7 @@
 			<tbody>
 				{#each TEMPO_COLORS as c (c)}
 					<tr>
-						<th scope="row"><span class="named"><Swatch color={c} />{TEMPO[c].name()}</span></th>
+						<th scope="row"><span class="line inline"><Swatch color={c} />{TEMPO[c].name()}</span></th>
 						<td>{price(tariffOf(t, c).offPeak)}</td>
 						<td>{price(tariffOf(t, c).peak)}</td>
 					</tr>
@@ -83,27 +83,5 @@
 	}
 	table {
 		width: 100%;
-		max-width: 24rem;
-		border-collapse: collapse;
-		font: var(--t-secondary);
-		font-variant-numeric: tabular-nums;
-	}
-	th,
-	td {
-		padding: var(--s-1) var(--s-2);
-		text-align: right;
-	}
-	th[scope='row'] {
-		text-align: left;
-		font-weight: 500;
-	}
-	thead th {
-		font: var(--t-meta);
-		color: var(--ink-muted);
-	}
-	.named {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--s-2);
 	}
 </style>

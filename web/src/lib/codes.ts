@@ -22,7 +22,6 @@ export const CODES = [
 	'pairing_elsewhere',
 	'screen_exists',
 	'too_many_attempts',
-	'nested_scene',
 	'too_many_actions',
 	'not_a_device',
 	'invalid',
@@ -34,7 +33,6 @@ export const CODES = [
 	'internal',
 	'use_public_address',
 	'cross_site',
-	'lan_only',
 	'too_large',
 	'not_a_photo',
 	'too_many_photos'

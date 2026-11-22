@@ -258,7 +258,7 @@ pub fn relying_party(public_url: &str) -> Result<(String, Url), String> {
     Ok((host, url))
 }
 
-/// The address to count attempts against. cloudflared runs on the Pi: a request from
+/// The address to count attempts against. cloudflared runs on the host: a request from
 /// loopback says who it is for in `CF-Connecting-IP` (or `X-Real-IP`, or the last
 /// `X-Forwarded-For` entry); from anywhere else, those headers are not believed.
 pub fn client_ip(addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
@@ -422,20 +422,20 @@ mod tests {
 
     #[test]
     fn relying_party_from_the_public_address() {
-        let (id, origin) = relying_party("https://home.kahn.studio").unwrap();
-        assert_eq!(id, "home.kahn.studio");
-        assert_eq!(origin.as_str(), "https://home.kahn.studio/");
+        let (id, origin) = relying_party("https://home.example.com").unwrap();
+        assert_eq!(id, "home.example.com");
+        assert_eq!(origin.as_str(), "https://home.example.com/");
         assert!(relying_party("http://localhost:5173").is_ok());
         assert!(
-            relying_party("https://192.168.1.103").is_err(),
+            relying_party("https://192.168.1.2").is_err(),
             "no IP address"
         );
         assert!(
-            relying_party("http://home.kahn.studio").is_err(),
+            relying_party("http://home.example.com").is_err(),
             "no plain http"
         );
         assert!(
-            relying_party("https://home.kahn.studio/maison").is_err(),
+            relying_party("https://home.example.com/maison").is_err(),
             "an origin, no path"
         );
     }

@@ -83,7 +83,7 @@
 				onchange={(on) => g.run(() => fountainApi.setUV(id, on), reread(prefix, on ? m.fountain_uv_on() : m.fountain_uv_off()), 'uv')}
 			/>
 		</ul>
-		<div class="block">
+		<div class="stack">
 			<ToggleGroup
 				type="single"
 				label={m.fountain_eco_mode()}
@@ -106,7 +106,7 @@
 			{/each}
 		</dl>
 		{#if waterLow(s)}<p class="warn-text">{m.fountain_add_water()}</p>{/if}
-		<div class="resets">
+		<div class="stack">
 			{#each COUNTERS as c (c.key)}
 				<ConfirmDialog
 					label={c.button()}
@@ -123,8 +123,4 @@
 </Loaded>
 
 <style>
-	.resets {
-		display: grid;
-		gap: var(--s-2);
-	}
 </style>

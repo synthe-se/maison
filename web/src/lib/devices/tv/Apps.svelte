@@ -10,7 +10,7 @@
 	const id = $props.id();
 </script>
 
-<div class="apps" role="group" aria-label={m.android_tv_apps()}>
+<div class="apps cluster" role="group" aria-label={m.android_tv_apps()}>
 	{#each box.shortcuts as app (app.package)}
 		{@const here = box.status?.currentApp === app.package}
 		<button
@@ -27,11 +27,6 @@
 </div>
 
 <style>
-	.apps {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--s-2);
-	}
 	.apps .pill-btn {
 		min-height: var(--control-h);
 	}

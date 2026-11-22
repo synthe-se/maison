@@ -16,6 +16,7 @@
 //! - `GET /api/people`, `DELETE /api/people/{id}` (recent passkey sign-in), `POST
 //!   /api/people/{id}/sessions/end`: admins.
 
+use crate::error::OrRefused;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
@@ -534,7 +535,7 @@ async fn finish_registration(
                 .await?
                 .into_iter()
                 .find(|k| k.id == key_id);
-            found.ok_or_else(|| AppError::from(Refusal::NotFound))
+            found.or_not_found()
         }
     };
     match via {
@@ -742,7 +743,7 @@ async fn rename(
         .rename_passkey(&user.0.id, &id, name)
         .await?
         .map(Answer::ok)
-        .ok_or_else(|| Refusal::NotFound.into())
+        .or_not_found()
 }
 
 /// Never the last one, and after a recent passkey sign-in. Every session it may have opened

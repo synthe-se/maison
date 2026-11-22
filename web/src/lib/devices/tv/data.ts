@@ -1,5 +1,5 @@
 // The TV and the box, each read under one key and as slowly as the TV allows (TV_MS, once a
-// minute, docs/ux.md § 4): their tiles, their pages and the remote's pickers share them. The
+// minute, docs/ux.md § 4): their tiles, their pages and the scenes' pickers share them. The
 // TV's JointSPACE HTTP server is single-threaded and dies for good under bursts (only a mains
 // power cycle revives it), so the dashboard asks rarely and the backend spaces every call it
 // makes (900 ms between two, a status read is four of them). Never poll it faster.

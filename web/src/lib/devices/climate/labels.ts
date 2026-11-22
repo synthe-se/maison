@@ -1,4 +1,4 @@
-// The words for the Mitsubishi settings, once: the dashboard and the IR remote's climate
+// The words for the Mitsubishi settings, once: the dashboard and a scene's climate
 // action both say them through these maps.
 
 import { m } from '#lib/paraglide/messages.js';

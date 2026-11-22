@@ -104,7 +104,7 @@ export function checkNoErrors(label = 'no page errors') {
 /** Waits for the page's own title (h1). */
 export const title = (page: Page, name: string | RegExp) => page.getByRole('heading', { name, level: 1 }).waitFor();
 
-/** A one-time invitation link, made as on the Pi: `maison-backend invite` (run.sh says where).
+/** A one-time invitation link, made as on the host: `maison-backend invite` (run.sh says where).
  * Its token rides in the fragment (`/invite#<token>`): never sent to the server. */
 export function invitation(person = USER.id, name = USER.name, admin = true): string {
 	const args = ['invite', person, '--name', name, ...(admin ? ['--admin'] : [])];
@@ -154,7 +154,6 @@ export const sideways = (page: Page) => page.evaluate(() => document.documentEle
 /** The screens a scenario visits, each with its name: every page of the app (look.ts, a11y.ts). */
 export const SCREENS: [path: string, name: string][] = [
 	['/', 'home'],
-	['/remote', 'remote'],
 	['/tempo-predictions', 'tempo'],
 	['/device/feeder-1', 'feeder'],
 	['/hue-lamp/hue-01', 'lamp'],

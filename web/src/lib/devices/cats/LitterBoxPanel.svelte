@@ -138,7 +138,7 @@
 						onchange={(enabled) => save('night-on', { sleepMode: { enabled } })}
 					/>
 				</ul>
-				<form class="night" onsubmit={applyNight}>
+				<form class="stack roomy" onsubmit={applyNight}>
 					<fieldset>
 						<legend>{m.litter_box_night_hours()}</legend>
 						<div class="field">
@@ -173,10 +173,6 @@
 </Loaded>
 
 <style>
-	.night {
-		display: grid;
-		gap: var(--s-3);
-	}
 	fieldset {
 		border: 0;
 		margin: 0;

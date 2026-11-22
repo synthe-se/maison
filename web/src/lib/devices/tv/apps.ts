@@ -1,4 +1,4 @@
-// The Android TV box's app shortcuts, once: its tile, its page and the remote's action
+// The Android TV box's app shortcuts, once: its tile, its page and a scene's action
 // pickers offer the same ones.
 
 import type { AndroidApp, AndroidTvConfig } from '#lib/devices/tv/api.ts';

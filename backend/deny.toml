@@ -6,7 +6,7 @@
 # other platforms build, never downloaded here.
 
 [graph]
-# the Pi (ARMv6 musl, `--no-default-features`) and the Mac (Bluetooth included)
+# the host (musl, `--no-default-features`) and the build machine (Bluetooth included)
 targets = ["arm-unknown-linux-musleabihf", "aarch64-apple-darwin"]
 all-features = true
 

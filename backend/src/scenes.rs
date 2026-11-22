@@ -1,6 +1,5 @@
-//! Scenes: a named list of IR binding actions (« Cinéma »: TV on, lamps dimmed), run from
-//! the dashboard or bound to a remote key (`{"action": "scene", "scene": "<id>"}`). A scene
-//! is no new engine: its actions are `ir::IrAction`s, run by `ir::run_actions` like a key's.
+//! Scenes: a named list of actions (« Cinéma »: TV on, lamps dimmed), run from the dashboard
+//! by `actions::run`.
 //!
 //! Kept in `scenes.json`, a list in the order the dashboard shows them:
 //! ```json
@@ -11,8 +10,8 @@
 use std::{path::Path, sync::Arc};
 
 use crate::{
+    actions::{self, Action},
     error::{AppError, Refusal},
-    ir::{self, IrAction},
     json_config::{Checked, JsonConfig},
     util::refused,
 };
@@ -22,7 +21,7 @@ pub const MAX_ACTIONS: usize = 20;
 
 pub use maison_api::scenes::Scene;
 
-/// An id as kept: 1 to 32 of `a-z`, `0-9` and `-` (it goes in URLs and in the keymap).
+/// An id as kept: 1 to 32 of `a-z`, `0-9` and `-` (it goes in URLs).
 pub fn valid_id(id: &str) -> bool {
     (1..=32).contains(&id.len())
         && id
@@ -49,7 +48,7 @@ pub struct ScenesManager {
 
 impl ScenesManager {
     /// Missing file = no scenes (the web offers templates); an unreadable one is a startup
-    /// error, like the keymap.
+    /// error.
     pub fn new(path: &Path) -> Result<Self, AppError> {
         Ok(Self {
             scenes: Arc::new(JsonConfig::load(path)?),
@@ -74,7 +73,7 @@ impl ScenesManager {
         id: &str,
         name: &str,
         icon: &str,
-        actions: Vec<IrAction>,
+        actions: Vec<Action>,
     ) -> Result<Scene, AppError> {
         let scene = checked(id, name, icon, actions)?;
         self.scenes
@@ -89,8 +88,7 @@ impl ScenesManager {
         Ok(scene)
     }
 
-    /// Returns `true` when the scene existed. Keys bound to it then fail at their press,
-    /// saying so (`ir::run_actions`).
+    /// Returns `true` when the scene existed.
     pub async fn remove(&self, id: &str) -> Result<bool, AppError> {
         if self.get(id).await.is_none() {
             return Ok(false);
@@ -106,7 +104,7 @@ impl ScenesManager {
 }
 
 /// The scene as kept, or why not.
-fn checked(id: &str, name: &str, icon: &str, actions: Vec<IrAction>) -> Result<Scene, AppError> {
+fn checked(id: &str, name: &str, icon: &str, actions: Vec<Action>) -> Result<Scene, AppError> {
     if !valid_id(id) {
         return Err(refused(
             Refusal::Invalid,
@@ -129,13 +127,7 @@ fn checked(id: &str, name: &str, icon: &str, actions: Vec<IrAction>) -> Result<S
     if actions.len() > MAX_ACTIONS {
         return Err(Refusal::TooManyActions.into());
     }
-    if actions
-        .iter()
-        .any(|action| matches!(action, IrAction::Scene { .. }))
-    {
-        return Err(Refusal::NestedScene.into());
-    }
-    ir::validate_actions(&actions)?;
+    actions::validate(&actions)?;
     Ok(Scene {
         id: id.to_string(),
         name,
@@ -148,16 +140,16 @@ fn checked(id: &str, name: &str, icon: &str, actions: Vec<IrAction>) -> Result<S
 mod tests {
     use super::*;
 
-    fn pings(n: usize) -> Vec<IrAction> {
+    fn pings(n: usize) -> Vec<Action> {
         vec![
-            IrAction::Nabaztag {
+            Action::Nabaztag {
                 command: "ping".into()
             };
             n
         ]
     }
 
-    fn ping() -> Vec<IrAction> {
+    fn ping() -> Vec<Action> {
         pings(1)
     }
 
@@ -197,24 +189,14 @@ mod tests {
             checked("soir", "Soirée", "moon", pings(MAX_ACTIONS + 1)).is_err(),
             "too many"
         );
-        let typo = vec![IrAction::AndroidTvApp {
+        let typo = vec![Action::AndroidTvApp {
             package: "not a package".into(),
             ensure_tv_on: true,
         }];
         assert!(
             checked("soir", "Soirée", "moon", typo).is_err(),
-            "validated as a key's actions"
+            "its actions are checked"
         );
-        let nested = vec![IrAction::Scene {
-            scene: "other".into(),
-        }];
-        assert!(matches!(
-            checked("soir", "Soirée", "moon", nested),
-            Err(AppError::Coded {
-                code: "nested_scene",
-                ..
-            })
-        ));
     }
 
     #[tokio::test]

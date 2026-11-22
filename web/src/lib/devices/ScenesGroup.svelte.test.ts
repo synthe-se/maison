@@ -7,7 +7,7 @@ import { session } from '#lib/session.svelte.ts';
 import { alex, leonard } from '#lib/test/passkeys.ts';
 import { deferred, stubApi } from '#lib/test/api.ts';
 import { forgetAll } from '#lib/live.svelte.ts';
-import { scene, sourceRoutes } from '#lib/test/remote.ts';
+import { scene, sourceRoutes } from '#lib/test/actions.ts';
 import ScenesGroup from './ScenesGroup.svelte';
 
 const route = vi.hoisted(() => ({ url: new URL('http://localhost/') }));
@@ -59,7 +59,7 @@ describe('ScenesGroup', () => {
 		});
 		await render(ScenesGroup);
 		await page.getByRole('button', { name: 'Nuit', exact: true }).click();
-		const details = m.remote_action_failed({ action: m.remote_summary_tv_off(), reason: m.code_device_unreachable() });
+		const details = m.action_failed({ action: m.action_summary_tv_off(), reason: m.code_device_unreachable() });
 		await expect.poll(() => ui.toasts.find((t) => t.warn)?.text).toBe(m.scenes_failed({ name: 'Nuit', count: 1, total: 1, details }));
 	});
 
@@ -163,7 +163,7 @@ describe('ScenesGroup', () => {
 		await expect.element(name).toHaveAccessibleDescription(m.scenes_missing_name());
 		await userEvent.fill(name.element(), 'Matin');
 		await page.getByRole('button', { name: m.common_save() }).click();
-		await expect.element(page.getByText(m.remote_missing_actions()).last()).toBeVisible();
+		await expect.element(page.getByText(m.actions_missing()).last()).toBeVisible();
 		expect(api.calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
 	});
 });

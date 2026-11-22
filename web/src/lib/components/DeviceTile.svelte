@@ -206,10 +206,6 @@
 	.tile-link:focus-visible {
 		outline: none;
 	}
-	.tile-link:focus-visible::after {
-		outline: var(--focus-ring);
-		outline-offset: var(--focus-offset);
-	}
 	:global(.tile-settings) {
 		gap: var(--s-4);
 	}

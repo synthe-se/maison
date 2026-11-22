@@ -1,4 +1,4 @@
-// A photo made ready for the frame, here in the browser: the Pi behind the backend never decodes
+// A photo made ready for the frame, here in the browser: the host behind the backend never decodes
 // a picture. Scaled to cover the frame's portrait panel, what passes it cut off evenly, never
 // enlarged, written as a JPEG: small enough to send and for the frame to decode in a moment, and
 // without what the original's metadata says (where it was taken). The browser turns it the way

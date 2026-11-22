@@ -9,7 +9,6 @@
 	import { LIMIT } from '#lib/command.svelte.ts';
 	import { pending } from '#lib/gesture.svelte.ts';
 	import { session } from '#lib/session.svelte.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import DeviceTile from '#lib/components/DeviceTile.svelte';
 	import Icon from '#lib/components/Icon.svelte';
@@ -31,8 +30,7 @@
 	let settingsOpen = $state(false);
 
 	function switchToBox() {
-		haptic(CONFIRM);
-		return g.run(
+		return g.committed(
 			() => tvApi.switchToBox(),
 			() => {
 				ui.toast(m.tv_switched_to_box());
@@ -42,16 +40,14 @@
 		);
 	}
 	function followVideo() {
-		haptic(CONFIRM);
-		return g.run(
+		return g.committed(
 			() => tvApi.ambilightFollowVideo(),
 			(r) => tv.patch({ ambilight: r.ambilight }),
 			'follow'
 		);
 	}
 	function ambilight() {
-		haptic(CONFIRM);
-		return g.run(
+		return g.committed(
 			() => tvApi.ambilight('toggle'),
 			(r) => tv.patch({ ambilight: r.ambilight }),
 			'ambilight'

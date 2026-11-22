@@ -36,7 +36,7 @@
 				<Group id="tempo-season-title" title={m.tempo_season({ season: s.season })}>
 					{#each TEMPO_COLORS as c (c)}
 						{@const count = s[TEMPO[c].key]}
-						<div class="stock">
+						<div class="stock stack tight">
 							<div class="stock-head">
 								<Swatch color={c} />
 								<span class="label">{TEMPO[c].name()}</span>
@@ -57,8 +57,8 @@
 		<Group id="tempo-unofficial-title" title={m.tempo_unofficial_title()}>
 			<p class="hint measure">{m.tempo_unofficial_text()}</p>
 			{#if backtest?.horizons.length}
-				<table class="scores">
-					<caption>{m.tempo_reliability_title()}</caption>
+				<table class="scores figures">
+					<caption class="caption">{m.tempo_reliability_title()}</caption>
 					<thead>
 						<tr>
 							<th scope="col">{m.tempo_horizon()}</th>
@@ -99,10 +99,6 @@
 		display: grid;
 		gap: var(--s-6);
 	}
-	.stock {
-		display: grid;
-		gap: var(--s-1);
-	}
 	.stock-head {
 		display: flex;
 		align-items: center;
@@ -117,27 +113,6 @@
 		font-variant-numeric: tabular-nums;
 	}
 	.scores {
-		border-collapse: collapse;
-		font: var(--t-secondary);
-		font-variant-numeric: tabular-nums;
-		max-width: 24rem;
-	}
-	.scores caption {
-		font: var(--t-label);
-		text-align: left;
-		padding-bottom: var(--s-2);
-	}
-	.scores th,
-	.scores td {
-		padding: var(--s-1) var(--s-3);
-		text-align: right;
-	}
-	.scores th[scope='row'] {
-		text-align: left;
-		font-weight: 500;
-	}
-	.scores thead th {
-		font: var(--t-meta);
-		color: var(--ink-muted);
+		--figures-pad: var(--s-3);
 	}
 </style>

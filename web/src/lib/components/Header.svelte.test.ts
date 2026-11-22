@@ -39,11 +39,12 @@ describe('Header', () => {
 	});
 
 	it('marks the current destination in the navigation', async () => {
-		at('/remote/tv');
+		at('/tempo-predictions');
 		await render(Header);
-		await expect.element(nav().getByRole('link', { name: m.nav_remote() })).toHaveAttribute('aria-current', 'page');
+		const tempo = nav().getByRole('link', { name: m.nav_tempo() });
+		await expect.element(tempo).toHaveAttribute('aria-current', 'page');
+		await expect.element(tempo).toHaveAttribute('href', '/tempo-predictions');
 		await expect.element(nav().getByRole('link', { name: m.nav_home() })).not.toHaveAttribute('aria-current');
-		await expect.element(nav().getByRole('link', { name: m.nav_tempo() })).toHaveAttribute('href', '/tempo-predictions');
 	});
 
 	it('a device page belongs to the home destination', async () => {

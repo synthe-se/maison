@@ -13,14 +13,15 @@
 //!    and package names are validated, so nothing a client sends can turn into
 //!    arbitrary shell.
 //!  - **The connection is kept and reused.** The handshake costs an RSA
-//!    signature, which is cheap on a laptop and distinctly not on an ARMv6 Pi;
+//!    signature, which is cheap on a laptop and distinctly not on a small host;
 //!    a dropped connection is re-established once, transparently.
 //!
 //! The signing key is generated on first use and persisted. Generating 2048
-//! bits takes tens of seconds on a Pi 1, so it happens off the async runtime,
+//! bits takes tens of seconds on a small host, so it happens off the async runtime,
 //! and the box will show one "Allow USB debugging?" prompt the first time the
 //! backend talks to it.
 
+use crate::error::OrRefused;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -56,7 +57,7 @@ const REMOTE_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Remote-control keys, mapped to Android keycodes: an enum, so no caller can smuggle shell
 /// syntax into `input keyevent`.
-pub use maison_api::remote::AndroidKey;
+pub use maison_api::androidtv::AndroidKey;
 
 /// A key's spellings.
 trait Codes {
@@ -107,7 +108,7 @@ impl Codes for AndroidKey {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AndroidTvConfig {
-    /// Box address, e.g. `192.168.1.153`.
+    /// Box address, e.g. `192.168.1.30`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,10 +242,7 @@ impl AndroidTvManager {
 
     /// The box's host, checked where it came in (`Checked`).
     async fn host(&self) -> Result<String, AppError> {
-        self.config()
-            .await
-            .host
-            .ok_or_else(|| Refusal::NotConfigured.into())
+        self.config().await.host.or_not_configured()
     }
 
     async fn address(&self) -> Result<String, AppError> {
@@ -265,7 +263,7 @@ impl AndroidTvManager {
     }
 
     /// Loads the signing key, generating and persisting one on first use.
-    /// Generation is CPU-bound and slow on the Pi, hence `spawn_blocking`.
+    /// Generation is CPU-bound and slow on the host, hence `spawn_blocking`.
     async fn signing_key(&self) -> Result<AdbKey, AppError> {
         let mut slot = self.key.lock().await;
         if let Some(key) = slot.as_ref() {
@@ -280,7 +278,7 @@ impl AndroidTvManager {
                 &path,
                 |der| adb::decode_key(der).ok(),
                 || {
-                    tracing::info!("generating an ADB key (slow on the Pi, done once)");
+                    tracing::info!("generating an ADB key (slow on the host, done once)");
                     let key = adb::generate_key()?;
                     let der = adb::encode_key(&key)?;
                     Ok((key, der))
@@ -532,7 +530,7 @@ impl AndroidTvManager {
     /// hand it to the package manager, then clean up. `-r` reinstalls over an
     /// existing copy, which is what makes iterating on your own app painless.
     ///
-    /// The upload streams through to the box, never held whole: the Pi 1 has
+    /// The upload streams through to the box, never held whole: a small host has
     /// 512 MB and no swap worth the name. The caller holds `install_permit`.
     pub async fn install_apk<S>(&self, mut apk: S) -> Result<(), AppError>
     where
@@ -588,7 +586,7 @@ impl AndroidTvManager {
     /// launches the app, so it interrupts what plays: only when ADB's CEC cannot be had.
     pub async fn dial_wake(&self) -> Result<(), AppError> {
         let config = self.config().await;
-        let host = config.host.ok_or(Refusal::NotConfigured)?;
+        let host = config.host.or_not_configured()?;
         let app = config
             .wake_app
             .unwrap_or_else(|| DEFAULT_WAKE_APP.to_string());
@@ -841,12 +839,7 @@ mod tests {
     #[tokio::test]
     async fn missing_config_is_an_empty_config_not_an_error() {
         let dir = crate::util::test_dir();
-        let manager = AndroidTvManager::new(
-            &dir.path().join("androidtv.json"),
-            &dir.path().join("adb-key"),
-            &dir.path().join("atv-identity"),
-        )
-        .expect("manager");
+        let manager = new_manager(&dir);
         assert!(manager.config().await.host.is_none());
         let status = manager.status().await;
         assert!(!status.configured);
@@ -895,7 +888,7 @@ mod tests {
         for bad in [
             "127.0.0.1",
             "8.8.8.8",
-            "192.168.1.153:5555",
+            "192.168.1.30:5555",
             "box.example.com",
             "a/b.local",
         ] {
@@ -953,23 +946,19 @@ mod tests {
         let chunks = |parts: Vec<&'static [u8]>| {
             futures::stream::iter(parts.into_iter().map(|p| Ok(Bytes::from_static(p))))
         };
-        let code = |error: AppError| match error {
-            AppError::Coded { code, .. } => code,
-            other => panic!("not coded: {other}"),
-        };
         let error = manager
             .install_apk(chunks(vec![b"MZ", b"\x90\x00"]))
             .await
             .unwrap_err();
-        assert_eq!(code(error), "invalid", "not an APK");
+        assert_eq!(error.code(), "invalid", "not an APK");
         let error = manager.install_apk(chunks(vec![])).await.unwrap_err();
-        assert_eq!(code(error), "invalid", "empty");
+        assert_eq!(error.code(), "invalid", "empty");
         // a real zip head, cut in two: it gets past the check, to the missing box
         let error = manager
             .install_apk(chunks(vec![b"P", b"K\x03\x04rest"]))
             .await
             .unwrap_err();
-        assert_eq!(code(error), "not_configured", "no box");
+        assert_eq!(error.code(), "not_configured", "no box");
     }
 
     #[tokio::test]
@@ -994,17 +983,11 @@ mod tests {
     #[tokio::test]
     async fn set_config_persists_and_rejects_bad_packages() {
         let dir = crate::util::test_dir();
-        let path = dir.path().join("androidtv.json");
-        let manager = AndroidTvManager::new(
-            &path,
-            &dir.path().join("adb-key"),
-            &dir.path().join("atv-identity"),
-        )
-        .expect("manager");
+        let manager = new_manager(&dir);
 
         manager
             .set_config(AndroidTvConfig {
-                host: Some("192.168.1.153".to_string()),
+                host: Some("192.168.1.30".to_string()),
                 port: None,
                 favorite_apps: vec![AndroidApp {
                     package: "org.smarttube.beta".to_string(),
@@ -1015,21 +998,14 @@ mod tests {
             .await
             .expect("saved");
 
-        let reloaded = AndroidTvManager::new(
-            &path,
-            &dir.path().join("adb-key"),
-            &dir.path().join("atv-identity"),
-        )
-        .expect("reload")
-        .config()
-        .await;
-        assert_eq!(reloaded.host.as_deref(), Some("192.168.1.153"));
+        let reloaded = new_manager(&dir).config().await;
+        assert_eq!(reloaded.host.as_deref(), Some("192.168.1.30"));
         assert_eq!(reloaded.favorite_apps.len(), 1);
         assert_eq!(reloaded.wake_app.as_deref(), Some("YouTube"));
 
         let rejected = manager
             .set_config(AndroidTvConfig {
-                host: Some("192.168.1.153".to_string()),
+                host: Some("192.168.1.30".to_string()),
                 port: None,
                 favorite_apps: vec![AndroidApp {
                     package: "evil; reboot".to_string(),
@@ -1041,7 +1017,7 @@ mod tests {
         assert!(rejected.is_err());
         let rejected = manager
             .set_config(AndroidTvConfig {
-                host: Some("192.168.1.153".to_string()),
+                host: Some("192.168.1.30".to_string()),
                 wake_app: Some("../../admin".into()),
                 ..AndroidTvConfig::default()
             })
@@ -1051,7 +1027,7 @@ mod tests {
 
     #[test]
     fn favorite_apps_keep_loading_under_their_old_spelling() {
-        let old = r#"{"host":"192.168.1.153","favouriteApps":[{"package":"org.smarttube.beta","label":"SmartTube"}]}"#;
+        let old = r#"{"host":"192.168.1.30","favouriteApps":[{"package":"org.smarttube.beta","label":"SmartTube"}]}"#;
         let config: AndroidTvConfig = serde_json::from_str(old).expect("old file");
         assert_eq!(config.favorite_apps.len(), 1);
         let written = serde_json::to_string(&config).expect("written");

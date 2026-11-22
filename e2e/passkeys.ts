@@ -141,7 +141,7 @@ check(
 	(await q.evaluate(async () => (await fetch('/api/auth/verify', { method: 'POST' })).status)) === 401
 );
 
-// a member made by the CLI (as on the Pi): the dashboard without its admin settings
+// a member made by the CLI (as on the host): the dashboard without its admin settings
 const r = await open(browser);
 await authenticator(r);
 await r.goto(invitation('sam', 'Sam', false));
@@ -158,12 +158,6 @@ await settled(r);
 check(
 	'a member sees no TV settings',
 	(await r.getByRole('button', { name: fr.common_settings_of({ name: fr.tv_default_name() }) }).count()) === 0
-);
-await r.goto(`${BASE}/remote`);
-await title(r, fr.remote_title());
-check(
-	'a member configures no remote key',
-	(await r.getByRole('button', { name: fr.remote_add_binding() }).count()) === 0 && (await r.getByText(fr.code_forbidden()).count()) > 0
 );
 
 checkNoErrors();

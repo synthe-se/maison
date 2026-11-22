@@ -291,7 +291,7 @@ impl From<&DiscoveredDevice> for ZigbeeDevice {
 }
 
 /// When `instant` was, by the wall clock, to the second. Read from the clock each time: the
-/// Pi has no RTC and NTP steps its clock after boot.
+/// host has no RTC and NTP steps its clock after boot.
 fn wall_clock(instant: Instant) -> String {
     let at = Timestamp::now() - SignedDuration::try_from(instant.elapsed()).unwrap_or_default();
     crate::util::rfc3339_utc(Timestamp::from_second(at.as_second()).unwrap_or(at))

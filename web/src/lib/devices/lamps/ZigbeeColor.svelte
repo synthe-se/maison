@@ -39,9 +39,9 @@
 	}
 </script>
 
-<div class="color">
+<div class="stack loose">
 	{#if why}<p class="hint" id="{id}-why">{why}</p>{/if}
-	<div class="swatches" role="group" aria-label={m.zigbee_lamps_color()}>
+	<div class="cluster" role="group" aria-label={m.zigbee_lamps_color()}>
 		{#each PRESETS as p (p.rgb.join())}
 			<button
 				class="swatch"
@@ -73,15 +73,6 @@
 </div>
 
 <style>
-	.color {
-		display: grid;
-		gap: var(--s-4);
-	}
-	.swatches {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--s-2);
-	}
 	/* 44 px targets, a ring so white reads on a light ground */
 	.swatch {
 		width: var(--control-h);

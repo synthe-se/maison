@@ -20,17 +20,13 @@
 
 <svelte:head><title>{pageTitle(title)}</title></svelte:head>
 
-<section class="door" aria-labelledby={id}>
+<section class="door stack loose" aria-labelledby={id}>
 	{@render mark?.()}
 	<h1 {id} tabindex="-1" bind:this={heading}>{title}</h1>
 	{@render children?.()}
 </section>
 
 <style>
-	.door {
-		display: grid;
-		gap: var(--s-4);
-	}
 	.door :global(p) {
 		margin: 0;
 	}

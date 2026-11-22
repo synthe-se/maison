@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::remote::{SwitchState, TvKey, default_true};
+use crate::actions::{SwitchState, default_true};
 
-/// `POST /api/tv/power`, as `IrAction::TvPower` powers it, with the same defaults.
+/// `POST /api/tv/power`, as `Action::TvPower` powers it, with the same defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PowerRequest {
@@ -39,6 +39,41 @@ pub struct KeyRequest {
 pub struct AmbilightRequest {
     #[serde(default)]
     pub state: SwitchState,
+}
+
+/// Remote-control keys accepted by the TV's `/6/input/key`. An enum: an unknown key name is a
+/// rejected request, and a rejected request is a step towards a dead server (the TV's
+/// JointSPACE dies on what it does not implement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TvKey {
+    Standby,
+    Back,
+    Home,
+    Source,
+    WatchTv,
+    Confirm,
+    CursorUp,
+    CursorDown,
+    CursorLeft,
+    CursorRight,
+    VolumeUp,
+    VolumeDown,
+    Mute,
+    ChannelStepUp,
+    ChannelStepDown,
+    PlayPause,
+    Pause,
+    Stop,
+    FastForward,
+    Rewind,
+    Next,
+    Previous,
+    Info,
+    Options,
+    Subtitle,
+    Teletext,
+    AmbilightOnOff,
 }
 
 #[cfg(test)]

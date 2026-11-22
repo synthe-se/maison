@@ -96,7 +96,7 @@ pub trait LampRecord:
 /// Writes go through [`LampStore::save`]: the snapshot is taken *while holding the lock*,
 /// so the last write is always the newest state (a rename can never be overwritten by an
 /// older copy), and a file is only rewritten when its content changed (the SD card of the
-/// Pi counts its writes).
+/// host counts its writes).
 pub struct LampStore<T> {
     lamps_path: PathBuf,
     blacklist_path: PathBuf,

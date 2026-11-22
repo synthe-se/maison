@@ -8,7 +8,6 @@
 	import { live } from '#lib/live.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import AdminOnly from '#lib/components/AdminOnly.svelte';
 	import Group from '#lib/components/Group.svelte';
 	import Icon from '#lib/components/Icon.svelte';
@@ -27,8 +26,7 @@
 
 	const all = new Gesture();
 	function moveAll(open: boolean) {
-		haptic(CONFIRM);
-		return all.run(
+		return all.committed(
 			() =>
 				everyone(
 					online,

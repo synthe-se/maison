@@ -1,5 +1,5 @@
 <script lang="ts">
-	// A form that needs room (a meal, a remote binding): a Bits UI Dialog drawn as a sheet, from
+	// A form that needs room (a meal, a scene): a Bits UI Dialog drawn as a sheet, from
 	// the bottom on a phone, from the right on a wide screen (Material 3; app.css `.sheet`).
 	// Its title names what is edited; Escape, the overlay or the cross close it. A form changed
 	// and not saved (its `draft` is dirty) is not lost to a stray Escape or tap: closing asks first.

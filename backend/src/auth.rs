@@ -20,8 +20,6 @@
 //!   settings stay with people. [`SettingsClient`] is a device client that is not a wall
 //!   screen: what changes the house's settings (a name, a schedule) is not for a frame on the
 //!   wall.
-//! - [`MachineClient`]: the IR bridge's bearer token (`IR_API_TOKEN`), its failures limited per
-//!   address.
 //!
 //! Every extractor notes who it found ([`Principal`]): the request layer logs every 401 and
 //! 403 with it, the path and the client's address (`lib.rs`).
@@ -49,7 +47,7 @@ use crate::{
     passkey::client_ip,
     people::{People, Person, Role, Scope, StoredToken, TokenKind},
     store::{self, Access, Corrupt},
-    util::{constant_time_eq, hash_secret, lock, now_ms, random_id, random_secret},
+    util::{hash_secret, lock, now_ms, random_id, random_secret},
 };
 
 /// How recent the last passkey sign-in must be for what could hand the house to someone else:
@@ -457,54 +455,6 @@ pub(crate) async fn service_token(
         }
     }
     Ok(Some(found))
-}
-
-// ---------- the IR bridge ----------
-
-/// Extractor for machine-to-machine clients (the kird IR bridge on the STB): a raw bearer
-/// token compared in constant time against `IR_API_TOKEN` (32 characters at least, or the
-/// backend refuses to start). Fails closed when the token is not configured; failures count
-/// against the address, which waits once over the limit. The request guard keeps the route to
-/// the LAN (`lib.rs`). Deliberately not chained with the session: a machine route accepts the
-/// machine token only.
-#[derive(Debug, Clone)]
-pub struct MachineClient;
-
-impl<S> FromRequestParts<S> for MachineClient
-where
-    AppState: FromRef<S>,
-    S: Send + Sync,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-        let ip = request_ip(&parts.extensions, &parts.headers);
-        app_state
-            .auth_failures
-            .check(ip)
-            .map_err(AppError::too_many)?;
-        let token = bearer_token(&parts.headers);
-        // unset or wrong, the same answer: the LAN learns nothing of the setup
-        let good = match (app_state.config.ir_api_token.as_deref(), token) {
-            (Some(expected), Some(token)) => {
-                constant_time_eq(token.as_bytes(), expected.as_bytes())
-            }
-            (None, _) => {
-                tracing::warn!(%ip, "a machine call, but IR_API_TOKEN is not set: refused");
-                false
-            }
-            (Some(_), None) => false,
-        };
-        if !good {
-            app_state.auth_failures.fail(ip);
-            note(parts, || "the IR bridge (bad token)".into());
-            tracing::warn!(%ip, "IR bridge: wrong or missing machine token");
-            return Err(Refusal::NotSignedIn.into());
-        }
-        note(parts, || "the IR bridge".into());
-        Ok(Self)
-    }
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {

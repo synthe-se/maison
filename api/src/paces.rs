@@ -65,8 +65,6 @@ paces! {
     BROADLINK_SEARCH_FOR_MS = 120_000;
     /// The last climate order (only Maison changes it).
     CLIMATE_STATE_MS = 60_000;
-    /// The remote's recent keys, while a key is being captured.
-    IR_CAPTURE_MS = 1_000;
     /// The TV and the box: as slowly as the TV allows (JointSPACE dies of being asked).
     TV_MS = 60_000;
     /// The Zigbee network's pairing window while it is open (its countdown), and closed.

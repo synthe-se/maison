@@ -9,7 +9,7 @@ pub struct Config {
     pub auth_cookie_name: String,
     pub auth_cookie_secure: bool,
     /// Where Maison is reached (`https://home.example.com`): the passkeys' origin, its host
-    /// their RP ID. `PUBLIC_URL`, else `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`.
+    /// their RP ID (`PUBLIC_URL`).
     pub public_url: Option<String>,
     pub disable_bluetooth: bool,
     pub source_root: PathBuf,
@@ -27,15 +27,13 @@ pub struct Config {
     pub zigbee_lamps_blacklist_path: PathBuf,
     pub nabaztag_config_path: PathBuf,
     pub nabaztag_host: Option<String>,
-    pub ir_keymap_path: PathBuf,
     pub tv_config_path: PathBuf,
     pub androidtv_config_path: PathBuf,
     pub adb_key_path: PathBuf,
     pub atv_identity_path: PathBuf,
-    pub ir_api_token: Option<String>,
     /// Whether an app's service token may come over the LAN's plain HTTP (`ALLOW_LAN_TOKENS`,
     /// off by default): the token would cross the Wi-Fi in clear. Tailscale (encrypted) and
-    /// loopback are always allowed; the IR bridge's own token is not concerned.
+    /// loopback are always allowed.
     pub allow_lan_tokens: bool,
     /// A wall screen not seen for this many days is revoked (`SCREEN_IDLE_DAYS`, default 90;
     /// 0 keeps them forever): a frame thrown away or stolen stops opening the house.
@@ -131,9 +129,7 @@ impl Config {
             frontend_dist_dir: path("FRONTEND_DIST_DIR", "web/build"),
             auth_cookie_name: var("AUTH_COOKIE_NAME").unwrap_or_else(|| "maison_session".to_string()),
             auth_cookie_secure: flag("AUTH_COOKIE_SECURE", true),
-            public_url: var("PUBLIC_URL")
-                .or_else(|| var("CLOUDFLARE_PUBLIC_HOSTNAME").map(|host| format!("https://{host}")))
-                .map(|url| url.trim_end_matches('/').to_string()),
+            public_url: var("PUBLIC_URL").map(|url| url.trim_end_matches('/').to_string()),
             disable_bluetooth: flag("DISABLE_BLUETOOTH", false),
             // A directory of its own, like matter/: the file is replaced by temp-file +
             // rename, so the service user must own the directory (the app dir is root's).
@@ -153,7 +149,6 @@ impl Config {
             ),
             nabaztag_config_path: path("NABAZTAG_JSON_PATH", "nabaztag.json"),
             nabaztag_host: var("NABAZTAG_HOST"),
-            ir_keymap_path: path("IR_KEYMAP_JSON_PATH", "ir-keymap.json"),
             tv_config_path: path("TV_JSON_PATH", "tv.json"),
             androidtv_config_path: path("ANDROIDTV_JSON_PATH", "androidtv.json"),
             // Private key authenticating this host to the box's adbd.
@@ -161,8 +156,6 @@ impl Config {
             // TLS client identity for the Android TV Remote v2 protocol. Distinct from the
             // ADB key: the TV pairs against this certificate.
             atv_identity_path: path("ATV_IDENTITY_PATH", "atv-identity"),
-            // Machine token for the STB IR bridge (kird); unset = IR API off.
-            ir_api_token: var("IR_API_TOKEN"),
             allow_lan_tokens: flag("ALLOW_LAN_TOKENS", false),
             screen_idle_days: parsed(&var, "SCREEN_IDLE_DAYS", 90),
             edge_listen: var("EDGE_LISTEN"),
@@ -282,7 +275,7 @@ mod tests {
         assert_eq!(c.public_url.as_deref(), Some("https://home.example.com"));
         assert_eq!(c.open_meteo_url, "http://127.0.0.1:9");
         assert_eq!(
-            with(&[("CLOUDFLARE_PUBLIC_HOSTNAME", "home.example.com")])
+            with(&[("PUBLIC_URL", "https://home.example.com/")])
                 .public_url
                 .as_deref(),
             Some("https://home.example.com")

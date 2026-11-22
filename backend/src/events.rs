@@ -1,7 +1,7 @@
 //! What changed, said to every open page and wall screen (`GET /api/events`, server-sent
 //! events; the names are `maison_api::events`): each family's own watch (the Zigbee driver's
 //! lamps, the shutters' subscriptions, Tempo's answer, each cat device's pushes, the plugs'
-//! reader, the last climate order, the remote's keys, the box's power, the frame's photos) is
+//! reader, the last climate order, the box's power, the frame's photos) is
 //! followed by one task, which says the family's name on one broadcast. The data is a name, never the value: a client
 //! reads the value again through its usual route (one answer, one serialisation).
 
@@ -73,17 +73,6 @@ impl Events {
             state.androidtv.subscribe_power(),
             names::ANDROID_TV,
         );
-        let mut keys = state.ir.subscribe();
-        let events = self.clone();
-        supervised("events: ir", async move {
-            loop {
-                match keys.recv().await {
-                    Ok(_) => events.said(names::IR_KEYS),
-                    Err(broadcast::error::RecvError::Lagged(_)) => events.said(names::IR_KEYS),
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
         let (events, tuya) = (self.clone(), state.tuya.clone());
         supervised("events: tuya", async move {
             for device in tuya.list_devices().await {

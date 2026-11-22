@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 pub const UPLOAD_FIELD: &str = "photo";
 
 /// One photo's bytes at most: well above a JPEG the size of the frame's panel at quality 0.85
-/// (under 1 MB), and held in memory while it comes in on a 512 MB Pi.
+/// (under 1 MB), and held in memory while it comes in on a 512 MB host.
 pub const MAX_PHOTO_BYTES: usize = 2 * 1024 * 1024;
 
-/// Photos the house keeps at most: the Pi's SD card and the frames' caches stay bounded.
+/// Photos the house keeps at most: the host's flash and the frames' caches stay bounded.
 pub const MAX_PHOTOS: usize = 500;
 
 /// Hexadecimal characters of a SHA-256.

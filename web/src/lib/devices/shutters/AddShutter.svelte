@@ -6,7 +6,6 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import { Draft } from '#lib/draft.svelte.ts';
 	import { Elapsed } from '#lib/elapsed.svelte.ts';
 	import Icon from '#lib/components/Icon.svelte';
@@ -43,8 +42,7 @@
 		return pairing.run(
 			() => shuttersApi.commission(code, name),
 			async (r) => {
-				haptic(CONFIRM);
-				ui.toast(m.shutters_added({ name: r.cover.name }));
+				ui.done(m.shutters_added({ name: r.cover.name }));
 				close();
 				await onadded(r.cover);
 			},
@@ -55,7 +53,7 @@
 </script>
 
 <Sheet {open} onclose={close} {draft} title={m.shutters_add()} description={m.shutters_commission_hint()}>
-	<form class="pair" onsubmit={pair} novalidate>
+	<form class="pair stack loose" onsubmit={pair} novalidate>
 		<TextField
 			label={m.shutters_code()}
 			bind:input={codeInput}
@@ -83,10 +81,6 @@
 </Sheet>
 
 <style>
-	.pair {
-		display: grid;
-		gap: var(--s-4);
-	}
 	.pair .btn {
 		min-height: var(--control-h);
 	}

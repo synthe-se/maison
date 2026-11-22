@@ -9,7 +9,7 @@ import { forgetAll } from '#lib/live.svelte.ts';
 import { screensApi, takeAddress } from '#lib/screens.ts';
 
 class Session {
-	/** `unreachable`: no answer, or the tunnel's 502 while the Pi restarts. `revoked`: a screen
+	/** `unreachable`: no answer, or the proxy's 502 while the host restarts. `revoked`: a screen
 	 * an admin removed while it was on. */
 	status = $state<'loading' | 'signed_in' | 'signed_out' | 'unreachable' | 'revoked'>('loading');
 	/** A wall screen's name: in by its cookie, nobody signed in. */

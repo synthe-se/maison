@@ -162,10 +162,7 @@ mod tests {
 
     #[test]
     fn the_client_hears_a_code_never_the_radio_detail() {
-        let code = |error: DriverError| match error.into_client() {
-            AppError::Coded { code, .. } => code,
-            other => panic!("uncoded: {other}"),
-        };
+        let code = |error: DriverError| error.into_client().code();
         let io = std::io::Error::other("/dev/ttyUSB0: device disconnected");
         assert_eq!(code(ezsp(ezsp::Error::Io(io))), "device_unreachable");
         assert_eq!(

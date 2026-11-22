@@ -7,7 +7,6 @@
 	import { ui } from '#lib/ui.svelte.ts';
 	import { refocus } from '#lib/focus.ts';
 	import { Gesture } from '#lib/gesture.svelte.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import Progress from '#lib/components/Progress.svelte';
 	import { androidTvApi } from './api.ts';
@@ -25,8 +24,7 @@
 		await g.run(
 			() => androidTvApi.installApk(file, (sent) => apk && (apk.sent = sent)),
 			() => {
-				haptic(CONFIRM);
-				ui.toast(m.android_tv_apk_installed({ name: file.name }));
+				ui.done(m.android_tv_apk_installed({ name: file.name }));
 				void oninstalled();
 			},
 			'apk'
@@ -45,7 +43,7 @@
 		valueText={m.android_tv_upload_sent({ percent: percent(apk.sent) })}
 	/>
 {:else if apk}
-	<p class="hint installing"><Icon name="upload" busy />{m.android_tv_installing()}</p>
+	<p class="hint line tight"><Icon name="upload" busy />{m.android_tv_installing()}</p>
 {:else}
 	<div class="actions">
 		<label class="btn file">
@@ -56,16 +54,4 @@
 {/if}
 
 <style>
-	.file {
-		position: relative;
-	}
-	.file:focus-within {
-		outline: var(--focus-ring);
-		outline-offset: var(--focus-offset);
-	}
-	.installing {
-		display: flex;
-		align-items: center;
-		gap: var(--s-1);
-	}
 </style>

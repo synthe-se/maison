@@ -349,7 +349,7 @@ fn scan_range(start: Option<&str>, end: Option<&str>) -> Result<(u32, u32), AppE
 }
 
 /// The reported points whose number falls in `start..=end`: the device's own keys are
-/// walked, never the range (a range up to 4 294 967 295 would stall the Pi).
+/// walked, never the range (a range up to 4 294 967 295 would stall the host).
 fn dps_in_range(
     raw_status: &Map<String, Value>,
     start: u32,

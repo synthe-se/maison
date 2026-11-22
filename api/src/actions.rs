@@ -1,8 +1,9 @@
-//! The remote's actions (`/api/ir`): what a key of the set-top box's remote, a scene or the
-//! configurator's test runs, and the keys it may send to the TV and the box. Kept in the
-//! keymap and the scenes' files too: each renamed field reads its old snake_case name.
+//! Actions: what a scene runs, one device order each. Kept in the scenes' file too: each
+//! renamed field reads its old snake_case name.
 
 use serde::{Deserialize, Serialize};
+
+use crate::{androidtv::AndroidKey, tv::TvKey};
 
 /// serde's `default` for flags that are on unless said otherwise.
 pub fn default_true() -> bool {
@@ -21,7 +22,7 @@ pub enum CoverOrder {
 }
 
 /// What a switch-like action does to the device: force a state, or flip
-/// whatever the current state is — the remote-control default.
+/// whatever the current state is (the default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwitchState {
@@ -31,16 +32,15 @@ pub enum SwitchState {
     Toggle,
 }
 
-/// The `action` values are snake_case, the fields camelCase like the rest of the API. The
-/// keymap and scenes written before kept snake_case fields: each renamed one reads its old
-/// name too.
+/// The `action` values are snake_case, the fields camelCase like the rest of the API. Scenes
+/// written before kept snake_case fields: each renamed one reads its old name too.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "action",
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
-pub enum IrAction {
+pub enum Action {
     Nabaztag {
         command: String,
     },
@@ -104,8 +104,7 @@ pub enum IrAction {
         state: SwitchState,
     },
     /// Launches an app on the Android TV box, powering the television on and
-    /// routing it to the box first — a remote button that lights up a dark
-    /// room's screen is the whole point.
+    /// routing it to the box first.
     #[serde(rename = "androidtv_app")]
     AndroidTvApp {
         package: String,
@@ -136,119 +135,37 @@ pub enum IrAction {
         model: Option<String>,
     },
     /// Switches the Mitsubishi AC back on with the last settings it was given (from its page,
-    /// a toggle or a binding), without their sleep timer: that was for then, not now.
+    /// a toggle or a scene), without their sleep timer: that was for then, not now.
     ClimateOn {
         host: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
-    /// Runs a saved scene's actions (`scenes.rs`). Only from a key or a test: a scene may
-    /// not hold another scene.
-    Scene {
-        scene: String,
-    },
 }
 
-/// Remote-control keys accepted by the TV's `/6/input/key`. An enum: an unknown key name is a
-/// rejected request, and a rejected request is a step towards a dead server (the TV's
-/// JointSPACE dies on what it does not implement).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TvKey {
-    Standby,
-    Back,
-    Home,
-    Source,
-    WatchTv,
-    Confirm,
-    CursorUp,
-    CursorDown,
-    CursorLeft,
-    CursorRight,
-    VolumeUp,
-    VolumeDown,
-    Mute,
-    ChannelStepUp,
-    ChannelStepDown,
-    PlayPause,
-    Pause,
-    Stop,
-    FastForward,
-    Rewind,
-    Next,
-    Previous,
-    Info,
-    Options,
-    Subtitle,
-    Teletext,
-    AmbilightOnOff,
-}
-
-/// Remote-control keys, mapped to Android keycodes. An enum rather than a
-/// string so no caller can smuggle shell syntax into `input keyevent`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AndroidKey {
-    Up,
-    Down,
-    Left,
-    Right,
-    Ok,
-    Back,
-    Home,
-    Menu,
-    Search,
-    VolumeUp,
-    VolumeDown,
-    Mute,
-    PlayPause,
-    Play,
-    Pause,
-    Stop,
-    Next,
-    Previous,
-    Rewind,
-    FastForward,
-    ChannelUp,
-    ChannelDown,
-    Power,
-    Sleep,
-    Wakeup,
-}
-
-/// How one action went, in the order they ran (a scene run from a key runs the scene's
-/// actions): the action itself (the apps name it in their words), whether it went, and if not,
-/// the refusal's code (`maison_api::codes`: `device_unreachable`, `not_found`, …).
+/// How one action went: the action itself (the apps name it in their words), whether it went,
+/// and if not, the refusal's code (`maison_api::codes`: `device_unreachable`, `not_found`, …).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionResult {
-    pub action: IrAction,
+    pub action: Action,
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 }
 
-/// What running actions answers (`POST /api/scenes/{id}/run`, `/api/ir/test`, and a key press
-/// with no results, its actions running after): one entry per action, in the order they ran.
+/// What running a scene answers (`POST /api/scenes/{id}/run`): one entry per action, in the
+/// order they ran.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KeyResponse {
+pub struct RunResponse {
     pub success: bool,
     /// For logs and curl (« 1/2 actions ok »): the apps say their own words.
     pub message: String,
     pub results: Vec<ActionResult>,
 }
 
-impl KeyResponse {
-    /// Nothing ran (yet): said why.
-    pub fn nothing(message: String) -> Self {
-        Self {
-            success: true,
-            message,
-            results: Vec::new(),
-        }
-    }
-
+impl RunResponse {
     /// Actions ran: how many went.
     pub fn ran(results: Vec<ActionResult>) -> Self {
         let failures = results.iter().filter(|r| !r.ok).count();
@@ -271,18 +188,18 @@ mod tests {
 
     #[test]
     fn a_run_says_each_action() {
-        let off = IrAction::MerossPower {
+        let off = Action::MerossPower {
             device: "p1".into(),
             state: SwitchState::Off,
         };
-        let r = KeyResponse::ran(vec![
+        let r = RunResponse::ran(vec![
             ActionResult {
                 action: off.clone(),
                 ok: true,
                 code: None,
             },
             ActionResult {
-                action: IrAction::TvKey { key: TvKey::Mute },
+                action: Action::TvKey { key: TvKey::Mute },
                 ok: false,
                 code: Some("device_unreachable".into()),
             },
@@ -294,7 +211,7 @@ mod tests {
             json,
             r#"{"success":false,"message":"1/2 actions ok","results":[{"action":{"action":"meross_power","device":"p1","state":"off"},"ok":true},{"action":{"action":"tv_key","key":"mute"},"ok":false,"code":"device_unreachable"}]}"#
         );
-        let back: KeyResponse = serde_json::from_str(&json).unwrap();
+        let back: RunResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back, r);
         assert_eq!(
             back.failures()
@@ -306,28 +223,26 @@ mod tests {
 
     #[test]
     fn actions_round_trip_and_old_names_load() {
-        let json = r#"[{"action":"zigbee_power","lamp":"z1","state":"toggle"},{"action":"cover","cover":"c1","command":"position","position":40},{"action":"tv_power","state":"on","switchToBox":true},{"action":"androidtv_key","key":"play_pause"},{"action":"scene","scene":"nuit"}]"#;
-        let a: Vec<IrAction> = serde_json::from_str(json).unwrap();
+        let json = r#"[{"action":"zigbee_power","lamp":"z1","state":"toggle"},{"action":"cover","cover":"c1","command":"position","position":40},{"action":"tv_power","state":"on","switchToBox":true},{"action":"androidtv_key","key":"play_pause"}]"#;
+        let a: Vec<Action> = serde_json::from_str(json).unwrap();
         assert_eq!(serde_json::to_string(&a).unwrap(), json);
-        let old: IrAction =
+        let old: Action =
             serde_json::from_str(r#"{"action":"broadlink_code","host":"h","code_id":"c"}"#)
                 .unwrap();
         assert_eq!(
             old,
-            IrAction::BroadlinkCode {
+            Action::BroadlinkCode {
                 host: "h".into(),
                 code_id: "c".into()
             }
         );
-        let tv: IrAction = serde_json::from_str(r#"{"action":"tv_power"}"#).unwrap();
+        let tv: Action = serde_json::from_str(r#"{"action":"tv_power"}"#).unwrap();
         assert_eq!(
             tv,
-            IrAction::TvPower {
+            Action::TvPower {
                 state: SwitchState::Toggle,
                 switch_to_box: true
             }
         );
-        let key: TvKey = serde_json::from_str(r#""watch_tv""#).unwrap();
-        assert_eq!(key, TvKey::WatchTv);
     }
 }

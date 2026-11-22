@@ -78,7 +78,7 @@
 			{#if missing}
 				<p class="banner warn" role="alert">{missing}</p>
 			{:else}
-				<ul class="why plain-list">
+				<ul class="why stack roomy plain-list">
 					<li><Icon name="key" /><span>{m.invite_why_nopassword()}</span></li>
 					<li><Icon name="copy" /><span>{m.invite_why_devices()}</span></li>
 				</ul>
@@ -91,10 +91,6 @@
 </AuthShell>
 
 <style>
-	.why {
-		display: grid;
-		gap: var(--s-3);
-	}
 	.why li {
 		display: grid;
 		grid-template-columns: var(--lead) 1fr;

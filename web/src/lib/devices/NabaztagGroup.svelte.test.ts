@@ -27,7 +27,7 @@ describe('NabaztagGroup', () => {
 		await expect.element(push()).toBeEnabled();
 	});
 
-	it('plays its tai chi, the same choreography as the remote key', async () => {
+	it('plays its tai chi', async () => {
 		const api = stubApi({ '/nabaztag': status(true), 'POST /nabaztag/ctl': { success: true, message: 'ok' } });
 		await render(NabaztagGroup);
 		await page.getByRole('button', { name: m.nabaztag_taichi() }).click();

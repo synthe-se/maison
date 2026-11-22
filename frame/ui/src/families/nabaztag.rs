@@ -1,5 +1,5 @@
 //! The rabbit on the dashboard (NabaztagGroup): reachable or not, whether it shows Tempo, its
-//! tai chi (the remote's « Taichi » key plays it too) and a way to push today's colour again.
+//! tai chi and a way to push today's colour again.
 //! Out of reach, both buttons stay, out of reach. No group at all once the server says no
 //! rabbit is set.
 

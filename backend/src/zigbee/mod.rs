@@ -646,29 +646,7 @@ mod tests {
     const ID: &str = "4b8ec60801881700";
 
     fn device() -> ZigbeeDevice {
-        ZigbeeDevice {
-            id: ID.to_string(),
-            node_id: 0x2e34,
-            info: ZigbeeDeviceInfo {
-                eui64: "4b:8e:c6:08:01:88:17:00".to_string(),
-                endpoint: Some(11),
-                input_clusters: vec![0, 3, 4, 5, 6, 8],
-                output_clusters: vec![25],
-                model: Some("LTG002".to_string()),
-                manufacturer: Some("Signify Netherlands B.V.".to_string()),
-                supports_brightness: true,
-                device_type: ZigbeeDeviceType::Lamp,
-                ..ZigbeeDeviceInfo::default()
-            },
-            light: Light {
-                is_on: true,
-                brightness: 100,
-                ..Light::default()
-            },
-            connected: true,
-            reachable: true,
-            last_seen: None,
-        }
+        ZigbeeDevice::from(&device::DiscoveredDevice::test_lamp())
     }
 
     /// A manager on `root` whose driver never starts: no serial port, no save loop.
@@ -705,18 +683,11 @@ mod tests {
             .set_power(ID, false)
             .await
             .expect_err("the driver's refusal comes back");
-        assert_eq!(code(&error), "device_unreachable", "{error}");
+        assert_eq!(error.code(), "device_unreachable", "{error}");
         assert!(
             !error.to_string().contains("boom"),
             "the reason is the log's"
         );
-    }
-
-    fn code(error: &AppError) -> &'static str {
-        match error {
-            AppError::Coded { code, .. } => code,
-            other => panic!("uncoded: {other}"),
-        }
     }
 
     #[tokio::test]
@@ -731,12 +702,12 @@ mod tests {
             .await;
         for _ in 0..6 {
             let error = manager.set_power("nope", true).await.unwrap_err();
-            assert_eq!(code(&error), "not_found");
+            assert_eq!(error.code(), "not_found");
         }
         let error = manager.set_effect(ID, "disco").await.unwrap_err();
-        assert_eq!(code(&error), "invalid");
+        assert_eq!(error.code(), "invalid");
         let error = manager.set_effect("nope", "candle").await.unwrap_err();
-        assert_eq!(code(&error), "not_found");
+        assert_eq!(error.code(), "not_found");
     }
 
     /// A blacklist kept with capitals or separators keeps the device out all the same.

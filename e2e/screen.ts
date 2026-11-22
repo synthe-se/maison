@@ -1,7 +1,7 @@
-// A wall screen (the frame, frame/android, and Maison on frame-kernel), paired as a TV signs in: signed out,
+// A wall screen (a browser kept on a wall), paired as a TV signs in: signed out,
 // its browser asks for a code; an admin, signed in on their phone, gives it from « Mon compte »;
-// the screen opens by itself, its language and the sun's theme from its address (the frame's WPE
-// says en-US and light), the house's pages with nobody signed in. No token in its address, its
+// the screen opens by itself, its language and the sun's theme from its address (a wall's browser
+// may say en-US and light), the house's pages with nobody signed in. No token in its address, its
 // storage nor its scripts' cookies. Removed by the admin, it says so and offers to pair again, never a passkey.
 import { BASE, PAIRING_CODE, check, checkNoErrors, done, fr, launch, open, pairScreen, removeScreen, signIn, title } from './lib.ts';
 
@@ -20,7 +20,7 @@ await phone.evaluate(() =>
 );
 const side = await phone.evaluate(async () => (await (await fetch('/api/sun')).json()).side as string);
 
-// the frame opens Maison as its kiosk does: its language and the sun's theme in the address
+// the screen opens Maison with its language and the sun's theme in the address
 await screen.goto(`${BASE}/#lang=fr&theme=sun`);
 await title(screen, fr.pk_signin_title());
 check('the screen speaks the language its address names', (await screen.evaluate(() => document.documentElement.lang)) === 'fr');
@@ -35,7 +35,10 @@ check('the screen shows a code to give', PAIRING_CODE.test(code), code);
 // the admin, on their phone, in the house: « Mon compte », Écrans, Associer un écran
 // typed in lower case: the code is read as the screen shows it
 await pairScreen(phone, code.toLowerCase(), 'Cadre');
-check('the screen is listed', await phone.getByRole('region', { name: fr.screens_title() }).getByText('Cadre').isVisible());
+check(
+	'the screen is listed',
+	await phone.getByRole('region', { name: fr.screens_title() }).getByText('Cadre', { exact: true }).isVisible()
+);
 
 // the screen opens by itself at its next question (every 3 s)
 await title(screen, fr.nav_home());

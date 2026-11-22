@@ -1,7 +1,7 @@
 // Where the focus goes when the focused control disappears (a row removed, a form closed, a
 // view swapped): never left to fall on the page (WCAG 2.4.3). The first candidate still on the
 // page takes it, after the DOM has caught up; a heading is made focusable for it (tabindex -1,
-// no outline: app.css), as the remote page does with its list title.
+// no outline: app.css).
 
 import { tick } from 'svelte';
 

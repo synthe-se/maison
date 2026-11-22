@@ -72,7 +72,7 @@ struct HueManagerInner {
     availability_message: RwLock<Option<String>>,
     disabled: bool,
     shutting_down: AtomicBool,
-    /// One Bluetooth operation at a time (BlueZ on the Pi mishandles overlapping ones);
+    /// One Bluetooth operation at a time (BlueZ on the host mishandles overlapping ones);
     /// held around the calls only, never across a wait.
     ble_lock: Mutex<()>,
     /// The scan, poll and adapter-event loops, stopped at shutdown.
@@ -373,16 +373,14 @@ impl HueManager {
 
     pub async fn set_power(&self, lamp_id: &str, enabled: bool) -> Result<LampState, AppError> {
         let (peripheral, characteristics) = self.connected_target(lamp_id).await?;
-        if let Some(power) = characteristics.power.as_ref() {
-            self.write_characteristic(&peripheral, power, &[u8::from(enabled)])
-                .await?;
-        } else if let Some(control) = characteristics.control.as_ref() {
-            let command = build_control_command(Some(enabled), None, None);
-            self.write_characteristic(&peripheral, control, &command)
-                .await?;
-        } else {
-            return Err(Refusal::Unsupported.into());
-        }
+        self.write_setting(
+            &peripheral,
+            &characteristics,
+            characteristics.power.as_ref(),
+            &[u8::from(enabled)],
+            build_control_command(Some(enabled), None, None),
+        )
+        .await?;
 
         self.update_state_after_write(lamp_id, |state| state.is_on = enabled)
             .await
@@ -397,17 +395,14 @@ impl HueManager {
         let brightness = lamps::brightness(brightness);
         let raw = level_of(brightness);
         let (peripheral, characteristics) = self.connected_target(lamp_id).await?;
-
-        if let Some(characteristic) = characteristics.brightness.as_ref() {
-            self.write_characteristic(&peripheral, characteristic, &[raw])
-                .await?;
-        } else if let Some(control) = characteristics.control.as_ref() {
-            let command = build_control_command(None, Some(raw), None);
-            self.write_characteristic(&peripheral, control, &command)
-                .await?;
-        } else {
-            return Err(Refusal::Unsupported.into());
-        }
+        self.write_setting(
+            &peripheral,
+            &characteristics,
+            characteristics.brightness.as_ref(),
+            &[raw],
+            build_control_command(None, Some(raw), None),
+        )
+        .await?;
 
         self.update_state_after_write(lamp_id, |state| state.brightness = brightness)
             .await
@@ -425,17 +420,14 @@ impl HueManager {
         // temperature must land on the lamp itself
         let lamp_key = self.lamp_key(lamp_id).await?;
         let (peripheral, characteristics) = self.connected_target(&lamp_key).await?;
-
-        if let Some(characteristic) = characteristics.temperature.as_ref() {
-            self.write_characteristic(&peripheral, characteristic, &[raw, 0x01])
-                .await?;
-        } else if let Some(control) = characteristics.control.as_ref() {
-            let command = build_control_command(None, None, Some(raw));
-            self.write_characteristic(&peripheral, control, &command)
-                .await?;
-        } else {
-            return Err(Refusal::Unsupported.into());
-        }
+        self.write_setting(
+            &peripheral,
+            &characteristics,
+            characteristics.temperature.as_ref(),
+            &[raw, 0x01],
+            build_control_command(None, None, Some(raw)),
+        )
+        .await?;
 
         if let Some(lamp) = self.inner.lamps.write().await.get_mut(&lamp_key) {
             lamp.config.last_temperature = Some(temperature);
@@ -726,15 +718,11 @@ impl HueManager {
     async fn handle_adapter_event(&self, event: CentralEvent) {
         match event {
             CentralEvent::DeviceConnected(id) => {
-                let Some(lamp_key) = self.resolve_lamp_key(&id.to_string()).await else {
-                    return;
-                };
-                if let Some(lamp) = self.inner.lamps.write().await.get_mut(&lamp_key) {
+                self.seen(&id.to_string(), |lamp| {
                     lamp.connected = true;
                     lamp.connecting = false;
-                    lamp.reachable = true;
-                    lamp.last_seen = Some(Timestamp::now());
-                }
+                })
+                .await;
             }
             CentralEvent::DeviceDisconnected(id) => {
                 self.mark_runtime_disconnected(&id.to_string()).await;
@@ -745,16 +733,21 @@ impl HueManager {
             | CentralEvent::ManufacturerDataAdvertisement { id, .. }
             | CentralEvent::ServiceDataAdvertisement { id, .. }
             | CentralEvent::ServicesAdvertisement { id, .. }
-            | CentralEvent::RssiUpdate { id, .. } => {
-                let Some(lamp_key) = self.resolve_lamp_key(&id.to_string()).await else {
-                    return;
-                };
-                if let Some(lamp) = self.inner.lamps.write().await.get_mut(&lamp_key) {
-                    lamp.reachable = true;
-                    lamp.last_seen = Some(Timestamp::now());
-                }
-            }
+            | CentralEvent::RssiUpdate { id, .. } => self.seen(&id.to_string(), |_| {}).await,
             CentralEvent::StateUpdate(_) => {}
+        }
+    }
+
+    /// The adapter heard the lamp `id` names (none of ours: nothing): reachable, seen now, and
+    /// what `more` adds.
+    async fn seen(&self, id: &str, more: impl FnOnce(&mut LampRuntime)) {
+        let Some(lamp_key) = self.resolve_lamp_key(id).await else {
+            return;
+        };
+        if let Some(lamp) = self.inner.lamps.write().await.get_mut(&lamp_key) {
+            more(lamp);
+            lamp.reachable = true;
+            lamp.last_seen = Some(Timestamp::now());
         }
     }
 
@@ -865,6 +858,27 @@ impl HueManager {
             .filter(|_| lamp.connected)
             .ok_or(Refusal::DeviceUnreachable)?;
         Ok((peripheral, lamp.characteristics.clone()))
+    }
+
+    /// One setting written: to its own characteristic (`payload`) when the lamp has it, else as
+    /// the control characteristic's `command`; a lamp with neither does not take it.
+    async fn write_setting(
+        &self,
+        peripheral: &Peripheral,
+        characteristics: &HueCharacteristics,
+        dedicated: Option<&Characteristic>,
+        payload: &[u8],
+        command: Vec<u8>,
+    ) -> Result<(), AppError> {
+        if let Some(characteristic) = dedicated {
+            self.write_characteristic(peripheral, characteristic, payload)
+                .await
+        } else if let Some(control) = characteristics.control.as_ref() {
+            self.write_characteristic(peripheral, control, &command)
+                .await
+        } else {
+            Err(Refusal::Unsupported.into())
+        }
     }
 
     async fn write_characteristic(

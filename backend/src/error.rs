@@ -47,6 +47,22 @@ impl From<Refusal> for AppError {
     }
 }
 
+/// What was looked up or set, or the refusal that says it is not there: the one way to turn
+/// an `Option` into a coded 404 or `not_configured`.
+pub trait OrRefused<T> {
+    fn or_not_found(self) -> Result<T, AppError>;
+    fn or_not_configured(self) -> Result<T, AppError>;
+}
+
+impl<T> OrRefused<T> for Option<T> {
+    fn or_not_found(self) -> Result<T, AppError> {
+        self.ok_or_else(|| Refusal::NotFound.into())
+    }
+    fn or_not_configured(self) -> Result<T, AppError> {
+        self.ok_or_else(|| Refusal::NotConfigured.into())
+    }
+}
+
 /// The code of the refusal a response carries, in its extensions: the request layer logs every
 /// 401 and 403 with it (`lib.rs`).
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +77,17 @@ struct ErrorBody {
     code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<Box<serde_json::Value>>,
+}
+
+#[cfg(test)]
+impl AppError {
+    /// The refusal's code; anything else is a test's failure.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Coded { code, .. } => code,
+            other => panic!("not coded: {other}"),
+        }
+    }
 }
 
 impl AppError {

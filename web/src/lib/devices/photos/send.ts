@@ -1,4 +1,4 @@
-// Several photos added at once: one at a time (the Pi holds each while it comes), each resized
+// Several photos added at once: one at a time (the host holds each while it comes), each resized
 // just before it goes, so a hundred photos never sit decoded in the page. One that fails does
 // not stop the others: the outcome says which, and what was refused.
 

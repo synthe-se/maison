@@ -8,8 +8,8 @@ import { text } from '#lib/test/snippet.ts';
 import Settings from './Settings.svelte';
 
 const fields = [
-	{ key: 'host', label: m.tv_host(), placeholder: '192.168.1.52' },
-	{ key: 'irBlasterHost', label: m.tv_ir_blaster_host(), placeholder: '192.168.1.153' }
+	{ key: 'host', label: m.tv_host(), placeholder: '192.168.1.31' },
+	{ key: 'irBlasterHost', label: m.tv_ir_blaster_host(), placeholder: '192.168.1.30' }
 ];
 
 describe('tv/Settings', () => {
@@ -24,7 +24,7 @@ describe('tv/Settings', () => {
 		});
 		await expect.element(page.getByLabelText(m.tv_host())).toHaveValue('10.0.0.2');
 		await expect.element(page.getByLabelText(m.tv_ir_blaster_host())).toHaveValue('');
-		await expect.element(page.getByLabelText(m.tv_ir_blaster_host())).toHaveAttribute('placeholder', '192.168.1.153');
+		await expect.element(page.getByLabelText(m.tv_ir_blaster_host())).toHaveAttribute('placeholder', '192.168.1.30');
 		await expect.element(page.getByText(m.tv_configure_hint())).toBeVisible();
 		await expect.element(page.getByText('Pairing')).toBeVisible();
 	});

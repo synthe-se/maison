@@ -19,7 +19,7 @@
 	import Icon from '#lib/components/Icon.svelte';
 	import Sheet from '#lib/components/Sheet.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import { liveSources, summarize } from './remote/actions.ts';
+	import { liveSources, summarize } from './actions/actions.ts';
 	import SceneEditor from './scenes/SceneEditor.svelte';
 	import { iconOf, runScene, sceneForm, templates, type SceneForm } from './scenes/scenes.ts';
 	import { scenes } from './scenes/data.ts';
@@ -85,9 +85,9 @@
 {#if all.length || session.admin}
 	<Group id="scenes-title" title={m.scenes_title()} bind:heading={title} actions={session.admin && all.length ? manage : undefined}>
 		{#if all.length || list.data}
-			<ul class="scenes plain-list">
+			<ul class="scenes cluster plain-list">
 				{#each all as s (s.id)}
-					<li>
+					<li class="line tight">
 						<button class="btn scene" {...pending(g.is(s.id))} onclick={() => runScene(g, s, sources.current)}>
 							<Icon name={iconOf(s)} busy={g.is(s.id)} />{s.name}
 						</button>
@@ -99,7 +99,7 @@
 					</li>
 				{/each}
 				{#if session.admin}
-					<li>
+					<li class="line tight">
 						<button class="btn ghost scene" aria-haspopup="dialog" onclick={(e) => edit(blank(), true, e)}
 							><Icon name="plus" />{m.scenes_add()}</button
 						>
@@ -128,7 +128,7 @@
 		{#if editing.isNew && offered.length}
 			<div class="from" role="group" aria-labelledby="scenes-from">
 				<span id="scenes-from" class="label">{m.scenes_from_template()}</span>
-				<div class="row">
+				<div class="cluster">
 					{#each offered as t (t.id)}
 						<button class="btn" aria-pressed={editing.scene.id === t.id} onclick={() => start(t)}><Icon name={iconOf(t)} />{t.name}</button>
 					{/each}
@@ -163,16 +163,6 @@
 {/if}
 
 <style>
-	.scenes {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--s-2);
-	}
-	.scenes li {
-		display: flex;
-		align-items: center;
-		gap: var(--s-1);
-	}
 	.scene {
 		min-height: var(--control-h);
 	}
@@ -180,10 +170,5 @@
 		display: grid;
 		gap: var(--s-2);
 		margin-bottom: var(--s-4);
-	}
-	.from .row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--s-2);
 	}
 </style>

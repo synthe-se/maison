@@ -91,7 +91,7 @@
 	<p class="hint">{m.invites_intro()}</p>
 	<div><button class="btn primary" aria-haspopup="dialog" onclick={() => (inviting = true)}>{m.invites_title()}</button></div>
 	<Sheet open={inviting} title={m.invites_title()} onclose={close} {draft}>
-		<form class="invite" onsubmit={(e) => (e.preventDefault(), void invite())} novalidate>
+		<form class="stack loose" onsubmit={(e) => (e.preventDefault(), void invite())} novalidate>
 			<TextField
 				label={m.invites_name()}
 				bind:input={nameField}
@@ -123,7 +123,7 @@
 			<p id="created-title">
 				<strong>{m.invites_link({ name: created.name })}</strong>{separator()}{m.invites_expires({ date: longDate(created.expiresMs) })}
 			</p>
-			<div class="inline">
+			<div class="inline cluster">
 				<label class="sr-only" for="invite-url">{m.invites_link({ name: created.name })}</label>
 				<input id="invite-url" readonly value={created.url} onfocus={(e) => e.currentTarget.select()} />
 				<button class="btn" onclick={copy}><Icon name="copy" />{m.invites_copy()}</button>
@@ -158,17 +158,8 @@
 	.sub {
 		margin-top: var(--s-2);
 	}
-	.inline {
-		display: flex;
-		gap: var(--s-2);
-		flex-wrap: wrap;
-	}
 	.inline input {
 		flex: 1 1 14rem;
 		min-width: 0;
-	}
-	.invite {
-		display: grid;
-		gap: var(--s-4);
 	}
 </style>

@@ -12,7 +12,7 @@
 import { tick } from 'svelte';
 import { ui } from '#lib/ui.svelte.ts';
 import { errorText } from '#lib/errors.ts';
-import { FAILURE, haptic } from '#lib/haptics.ts';
+import { CONFIRM, FAILURE, haptic } from '#lib/haptics.ts';
 import { refocus } from '#lib/focus.ts';
 
 /** The attributes of a control whose gesture is in flight, to spread on it: busy, not
@@ -59,6 +59,13 @@ export class Gesture {
 		return key === undefined ? this.busy !== null : this.busy === key;
 	}
 
+	/** `run`, for a gesture that commits to something (feeding, a scene, a power key): felt
+	 * under the finger at once, never with the answer (haptics.ts). */
+	committed: Gesture['run'] = (...args) => {
+		haptic(CONFIRM);
+		return this.run(...args);
+	};
+
 	/**
 	 * Sends, then hands the answer to `then` (show it, read the device again, say it). Returns
 	 * the answer, or undefined when it failed (the failure is already told) or when the same
@@ -89,7 +96,7 @@ export class Gesture {
 	}
 }
 
-/** A row removed from a list (a passkey, a screen, an invitation, a person, a remote key): sent
+/** A row removed from a list (a passkey, a screen, an invitation, a person): sent
  * through `g` under `key`, its outcome said (`said`, a toast), the list read again, then the
  * focus to the list's title: the row and its button are gone (WCAG 2.4.3). */
 export function removeRow(

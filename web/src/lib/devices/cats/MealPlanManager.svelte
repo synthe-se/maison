@@ -112,7 +112,7 @@
 							onchange={(on) => toggle(index, on)}
 						/>
 						<button
-							class="icon-btn op"
+							class="icon-btn control"
 							aria-label={m.meal_plan_edit_label({ time })}
 							{...pending(g.is())}
 							onclick={() => !g.is() && edit(index)}
@@ -120,7 +120,7 @@
 							<Icon name="pencil" />
 						</button>
 						<button
-							class="icon-btn op"
+							class="icon-btn control"
 							aria-label={m.meal_plan_delete_label({ time })}
 							{...pending(g.is())}
 							onclick={(e) => !g.is() && remove(index, e)}
@@ -131,7 +131,7 @@
 				</li>
 			{/each}
 		</ul>
-		<p class="total">{m.meal_plan_total_portions_per_day({ total: m.feeder_portion({ count: perDay }) })}</p>
+		<p class="hint">{m.meal_plan_total_portions_per_day({ total: m.feeder_portion({ count: perDay }) })}</p>
 	</Loaded>
 </div>
 
@@ -198,18 +198,9 @@
 			grid-column: auto;
 		}
 	}
-	.op {
-		width: var(--control-h);
-		height: var(--control-h);
-	}
 	/* a meal switched off: said by its switch, dimmed only as an echo */
 	.off .time,
 	.off .what {
-		color: var(--ink-muted);
-	}
-	.total {
-		margin: 0;
-		font: var(--t-secondary);
 		color: var(--ink-muted);
 	}
 </style>

@@ -48,7 +48,7 @@
 	}
 </script>
 
-<div class="block">
+<div class="stack">
 	{#if hint}<p class="hint">{hint}</p>{/if}
 	<form class="fields" onsubmit={submit}>
 		{#each fields as f, i (f.key)}

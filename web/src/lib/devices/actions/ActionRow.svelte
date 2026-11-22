@@ -1,6 +1,6 @@
 <script lang="ts">
-	// One action of a binding: its type, its fields, and the buttons that move or remove it
-	// (buttons, so the order can be changed from the keyboard). An action type the configurator
+	// One action of a scene: its type, its fields, and the buttons that move or remove it
+	// (buttons, so the order can be changed from the keyboard). An action type the editor
 	// does not edit is shown by its summary and carried through untouched.
 	import { m } from '#lib/paraglide/messages.js';
 	import { options } from '#lib/options.ts';
@@ -8,7 +8,7 @@
 	import Range from '#lib/components/Range.svelte';
 	import Select from '#lib/components/Select.svelte';
 	import { unavailable } from '#lib/gesture.svelte.ts';
-	import type { IrAction, IrCoverCommand, IrSwitchState } from './api.ts';
+	import type { Action, CoverCommand, SwitchState } from './api.ts';
 	import ClimateFields from './ClimateFields.svelte';
 	import LampFields from './LampFields.svelte';
 	import NabaztagFields from './NabaztagFields.svelte';
@@ -25,23 +25,22 @@
 	} from './actions.ts';
 
 	interface Props {
-		action: IrAction;
+		action: Action;
 		/** 0-based place in the list. */
 		index: number;
 		count: number;
 		sources: Sources;
-		onchange: (a: IrAction) => void;
+		onchange: (a: Action) => void;
 		onmove: (direction: -1 | 1) => void;
 		onremove: () => void;
-		/** The types offered (a scene's actions never hold a scene); all by default. */
-		types?: ActionType[];
 	}
-	let { action, index, count, sources, onchange, onmove, onremove, types = Object.keys(ACTION_TYPES) as ActionType[] }: Props = $props();
+	let { action, index, count, sources, onchange, onmove, onremove }: Props = $props();
+	const TYPES = Object.keys(ACTION_TYPES) as ActionType[];
 	const id = $props.id();
 	const n = $derived(index + 1);
 
-	const STATES = Object.keys(SWITCH_STATES) as IrSwitchState[];
-	const COVER = Object.keys(COVER_COMMANDS) as IrCoverCommand[];
+	const STATES = Object.keys(SWITCH_STATES) as SwitchState[];
+	const COVER = Object.keys(COVER_COMMANDS) as CoverCommand[];
 	const TV_STATES = ['on', 'off'] as const;
 
 	const coverOptions = $derived(sources.covers.map((c) => ({ value: c.id, label: c.name })));
@@ -49,51 +48,50 @@
 	const hostOptions = $derived(sources.hosts.map((h) => ({ value: h.host, label: `${h.name} (${h.host})` })));
 	const codeOptions = $derived(sources.codes.map((c) => ({ value: c.id, label: c.name })));
 	const appOptions = $derived(sources.apps.map((a) => ({ value: a.package, label: a.label })));
-	const sceneOptions = $derived(sources.scenes.map((x) => ({ value: x.id, label: x.name })));
 </script>
 
 <li class="action" aria-labelledby="{id}-n">
 	<div class="head">
-		<span class="n" id="{id}-n"><span class="sr-only">{m.remote_action_number({ n })}</span><span aria-hidden="true">{n}</span></span>
-		<div class="type">
+		<span class="n" id="{id}-n"><span class="sr-only">{m.action_number({ n })}</span><span aria-hidden="true">{n}</span></span>
+		<div class="type field-grow">
 			{#if isEditable(action)}
 				<Select
-					label={m.remote_action_type()}
+					label={m.action_type()}
 					value={action.action}
-					options={options(types, ACTION_TYPES)}
+					options={options(TYPES, ACTION_TYPES)}
 					onchange={(t) => t !== action.action && onchange(defaultAction(t, sources))}
 				/>
 			{:else}
 				<p>{summarize(action, sources)}</p>
-				<p class="hint">{m.remote_other_hint()}</p>
+				<p class="hint">{m.action_other_hint()}</p>
 			{/if}
 		</div>
 		<div class="order">
 			<button
 				type="button"
-				class="icon-btn"
+				class="icon-btn control"
 				id="{id}-up"
 				{...unavailable(index === 0 && `${id}-first`)}
-				aria-label={m.remote_move_up({ n })}
+				aria-label={m.action_move_up({ n })}
 				onclick={() => index > 0 && onmove(-1)}
 			>
 				<Icon name="chevron-up" />
 			</button>
 			<button
 				type="button"
-				class="icon-btn"
+				class="icon-btn control"
 				id="{id}-down"
 				{...unavailable(index === count - 1 && `${id}-last`)}
-				aria-label={m.remote_move_down({ n })}
+				aria-label={m.action_move_down({ n })}
 				onclick={() => index < count - 1 && onmove(1)}
 			>
 				<Icon name="chevron-down" />
 			</button>
-			<button type="button" class="icon-btn danger" aria-label={m.remote_remove_action({ n })} onclick={onremove}>
+			<button type="button" class="icon-btn danger" aria-label={m.action_remove({ n })} onclick={onremove}>
 				<Icon name="trash" />
 			</button>
-			<span class="sr-only" id="{id}-first">{m.remote_move_first()}</span>
-			<span class="sr-only" id="{id}-last">{m.remote_move_last()}</span>
+			<span class="sr-only" id="{id}-first">{m.action_move_first()}</span>
+			<span class="sr-only" id="{id}-last">{m.action_move_last()}</span>
 		</div>
 	</div>
 
@@ -102,16 +100,16 @@
 	{:else if action.action === 'zigbee_power' || action.action === 'zigbee_brightness' || action.action === 'hue_power' || action.action === 'hue_brightness'}
 		<LampFields {action} {sources} {onchange} />
 	{:else if action.action === 'cover'}
-		<div class="grid">
+		<div class="field-grid">
 			<Select
-				label={m.remote_fields_cover()}
+				label={m.action_fields_cover()}
 				value={action.cover}
 				options={coverOptions}
-				placeholder={m.remote_fields_cover_placeholder()}
+				placeholder={m.action_fields_cover_placeholder()}
 				onchange={(cover) => onchange({ ...action, cover })}
 			/>
 			<Select
-				label={m.remote_fields_command()}
+				label={m.action_fields_command()}
 				value={action.command}
 				options={options(COVER, COVER_COMMANDS)}
 				onchange={(command) => {
@@ -130,42 +128,42 @@
 			/>
 		{/if}
 	{:else if action.action === 'climate_off' || action.action === 'climate_on'}
-		{#if action.action === 'climate_on'}<p class="hint">{m.remote_fields_climate_on_hint()}</p>{/if}
+		{#if action.action === 'climate_on'}<p class="hint">{m.action_fields_climate_on_hint()}</p>{/if}
 		<Select
-			label={m.remote_fields_host()}
+			label={m.action_fields_host()}
 			value={action.host}
 			options={hostOptions}
-			placeholder={m.remote_fields_host_placeholder()}
+			placeholder={m.action_fields_host_placeholder()}
 			onchange={(host) => onchange({ ...action, host })}
 		/>
 	{:else if action.action === 'broadlink_code'}
-		<div class="grid">
+		<div class="field-grid">
 			<Select
-				label={m.remote_fields_host()}
+				label={m.action_fields_host()}
 				value={action.host}
 				options={hostOptions}
-				placeholder={m.remote_fields_host_placeholder()}
+				placeholder={m.action_fields_host_placeholder()}
 				onchange={(host) => onchange({ ...action, host })}
 			/>
 			<Select
-				label={m.remote_fields_code()}
+				label={m.action_fields_code()}
 				value={action.codeId}
 				options={codeOptions}
-				placeholder={m.remote_fields_code_placeholder()}
+				placeholder={m.action_fields_code_placeholder()}
 				onchange={(codeId) => onchange({ ...action, codeId })}
 			/>
 		</div>
 	{:else if action.action === 'meross_power'}
-		<div class="grid">
+		<div class="field-grid">
 			<Select
-				label={m.remote_fields_device()}
+				label={m.action_fields_device()}
 				value={action.device}
 				options={plugOptions}
-				placeholder={m.remote_fields_device_placeholder()}
+				placeholder={m.action_fields_device_placeholder()}
 				onchange={(device) => onchange({ ...action, device })}
 			/>
 			<Select
-				label={m.remote_fields_state()}
+				label={m.action_fields_state()}
 				value={action.state}
 				options={options(STATES, SWITCH_STATES)}
 				onchange={(state) => onchange({ ...action, state })}
@@ -173,26 +171,18 @@
 		</div>
 	{:else if action.action === 'tv_power'}
 		<Select
-			label={m.remote_fields_state()}
+			label={m.action_fields_state()}
 			value={action.state}
 			options={options(TV_STATES, SWITCH_STATES)}
 			onchange={(state) => onchange({ ...action, state })}
 		/>
 	{:else if action.action === 'androidtv_app'}
 		<Select
-			label={m.remote_fields_app()}
+			label={m.action_fields_app()}
 			value={action.package}
 			options={appOptions}
-			placeholder={m.remote_fields_app_placeholder()}
+			placeholder={m.action_fields_app_placeholder()}
 			onchange={(pkg) => onchange({ ...action, package: pkg })}
-		/>
-	{:else if action.action === 'scene'}
-		<Select
-			label={m.remote_fields_scene()}
-			value={action.scene}
-			options={sceneOptions}
-			placeholder={m.remote_fields_scene_placeholder()}
-			onchange={(scene) => onchange({ ...action, scene })}
 		/>
 	{:else if action.action === 'climate_toggle'}
 		<ClimateFields {action} {hostOptions} {onchange} />
@@ -224,10 +214,6 @@
 		color: var(--ink-muted);
 		font-variant-numeric: tabular-nums;
 	}
-	.type {
-		flex: 1 1 12rem;
-		min-width: 0;
-	}
 	.type p {
 		margin: 0;
 	}
@@ -236,16 +222,7 @@
 		gap: var(--s-1);
 		margin-left: auto;
 	}
-	.order .icon-btn {
-		width: var(--control-h);
-		height: var(--control-h);
-	}
 	.danger {
 		color: var(--status-down-text);
-	}
-	.grid {
-		display: grid;
-		gap: var(--s-3);
-		grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
 	}
 </style>

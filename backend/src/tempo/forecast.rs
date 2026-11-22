@@ -9,7 +9,7 @@
 //! - Its error grows with the horizon: a seeded Monte Carlo (correlated from day to day)
 //!   runs RTE's rule, stocks and calendar included, and counts the colours.
 //!
-//! Pure and allocation-free in the loop: a refresh is far under 100 ms on the Pi 1.
+//! Pure and allocation-free in the loop: a refresh is far under 100 ms on a small host.
 
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};

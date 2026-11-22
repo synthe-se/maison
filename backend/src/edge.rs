@@ -465,35 +465,7 @@ mod tests {
             assert_eq!(mode(&proxy.join(CLIENT_KEY_FILE)), 0o600);
         }
 
-        let app = Router::new()
-            .route(
-                "/who",
-                get(
-                    |ConnectInfo(peer): ConnectInfo<SocketAddr>,
-                     request: axum::extract::Request| async move {
-                        format!("edge={} peer={}", is_edge(request.extensions()), peer.ip())
-                    },
-                ),
-            )
-            .layer(axum::middleware::from_fn(from_edge));
-        let listener = EdgeListener::bind(
-            "127.0.0.1:0".parse().unwrap(),
-            server_config(&house).unwrap(),
-        )
-        .await
-        .unwrap();
-        let port = axum::serve::Listener::local_addr(&listener)
-            .unwrap()
-            .addr
-            .port();
-        tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<EdgePeer>(),
-            )
-            .await
-            .unwrap();
-        });
+        let port = who(&house).await;
 
         let proxy_tls = client_config(&proxy, Some(&proxy));
         let answer =
@@ -522,14 +494,14 @@ mod tests {
 
         // and over HTTP/2, when the client offers it
         let answer = h2_through(port, proxy_tls, "/who").await;
-        assert_eq!(answer, "edge=true peer=203.0.113.20");
+        assert_eq!(answer, "edge=true peer=203.0.113.20 house=false");
     }
 
     /// An edge listener serving `/who` (whether the request is the edge's, and its peer's
     /// address as the routes see it), on its own port.
-    async fn who(house: std::path::PathBuf) -> u16 {
-        let app = Router::new()
-            .route(
+    async fn who(house: &Path) -> u16 {
+        let routes =
+            Router::new().route(
                 "/who",
                 get(
                     |ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -542,11 +514,16 @@ mod tests {
                         )
                     },
                 ),
-            )
-            .layer(axum::middleware::from_fn(from_edge));
+            );
+        served(house, routes).await
+    }
+
+    /// `routes` served at the edge of `house`, on a port of its own.
+    async fn served(house: &Path, routes: Router) -> u16 {
+        let app = routes.layer(axum::middleware::from_fn(from_edge));
         let listener = EdgeListener::bind(
             "127.0.0.1:0".parse().unwrap(),
-            server_config(&house).unwrap(),
+            server_config(house).unwrap(),
         )
         .await
         .unwrap();
@@ -572,34 +549,15 @@ mod tests {
         let root = crate::util::test_dir();
         let (house, proxy) = (root.path().join("edge"), root.path().join("proxy"));
         init(&house, &proxy).unwrap();
-        let app = Router::new()
-            .route(
-                "/session",
-                get(|request: axum::extract::Request| async move {
-                    crate::auth::cookie_value(request.headers(), "__Host-session")
-                        .unwrap_or("none")
-                        .to_string()
-                }),
-            )
-            .layer(axum::middleware::from_fn(from_edge));
-        let listener = EdgeListener::bind(
-            "127.0.0.1:0".parse().unwrap(),
-            server_config(&house).unwrap(),
-        )
-        .await
-        .unwrap();
-        let port = axum::serve::Listener::local_addr(&listener)
-            .unwrap()
-            .addr
-            .port();
-        tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<EdgePeer>(),
-            )
-            .await
-            .unwrap();
-        });
+        let routes = Router::new().route(
+            "/session",
+            get(|request: axum::extract::Request| async move {
+                crate::auth::cookie_value(request.headers(), "__Host-session")
+                    .unwrap_or("none")
+                    .to_string()
+            }),
+        );
+        let port = served(&house, routes).await;
         let cookies = [("cookie", "theme=dark"), ("cookie", "__Host-session=abc")];
         let answer = h2_with(
             port,
@@ -637,31 +595,7 @@ mod tests {
             assert_eq!(mode(&frame.join(CLIENT_KEY_FILE)), 0o600);
         }
 
-        let serve = |house: std::path::PathBuf| async move {
-            let app = Router::new()
-                .route("/who", get(|| async { "edge=true" }))
-                .layer(axum::middleware::from_fn(from_edge));
-            let listener = EdgeListener::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                server_config(&house).unwrap(),
-            )
-            .await
-            .unwrap();
-            let port = axum::serve::Listener::local_addr(&listener)
-                .unwrap()
-                .addr
-                .port();
-            tokio::spawn(async move {
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<EdgePeer>(),
-                )
-                .await
-                .unwrap();
-            });
-            port
-        };
-        let port = serve(house.clone()).await;
+        let port = who(&house).await;
         let frame_tls = client_config(&frame, Some(&frame));
         assert!(
             get_through(port, frame_tls.clone(), "/who", "")
@@ -670,14 +604,13 @@ mod tests {
         );
 
         // a frame is no proxy: what it forwards is not believed, its TCP address is its own
-        let port_who = who(house.clone()).await;
-        let answer = get_through(port_who, frame_tls.clone(), "/who", "203.0.113.66").await;
+        let answer = get_through(port, frame_tls.clone(), "/who", "203.0.113.66").await;
         assert!(
             answer.contains("edge=true peer=127.0.0.1 house=true"),
             "{answer}"
         );
         let proxy_tls = client_config(&proxy, Some(&proxy));
-        let answer = get_through(port_who, proxy_tls, "/who", "203.0.113.66").await;
+        let answer = get_through(port, proxy_tls, "/who", "203.0.113.66").await;
         assert!(
             answer.contains("edge=true peer=203.0.113.66 house=false"),
             "the proxy is: {answer}"
@@ -690,7 +623,7 @@ mod tests {
 
         // the frame's CA taken out of the house's ca.pem (the service restarted): refused
         std::fs::write(house.join(CA_FILE), &alone).unwrap();
-        let port = serve(house.clone()).await;
+        let port = who(&house).await;
         assert!(
             !get_through(port, frame_tls, "/who", "")
                 .await

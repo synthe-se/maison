@@ -2,7 +2,7 @@
 //!
 //! Maison is its own Matter commissioner: it holds a fabric, brings a device
 //! onto it from a pairing code, and drives it over CASE sessions — all local,
-//! no cloud account. The Pi build has no Bluetooth, so devices are commissioned
+//! no cloud account. The host's build has no Bluetooth, so devices are commissioned
 //! **over IP**: the switch must already be on the Wi-Fi (paired once with the
 //! eWeLink app or another Matter ecosystem) and have a commissioning window
 //! open; the code shown by that app's "share / add to another ecosystem"
@@ -20,6 +20,7 @@
 //! *closure* in hundredths of a percent (0 = fully open, 10000 = closed),
 //! while every view here reports `openPercent` (100 = fully open).
 
+use crate::error::OrRefused;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -69,7 +70,7 @@ const ATTR_CURRENT_FABRIC_INDEX: u32 = 0x0005;
 const CMD_REMOVE_FABRIC: u32 = 0x0A;
 
 /// PASE runs PBKDF2 with the device's iteration count and the device then
-/// joins the operational network, which takes a while on a Pi 1; stays under
+/// joins the operational network, which takes a while on a small host; stays under
 /// the router's global 180 s timeout.
 const COMMISSION_TIMEOUT: Duration = Duration::from_secs(150);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -100,7 +101,7 @@ struct CoverConfig {
     #[serde(default)]
     schedule: SunSchedule,
     /// « Not tonight »: the one opening / closing skipped, by its scheduled time (only that
-    /// occurrence: one that passed while the Pi was down or unsure of the time skips
+    /// occurrence: one that passed while the host was down or unsure of the time skips
     /// nothing else, and goes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     skip_open_at: Option<Time>,
@@ -166,7 +167,7 @@ struct Covers(Vec<CoverConfig>);
 impl Checked for Covers {}
 
 impl Covers {
-    /// The kept covers, the skips whose time is over forgotten (the Pi was off then), on
+    /// The kept covers, the skips whose time is over forgotten (the host was off then), on
     /// disk too.
     fn load(path: &Path) -> Result<JsonConfig<Self>, AppError> {
         let mut covers = store::read_json::<Self>(path, Corrupt::Fail)?;
@@ -481,7 +482,7 @@ impl MatterManager {
                 close
             };
             // nothing scheduled: that event is not set up
-            skipped = Some(next.ok_or(Refusal::NotConfigured)?);
+            skipped = Some(next.or_not_configured()?);
             let mut schedule = self.inner.schedule.lock().await;
             if schedule
                 .pending
@@ -522,7 +523,7 @@ impl MatterManager {
             .inner
             .covers
             .update(|covers| {
-                let cover = covers.get_mut(node_id).ok_or(Refusal::NotFound)?;
+                let cover = covers.get_mut(node_id).or_not_found()?;
                 change(cover);
                 Ok(cover.clone())
             })
@@ -638,7 +639,7 @@ impl MatterManager {
                 }
             }
         }
-        // a skip whose time passed unseen (the Pi down, its clock unsure) goes too
+        // a skip whose time passed unseen (the host down, its clock unsure) goes too
         for cover in covers.iter().filter(|c| trusted && c.past_skip(now)) {
             if let Err(error) = self.change(cover.node_id, |c| c.expire_skips(now)).await {
                 tracing::warn!(%error, cover = %cover.name, "sun schedule: a past skip could not be cleared");
@@ -682,7 +683,7 @@ impl MatterManager {
             .covers
             .read(|covers| covers.get(node_id).cloned())
             .await
-            .ok_or_else(|| Refusal::NotFound.into())
+            .or_not_found()
     }
 
     async fn controller(&self) -> Result<MatterController, AppError> {
@@ -913,7 +914,7 @@ pub(crate) fn load_trust(trust_dir: &Path) -> Result<AttestationTrust, AppError>
 }
 
 /// One fabric per Maison install, created on the first commissioning rather
-/// than at boot: the Pi has no RTC, and certificates minted before NTP has
+/// than at boot: the host has no RTC, and certificates minted before NTP has
 /// set the clock would be dated 1970.
 async fn ensure_fabric(controller: &MatterController) -> Result<(), AppError> {
     let fabrics = controller.fabrics().await.map_err(operation_error)?;
@@ -1686,7 +1687,7 @@ mod tests {
         assert!(kept(&manager).await.skip_open_at.is_none());
     }
 
-    /// The Pi off (or unsure of the time) when the skipped closing passes: the next
+    /// The host off (or unsure of the time) when the skipped closing passes: the next
     /// evening still closes, and the stale skip goes.
     #[tokio::test]
     async fn a_skip_whose_time_passed_unseen_skips_nothing_else() {
@@ -1838,10 +1839,7 @@ mod tests {
     #[tokio::test]
     async fn refusals_are_coded() {
         let (_dir, manager) = manager_with_one_cover(BOTH).await;
-        let code = |error: AppError| match error {
-            AppError::Coded { code, .. } => code,
-            other => panic!("uncoded: {other}"),
-        };
+        let code = |error: AppError| error.code();
         assert_eq!(
             code(manager.get("00000000000000ff").await.unwrap_err()),
             "not_found"

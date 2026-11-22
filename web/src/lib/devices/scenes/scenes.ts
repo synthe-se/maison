@@ -1,16 +1,15 @@
-// Scenes (« Je pars », « Nuit », « Film »): a named list of the remote's actions, run in
-// order by the backend's engine. What the dashboard group, the editor and the app shortcuts
+// Scenes (« Je pars », « Nuit », « Film »): a named list of actions, run in order by the
+// backend. What the dashboard group, the editor and the app shortcuts
 // (`/?scene=<id>`) share: the list, running one and saying how it went, the icons offered,
 // the templates offered when there is none, and a new scene's id.
 
 import { m } from '#lib/paraglide/messages.js';
 import { refresh } from '#lib/live.svelte.ts';
 import type { Gesture } from '#lib/gesture.svelte.ts';
-import { CONFIRM, haptic } from '#lib/haptics.ts';
 import { facts } from '#lib/i18n.svelte.ts';
 import type { IconName } from '#lib/components/Icon.svelte';
-import { outcome, toRows, type Row, type Sources } from '#lib/devices/remote/actions.ts';
-import type { IrAction, KeyResponse } from '#lib/devices/remote/api.ts';
+import { outcome, toRows, type Row, type Sources } from '#lib/devices/actions/actions.ts';
+import type { Action, RunResponse } from '#lib/devices/actions/api.ts';
 import { sayOutcome } from '#lib/devices/everyone.ts';
 import { HUE, ZIGBEE } from '#lib/devices/lamps/lamp.ts';
 import { MEROSS } from '#lib/devices/meross/data.ts';
@@ -43,8 +42,8 @@ export const sceneForm = (s: Scene): SceneForm => ({ name: s.name, icon: iconOf(
 /** The ids of the templates, fixed: the app's shortcuts point at them (`/?scene=je-pars`). */
 export const TEMPLATE_IDS = { leave: 'je-pars', night: 'nuit', film: 'film' } as const;
 
-/** A dimmed lamp for a film: a fifth of the Zigbee maximum (254), a fifth for a Hue lamp. */
-const DIM = { zigbee: 51, hue: 20 };
+/** A dimmed lamp for a film: a fifth of its brightness. */
+const DIM = 20;
 
 /**
  * The three scenes offered when there is none, filled from the house's devices: « Je pars »
@@ -53,21 +52,21 @@ const DIM = { zigbee: 51, hue: 20 };
  * a lamp dimmed).
  */
 export function templates(s: Sources): Scene[] {
-	const lampsOff: IrAction[] = [
-		...s.lamps.map((l): IrAction => ({ action: 'zigbee_power', lamp: l.id, state: 'off' })),
-		...s.hueLamps.map((l): IrAction => ({ action: 'hue_power', lamp: l.id, state: 'off' }))
+	const lampsOff: Action[] = [
+		...s.lamps.map((l): Action => ({ action: 'zigbee_power', lamp: l.id, state: 'off' })),
+		...s.hueLamps.map((l): Action => ({ action: 'hue_power', lamp: l.id, state: 'off' }))
 	];
-	const plugsOff: IrAction[] = s.plugs.map((p) => ({ action: 'meross_power', device: p.id, state: 'off' }));
-	const acOff: IrAction[] = s.hosts[0] ? [{ action: 'climate_off', host: s.hosts[0].host }] : [];
-	const closed: IrAction[] = s.covers.map((c) => ({ action: 'cover', cover: c.id, command: 'close' }));
-	const dim: IrAction[] = s.lamps[0]
-		? [{ action: 'zigbee_brightness', lamp: s.lamps[0].id, brightness: DIM.zigbee }]
+	const plugsOff: Action[] = s.plugs.map((p) => ({ action: 'meross_power', device: p.id, state: 'off' }));
+	const acOff: Action[] = s.hosts[0] ? [{ action: 'climate_off', host: s.hosts[0].host }] : [];
+	const closed: Action[] = s.covers.map((c) => ({ action: 'cover', cover: c.id, command: 'close' }));
+	const dim: Action[] = s.lamps[0]
+		? [{ action: 'zigbee_brightness', lamp: s.lamps[0].id, brightness: DIM }]
 		: s.hueLamps[0]
-			? [{ action: 'hue_brightness', lamp: s.hueLamps[0].id, brightness: DIM.hue }]
+			? [{ action: 'hue_brightness', lamp: s.hueLamps[0].id, brightness: DIM }]
 			: [];
-	const film: IrAction[] = [
+	const film: Action[] = [
 		{ action: 'tv_power', state: 'on', switchToBox: true },
-		...(s.apps[0] ? [{ action: 'androidtv_app', package: s.apps[0].package } as IrAction] : []),
+		...(s.apps[0] ? [{ action: 'androidtv_app', package: s.apps[0].package } as Action] : []),
 		...dim
 	];
 	return [
@@ -99,12 +98,12 @@ export function slug(name: string, taken: string[]): string {
 
 /** How a run went, said once: every action done, or which ones failed, each named with the
  * devices' names (`s`) and why. */
-function sayRun(scene: Pick<Scene, 'name'>, r: KeyResponse, s: Sources) {
+function sayRun(scene: Pick<Scene, 'name'>, r: RunResponse, s: Sources) {
 	const told = r.results.map((x) => outcome(x, s));
 	sayOutcome(
 		{
 			done: told.filter((o) => o.ok).map((o) => o.what),
-			failed: told.filter((o) => !o.ok).map((o) => m.remote_action_failed({ action: o.what, reason: o.why }))
+			failed: told.filter((o) => !o.ok).map((o) => m.action_failed({ action: o.what, reason: o.why }))
 		},
 		(count) => m.scenes_done({ name: scene.name, count }),
 		(o) => m.scenes_failed({ name: scene.name, count: o.failed.length, total: r.results.length, details: facts(...o.failed) })
@@ -114,8 +113,7 @@ function sayRun(scene: Pick<Scene, 'name'>, r: KeyResponse, s: Sources) {
 /** Runs `scene` through the caller's gesture (keyed by its id), says how it went (naming the
  * devices of `sources`), then reads again what it may have changed. */
 export function runScene(g: Gesture, scene: Scene, sources: Sources) {
-	haptic(CONFIRM);
-	return g.run(
+	return g.committed(
 		() => scenesApi.run(scene.id),
 		async (r) => {
 			sayRun(scene, r, sources);

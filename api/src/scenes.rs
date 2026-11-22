@@ -1,8 +1,8 @@
-//! Scenes (`/api/scenes`): a named list of the remote's actions, one tap away.
+//! Scenes (`/api/scenes`): a named list of actions, one tap away.
 
 use serde::{Deserialize, Serialize};
 
-use crate::remote::IrAction;
+use crate::actions::Action;
 
 /// The icons a scene may have, by the web app's icon names; another draws as the sparkles.
 pub const ICONS: [&str; 6] = ["log-out", "moon", "film", "sun", "house", "sparkles"];
@@ -24,7 +24,7 @@ pub struct Scene {
     pub name: String,
     /// One of the web's icon names.
     pub icon: String,
-    pub actions: Vec<IrAction>,
+    pub actions: Vec<Action>,
 }
 
 /// `GET /api/scenes`.

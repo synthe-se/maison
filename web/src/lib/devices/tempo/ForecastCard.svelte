@@ -25,7 +25,7 @@
 	{#if d.official}
 		<p class="hint">{m.tempo_official()}</p>
 	{:else}
-		<div class="block">
+		<div class="stack">
 			<p class="eyebrow" id="{id}-probs">{m.tempo_probabilities()}</p>
 			<span class="bar" aria-hidden="true">
 				{#each TEMPO_COLORS as c (c)}
@@ -34,7 +34,9 @@
 			</span>
 			<ul class="probs plain-list" aria-labelledby="{id}-probs">
 				{#each TEMPO_COLORS as c (c)}
-					<li><Swatch color={c} /><span>{TEMPO[c].name()}</span><span class="val">{percent(d.probabilities[c])}</span></li>
+					<li class="line inline">
+						<Swatch color={c} /><span>{TEMPO[c].name()}</span><span class="val">{percent(d.probabilities[c])}</span>
+					</li>
 				{/each}
 			</ul>
 		</div>
@@ -49,10 +51,6 @@
 <style>
 	.day::first-letter {
 		text-transform: uppercase;
-	}
-	.block {
-		display: grid;
-		gap: var(--s-2);
 	}
 	/* the three shares side by side, each in its color and shape (white a ring, red hatched) */
 	.bar {
@@ -80,11 +78,6 @@
 		flex-wrap: wrap;
 		gap: var(--s-1) var(--s-4);
 		font: var(--t-secondary);
-	}
-	.probs li {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--s-2);
 	}
 	.val {
 		font-variant-numeric: tabular-nums;

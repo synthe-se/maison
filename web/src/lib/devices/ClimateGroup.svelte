@@ -103,7 +103,7 @@
 						<p>{m.climate_no_remote_description()}</p>
 					</div>
 				{:else}
-					<p class="hint searching" id="{id}-why">
+					<p class="hint line" id="{id}-why">
 						<Icon name="search" busy />{facts(m.climate_searching_title(), m.climate_searching_description())}
 					</p>
 				{/if}
@@ -122,11 +122,6 @@
 </Group>
 
 <style>
-	.searching {
-		display: flex;
-		align-items: center;
-		gap: var(--s-2);
-	}
 	.hint p {
 		margin: 0;
 	}

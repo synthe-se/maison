@@ -3,7 +3,6 @@ pub mod auth;
 pub mod broadlink;
 pub mod devices;
 pub mod hue;
-pub mod ir;
 pub mod lamps;
 pub mod matter;
 pub mod meross;

@@ -1,4 +1,4 @@
-//! Fits the Tempo forecast, on the Mac (never on the Pi), and writes the Tempo directory (`Config::tempo_dir`, `cache/tempo/`):
+//! Fits the Tempo forecast, on the build machine (never on the host), and writes the Tempo directory (`Config::tempo_dir`, `cache/tempo/`):
 //! `model.json` (coefficients, errors by horizon, the backtest's scores), `netload.json`
 //! (the past year RTE's normalisation needs) and every season's colours.
 //!
@@ -255,16 +255,7 @@ impl Data {
     /// What the weather service had to say on `issued`: past days as observed, coming ones
     /// as forecast that day.
     fn weather(&self, issued: Date) -> Option<Weather> {
-        let mut weather = Weather {
-            issued: Some(issued),
-            ..Default::default()
-        };
-        for back in 0..3 {
-            let day = issued - back.days();
-            weather
-                .temperature
-                .insert(day, *self.temperature.get(&day)?);
-        }
+        let mut weather = self.lately(issued)?;
         for lead in 1..=HORIZON {
             let day = issued + lead.days();
             let i = lead as usize - 1;
@@ -280,6 +271,13 @@ impl Data {
 
     /// The observed weather of a past day.
     fn observed(&self, date: Date) -> Option<Weather> {
+        let mut weather = self.lately(date)?;
+        weather.wind_power.insert(date, *self.wind.get(&date)?);
+        Some(weather)
+    }
+
+    /// A weather issued on `date`, holding the temperatures observed that day and the two before.
+    fn lately(&self, date: Date) -> Option<Weather> {
         let mut weather = Weather {
             issued: Some(date),
             ..Default::default()
@@ -290,7 +288,6 @@ impl Data {
                 .temperature
                 .insert(day, *self.temperature.get(&day)?);
         }
-        weather.wind_power.insert(date, *self.wind.get(&date)?);
         Some(weather)
     }
 

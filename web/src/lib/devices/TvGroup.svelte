@@ -1,7 +1,6 @@
 <script lang="ts">
 	// « Télé » on the dashboard: the TV and the Android box in one group, one framed list (each
-	// row leads to its own page, /tv and /androidtv). The remote's keymap is not here: it has
-	// its own destination, « Télécommande » (docs/ux.md § 5).
+	// row leads to its own page, /tv and /androidtv).
 	import { m } from '#lib/paraglide/messages.js';
 	import Group from '#lib/components/Group.svelte';
 	import TvTile from './tv/TvTile.svelte';

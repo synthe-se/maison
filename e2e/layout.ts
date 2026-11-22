@@ -6,7 +6,7 @@ import { BASE, check, checkNoErrors, done, invitation, launch, onlyFailures, ope
 import { house } from './house.ts';
 import { showcase } from './showcase.ts';
 
-const ROUTES = ['/', '/remote', '/tempo-predictions', '/device/feeder-1', '/hue-lamp/hue-01', '/meross/plug-1', '/tv', '/androidtv'];
+const ROUTES = ['/', '/tempo-predictions', '/device/feeder-1', '/hue-lamp/hue-01', '/meross/plug-1', '/tv', '/androidtv'];
 const browser = await launch();
 
 // the door (sign-in, an invitation), before any session: one column on a phone, two from

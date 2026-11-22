@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { m } from '#lib/paraglide/messages.js';
 import { ui } from '#lib/ui.svelte.ts';
-import { remoteSources } from '#lib/test/remote.ts';
+import { actionSources } from '#lib/test/actions.ts';
 import { iconOf, slug, templates, TEMPLATE_IDS } from './scenes.ts';
 
 afterEach(() => (ui.toasts = []));
 
 describe('scenes', () => {
 	it('three templates filled from the house’s devices, at the shortcuts’ ids', () => {
-		const [leave, night, film] = templates(remoteSources());
+		const [leave, night, film] = templates(actionSources());
 		expect(leave).toMatchObject({ id: TEMPLATE_IDS.leave, name: m.scenes_template_leave(), icon: 'log-out' });
 		const lampsOff = [
 			{ action: 'zigbee_power', lamp: 'zb-1', state: 'off' },
@@ -26,12 +26,12 @@ describe('scenes', () => {
 		expect(film.actions).toEqual([
 			{ action: 'tv_power', state: 'on', switchToBox: true },
 			{ action: 'androidtv_app', package: 'org.smarttube.beta' },
-			{ action: 'zigbee_brightness', lamp: 'zb-1', brightness: 51 }
+			{ action: 'zigbee_brightness', lamp: 'zb-1', brightness: 20 }
 		]);
 	});
 
 	it('dims a Hue lamp for a film when there is no Zigbee lamp; no blaster, no AC action', () => {
-		const [leave, , film] = templates({ ...remoteSources(), lamps: [], hosts: [] });
+		const [leave, , film] = templates({ ...actionSources(), lamps: [], hosts: [] });
 		expect(film.actions.at(-1)).toEqual({ action: 'hue_brightness', lamp: 'hue-1', brightness: 20 });
 		expect(leave.actions.map((a) => a.action)).not.toContain('climate_off');
 	});

@@ -5,7 +5,6 @@ import { feederApi } from './api.ts';
 import { refresh } from '#lib/live.svelte.ts';
 import { ui } from '#lib/ui.svelte.ts';
 import type { Gesture } from '#lib/gesture.svelte.ts';
-import { CONFIRM, haptic } from '#lib/haptics.ts';
 import type { IconName } from '#lib/components/Icon.svelte';
 import type { Kind } from './data.ts';
 
@@ -30,8 +29,7 @@ export const served = $state<Record<string, number>>({});
 
 /** Serves `count` portions through the caller's gesture (its control shows `key` in flight). */
 export function feed(g: Gesture, id: string, count: number, key?: string) {
-	haptic(CONFIRM);
-	return g.run(
+	return g.committed(
 		() => feederApi.feed(id, count),
 		() => {
 			served[id] = Date.now();

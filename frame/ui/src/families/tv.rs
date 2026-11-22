@@ -14,8 +14,8 @@ use std::time::Duration;
 use jiff::ZonedDateTime;
 use maison_api::androidtv::{self, LaunchRequest, SHORTCUTS};
 use maison_api::paces;
-use maison_api::remote::{AndroidKey, SwitchState, TvKey};
 use maison_api::tv::{AmbilightRequest, KeyRequest, PowerRequest, VolumeRequest};
+use maison_api::{actions::SwitchState, androidtv::AndroidKey, tv::TvKey};
 use serde::Serialize;
 use serde_json::Value;
 

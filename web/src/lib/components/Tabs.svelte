@@ -20,7 +20,7 @@
 		value = v;
 		onchange?.(v);
 	}}
-	class="tabs"
+	class="tabs stack loose"
 >
 	<Tabs.List class="tabs-list">
 		{#each tabs as t (t.value)}
@@ -30,17 +30,6 @@
 		{/each}
 	</Tabs.List>
 	{#each tabs as t (t.value)}
-		<Tabs.Content value={t.value} class="tabs-panel">{@render panel(t.value)}</Tabs.Content>
+		<Tabs.Content value={t.value} class="tabs-panel stack loose">{@render panel(t.value)}</Tabs.Content>
 	{/each}
 </Tabs.Root>
-
-<style>
-	:global(.tabs) {
-		display: grid;
-		gap: var(--s-4);
-	}
-	:global(.tabs-panel) {
-		display: grid;
-		gap: var(--s-4);
-	}
-</style>

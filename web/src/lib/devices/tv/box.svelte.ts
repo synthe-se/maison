@@ -40,8 +40,7 @@ export class Box {
 
 	launch = (app: AndroidApp) => {
 		if (this.apps.is()) return;
-		haptic(CONFIRM);
-		return this.apps.run(
+		return this.apps.committed(
 			() => androidTvApi.launch(app.package),
 			() => {
 				ui.toast(m.android_tv_launched({ name: app.label }));

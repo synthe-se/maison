@@ -55,7 +55,9 @@ html {
 	gap: var(--s-2);
 	flex-wrap: wrap;
 }
-.group-title {
+.group-title,
+.sheet .sheet-title,
+.panel .who-title {
 	font: var(--t-group);
 	margin: 0;
 }
@@ -96,9 +98,16 @@ a {
 	font: inherit;
 	color: inherit;
 }
-:focus-visible {
+/* the ring: on what has the focus, or on what stands for it (a link's whole tile, a slider's
+   drawn thumb, the button that labels a hidden file input) */
+:focus-visible,
+.tile-link:focus-visible::after,
+.range-thumb:focus-visible,
+.btn.file:focus-within {
 	outline: var(--focus-ring);
 	outline-offset: var(--focus-offset);
+}
+:focus-visible {
 	border-radius: var(--radius-s);
 }
 [tabindex='-1']:focus {
@@ -235,9 +244,6 @@ a {
 }
 /* a row of actions; `end` aligns it to the end (a form's, a dialog's) */
 .actions {
-	display: flex;
-	gap: var(--s-2);
-	flex-wrap: wrap;
 	align-items: center;
 }
 .actions.end {
@@ -264,11 +270,14 @@ kbd {
 	color: var(--ink-muted);
 	white-space: nowrap;
 }
-.chip.accent {
+.chip.accent,
+.tile-head .glyph.on {
 	background: var(--accent-wash);
 	color: var(--accent);
 }
-.chip.warn {
+.chip.warn,
+.banner.warn,
+.callout.warn {
 	background: var(--blocked-wash);
 	color: var(--warn-text);
 }
@@ -300,7 +309,8 @@ kbd {
 }
 /* a secondary line: a hint, a fact under a title */
 .hint,
-.page-head .sub {
+.page-head .sub,
+.tile-state {
 	margin: 0;
 	font: var(--t-secondary);
 	color: var(--ink-muted);
@@ -415,11 +425,6 @@ kbd {
 .panel h2 {
 	font: var(--t-group);
 }
-.panel .row {
-	display: flex;
-	gap: var(--s-2);
-	flex-wrap: wrap;
-}
 
 /* dialogs */
 .overlay {
@@ -469,10 +474,6 @@ kbd {
 .sheet .dlg-head {
 	padding-top: 0;
 	align-items: center;
-}
-.sheet .sheet-title {
-	font: var(--t-group);
-	margin: 0;
 }
 .sheet .sheet-body {
 	overflow-y: auto;
@@ -594,7 +595,8 @@ kbd {
 	border-radius: var(--radius-l);
 	box-shadow: var(--shadow-toast);
 }
-.toast p {
+.toast p,
+.banner p {
 	margin: 0;
 	flex: 1;
 }
@@ -640,10 +642,6 @@ kbd {
 	background: var(--accent-wash);
 	margin-bottom: var(--s-4);
 }
-.banner p {
-	margin: 0;
-	flex: 1;
-}
 /* a box of its own, in a tint: what was just made, conflicts to look at */
 .callout {
 	display: grid;
@@ -655,10 +653,93 @@ kbd {
 .callout p {
 	margin: 0;
 }
-.banner.warn,
-.callout.warn {
-	background: var(--blocked-wash);
-	color: var(--warn-text);
+
+/* ── layout, said once: components name one of these rather than declare it again ── */
+/* children one under the other; `tight`, `roomy`, `loose` for the room between them */
+.stack {
+	display: grid;
+	gap: var(--s-2);
+}
+.stack.tight {
+	gap: var(--s-1);
+}
+.stack.roomy {
+	gap: var(--s-3);
+}
+.stack.loose {
+	gap: var(--s-4);
+}
+/* an icon and its words, a few controls: side by side, centred; `inline` inside a sentence */
+.line {
+	display: flex;
+	align-items: center;
+	gap: var(--s-2);
+}
+.line.tight {
+	gap: var(--s-1);
+}
+.line.inline {
+	display: inline-flex;
+}
+/* things side by side that wrap to the next line */
+.cluster,
+.actions,
+.panel .row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--s-2);
+}
+/* two facts at the ends of a line (a slider's name and value, its ends, a bar's) */
+.between {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--s-3);
+	font: var(--t-secondary);
+	color: var(--ink-muted);
+}
+/* a form's fields in as many columns as fit; a field that takes the room left in a cluster */
+.field-grid {
+	display: grid;
+	gap: var(--s-3);
+	grid-template-columns: repeat(auto-fit, minmax(min(var(--field-min), 100%), 1fr));
+}
+.field-grow {
+	flex: 1 1 var(--field-min);
+	min-width: 0;
+}
+/* an icon button as tall and wide as the controls beside it */
+.icon-btn.control {
+	width: var(--control-h);
+	height: var(--control-h);
+}
+/* the button that labels a hidden file input */
+.btn.file {
+	position: relative;
+}
+/* a small table of figures: names on the left, numbers on the right */
+.figures {
+	border-collapse: collapse;
+	font: var(--t-secondary);
+	font-variant-numeric: tabular-nums;
+	max-width: 24rem;
+}
+.figures th,
+.figures td {
+	padding: var(--s-1) var(--figures-pad, var(--s-2));
+	text-align: right;
+}
+.figures th[scope='row'] {
+	text-align: left;
+	font-weight: 500;
+}
+.figures thead th {
+	font: var(--t-meta);
+	color: var(--ink-muted);
+}
+.caption {
+	font: var(--t-label);
+	text-align: left;
+	padding-bottom: var(--s-2);
 }
 
 /* ── shared building blocks (docs/ux.md « Layout ») ── */
@@ -674,10 +755,6 @@ kbd {
 /* a group (Group.svelte): its head is a 44 px target, the name in Fraunces, a short fact and
    its actions on the right; on a narrow screen the fact goes under the title rather than
    widening the page (1.4.10) */
-.group {
-	display: grid;
-	gap: var(--s-3);
-}
 .group + .group {
 	margin-top: var(--s-5);
 }
@@ -772,10 +849,6 @@ kbd {
 	background: var(--ground-raised);
 	color: var(--ink-muted);
 }
-.tile-head .glyph.on {
-	background: var(--accent-wash);
-	color: var(--accent);
-}
 .tile-head .text {
 	min-width: 0;
 	flex: 1;
@@ -785,11 +858,6 @@ kbd {
 	font-weight: 600;
 	margin: 0;
 	overflow-wrap: anywhere;
-}
-.tile-state {
-	font: var(--t-secondary);
-	color: var(--ink-muted);
-	margin: 0;
 }
 .tile-state.warn {
 	color: var(--warn-text);
@@ -858,11 +926,6 @@ kbd {
 .label {
 	font: var(--t-label);
 	margin: 0;
-}
-/* a few lines stacked */
-.block {
-	display: grid;
-	gap: var(--s-2);
 }
 /* a sentence that needs a hand: the words say it, the color only repeats it */
 .warn-text {

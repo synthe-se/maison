@@ -561,6 +561,14 @@ mod tests {
     use crate::testing::{temp_dir, wait_until};
     use maison_api::lamps::{BrightnessRequest, PowerRequest};
 
+    /// A house that takes `ms` to answer `status`, an empty object.
+    fn slow(ms: u64, status: u16) -> crate::client::stub::Stub {
+        serve(move |_| {
+            std::thread::sleep(Duration::from_millis(ms));
+            (status, vec![], "{}".into())
+        })
+    }
+
     fn commands(origin: &str) -> Commands {
         let client = Client::new(origin, &temp_dir("commands"), Duration::from_secs(5));
         Commands::new(client, Arc::new(|| {}))
@@ -646,10 +654,7 @@ mod tests {
 
     #[test]
     fn past_its_limit_an_order_says_so_once_and_its_failure_adds_nothing() {
-        let stub = serve(|_| {
-            std::thread::sleep(Duration::from_millis(200));
-            (500, vec![], "{}".into())
-        });
+        let stub = slow(200, 500);
         let words = Words::new(Lang::Fr);
         let mut c = commands(&stub.origin);
         let t0 = Instant::now();
@@ -688,10 +693,7 @@ mod tests {
 
     #[test]
     fn a_timed_order_says_how_long_and_ticks_each_second() {
-        let stub = serve(|_| {
-            std::thread::sleep(Duration::from_millis(100));
-            (200, vec![], "{}".into())
-        });
+        let stub = slow(100, 200);
         let words = Words::new(Lang::Fr);
         let mut c = commands(&stub.origin);
         let t0 = Instant::now();
@@ -713,10 +715,7 @@ mod tests {
 
     #[test]
     fn past_its_limit_a_gesture_is_late_until_its_answer_ends_it() {
-        let stub = serve(|_| {
-            std::thread::sleep(Duration::from_millis(400));
-            (200, vec![], "{}".into())
-        });
+        let stub = slow(400, 200);
         let mut c = commands(&stub.origin);
         c.run(
             Order::one("k", "x", Post::empty("/x"))
@@ -733,10 +732,7 @@ mod tests {
 
     #[test]
     fn a_success_past_its_limit_settles_like_any_other() {
-        let stub = serve(|_| {
-            std::thread::sleep(Duration::from_millis(300));
-            (200, vec![], "{}".into())
-        });
+        let stub = slow(300, 200);
         let words = Words::new(Lang::Fr);
         let mut c = commands(&stub.origin);
         c.run(
@@ -776,10 +772,7 @@ mod tests {
 
     #[test]
     fn one_order_on_the_wire_per_key_and_only_the_latest_waits() {
-        let stub = serve(|_| {
-            std::thread::sleep(Duration::from_millis(150));
-            (200, vec![], "{}".into())
-        });
+        let stub = slow(150, 200);
         let words = Words::new(Lang::Fr);
         let mut c = commands(&stub.origin);
         let set = |v: u8| {

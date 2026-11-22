@@ -13,7 +13,7 @@
 
 <Fold bind:open>
 	{#snippet children(trigger, panel)}
-		<div class="disclosure">
+		<div class="stack">
 			{@render trigger({ class: 'link-btn quiet disclosure-trigger', body: name })}
 			{@render panel({ body: content })}
 		</div>
@@ -21,10 +21,6 @@
 </Fold>
 
 <style>
-	.disclosure {
-		display: grid;
-		gap: var(--s-2);
-	}
 	:global(.disclosure-trigger) {
 		display: inline-flex;
 		align-items: center;

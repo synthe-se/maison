@@ -1,16 +1,17 @@
+use crate::error::OrRefused;
 use axum::{
     Json, Router,
     extract::{Path, State},
     routing::{get, post, put},
 };
-use maison_api::{Message, remote::KeyResponse, scenes::SceneList};
+use maison_api::{Message, actions::RunResponse, scenes::SceneList};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
+    actions::{self, Action},
     auth::AdminUser,
     error::{AppError, Refusal},
-    ir::{self, IrAction},
     routes::{Answer, Reply},
     scenes::Scene,
 };
@@ -26,7 +27,7 @@ struct One {
 struct SceneRequest {
     name: String,
     icon: String,
-    actions: Vec<IrAction>,
+    actions: Vec<Action>,
 }
 
 /// Everyone signed in sees and runs the scenes; making them is an admin's.
@@ -71,9 +72,9 @@ async fn remove(
 async fn run(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<KeyResponse>, AppError> {
-    let scene = state.scenes.get(&id).await.ok_or(Refusal::NotFound)?;
-    Ok(Json(KeyResponse::ran(
-        ir::run_actions(&state, &scene.actions, None).await,
+) -> Result<Json<RunResponse>, AppError> {
+    let scene = state.scenes.get(&id).await.or_not_found()?;
+    Ok(Json(RunResponse::ran(
+        actions::run(&state, &scene.actions).await,
     )))
 }

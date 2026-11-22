@@ -268,7 +268,7 @@ pub fn encode_mitsubishi_command(
 /// Current wall-clock time as 10-minute ticks since midnight, the unit used
 /// by the Mitsubishi clock/timer bytes.
 ///
-/// In the house's time zone (`util::HOUSE_TZ`), never the system's (UTC on the Pi).
+/// In the house's time zone (`util::HOUSE_TZ`), never the system's (UTC on the host).
 pub fn current_clock_ticks() -> u8 {
     let now = crate::util::HOUSE_TZ.to_datetime(jiff::Timestamp::now());
     clock_ticks(u32::from(now.hour().unsigned_abs()) * 60 + u32::from(now.minute().unsigned_abs()))

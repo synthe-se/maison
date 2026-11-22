@@ -170,7 +170,7 @@ describe('layout', () => {
 		stubApi(signedIn);
 		await show();
 		const before = location.href;
-		for (const f of kit.before) f({ willUnload: false, to: { url: new URL('/remote', location.origin) } });
+		for (const f of kit.before) f({ willUnload: false, to: { url: new URL('/tempo-predictions', location.origin) } });
 		expect(location.href).toBe(before);
 	});
 

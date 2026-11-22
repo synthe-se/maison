@@ -13,7 +13,6 @@ export const EVENTS = {
 	TEMPO: 'tempo',
 	MEROSS: 'meross',
 	CLIMATE: 'broadlink:climate-state',
-	IR_KEYS: 'ir:recent',
 	ANDROID_TV: 'androidtv',
 	PHOTOS: 'photos'
 } as const;

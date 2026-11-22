@@ -17,7 +17,7 @@ const NAME = 'Philips 55PUS';
 function tvStatus(over: Partial<TvStatus> = {}): TvStatusResponse {
 	return {
 		success: true,
-		config: { host: '192.168.1.52', irBlasterHost: '192.168.1.73' },
+		config: { host: '192.168.1.31', irBlasterHost: '192.168.1.32' },
 		status: {
 			configured: true,
 			power: 'on',
@@ -253,7 +253,7 @@ describe('TvPage', () => {
 		await userEvent.fill(page.getByLabelText(m.tv_host()).element(), '192.168.1.53');
 		await page.getByRole('button', { name: m.common_save() }).click();
 		await expect.poll(() => reads(calls)).toBe(2);
-		expect(sent(calls)).toEqual([['PUT', '/api/tv/config', { host: '192.168.1.53', irBlasterHost: '192.168.1.73' }]]);
+		expect(sent(calls)).toEqual([['PUT', '/api/tv/config', { host: '192.168.1.53', irBlasterHost: '192.168.1.32' }]]);
 	});
 
 	it('the settings button unfolds and folds the settings', async () => {
@@ -262,7 +262,7 @@ describe('TvPage', () => {
 		const settings = page.getByRole('button', { name: m.common_settings_of({ name: NAME }) });
 		await expect.element(settings).toHaveAttribute('aria-expanded', 'false');
 		await settings.click();
-		await expect.element(page.getByLabelText(m.tv_host())).toHaveValue('192.168.1.52');
+		await expect.element(page.getByLabelText(m.tv_host())).toHaveValue('192.168.1.31');
 		await page.getByRole('button', { name: m.common_save() }).click();
 		await expect.element(settings).toHaveAttribute('aria-expanded', 'false');
 		// the form is gone: the focus is back on the button that opened it

@@ -279,7 +279,7 @@ mod tests {
                 .map(|c| c.origin.unwrap())
         };
         assert!(http("http://maison.lan", "").unwrap_err().contains("HTTPS"));
-        assert!(http("http://192.168.1.103:3000", "0").is_err());
+        assert!(http("http://192.168.1.2:3000", "0").is_err());
         assert_eq!(
             http("http://localhost:3999/x", "").unwrap(),
             "http://localhost:3999"

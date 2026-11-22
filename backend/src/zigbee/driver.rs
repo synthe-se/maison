@@ -255,7 +255,7 @@ impl Driver {
 
 /// `task` on a thread and a runtime of its own, until the sender goes. The serial port's calls can
 /// block in the kernel (a dongle that stopped taking bytes leaves a drain waiting for ever): on the
-/// Pi's one core, on the app's runtime, that would be every route of the house.
+/// host's one core, on the app's runtime, that would be every route of the house.
 fn on_own_thread(
     task: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<oneshot::Sender<()>> {
@@ -338,7 +338,7 @@ async fn supervise_driver<F>(
 }
 
 /// 1 s, 2 s, 4 s… up to [`MAX_RESTART_DELAY`]: a driver that panics at once every time
-/// must not spin the Pi's single core.
+/// must not spin the host's single core.
 fn restart_delay(crashes: u32) -> Duration {
     capped_backoff(Duration::from_secs(1), crashes, MAX_RESTART_DELAY)
 }
@@ -688,7 +688,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        // this test has one thread, as the Pi has one worker: it still runs
+        // this test has one thread, as the host has one worker: it still runs
         tokio::time::sleep(Duration::from_millis(10)).await;
         drop(held);
     }

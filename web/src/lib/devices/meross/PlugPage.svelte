@@ -127,7 +127,7 @@
 						fact={facts(m.meross_consumption_days({ count: consumption.data.summary.days }), kwh(consumption.data.summary.totalKwh))}
 					>
 						{#if estimate && estimate.days > 0 && tempo.data}
-							<div class="estimate">
+							<div class="stack tight">
 								<p class="amount">
 									<span>{m.meross_month_estimate({ cost: euros(estimate.euros) })}</span><span class="chip">{m.meross_estimate()}</span>
 								</p>
@@ -188,10 +188,6 @@
 		margin: 0;
 		font: var(--t-group);
 		font-variant-numeric: tabular-nums;
-	}
-	.estimate {
-		display: grid;
-		gap: var(--s-1);
 	}
 	.amount {
 		margin: 0;

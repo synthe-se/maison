@@ -182,6 +182,7 @@
 
 	/* controls: one height scale for fields, selects and buttons (WCAG 2.5.8, Apple 44pt) */
 	--control-h: 44px; /* the touch target: text fields, selects, main actions */
+	--field-min: 12rem; /* the narrowest a form's field gets before its row wraps */
 	--control-h-s: 36px; /* compact: buttons, menu items, a select in a row of options */
 	--control-h-xs: 32px; /* icon buttons, handles, chips */
 	--control-h-l: 52px; /* the door's one big action (sign in, create a passkey) */

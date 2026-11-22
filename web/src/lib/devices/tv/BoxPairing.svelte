@@ -6,7 +6,6 @@
 	import { m } from '#lib/paraglide/messages.js';
 	import { ui } from '#lib/ui.svelte.ts';
 	import { Gesture, pending } from '#lib/gesture.svelte.ts';
-	import { CONFIRM, haptic } from '#lib/haptics.ts';
 	import Icon from '#lib/components/Icon.svelte';
 	import { BOX_CODE_LENGTH } from '#lib/limits.ts';
 	import { androidTvApi } from './api.ts';
@@ -42,8 +41,7 @@
 		return pairing.run(
 			() => androidTvApi.pairFinish(typed),
 			async () => {
-				haptic(CONFIRM);
-				ui.toast(m.android_tv_paired_ok());
+				ui.done(m.android_tv_paired_ok());
 				// the settings close while the focus is still in the form: it goes back to their gear
 				await onpaired();
 				open = false;
@@ -55,7 +53,7 @@
 	}
 </script>
 
-<div class="block">
+<div class="stack">
 	<p class="hint">{m.android_tv_pair_hint()}</p>
 	{#if open}
 		<form class="pair" onsubmit={finish} novalidate>

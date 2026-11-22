@@ -154,7 +154,7 @@ export interface CleanupResponse {
 	launcher: boolean;
 }
 
-/** An APK upload and its install answer together within this long (tens of MB over the Pi's
+/** An APK upload and its install answer together within this long (tens of MB over the host's
  * link, then `pm install`). */
 const APK_TIMEOUT_MS = 15 * 60_000;
 
@@ -172,7 +172,7 @@ export const androidTvApi = {
 	pairFinish: (code: string) => post('/androidtv/pair/finish', { code }),
 
 	/**
-	 * Sideloads an APK onto the box: an APK is tens of MB on a Pi's link, so the upload says how
+	 * Sideloads an APK onto the box: an APK is tens of MB on a host's link, so the upload says how
 	 * far it got (`onProgress`, 0 to 1); at 1 the box is installing, and the answer comes when
 	 * `pm install` is done.
 	 */
