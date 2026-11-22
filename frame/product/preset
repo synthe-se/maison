@@ -1,0 +1,4 @@
+enable maison-ui.service
+enable frame-wifid.service
+enable frame-power-key.service
+enable frame-wifi-watch.service

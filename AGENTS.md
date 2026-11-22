@@ -100,19 +100,18 @@ i18n/messages/       fr.json, en.json: the only source of texts
 e2e/                 Playwright + axe against the real backend (run.sh, house.ts: typed with the
                      app's types, built from web/src/lib/test fixtures; words from fr.json;
                      frame.ts: the native frame app against it, through a proxy serving house.ts)
-frame/               the wall screen (a Frameo photo frame, RK3126, Android 6): tools/ (maison-update,
-                     maison-wifid: root's Wi-Fi service over a kiosk socket, maison-power-key,
-                     maison-setup; `wifi.rs`: their protocol, shared with ui/), android/ (the
-                     GeckoView kiosk APK, Kotlin), system/ (build.py: our /system, logo and
-                     rescue recovery from the vendor's backup; bootimg.py, rescue-tools.sh),
-                     rkwrite.py (loader writes), flash.sh, provision.sh, rescue.sh,
-                     bootanimation.sh/.ts, test_frame.py (docs/frame.md); linux/ (mainline
-                     from the recovery slot: build.sh, buildroot.sh (the system), release.sh, ssh-cert.sh,
-                     loader.c, initramfs.py, image.py,
-                     install.sh, try.sh, console.sh, the board's device tree, rootfs/: units and
-                     launchers); ui/ (the native interface: SDL3 on KMS, Rust 2024,
-                     ARCHITECTURE.md; maison-api's types, codes, paces and events, `paths.rs`
-                     for every path it asks; frame/linux/buildroot.sh cross-builds it for the system)
+frame/               the wall screen (a Frameo photo frame, RK3126): product/ (Maison as the frame's
+                     product: product.conf, its units and launchers under rootfs/, preset,
+                     defconfig, build-target.sh, release.pub; the frame's Linux, its tools and
+                     its build are synthe-se/frame-kernel's, checked out beside this repository:
+                     `just image ../maison/frame/product` there); ui/ (the native interface:
+                     SDL3 on KMS, Rust 2024, ARCHITECTURE.md; maison-api's types, codes, paces
+                     and events, `paths.rs` for every path it asks; the Wi-Fi's protocol is
+                     frame-kernel's `frame-tools`); tools/ (maison-setup, the page of the
+                     frame's own Wi-Fi); android/ (the GeckoView kiosk APK, Kotlin), system/
+                     (build.py: our /system, logo and rescue recovery from the vendor's backup;
+                     bootimg.py, rescue-tools.sh), rkwrite.py (loader writes), flash.sh,
+                     provision.sh, rescue.sh, bootanimation.sh/.ts, test_frame.py (docs/frame.md)
 box/launcher/        the box's home: Compose for TV, for any Android TV (docs/box.md)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
 deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
@@ -422,42 +421,28 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 - Our build.prop sets `ro.adb.secure=1` (the vendor's default.prop leaves it out). The kiosk's
   activity is exported (it is the home): it lifts itself only with the one-time grant
   `ProvisionReceiver` (DUMP: the shell's alone) hands it, never on its own action's word.
+- Mainline, the frame's Linux is `synthe-se/frame-kernel` (its kernel, initramfs, system, slots,
+  signed updates, Wi-Fi service, tools and what they taught: its README and `docs/frame.md`).
+  Here: Maison as its product (`frame/product`), the interface (`frame/ui`) and the setup page
+  (`frame/tools`). Both crates name `../../../frame-kernel/tools` (`frame-tools`).
 - Mainline, the network is joined on the frame's own touch screen (`frame/ui/src/wifi.rs`,
-  `ui/keyboard.rs`): the app stays `kiosk`, `maison-wifid` is the only root behind it. No network, or
-  10 minutes without one (`maison-wifi-watch`, `/run/maison-lost`, never on trial): the screen comes
-  by itself.
+  `ui/keyboard.rs`): the app stays `kiosk`, the frame's `frame-wifid` is the only root behind it.
+  No network, or 10 minutes without one (`/run/frame-lost`, never on trial): the screen comes by
+  itself.
 - Mainline, KMSDRM makes its surface anew at the first present and shows that, blank: the app draws
   twice at its start, or a screen that never changes stays black until a touch.
-- Mainline, the hotspot is dormant, a dead touch panel's last resort: only the power key held 10 s
-  opens it (`maison-power-key`, `maison-hotspot`; logind must keep off that key), for 30 minutes after
-  its page's last request, then back without a restart.
+- Mainline, the interface has no session: SDL on KMS as `kiosk`, whose groups open the panel and
+  the touch panel (the frame's initramfs gives them). Its unit has no default dependencies: it
+  starts with the system, never behind udev, logind or the network. No logind, no PAM in the image.
+- Mainline, the hotspot is the frame's, a dead touch panel's last resort (its power key held 10 s);
+  the interface reads `FRAME_SETUP_*` as it starts, and `maison-setup` serves the page
+  (`frame-setup.service`).
 - Mainline: Maison's address is never typed on the frame: root's `/android-data/maison/target`
-  (0600), over SSH or adopted once from Android's shell-writable `/data/local/tmp/maison/target`,
-  else the image's `/etc/maison-target` (`FRAME_TARGET` at build); `maison-wifi` puts the one that
-  holds in `/run/maison-target`, the unit's `target` credential. To change root's, remove it first.
-- Linux boots by default from `boot` (`image.py`: the vendor's resource for U-Boot's logo; our device
-  tree after a zImage holding its initramfs, since U-Boot says where it put one only in its own tree); Android sits in `recovery`. A new
-  system goes to a slot over the Wi-Fi (`try.sh --install`, checked and tried); a new kernel to
-  `boot` from Linux, else the loader (`try.sh --flash`). No battery: timesyncd's clock is
-  kept on userdata, and the app never waits for NTP. SSH by certificate; the journal kept on userdata (`/var/log/journal`, one machine id from the eMMC's serial); the
-  boot pictures: U-Boot's Synthèse (the `resource` partition), then the initramfs's Maison with its
-  ring (splash.py), a line only on failure. The kernel
-  has no console on the panel: no text can reach it.
-- The kernel is `allnoconfig` + `maison.config`, every symbol said; a dropped symbol or any build
-  warning fails `build.sh`. Nothing drives the CPU's rail (PWM1 reads zero, the vendor's kernel never
-  got `vdd_arm`), its voltage is unknown and never written, no temperature sensor: the OPPs change
-  the clock alone, up to 1008 MHz, the top held under checked load. `try.sh --ram` runs a new kernel
-  by kexec, the slots untouched. The AIC driver forces Wi-Fi power save: `ps_on=0` at insmod.
-- SSH is by a certificate of the frames' CA (`ssh-cert.sh`, 8 h), no key on a frame. OTA: `release.sh`
-  signs a release (`frame/tools`: maison-sign, maison-update), `FRAME_UPDATE_URL` at build says where.
-  The hotspot: `maison-wifi` makes the frame an access point, `maison-setup` serves its page.
-- The system is Buildroot (`frame/linux/buildroot`). A unit is enabled in its preset (`preset-all` undoes
-  an `enable`), kiosk keeps uid 988 (its cookie on userdata), its timesyncd has no servers of its own.
-- No console on a product's boot; root's password is locked, an SSH certificate is the way in.
-  `initramfs.py --debug` adds a root shell on the USB-C, the backlight blinks and an 8 s pause.
-- Updates go to a slot on userdata (`/android-data/maison/slots`, `try.sh --install [--kernel]`),
-  tried, then kept by `maison-commit` or rolled back by the initramfs; `boot` only by `try.sh --flash`.
-  A slot's kernel adds a kexec to each boot. Over the air needs `FRAME_UPDATE_URL` at build.
+  (0600), over SSH or from the setup page, else the image's `/etc/maison-target` (`FRAME_TARGET` at
+  build); `maison-target` puts the one that holds in `/run/maison-target`, the unit's `target`
+  credential.
+- Maison's updates are signed with its release key (`frame/product/release.pub`; frame-kernel's
+  `just release ../maison/frame/product --publish`).
 
 ### Cat devices, plugs, blaster, Hue
 

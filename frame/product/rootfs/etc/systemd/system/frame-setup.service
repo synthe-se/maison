@@ -1,0 +1,12 @@
+# The page of the frame's own Wi-Fi, Maison's (frame/tools: maison-setup): the frame's frame-wifi
+# starts it under this name when the power key was held. It binds the access point's address, which
+# comes seconds later: retried without a limit
+[Unit]
+Description=Maison's setup page
+After=frame-wpa.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/maison-setup
+Restart=on-failure
+RestartSec=2

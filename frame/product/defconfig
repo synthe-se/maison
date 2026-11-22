@@ -1,0 +1,7 @@
+# What Maison's interface adds to the frame's system: the picture through Lima on KMS, which its
+# SDL opens at run time
+BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_LIMA=y
+BR2_PACKAGE_MESA3D_GBM=y
+BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+BR2_PACKAGE_MESA3D_OPENGL_ES=y

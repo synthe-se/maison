@@ -1,0 +1,11 @@
+# Maison's address for this boot (usr/local/sbin/maison-target). Not RemainAfterExit: restarting
+# the interface reads it again (the setup page may have written another).
+[Unit]
+Description=Maison's address
+DefaultDependencies=no
+Before=maison-ui.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/maison-target

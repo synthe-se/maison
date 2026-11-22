@@ -9,8 +9,9 @@ publish = false
 [dependencies]
 # what the API answers and reads, the backend's own types
 maison-api = { path = "../../api" }
-# the Wi-Fi's protocol with maison-wifid and what a network's name and password may be, said once
-maison-frame-tools = { path = "../tools" }
+# the Wi-Fi's protocol with the frame's frame-wifid and what a network's name and password may be,
+# said once (synthe-se/frame-kernel, checked out beside this repository)
+frame-tools = { path = "../../../frame-kernel/tools" }
 # SDL from its latest sources, linked in (trixie's libSDL3 is older: never loaded in its place);
 # SDL itself opens the system's DRM, GBM, EGL and GLES libraries at run time
 sdl3 = { version = "0.20.0", features = ["build-from-source-static", "ttf"] }

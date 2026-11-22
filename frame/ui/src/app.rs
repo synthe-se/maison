@@ -874,7 +874,7 @@ mod tests {
     use crate::ui::keyboard::Key;
     use crate::ui::model::{Slider, WifiAct};
     use crate::wifi::tests::fake;
-    use maison_frame_tools::wifi::Status;
+    use frame_tools::wifi::Status;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
 

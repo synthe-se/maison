@@ -1,0 +1,15 @@
+#!/bin/sh
+# Maison's address for this boot, what the interface is given as its `target` credential: root's
+# (/android-data/maison/target, set over SSH or by the setup page), else the image's default; empty,
+# it says the frame has no address. And where root keeps the interface's edge identity (its `edge`
+# credential, a directory): empty, the interface reaches its address as any client.
+set -eu
+umask 077
+install -d -m 0755 /android-data/maison
+install -d -m 0700 /android-data/maison/edge
+for kept in /android-data/maison/target /etc/maison-target; do
+	[ -s "$kept" ] || continue
+	cat "$kept" >/run/maison-target
+	exit 0
+done
+: >/run/maison-target

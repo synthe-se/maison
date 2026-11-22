@@ -1,16 +1,16 @@
 //! What the app is told at start, from its environment (the service's, or a simulation's):
 //!
 //! - Maison's address: the systemd credential `target` (`$CREDENTIALS_DIRECTORY/target`,
-//!   `maison-wifi`'s `/run/maison-target`: root's `/android-data/maison/target`, set over SSH, else
+//!   `maison-target`'s `/run/maison-target`: root's `/android-data/maison/target`, set over SSH, else
 //!   the image's `/etc/maison-target`), else `MAISON_TARGET`; never typed on the frame. Its fragment and path are dropped (the kiosk's `#lang=…`, an older
 //!   target's token). HTTPS only, but for this computer (`localhost`, a loopback address) and a
 //!   simulation that says `MAISON_ALLOW_HTTP=1` (the host seen from a container): the screen's
 //!   cookie never crosses the Wi-Fi in clear;
-//! - no address at all: the app says so. `MAISON_SETUP_SSID` said (the power key was held and the
-//!   frame is its own Wi-Fi; the unit's file, read as the app starts: `maison-hotspot` restarts it):
-//!   the app starts on its setup view, with what `MAISON_SETUP_SSID`, `MAISON_SETUP_PASSWORD` and
-//!   `MAISON_SETUP_URL` say of that Wi-Fi and its page;
-//! - `MAISON_WIFI_SOCKET`: `maison-wifid`'s socket, a simulation's fake;
+//! - no address at all: the app says so. `FRAME_SETUP_SSID` said (the power key was held and the
+//!   frame is its own Wi-Fi; the unit's file, read as the app starts: the frame's `frame-hotspot` restarts it):
+//!   the app starts on its setup view, with what `FRAME_SETUP_SSID`, `FRAME_SETUP_PASSWORD` and
+//!   `FRAME_SETUP_URL` say of that Wi-Fi and its page;
+//! - `MAISON_WIFI_SOCKET`: the frame's `frame-wifid`'s socket, a simulation's fake;
 //! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
 //!   `$XDG_DATA_HOME/maison-ui`;
 //! - its language: `MAISON_LANG`, else `LANG` (`fr_FR.UTF-8`);
@@ -22,7 +22,7 @@
 
 use std::path::PathBuf;
 
-use maison_frame_tools::wifi::SOCKET;
+use frame_tools::wifi::SOCKET;
 
 use crate::edge::Edge;
 use crate::i18n::Lang;
@@ -88,9 +88,9 @@ impl Config {
             .map(|t| origin(t.trim(), allow_http))
             .transpose()?;
         let setup = Setup {
-            ssid: env("MAISON_SETUP_SSID"),
-            password: env("MAISON_SETUP_PASSWORD"),
-            url: env("MAISON_SETUP_URL"),
+            ssid: env("FRAME_SETUP_SSID"),
+            password: env("FRAME_SETUP_PASSWORD"),
+            url: env("FRAME_SETUP_URL"),
         };
         let origin = origin.filter(|_| setup.ssid.is_none());
         let state_dir = env("MAISON_STATE")
@@ -245,9 +245,9 @@ mod tests {
             Some(" \n".into()),
             vars(&[
                 state,
-                ("MAISON_SETUP_SSID", "maison-frame"),
-                ("MAISON_SETUP_PASSWORD", "sel"),
-                ("MAISON_SETUP_URL", "http://10.42.0.1"),
+                ("FRAME_SETUP_SSID", "maison-frame"),
+                ("FRAME_SETUP_PASSWORD", "sel"),
+                ("FRAME_SETUP_URL", "http://10.42.0.1"),
             ]),
         )
         .unwrap();
@@ -263,7 +263,7 @@ mod tests {
             Some("https://maison.example".into()),
             vars(&[
                 ("MAISON_STATE", "/tmp/s"),
-                ("MAISON_SETUP_SSID", "Maison-ab12"),
+                ("FRAME_SETUP_SSID", "Maison-ab12"),
             ]),
         )
         .unwrap();

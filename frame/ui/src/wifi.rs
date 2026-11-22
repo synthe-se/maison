@@ -12,9 +12,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use maison_frame_tools::wifi::{
-    Answer, Join, Network, Refusal, Request, Status, Why, password_fits,
-};
+use frame_tools::wifi::{Answer, Join, Network, Refusal, Request, Status, Why, password_fits};
 
 use crate::i18n::{Words, k};
 use crate::ui::icon::{self, Icon};

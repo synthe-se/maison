@@ -1,10 +1,10 @@
 //! The setup, while the frame is its own Wi-Fi: one page on 192.168.4.1 asks for the house's network
 //! and Maison's address (the one kept, if any, already there), writes them where the system reads
 //! them, and restarts. The words are i18n/messages/fr.json's. Only ever runs when the power key was
-//! held (maison-power-key, maison-hotspot): the last resort of a dead touch panel. Each request
+//! held (the frame's frame-power-key, frame-hotspot): the last resort of a dead touch panel. Each request
 //! touches `SETUP`: someone at the form holds the watch's way back to the configured network.
 
-use maison_frame_tools::wifi::{CONF, network, password_fits, private, ssid_fits};
+use frame_tools::wifi::{CONF, network, password_fits, private, ssid_fits};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -15,7 +15,7 @@ use std::{fs, process};
 
 const LISTEN: &str = "192.168.4.1:80";
 const TARGET: &str = "/android-data/maison/target";
-const SETUP: &str = "/run/maison-setup";
+const SETUP: &str = "/run/frame-setup";
 const MESSAGES: &str = include_str!("../../../../i18n/messages/fr.json");
 
 #[derive(Debug, PartialEq)]

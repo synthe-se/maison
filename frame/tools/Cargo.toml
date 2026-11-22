@@ -3,16 +3,14 @@ name = "maison-frame-tools"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
-description = "The frame's updates, Wi-Fi and hotspot: maison-update, maison-wifid, maison-power-key, maison-setup; maison-sign on the build machine"
+description = "Maison's own on the frame: maison-setup, the page of the frame's own Wi-Fi. The frame's tools (its updates, its Wi-Fi's service, its power key) are frame-kernel's"
 publish = false
 
 [dependencies]
-# Ed25519 and SHA-256, the same ring the app's TLS is built on
-ring = "0.17.14"
-serde = { version = "1.0.229", features = ["derive"] }
+# the frame's Wi-Fi: where its network is kept and what a name and a password may be, said once
+# (synthe-se/frame-kernel, checked out beside this repository)
+frame-tools = { path = "../../../frame-kernel/tools" }
 serde_json = "1.0.154"
-# HTTPS without an async runtime: rustls and the webpki roots
-ureq = "3.5.0"
 
 [profile.release]
 lto = "fat"
