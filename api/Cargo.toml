@@ -2,7 +2,7 @@
 name = "maison-api"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 description = "What Maison's HTTP API answers and reads, said once: the backend serves these types, the wall frame's native interface reads them"
 publish = false
 

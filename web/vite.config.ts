@@ -25,7 +25,10 @@ export default defineConfig({
 			outdir: './src/lib/paraglide',
 			strategy: ['localStorage', 'preferredLanguage', 'baseLocale'],
 			localStorageKey: STORAGE.locale,
-			emitTsDeclarations: true
+			emitTsDeclarations: true,
+			// real files, as the CLI writes them (`bun run i18n`): e2e and the scripts read the
+			// messages outside Vite, where its virtual modules do not exist
+			outputStructure: 'message-modules'
 		})
 	],
 	test: {

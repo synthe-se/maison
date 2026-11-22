@@ -2,7 +2,7 @@
 name = "maison-frame-tools"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 description = "Maison's own on the frame: maison-setup, the page of the frame's own Wi-Fi. The frame's tools (its updates, its Wi-Fi's service, its power key) are frame-kernel's"
 publish = false
 

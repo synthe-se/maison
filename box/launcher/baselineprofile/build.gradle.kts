@@ -13,7 +13,10 @@ plugins {
 
 android {
 	namespace = "maison.box.baselineprofile"
-	compileSdk = 37
+	// Compose 1.13 wants the 37.1 APIs at least
+	compileSdk {
+		version = release(37) { minorApiLevel = 2 }
+	}
 
 	defaultConfig {
 		minSdk = 29
