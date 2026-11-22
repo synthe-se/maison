@@ -297,6 +297,7 @@ impl ZigbeeManager {
 
     /// The visible lamps by name, and their counts: one sync for both.
     pub async fn listing(&self) -> (Vec<ZigbeeLamp>, LampStats) {
+        self.inner.driver.looked();
         self.sync_logged("", "listing").await;
         let lamps = self.inner.lamps.read().await;
         let stats = self.stats_of(&lamps).await;
@@ -304,6 +305,7 @@ impl ZigbeeManager {
     }
 
     pub async fn get_lamp(&self, lamp_id: &str) -> Option<ZigbeeLamp> {
+        self.inner.driver.looked();
         self.sync_logged(lamp_id, "loading a lamp").await;
         self.inner
             .lamps

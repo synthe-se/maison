@@ -121,12 +121,21 @@ async fn handle_callback(context: &mut EzspContext, callback: Callback) -> Optio
             if matches!(sent.ack_received(), Ok(false)) =>
         {
             let node_id = sent.index_or_destination();
+            context.availability.delivery_failed(node_id);
             if let Some(device) = context.device_mut(node_id)
                 && device.lost()
             {
                 info!(node_id = %Hex(node_id), eui64 = %device.info.eui64, "device marked unreachable after MAC delivery failure");
             }
             Some(DriverEvent::DeliveryFailed { node_id })
+        }
+        Callback::Networking(Networking::EnergyScanResult(energy)) => {
+            debug!(
+                channel = energy.channel(),
+                max_rssi = energy.max_rssi_value(),
+                "zigbee channel energy"
+            );
+            None
         }
         Callback::Zll(handler) => {
             handle_zll_callback(context, handler);

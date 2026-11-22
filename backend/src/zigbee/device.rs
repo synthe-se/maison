@@ -113,7 +113,7 @@ pub struct Light {
 }
 
 /// Whether a lamp reports its light by itself (ZCL attribute reporting, asked at its
-/// interview): one that does says it is alive every few minutes, and needs no ping.
+/// interview): one that does says it is alive every minute, and needs no ping.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Reporting {
     /// Not asked (yet).
@@ -178,6 +178,8 @@ pub struct DiscoveredDevice {
     pub failed_ping_cycles: u32,
     /// Whether it reports by itself (then it is only pinged when its reports stop).
     pub reporting: Reporting,
+    /// The dongle, its neighbour, stopped hearing its link status: pinged at once.
+    pub link_lost: bool,
 }
 
 impl DiscoveredDevice {
@@ -199,6 +201,7 @@ impl DiscoveredDevice {
             last_discovery_at: None,
             failed_ping_cycles: 0,
             reporting: Reporting::Unknown,
+            link_lost: false,
         }
     }
 
@@ -229,11 +232,13 @@ impl DiscoveredDevice {
         self.reachable = true;
         self.last_seen = Some(Instant::now());
         self.failed_ping_cycles = 0;
+        self.link_lost = false;
     }
 
     /// It stopped answering; says whether that is news (it was reachable until now).
     pub fn lost(&mut self) -> bool {
         let news = self.reachable;
+        self.link_lost = false;
         if news {
             self.reachable = false;
             self.desired.applied = false;

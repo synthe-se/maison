@@ -6,7 +6,10 @@
 
 use std::{
     future::Future,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -18,7 +21,7 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use super::{
-    availability::check_availability,
+    availability::{check_availability, check_neighbours},
     callbacks::on_callback,
     commands::{DriverCommand, discover_devices, handle_command},
     config::ZigbeeConfig,
@@ -38,6 +41,8 @@ use crate::{
 const CHORES_INTERVAL: Duration = Duration::from_secs(1);
 /// Uninterviewed devices are asked again every this many chores.
 const INTERVIEW_RETRY_CHORES: u32 = 10;
+/// How often the dongle's neighbours are looked at, in chores.
+const NEIGHBOUR_CHORES: u32 = 5;
 /// Per-EZSP-step timeout. Past it the pipeline is presumed dead and rebuilt: safe ONLY
 /// because a desynchronised EZSP channel is never reused.
 pub const EZSP_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -77,6 +82,8 @@ pub struct Shared {
     lifecycle: RwLock<DriverLifecycle>,
     network: RwLock<NetworkState>,
     devices: watch::Sender<Vec<ZigbeeDevice>>,
+    /// Someone read the lamps since the availability check last asked.
+    looked: AtomicBool,
 }
 
 impl Shared {
@@ -86,7 +93,13 @@ impl Shared {
             lifecycle: RwLock::new(DriverLifecycle::Starting),
             network: RwLock::new(NetworkState::Unknown),
             devices: watch::Sender::new(Vec::new()),
+            looked: AtomicBool::new(false),
         }
+    }
+
+    /// Whether someone read the lamps since the last call.
+    pub fn take_look(&self) -> bool {
+        self.looked.swap(false, Ordering::Relaxed)
     }
 
     /// The status line shown with the lamps (none when all is well).
@@ -152,6 +165,12 @@ impl Driver {
 
     pub async fn message(&self) -> Option<String> {
         self.shared.message.read().await.clone()
+    }
+
+    /// Someone is reading the lamps: those silent a while are checked now, not at their
+    /// next heartbeat.
+    pub fn looked(&self) {
+        self.shared.looked.store(true, Ordering::Relaxed);
     }
 
     /// The devices as the driver last shared them; `changed()` says when they move.
@@ -461,8 +480,76 @@ async fn on_chores(
             .map_err(|_| "interview retry timed out".to_string())?;
         context.publish();
     }
+    if chore_count.is_multiple_of(NEIGHBOUR_CHORES) {
+        check_neighbours(context).await;
+    }
     check_availability(context).await;
+    if chore_count.is_multiple_of(RADIO_LOG_CHORES) && tracing::enabled!(tracing::Level::DEBUG) {
+        log_radio(context).await;
+    }
     Ok(())
+}
+
+/// How often the NCP's counters and neighbours are logged (debug), in chores.
+const RADIO_LOG_CHORES: u32 = 30;
+/// The 2.4 GHz channels, 11 to 26, as a scan's mask.
+const ALL_CHANNELS: u32 = 0x07ff_f800;
+
+/// The NCP's own view of the radio (debug): its counts since the last look (MAC sends
+/// acknowledged or not, route discoveries, a busy channel) and each neighbour's costs, both
+/// ways (`in`: how well it hears the neighbour; `out`: how well the neighbour says it hears it,
+/// from its link status; 0 = unknown, 1 best, 7 worst).
+async fn log_radio(context: &mut EzspContext) {
+    use ezsp::{Networking, Security, Utilities, ember::counter::Type};
+    match context.connection.read_and_clear_counters().await {
+        Ok(counts) => {
+            // one line each: syslog cuts a long line, and the last counters (network, security,
+            // the channel) are the ones that matter
+            for (index, count) in counts.iter().enumerate().filter(|(_, count)| **count > 0) {
+                match u8::try_from(index)
+                    .ok()
+                    .and_then(|i| Type::try_from(i).ok())
+                {
+                    Some(kind) => tracing::debug!(counter = ?kind, count, "zigbee NCP counter"),
+                    None => tracing::debug!(counter = index, count, "zigbee NCP counter"),
+                }
+            }
+        }
+        Err(error) => tracing::debug!(%error, "zigbee NCP counters unread"),
+    }
+    match context.connection.get_network_key_info().await {
+        Ok(key) => tracing::debug!(
+            frame_counter = key.network_key_frame_counter(),
+            sequence = key.network_key_sequence_number(),
+            key_set = key.network_key_set(),
+            "zigbee NCP network key"
+        ),
+        Err(error) => tracing::debug!(%error, "zigbee NCP network key unread"),
+    }
+    // a short look at every channel's energy (about 30 ms each, the radio away half a second);
+    // its results come as callbacks. Short on purpose: a source that is always there shows in
+    // every look, one that comes in bursts (a Wi-Fi beacon) only in some
+    if let Err(error) = context
+        .connection
+        .start_scan(ezsp::ezsp::network::scan::Type::EnergyScan, ALL_CHANNELS, 0)
+        .await
+    {
+        tracing::debug!(%error, "zigbee energy scan not started");
+    }
+    let count = context.connection.neighbor_count().await.unwrap_or(0);
+    for index in 0..count {
+        match context.connection.get_neighbor(index).await {
+            Ok(neighbor) => tracing::debug!(
+                node_id = format_args!("{:#06x}", neighbor.short_id()),
+                lqi = neighbor.average_lqi(),
+                in_cost = neighbor.in_cost(),
+                out_cost = neighbor.out_cost(),
+                age = neighbor.age(),
+                "zigbee NCP neighbour"
+            ),
+            Err(error) => tracing::debug!(index, %error, "zigbee NCP neighbour unread"),
+        }
+    }
 }
 
 /// Commands the dongle failed in a row, without a success between.

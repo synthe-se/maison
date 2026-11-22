@@ -303,8 +303,11 @@ cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the 
 - The driver publishes its devices on a watch channel; the manager syncs (and saves) only
   when they changed.
 - The driver's loop serves callbacks and commands as they come; its chores (link health,
-  availability) run on a 1 s tick. Lamps are asked for ZCL attribute reporting; only those
-  that do not report (or whose reports stopped) are pinged.
+  availability) run on a 1 s tick. Lamps are asked for ZCL attribute reporting (a report at
+  least every minute); pinged are those that do not report or whose reports stopped, a lamp
+  the dongle stopped hearing as a neighbour (its age read every 5 s, no frame sent: 3 to 5
+  when there, 6 half a minute after a wall switch), and one silent 20 s when someone reads
+  the lamps. A ping ends on its answer or on the dongle's failed delivery, not on a fixed wait.
 - No zigbee2mqtt, no MQTT client in the backend.
 
 ### Matter shutters (Sonoff Orb-RBS, `matter/`, `matter-controller`, pure Rust)

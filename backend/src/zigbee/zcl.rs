@@ -50,7 +50,7 @@ const ZCL_REPORT_ATTRIBUTES_COMMAND_ID: u8 = 0x0a;
 
 /// The longest a lamp waits between two reports of an attribute it reports (seconds): its
 /// heartbeat. A lamp switched off at the wall is noticed past it.
-pub const REPORT_MAX_INTERVAL_S: u16 = 300;
+pub const REPORT_MAX_INTERVAL_S: u16 = 60;
 /// The shortest, so a dimmer turned fast is not a flood.
 const REPORT_MIN_INTERVAL_S: u16 = 1;
 
@@ -1060,12 +1060,12 @@ mod tests {
     #[test]
     fn reporting_is_configured_and_its_answer_read() {
         let on_off = build_configure_reporting_payload(reported_attributes(ON_OFF_CLUSTER_ID), 9);
-        // global, seq, 0x06; direction, attribute 0x0000, boolean, min 0, max 300
-        assert_eq!(on_off, [0x00, 9, 0x06, 0x00, 0, 0, 0x10, 0, 0, 0x2c, 0x01]);
+        // global, seq, 0x06; direction, attribute 0x0000, boolean, min 0, max 60
+        assert_eq!(on_off, [0x00, 9, 0x06, 0x00, 0, 0, 0x10, 0, 0, 60, 0]);
         let level =
             build_configure_reporting_payload(reported_attributes(LEVEL_CONTROL_CLUSTER_ID), 1);
-        // uint8: min 1, max 300, a change of 1 on one byte
-        assert_eq!(&level[3..], [0x00, 0, 0, 0x20, 1, 0, 0x2c, 0x01, 1]);
+        // uint8: min 1, max 60, a change of 1 on one byte
+        assert_eq!(&level[3..], [0x00, 0, 0, 0x20, 1, 0, 60, 0, 1]);
         let color =
             build_configure_reporting_payload(reported_attributes(COLOR_CONTROL_CLUSTER_ID), 2);
         assert_eq!(

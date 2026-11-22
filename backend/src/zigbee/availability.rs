@@ -1,7 +1,8 @@
 //! Is each lamp still there? A lamp that reports by itself (attribute reporting, asked at
-//! its interview) says so at least every few minutes; one that does not is only noticed
-//! when a ping goes unanswered. A lamp silent past its timeout is pinged (an On/Off read);
-//! one that comes back gets the light it was asked for.
+//! its interview) says so at least every minute; one that does not is only noticed when a
+//! ping goes unanswered. A lamp silent past its timeout is pinged (an On/Off read), and so
+//! is, at once, one the dongle stopped hearing as a neighbour, or one silent a while when
+//! someone reads the lamps; one that comes back gets the light it was asked for.
 //!
 //! Never blocking: the check advances one step per call (every chore of the event loop),
 //! timed against stored deadlines, and the event loop serves commands between steps.
@@ -29,7 +30,16 @@ use crate::util::capped_backoff;
 const AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(60);
 /// A lamp that reports, silent this long (its longest report interval and a margin), is
 /// pinged: its reports stopped.
-const REPORTED_TIMEOUT: Duration = Duration::from_secs(REPORT_MAX_INTERVAL_S as u64 + 60);
+const REPORTED_TIMEOUT: Duration = Duration::from_secs(REPORT_MAX_INTERVAL_S as u64 + 15);
+/// A reachable lamp silent this long is pinged when someone reads the lamps: what they see
+/// is checked now, not at its next heartbeat.
+const WATCHED_TIMEOUT: Duration = Duration::from_secs(20);
+/// A neighbour's age (the dongle's count of link status periods, about 15 s each, since it
+/// last heard one) from which its lamp is pinged. Measured: 3 to 5 for a lamp that is there,
+/// 6 half a minute after its wall switch, 9 from a minute and a half on.
+const STALE_NEIGHBOUR_AGE: u8 = 6;
+/// A neighbour that looks stale but answered a ping is not pinged again before this.
+const STALE_NEIGHBOUR_PING_GAP: Duration = Duration::from_secs(30);
 /// Between two pings of one lamp.
 const PING_RETRY_DELAY: Duration = Duration::from_secs(3);
 /// Between two lamps.
@@ -48,6 +58,19 @@ pub struct Availability {
     state: AvailabilityState,
     /// Lamps due for a ping, the first being pinged.
     queue: Vec<AvailabilityTarget>,
+    /// Someone read the lamps: the next round also pings those silent [`WATCHED_TIMEOUT`].
+    watched: bool,
+}
+
+impl Availability {
+    /// The dongle gave up delivering to `node_id`: a ping waiting on it waits no longer.
+    pub fn delivery_failed(&mut self, node_id: u16) {
+        if let AvailabilityState::WaitingForResponse(ping) = &mut self.state
+            && ping.target.node_id == node_id
+        {
+            ping.check_at = Instant::now();
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +142,40 @@ fn silence_allowed(device: &DiscoveredDevice) -> Duration {
     )
 }
 
+/// The dongle's own neighbours, read without a frame on the air: a reachable lamp whose
+/// link status it stopped hearing ([`STALE_NEIGHBOUR_AGE`]) is pinged at the next step. Only
+/// lamps in direct reach of the dongle are its neighbours: the others wait for their
+/// heartbeat. A read that fails is left for the next look.
+pub async fn check_neighbours(context: &mut EzspContext) {
+    use ezsp::Networking;
+    let look = async {
+        let count = context.connection.neighbor_count().await.unwrap_or(0);
+        let now = Instant::now();
+        for index in 0..count {
+            let Ok(neighbour) = context.connection.get_neighbor(index).await else {
+                continue;
+            };
+            if let Some(device) = context.device_mut(neighbour.short_id()) {
+                device.link_lost = link_lost(device, neighbour.age(), now);
+            }
+        }
+    };
+    if timeout(EZSP_COMMAND_TIMEOUT, look).await.is_err() {
+        warn!("reading the dongle's neighbours exceeded the command timeout");
+    }
+}
+
+/// Whether a neighbour of that age is a lamp to ping now: reachable so far, stale, and not
+/// heard since [`STALE_NEIGHBOUR_PING_GAP`] (one that answers its pings while the dongle
+/// still lists it stale is reached through another lamp).
+fn link_lost(device: &DiscoveredDevice, age: u8, now: Instant) -> bool {
+    age >= STALE_NEIGHBOUR_AGE
+        && device.reachable
+        && device
+            .last_seen
+            .is_none_or(|seen| now.duration_since(seen) > STALE_NEIGHBOUR_PING_GAP)
+}
+
 /// Idle → ping the next lamp due → wait for its answer (retrying once for a lamp that was
 /// reachable) → cool down → idle. Says whether a lamp changed state.
 async fn tick_device_availability(context: &mut EzspContext) -> bool {
@@ -126,6 +183,7 @@ async fn tick_device_availability(context: &mut EzspContext) -> bool {
     if let Err(error) = drain_callbacks(context).await {
         warn!(%error, "callback during the availability check");
     }
+    context.availability.watched |= context.shared.take_look();
     let now = Instant::now();
     match std::mem::take(&mut context.availability.state) {
         AvailabilityState::Idle => start_next_ping(context, now).await,
@@ -141,10 +199,11 @@ async fn tick_device_availability(context: &mut EzspContext) -> bool {
 
 async fn start_next_ping(context: &mut EzspContext, now: Instant) -> bool {
     if context.availability.queue.is_empty() {
+        let watched = std::mem::take(&mut context.availability.watched);
         let due = context
             .joined_devices
             .iter()
-            .filter_map(|device| due_for_ping(device, now))
+            .filter_map(|device| due_for_ping(device, now, watched))
             .collect();
         context.availability.queue = due;
     }
@@ -157,17 +216,26 @@ async fn start_next_ping(context: &mut EzspContext, now: Instant) -> bool {
     send_ping(context, target, 1, max_attempts).await
 }
 
-/// A lamp (interviewed, with On/Off) silent past its timeout ([`silence_allowed`]).
-fn due_for_ping(device: &DiscoveredDevice, now: Instant) -> Option<AvailabilityTarget> {
+/// A lamp (interviewed, with On/Off) silent past its timeout ([`silence_allowed`];
+/// [`WATCHED_TIMEOUT`] for a reachable one while someone is `watching`), or one the dongle
+/// stopped hearing as a neighbour.
+fn due_for_ping(
+    device: &DiscoveredDevice,
+    now: Instant,
+    watching: bool,
+) -> Option<AvailabilityTarget> {
     let endpoint = device.info.endpoint?;
     let lamp = device.interview_completed
         && device.info.has_input(ON_OFF_CLUSTER_ID)
         && device.info.device_type != ZigbeeDeviceType::Remote;
-    let limit = silence_allowed(device);
+    let mut limit = silence_allowed(device);
+    if watching && device.reachable {
+        limit = limit.min(WATCHED_TIMEOUT);
+    }
     let silent = device
         .last_seen
         .is_none_or(|seen| now.duration_since(seen) > limit);
-    (lamp && silent).then(|| AvailabilityTarget {
+    (lamp && (silent || device.link_lost)).then(|| AvailabilityTarget {
         node_id: device.node_id,
         endpoint,
         was_reachable: device.reachable,
@@ -213,16 +281,18 @@ async fn send_ping(
     }
 }
 
+/// An answer ends the wait at once; so does the dongle giving up the delivery
+/// ([`Availability::delivery_failed`]); else the ping has [`PING_RETRY_DELAY`].
 async fn check_ping(context: &mut EzspContext, ping: Ping, now: Instant) -> bool {
-    if now < ping.check_at {
-        context.availability.state = AvailabilityState::WaitingForResponse(ping);
-        return false;
-    }
     let node_id = ping.target.node_id;
     let answered = context
         .device(node_id)
         .and_then(|device| device.last_seen)
         .is_some_and(|seen| seen > ping.before_ping);
+    if !answered && now < ping.check_at {
+        context.availability.state = AvailabilityState::WaitingForResponse(ping);
+        return false;
+    }
     if answered {
         debug!(
             node_id = %Hex(node_id),
@@ -400,27 +470,30 @@ mod tests {
             [60, 90, 180, 360, 720, 720],
             "×1.5, ×3, ×6, ×12 at most, no overflow"
         );
-        // a lamp that reports says it lives every five minutes: pinged only past that
+        // a lamp that reports says it lives every minute: pinged only past that
         lamp.reporting = Reporting::Configured;
-        assert_eq!(allowed(&lamp, 0), 360);
+        assert_eq!(allowed(&lamp, 0), 75);
         lamp.reporting = Reporting::Asked;
         assert_eq!(allowed(&lamp, 0), 60, "until it says yes, pinged as before");
     }
 
     #[test]
-    fn a_reporting_lamp_heard_minutes_ago_is_not_pinged() {
+    fn a_reporting_lamp_heard_a_minute_ago_is_not_pinged() {
         let now = Instant::now();
         let mut lamp = DiscoveredDevice::test_lamp();
-        let Some(two_minutes_ago) = now.checked_sub(Duration::from_secs(120)) else {
+        let Some(a_minute_ago) = now.checked_sub(Duration::from_secs(65)) else {
             return;
         };
-        lamp.last_seen = Some(two_minutes_ago);
+        lamp.last_seen = Some(a_minute_ago);
         assert!(
-            due_for_ping(&lamp, now).is_some(),
-            "silent 2 min, no reports"
+            due_for_ping(&lamp, now, false).is_some(),
+            "silent past a minute, no reports"
         );
         lamp.reporting = Reporting::Configured;
-        assert!(due_for_ping(&lamp, now).is_none(), "its next report is due");
+        assert!(
+            due_for_ping(&lamp, now, false).is_none(),
+            "its next report is due"
+        );
     }
 
     #[test]
@@ -429,22 +502,104 @@ mod tests {
         let mut lamp = DiscoveredDevice::test_lamp();
         lamp.last_seen = None;
         assert!(
-            due_for_ping(&lamp, now)
+            due_for_ping(&lamp, now, false)
                 .is_some_and(|target| target.endpoint == 11 && target.was_reachable)
         );
 
         lamp.last_seen = Some(now);
-        assert!(due_for_ping(&lamp, now).is_none(), "heard just now");
+        assert!(due_for_ping(&lamp, now, false).is_none(), "heard just now");
 
         let mut remote = DiscoveredDevice::test_lamp();
         remote.info.device_type = ZigbeeDeviceType::Remote;
         assert!(
-            due_for_ping(&remote, now).is_none(),
+            due_for_ping(&remote, now, false).is_none(),
             "a sleepy remote is never pinged"
         );
 
         let mut uninterviewed = DiscoveredDevice::test_lamp();
         uninterviewed.info.endpoint = None;
-        assert!(due_for_ping(&uninterviewed, now).is_none());
+        assert!(due_for_ping(&uninterviewed, now, false).is_none());
+    }
+
+    #[test]
+    fn a_lamp_someone_looks_at_is_pinged_sooner() {
+        let now = Instant::now();
+        let mut lamp = DiscoveredDevice::test_lamp();
+        lamp.reporting = Reporting::Configured;
+        let Some(half_a_minute_ago) = now.checked_sub(Duration::from_secs(30)) else {
+            return;
+        };
+        lamp.last_seen = Some(half_a_minute_ago);
+        assert!(
+            due_for_ping(&lamp, now, false).is_none(),
+            "its report is due"
+        );
+        assert!(
+            due_for_ping(&lamp, now, true).is_some(),
+            "silent 30 s, watched"
+        );
+        lamp.last_seen = now.checked_sub(Duration::from_secs(10));
+        assert!(due_for_ping(&lamp, now, true).is_none(), "heard 10 s ago");
+
+        // one already out of reach keeps its backoff: it announces itself when it is back
+        lamp.last_seen = Some(half_a_minute_ago);
+        lamp.lost();
+        lamp.failed_ping_cycles = 1;
+        assert!(due_for_ping(&lamp, now, true).is_none());
+    }
+
+    #[test]
+    fn a_neighbour_the_dongle_stopped_hearing_is_pinged_at_once() {
+        let now = Instant::now();
+        let mut lamp = DiscoveredDevice::test_lamp();
+        lamp.reporting = Reporting::Configured;
+        let Some(a_while_ago) = now.checked_sub(Duration::from_secs(40)) else {
+            return;
+        };
+        lamp.last_seen = Some(a_while_ago);
+        assert!(!link_lost(&lamp, 5, now), "a lamp that is there reaches 5");
+        assert!(link_lost(&lamp, STALE_NEIGHBOUR_AGE, now));
+        lamp.link_lost = true;
+        assert!(due_for_ping(&lamp, now, false).is_some());
+
+        // it answered a ping just now: reached through another lamp, left alone a while
+        lamp.heard();
+        assert!(!lamp.link_lost);
+        assert!(!link_lost(&lamp, 9, Instant::now()));
+
+        // already out of reach: nothing more to learn
+        lamp.last_seen = Some(a_while_ago);
+        lamp.lost();
+        assert!(!link_lost(&lamp, 9, now));
+    }
+
+    #[test]
+    fn a_failed_delivery_ends_the_wait_of_its_ping_only() {
+        let lamp = DiscoveredDevice::test_lamp();
+        let now = Instant::now();
+        let later = now + PING_RETRY_DELAY;
+        let mut availability = Availability {
+            state: AvailabilityState::WaitingForResponse(Ping {
+                target: AvailabilityTarget {
+                    node_id: lamp.node_id,
+                    endpoint: 11,
+                    was_reachable: true,
+                    eui64: lamp.info.eui64.clone(),
+                },
+                attempt: 1,
+                max_attempts: 2,
+                before_ping: now,
+                check_at: later,
+            }),
+            ..Availability::default()
+        };
+        let check_at = |availability: &Availability| match &availability.state {
+            AvailabilityState::WaitingForResponse(ping) => ping.check_at,
+            _ => panic!("no ping out"),
+        };
+        availability.delivery_failed(0x1234);
+        assert_eq!(check_at(&availability), later, "another lamp's failure");
+        availability.delivery_failed(lamp.node_id);
+        assert!(check_at(&availability) < later);
     }
 }
