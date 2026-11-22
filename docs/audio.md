@@ -47,7 +47,7 @@ side the Amp2 is « a DAC+ with a power stage » (`hifiberry-dacplus` overlay).
 - **Google Cast**: a closed stack for Google-certified devices; no working open receiver
   exists. Android casts already reach the TV through the box (LEAP-S1, Chromecast built-in),
   and its speakers.
-- **Maison's Pi 1 as the receiver**: ARMv6, below shairport-sync's AirPlay 2 floor. The
+- **Maison's own host as the receiver**: a small machine already driving the house. The
   companion receives, Maison orchestrates.
 
 ### The HiFiBerry DAC+ ADC Pro (also in the box)
@@ -112,7 +112,7 @@ alone. Over the gate: switch to Sonocotta's Louder Raspberry HAT (TAS5805M, 16.5
   - volume (ALSA mixer of the TAS5756M), mute,
   - amp standby after a few silent minutes, wake on play,
   - now playing (shairport-sync's metadata pipe, bluez-alsa's device name),
-  - a small HTTP API with a bearer token (constant-time compare, as `IR_API_TOKEN`).
+  - a small HTTP API with a bearer token (constant-time compare).
 
 Sketch of the API (camelCase keys, snake_case values, as Maison's):
 
@@ -157,8 +157,8 @@ fixes the hardware:
   A2DP but SBC only, and would mean the receiver on ESP-IDF (`esp-idf-svc`, Rust with std).
 - **The Amp2 needs a Pi's 40-pin header.** Changing the amp is acceptable: an ESP32 board with
   a TAS5805M (Sonocotta Louder) or an MA12070P board would follow the receiver.
-- Maison's own Pi 1 as the receiver stays a no: one core already running Zigbee, Matter and
-  the tunnel, RSA keys that take tens of seconds; audio would drop.
+- Maison's own host as the receiver stays a no: it already runs Zigbee and Matter, and RSA
+  keys take it tens of seconds; audio would drop.
 
 **The way.** Phase 1 with shairport-sync (a known reference, traffic to compare with), then
 openairplay2 and shairplay-rust on the same bench against the Mac and an iPhone: video in
@@ -205,8 +205,7 @@ Two ways to run it, tried in this order:
    reboots (it must never sleep); macOS cannot be a Bluetooth speaker, so Android still lands
    on the ESP32 (SBC), mixed with the Mac's stream by custom firmware.
 
-Either way the IR bridge moves to the ESP32 (its RMT peripheral decodes IR; POST to
-`/api/ir/key` as `kird` does), which frees the AirTies to go. Power is about the Zero 2 W's
+Power is about the Zero 2 W's
 (an ESP32 with Wi-Fi up is around half a watt): the gain is parts in stock, the Amp2 kept, and
 almost no software next to the speakers. The Amp2's own idle draw is still the number to
 measure.
@@ -223,8 +222,7 @@ between this variant and the Zero 2 W.
 - Web: `web/src/lib/devices/audio/` (`api.ts`, `data.ts` with its `live` source), an
   `AudioGroup` tile: source and now playing, volume as `Range`, mute and standby through
   `Command`, settings in its `settings` snippet. Texts in `i18n/messages`.
-- IR keymap actions: `audio_volume` (with `repeat` while held), `audio_mute`, so the
-  set-top-box remote drives the speakers. Run by `ir::run_actions`, hence by scenes too.
+- Actions: `audio_volume`, `audio_mute`, run by `actions::run`, hence by scenes.
 - Tests: unit and integration against a local stub of `maison-audio`, Vitest for the tile,
   e2e for the flow.
 

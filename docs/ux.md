@@ -81,7 +81,7 @@ Cal Sans, self-hosted), in `web/src/styles/tokens.css`:
   the one Bits UI Collapsible: `aria-expanded` and `aria-controls`; what unfolds exists only
   while open); closed while the focus is in them (saved, cancelled), the focus goes back to
   the gear. A form that needs room is a
-  `Sheet` instead (adding a shutter, an invitation, a meal, a remote key, a scene).
+  `Sheet` instead (adding a shutter, an invitation, a meal, a scene).
 
 ## 2. Commands
 
@@ -173,17 +173,15 @@ be touched anywhere (WCAG 2.5.7), `touch-action: pan-y`.
   fixed order: Tempo, lamps (one group, Bluetooth and Zigbee alike; the radio is said on the
   lamp's page, « Ajouter une lampe » offers both), the cats' corner, air conditioning,
   shutters, plugs, the rabbit, then « Télé » (little used): the TV and the Android TV box in
-  one group, each row leading to its page. The IR remote's keymap is not on the home: it is
-  the « Télécommande » destination. The same order at every width; nothing reorders itself.
+  one group, each row leading to its page. The same order at every width; nothing reorders itself.
 - Group actions where a group has several of a thing: « Tout éteindre » on the lamps (when
   one is on), « Tout ouvrir » / « Tout fermer » on the shutters. A shutter's next scheduled
   move can be skipped once next to it (« Fermeture 18:42 · Ne pas fermer ce soir », then
   « Fermeture de 18:42 sautée · Annuler »).
-- Three destinations: Accueil, Tempo, Télécommande. Device pages are not destinations: the
+- Two destinations: Accueil, Tempo. Device pages are not destinations: the
   home tab stays current and the page starts with « Retour à l’accueil ». « Cadre photo » is such a
   page, an admin's, reached from the wall screens' group in « Mon compte ».
-- « Télécommande » is the IR keymap page only: the TV's and the box's pads live on their own
-  pages (`/tv`, `/androidtv`), so one word never names two screens.
+- The TV's and the box's pads live on their own pages (`/tv`, `/androidtv`).
 
 ## 6. Long or irreversible actions
 

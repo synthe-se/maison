@@ -1,9 +1,10 @@
 # Maison: agent and contributor brief
 
 Self-hosted home dashboard. One Rust binary (`maison-backend`, Axum 0.8 + tokio) that drives
-every device on the LAN and serves a SvelteKit SPA. Production: a Raspberry Pi 1 (ARMv6,
-512 MB, Alpine, OpenRC, musl, built `--no-default-features`: no Bluetooth), behind a
-Cloudflare tunnel. Development on macOS. Deploying: [docs/deploy.md](docs/deploy.md).
+every device on the LAN and serves a SvelteKit SPA. Production: any Linux host that runs a
+static musl binary, built `--no-default-features` (no Bluetooth); today a MIPS32 set-top box
+(512 MB, BusyBox init), before it a Raspberry Pi 1. Reached at its public address through the
+edge listener. Development on macOS. Deploying: [docs/deploy.md](docs/deploy.md).
 
 ## Map
 
@@ -13,7 +14,7 @@ backend/src/
                      `maison-backend token create|list|revoke` (service tokens)
   lib.rs             AppState, router (`DEVICE_ROUTES`), layers: security headers + CSP
                      (SHA-256 of the page's inline scripts), cache policy, guard_request (the
-                     LAN's rules, `lan_only`, Origin vs PUBLIC_URL), audit (every 401/403 logged
+                     LAN's rules, Origin vs PUBLIC_URL), audit (every 401/403 logged
                      with who and the address), coded extractor rejections, 180 s timeout,
                      `every()` / `supervised()` for background jobs (a panic is logged, the job
                      goes on; the JoinHandle aborts it), the app constructors
@@ -31,16 +32,18 @@ backend/src/
                      `Bounded` (a TTL map capped per address and prefix), `capped_backoff`,
                      `refused(code, why)`, `house_time`, `house_date`, `minutes_of_day`,
                      `rfc3339_utc`, `HOUSE_TZ` = Europe/Paris (jiff, its database embedded;
-                     never `TimeZone::system()`, which is UTC on the Pi), `test_dir()`
+                     never `TimeZone::system()`: a host's own zone is not the house's), `test_dir()`
   auth.rs            sessions (JWT `sid`, ended sign-ins), AuthenticatedUser, AdminUser,
                      DeviceClient (a person, an app's bearer token, a screen's cookie),
-                     SettingsClient (never a screen), MachineClient (IR token), `REAUTH_MS`
+                     SettingsClient (never a screen), `REAUTH_MS`
   passkey.rs people.rs routes/passkeys.rs   passkeys, people, invitations (docs/passkeys.md)
   routes/auth.rs     the session's routes: refresh, sign out (Clear-Site-Data), my sessions
   screens.rs routes/screens.rs   wall screens: pairing by code, their cookie, revocation
   events.rs          `GET /api/events`: server-sent change names (`maison_api::events`), one
                      task per family's watch
-  scenes.rs          scenes: named lists of IR actions, run by `ir::run_actions` (scenes.json)
+  scenes.rs          scenes: named lists of actions (scenes.json)
+  actions.rs         what a scene runs: `actions::run` (each action answered `{action, ok,
+                     code}`), `actions::validate`
   photos.rs          the frame's photos: JPEGs kept as they came in photos/ (0700), named by
                      their SHA-256, the directory their only index
   tuya/              feeder, fountain, litter box (local TCP, uplg fork of rust-async-tuyapi):
@@ -58,7 +61,6 @@ backend/src/
   tv.rs              Philips TV (JointSPACE)
   androidtv.rs adb.rs atvremote.rs   Android TV box: native ADB, Remote v2
   box_clean.rs       the box's cleanup table, what its home is told of the house (docs/box.md)
-  ir.rs              set-top-box remote → actions (keymap)
   nabaztag.rs        Tempo colors on the rabbit (garenne)
   json_config.rs     a settings file kept in memory and on disk (TV, box, rabbit, IR codes):
                      `Checked` on load and set, `update` = copy, change, save, swap under one lock
@@ -70,7 +72,7 @@ backend/src/
   bin/               fit_tempo (build machine only), send_ir, atv_pair, decode_mitsubishi_ir, tuya_probe
 backend/tests/       integration tests (+ `live-runtime-tests` feature for real devices)
 api/                 maison-api: the API's types said once (screens, sun, tempo
-                     and `Today::price_at`, lamps, meross, matter, scenes, photos, remote; the request
+                     and `Today::price_at`, lamps, meross, matter, scenes, photos, actions; the request
                      bodies; `Answer`, `Message`, `OfDevice`, `DeviceRef`), `HOUSE_TZ` and `Tz`
                      (jiff's `TimeZone`, `tzdb-bundle-always`: the box and the frame have no tzdata),
                      and three tables: `codes.rs` (every refusal: code, status, message),
@@ -100,21 +102,19 @@ i18n/messages/       fr.json, en.json: the only source of texts
 e2e/                 Playwright + axe against the real backend (run.sh, house.ts: typed with the
                      app's types, built from web/src/lib/test fixtures; words from fr.json;
                      frame.ts: the native frame app against it, through a proxy serving house.ts)
-frame/               the wall screen (a Frameo photo frame, RK3126): product/ (Maison as the frame's
-                     product: product.conf, its units and launchers under rootfs/, preset,
-                     defconfig, build-target.sh, release.pub; the frame's Linux, its tools and
-                     its build are synthe-se/frame-kernel's, checked out beside this repository:
-                     `just image ../maison/frame/product` there); ui/ (the native interface:
-                     SDL3 on KMS, Rust 2024, ARCHITECTURE.md; maison-api's types, codes, paces
-                     and events, `paths.rs` for every path it asks; the Wi-Fi's protocol is
-                     frame-kernel's `frame-tools`); tools/ (maison-setup, the page of the
-                     frame's own Wi-Fi); android/ (the GeckoView kiosk APK, Kotlin), system/
-                     (build.py: our /system, logo and rescue recovery from the vendor's backup;
-                     bootimg.py, rescue-tools.sh), rkwrite.py (loader writes), flash.sh,
-                     provision.sh, rescue.sh, bootanimation.sh/.ts, test_frame.py (docs/frame.md)
+frame/               the wall screen (a Frameo photo frame, RK3126), on its own Linux
+                     (synthe-se/frame-kernel, checked out beside this repository: `just image
+                     ../maison/frame/product` there): product/ (Maison as the frame's product:
+                     product.conf, its units and launchers under rootfs/, preset, defconfig,
+                     build-target.sh, release.pub); ui/ (the native interface: SDL3 on KMS,
+                     ARCHITECTURE.md; maison-api's types, codes, paces and events, `paths.rs`
+                     for every path it asks; the Wi-Fi's protocol is frame-kernel's
+                     `frame-tools`); tools/ (maison-setup, the page of the frame's own Wi-Fi)
+                     (docs/frame.md)
 box/launcher/        the box's home: Compose for TV, for any Android TV (docs/box.md)
 cache/tempo/         seasons, model.json (fit_tempo), netload.json, weather.json
-deploy/ deploy.sh Makefile scripts/ bootstrap/   Pi build, deploy, flash
+deploy.sh deploy.env.example deploy/ Makefile scripts/   build for a host and push to it
+                     (`deploy.env`: this house's, never tracked), Mosquitto's configuration, chores
 matter-trust/        CSA attestation roots (tracked)
 docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md, box.md, audio.md (planned
                      audio companion)
@@ -122,7 +122,7 @@ docs/                deploy.md, tempo.md, passkeys.md, ux.md, frame.md, box.md, 
 
 Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devices.json`,
 `device-cache.json`, `hue-lamps*.json`, `zigbee-lamps*.json`, `climate-state.json`,
-`broadlink-codes.json`, `ir-keymap.json`, `scenes.json`, `tv.json`, `androidtv.json`,
+`broadlink-codes.json`, `scenes.json`, `tv.json`, `androidtv.json`,
 `nabaztag.json`, `refresh-tokens.json`, `adb-key`, `atv-identity`, `auth/`, `matter/`, `photos/`.
 
 ## Rules
@@ -142,7 +142,7 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
   `RED`, map keys that are data (keycodes, Tuya data points). Every integration-test answer is
   checked (`util::casing_offences`, from `tests/common` `respond`). **Persisted files keep
   loading their old shapes**: a renamed field of a stored type keeps its old name as a serde
-  `alias` (the keymap, scenes, `model.json`), and is written in the new casing.
+  `alias` (scenes, `model.json`), and is written in the new casing.
 - **Refusals are coded**: every 4xx is `AppError::from(Refusal::X)` (or `util::refused(code,
   why)`, the why in the log), a row of `api/src/codes.rs`; no uncoded 4xx is left to build
   (`AppError::http` is for 5xx). An extractor's own rejection (a body that is not the JSON a
@@ -163,7 +163,7 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
   (`not_for_screens`). Each token comes by its own carrier only: an app's as a bearer header,
   a screen's in its cookie. What could hand the house to someone else (a passkey added,
   renamed or removed, an admin's or a recovery invitation, a screen paired, a person removed)
-  wants a passkey sign-in within `REAUTH_MS` (5 min). The IR bridge uses `MachineClient`.
+  wants a passkey sign-in within `REAUTH_MS` (5 min).
 - **Changes are pushed by name, read by route**: a family whose state changes on its own
   says so on `events.rs`'s broadcast (`GET /api/events`); the event's data is the prefix of
   the `live()` keys that read it, never the value. The client reads again through the usual
@@ -215,67 +215,73 @@ Runtime state lives at the repo root (gitignored): `devices.json`, `meross-devic
 
 ```bash
 make backend / make web
-make test                             # fmt, clippy, tests of api, backend, frame/ui; web check and tests
+make test                             # fmt, clippy, tests of api, backend, frame/ui, frame/tools; web check and tests
 make deny                             # cargo deny on the backend (backend/deny.toml)
 cd web && bun run check               # i18n, css, oxfmt --check, oxlint, svelte-check, e2e types
 cd web && bun run format              # oxfmt over web/ and e2e/ (`bun run lint`: oxlint alone)
 cd web && bun scripts/i18n.add.ts '{"key": ["français", "English"]}'   # every locale at once
 cd e2e && bun run all                 # after `cargo build` (backend and frame/ui) and `bun run --cwd web build`
-cargo check --manifest-path backend/Cargo.toml --no-default-features   # the Pi's feature set
+cargo check --manifest-path backend/Cargo.toml --no-default-features   # a host's feature set
 cargo fmt --manifest-path backend/Cargo.toml --check                    # rustfmt's defaults, kept clean
 MATTER_LIVE_CODE=<code> cargo test --features live-runtime-tests --test matter_live -- --nocapture
-python3 -m unittest discover -s frame -p 'test_*.py'   # the frame's tooling
 cd frame/ui && cargo test && cargo clippy --all-targets -- -D warnings && cargo deny check   # the native app
 cargo run --manifest-path api/Cargo.toml --bin shared-ts paces > web/src/lib/paces.ts   # codes, events alike
-cd frame/android && ./gradlew lintDebug testDebugUnitTest assembleDebug   # the kiosk APK
 cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the box's home
 ```
 
 ## Gotchas learned the hard way
 
-### The Pi
+### The host
 
-- No RTC: it boots on swclock's saved time, then NTP steps the clock, sometimes weeks. The
-  Matter fabric is created on first pairing, not at boot (certificates minted before NTP
-  would be dated 1970). The sun schedule (`run_schedule`, every 30 s) sends per cover only
-  the latest event due since the last look, catching up 5 min at most (`CATCH_UP`; `due()` is
-  pure and tested), and does nothing while the kernel says the clock is unsynced
+- A host without a clock (the Pi 1 had none) boots on a saved time, then NTP steps the clock,
+  sometimes weeks. The Matter fabric is created on first pairing, not at boot (certificates
+  minted before NTP would be dated 1970). The sun schedule (`run_schedule`, every 30 s) sends per
+  cover only the latest event due since the last look, catching up 5 min at most (`CATCH_UP`;
+  `due()` is pure and tested), and does nothing while the kernel says the clock is unsynced
   (`clock_trusted`). Once, an NTP step replayed every sunrise in between. A « not tonight »
-  skip names its occurrence by time (`skipCloseAt`): one that passed while the Pi was off or
+  skip names its occurrence by time (`skipCloseAt`): one that passed while the host was off or
   unsure of the time skips nothing else and goes after 12 h.
 - `/opt/maison` is `root:maison 1775`: the service can create and rename its own files but
   not replace root's. State is written by temp file + rename, so state that needs privacy
   gets its own 0700 directory (`auth/`, `matter/`), never a pre-created file in the app dir.
   `maison-backend invite` runs as root and writes `auth/auth.json`: `store.rs` keeps the
   service as owner.
-- Generating a 2048-bit RSA key takes tens of seconds: off the runtime (`spawn_blocking`).
-- cloudflared runs as its own user (`PI_TUNNEL_USER`, default `cloudflared`), its token in
-  `/etc/cloudflared-maison/token` (0600, written by `deploy.sh push`, never in the Pi's
-  `.env`). Mosquitto's 8883 is open only to the plugs' addresses (`maison-mqtt-firewall`,
-  from `meross-devices.json`; mosquitto needs it). Logs are 0640, kept 14 days.
+- `.env` is `MAISON_SOURCE_ROOT`'s when a root is named (a host, e2e's throwaway root), else the
+  nearest above the working directory: a test never reads this checkout's.
+- `deploy.sh` knows no init system: `start` kills the process and waits for `/health`, the
+  host's supervisor starts it again; `stop` writes `/opt/maison/stopped` first. Files go over
+  `ssh` with `tar` and `cat` (BusyBox has no rsync). What a host must provide: docs/deploy.md.
+- A host of few megabytes: the binary is 13.7 MB (MIPS32, size profile), the web bundle 1.4 MB.
+  Nothing is built, installed or unpacked there.
+- Generating a 2048-bit RSA key takes tens of seconds on such a host: off the runtime
+  (`spawn_blocking`).
+- Mosquitto's 8883 is open only to the plugs' addresses (the host's firewall, from
+  `deploy/mosquitto/plugs.allow`, which `deploy.sh` writes from `meross-devices.json`). Logs
+  name people and addresses: readable by root and the service alone.
 - APK uploads are capped at 96 MB (held in memory on 512 MB).
+- One core is assumed possible: nothing may block the runtime's only worker (the Zigbee driver
+  has its own thread for that reason).
 
 ### Access
 
-- Passkeys need a domain and HTTPS: the RP ID is the host of `PUBLIC_URL` (default
-  `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`), never an IP. From the LAN the backend answers
-  only `/health`, `/api/ir/key` and, to an app's bearer token, the device routes (over
-  Tailscale always, over the plain LAN only with `ALLOW_LAN_TOKENS`: the token would cross the
-  Wi-Fi in clear); everything else, wall screens included, comes through cloudflared on
-  loopback. `/api/ir/key` is refused through the tunnel (`lan_only`), whatever the token.
-  Client address = `CF-Connecting-IP` from loopback only.
+- Passkeys need a domain and HTTPS: the RP ID is the host of `PUBLIC_URL`, never an IP. From
+  the LAN the backend answers only `/health` and, to an app's bearer token, the device routes
+  (over Tailscale always, over the plain LAN only with `ALLOW_LAN_TOKENS`: the token would cross
+  the Wi-Fi in clear); everything else, wall screens included, comes by the public address: the
+  edge listener (`EDGE_LISTEN`: mutual TLS, `X-Forwarded-For` believed from the proxy's
+  certificate alone) or a tunnel on loopback (`CF-Connecting-IP`, from loopback only).
+- Over HTTP/2 (the edge) cookies come one per header: every `Cookie` header is read, never the
+  first alone.
 - A request that changes something must come from this site: `Sec-Fetch-Site`, else `Origin`
   equal to `PUBLIC_URL`'s origin or matching `Host` (`cross_site`); clients that send neither
-  (kird, curl) pass.
-- `IR_API_TOKEN` under 32 characters: the backend refuses to start; wrong tokens are limited
-  per address (`too_many_attempts`).
+  (curl, an app) pass.
 - Invitation links are `<PUBLIC_URL>/invite#<token>`: the token in the fragment, never in a
   request (the page asks `POST /api/invites/greet`). Admin invitations last 72 h, others 7
   days; a session lives `SESSION_MAX_DAYS` (30) from its passkey sign-in, refreshed or not.
 - A wall screen's cookie is renewed only by `POST /api/screens/me` (each start of its page);
   `GET` only reads. A screen unseen for `SCREEN_IDLE_DAYS` (90; 0 = never) is revoked.
-- Cloudflare overrides the backend's `Cache-Control` unless the zone's Browser Cache TTL is
-  « Respect Existing Headers ».
+- Behind Cloudflare, the zone's Browser Cache TTL must be « Respect Existing Headers », or it
+  overrides the backend's `Cache-Control`.
 - e2e runs on `http://localhost`, not `127.0.0.1`: a secure context with a domain.
 - `JWT_SECRET` under 32 bytes or a placeholder: the backend refuses to start.
 
@@ -293,7 +299,7 @@ cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the 
   `ZIGBEE_EZSP_PROTOCOL_VERSION` (default 13); on a mismatch the pipeline is rebuilt once
   with the NCP's version.
 - The driver never dies: one task on its own thread and runtime owns serial → ASH → EZSP (a drain
-  stuck in the kernel froze the Pi's one worker, so every route); bounded command channel and reply
+  stuck in the kernel froze a one-core host's only worker, so every route); bounded command channel and reply
   waits; watchdog and per-step timeouts tear down and rebuild; reconnects forever with
   capped backoff (reported `Failed` past `MAX_RECONNECT_ATTEMPTS`, retries continue).
 - Errors are typed (`zigbee/error.rs`): only EZSP failures count toward a rebuild (5 in a
@@ -312,7 +318,7 @@ cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the 
 ### Matter shutters (Sonoff Orb-RBS, `matter/`, `matter-controller`, pure Rust)
 
 - Maison is the commissioner, pairing over IP with a multi-admin code from a phone ecosystem
-  (no BLE on the Pi). Attestation against `matter-trust/`; `MATTER_TEST_ROOTS=1` for
+  (no BLE on the host). Attestation against `matter-trust/`; `MATTER_TEST_ROOTS=1` for
   simulators. On macOS a simulator's `node` must be allowed through the firewall or PASE
   never arrives. Needs IPv6.
 - The Orb-RBS accepts the Window Covering `Mode` « motor reversed » bit and ignores it: a
@@ -356,20 +362,15 @@ cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the 
   reaches the disk seconds later: a reboot right after brings it back. `com.droidlogic`
   re-enables katniss, tvrecommendations and tts at boot, so those are removed for user 0.
 
-### IR remote (AirTies AIR 7310T, custom firmware [uplg/BCM7231B2](https://github.com/uplg/BCM7231B2))
+### Scenes and actions (`scenes.rs`, `actions.rs`)
 
-- Its `kird` daemon POSTs Ruwido key events to `/api/ir/key` with `IR_API_TOKEN`
-  (constant-time compare, not JWT). Keymap in `ir-keymap.json`, edited from « Télécommande »
-  (capture via `/api/ir/recent`, test without saving), never pushed by deploy. Actions:
-  Nabaztag command, Zigbee and Hue lamp power and brightness (`repeat` while held), Meross
-  power, Broadlink code, shutter (`cover`: open, close, stop, position), Mitsubishi AC toggle,
-  off and on (`climate_on`: the last settings sent, without their sleep timer), TV power, box
-  app, scene. One engine (`ir::run_actions`) for a key, the configurator's test and a scene.
-- Same-key presses within 1.2 s are phantom doubles; bindings may lower it (`debounceMs`,
-  150 ms for D-pad, media, volume), clamped at 50 ms. Unmapped keys answer 200 and are logged.
-  An AC action run from a key waits for that key's release (1.2 s at most), then 100 ms, so
-  the remote's own IR repeats do not collide with the blaster's frame.
-- A scene's or a key's run answers each action structured (`{action, ok, code}`), never words.
+- One engine (`actions::run`) for every scene. Actions: Nabaztag command, Zigbee and Hue lamp
+  power and brightness (a percentage, 1 to 100, for both families), Meross power, Broadlink
+  code, shutter (`cover`: open, close, stop, position), Mitsubishi AC toggle, off and on
+  (`climate_on`: the last settings sent, without their sleep timer), TV power, key, volume and
+  Ambilight, box app and key. A failing action never stops the others.
+- A run answers each action structured (`{action, ok, code}`), never words.
+- A scene holds no scene: the kind does not exist, a stored one refuses the file.
 
 ### Climate (Broadlink → Mitsubishi AC, `mitsubishi_ir.rs`)
 
@@ -387,57 +388,30 @@ cd box/launcher && ./gradlew lintDebug testDebugUnitTest assembleDebug    # the 
 
 ### Nabaztag
 
-garenne firmware, UDP 9998 `grn1` + `GET /status`; clapier runs on the same Pi.
+garenne firmware, UDP 9998 `grn1` + `GET /status`; clapier runs on the same host.
 Pushed when Tempo's answer changes, when the day turns, and every hour as a safety net: belly
 LED = today, ears = tomorrow (both ears when RTE published, the left one only for a forecast
 ≥ 80 %). Firmware tooling lives in uplg/nabgcc, not here.
 
 ### The wall frame (`frame/`, [docs/frame.md](docs/frame.md))
 
-- Our /system is the vendor's with Frameo, Adups FOTA and SuperSU gone and the kiosk APK the
-  only home and device owner; boot, uboot and userdata stay the vendor's. U-Boot boots images we
-  pack (proved with recovery), so `--boot` is possible, never flashed so far.
-- The recovery is a rescue (`frame/rescue.sh`): its menu needs buttons the frame lacks, its
-  adbd never runs as root and lets nothing gain privileges, `/sbin` is closed to its user,
-  toybox `nc -L` is mute on this kernel: root comes from an init service over fifos
-  (/dev/rootsh), tools (mksh, toybox from source) in the ramdisk's /system/bin.
-- ADB: Frameo approved a computer's key for the session only, and SystemUI (the prompt) is
-  disabled on this build: without Frameo, only keys in `/data/misc/adb/adb_keys` work.
-  `flash.sh keys` puts them there while root exists; `flash.sh` refuses to start without them.
-  Once flashed there is no root (`ro.debuggable=0`): APK updates are `pm install -r`, same key.
-- No ADB at all: power off, hold the reset pinhole, plug USB-C into a computer, then power: the
-  loader. It can drop mid-write: `rkwrite.py` writes 16 MiB chunks read back, and resumes. Its
-  sector 0 is the `parameter`'s (kernel sector − 8192), proved before every write.
-- A system app's native libraries are extracted in `lib/arm` (Android 6 reads the ABI there);
-  the vendor build forces a home screen to the panel's landscape unless the activity asks
-  `screenOrientation="user"`; the clock says 1970 until NTP, so Gecko stays hidden (the brand's
-  petrol) until a page has loaded. The boot animation draws before any rotation applies;
-  U-Boot's logo is `logo.bmp` in the resource partition, drawn on the raw panel (docs/frame.md).
-- Frameo reinstalls itself into /data while its beta is on: `pm uninstall net.frameo.frame`.
-- Powered up with the USB-C on a computer, U-Boot boots the recovery after a wait: power it with
-  the USB-C unplugged to get Android, then plug it in.
-- The backup, the vendor's device tree, the release keystore and rkdeveloptool live in
-  `~/maison-frame/`, never in the repo; rkdeveloptool writes a `log/` into its working directory.
-- Our build.prop sets `ro.adb.secure=1` (the vendor's default.prop leaves it out). The kiosk's
-  activity is exported (it is the home): it lifts itself only with the one-time grant
-  `ProvisionReceiver` (DUMP: the shell's alone) hands it, never on its own action's word.
-- Mainline, the frame's Linux is `synthe-se/frame-kernel` (its kernel, initramfs, system, slots,
+- The frame's Linux is `synthe-se/frame-kernel` (its kernel, initramfs, system, slots,
   signed updates, Wi-Fi service, tools and what they taught: its README and `docs/frame.md`).
-  Here: Maison as its product (`frame/product`), the interface (`frame/ui`) and the setup page
+  No Android is left on the frame nor here: Maison as its product (`frame/product`), the interface (`frame/ui`) and the setup page
   (`frame/tools`). Both crates name `../../../frame-kernel/tools` (`frame-tools`).
-- Mainline, the network is joined on the frame's own touch screen (`frame/ui/src/wifi.rs`,
+- The network is joined on the frame's own touch screen (`frame/ui/src/wifi.rs`,
   `ui/keyboard.rs`): the app stays `kiosk`, the frame's `frame-wifid` is the only root behind it.
   No network, or 10 minutes without one (`/run/frame-lost`, never on trial): the screen comes by
   itself.
-- Mainline, KMSDRM makes its surface anew at the first present and shows that, blank: the app draws
+- KMSDRM makes its surface anew at the first present and shows that, blank: the app draws
   twice at its start, or a screen that never changes stays black until a touch.
-- Mainline, the interface has no session: SDL on KMS as `kiosk`, whose groups open the panel and
+- The interface has no session: SDL on KMS as `kiosk`, whose groups open the panel and
   the touch panel (the frame's initramfs gives them). Its unit has no default dependencies: it
   starts with the system, never behind udev, logind or the network. No logind, no PAM in the image.
-- Mainline, the hotspot is the frame's, a dead touch panel's last resort (its power key held 10 s);
+- The hotspot is the frame's, a dead touch panel's last resort (its power key held 10 s);
   the interface reads `FRAME_SETUP_*` as it starts, and `maison-setup` serves the page
   (`frame-setup.service`).
-- Mainline: Maison's address is never typed on the frame: root's `/data/maison/target`
+- Maison's address is never typed on the frame: root's `/data/maison/target`
   (0600), over SSH or from the setup page, else the image's `/etc/maison-target` (`FRAME_TARGET` at
   build); `maison-target` puts the one that holds in `/run/maison-target`, the unit's `target`
   credential.
@@ -470,7 +444,7 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 
 ### The frame's photos (`photos.rs`, `frame/ui/src/photos/`)
 
-- The browser resizes (cover 800×1280, cut evenly, never enlarged, JPEG 0.85): the Pi never decodes
+- The browser resizes (cover 800×1280, cut evenly, never enlarged, JPEG 0.85): the host never decodes
   a picture. It checks a JPEG's first and last bytes and `MAX_PHOTO_BYTES`; `DefaultBodyLimit` on the
   route is that plus the multipart wrapping. Limits in `maison_api::photos`.
 - `/api/photos/<id>` is the one `/api/` answer kept by a browser (`private`, immutable, success
@@ -483,5 +457,5 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 
 ### Tempo
 
-the forecast is refitted on the build machine yearly (`fit_tempo`), never on the Pi
+the forecast is refitted on the build machine yearly (`fit_tempo`), never on the host
 ([docs/tempo.md](docs/tempo.md)).

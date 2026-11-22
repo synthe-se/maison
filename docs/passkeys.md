@@ -38,7 +38,7 @@ passkeys, invitations), `routes/passkeys.rs`, `auth.rs` (who is asking), `routes
 - **No database**: `auth/auth.json` (people, passkeys, invitations) is read on every use and
   replaced whole through `store.rs` (temp file + rename, 0600, owner kept, cross-process lock)
   in `auth/`, the service's own 0700 directory, because `maison-backend invite` runs as root
-  on the Pi while the service writes the same file.
+  on the host while the service writes the same file.
 - **Sessions**: Maison's own. A JWT access token (15 min, HS256 through our own provider:
   jsonwebtoken without its crypto backend) that says only who, when, and from which sign-in
   (`sid`, its refresh family), and a rotating refresh token (7 days) stored hashed, spent
@@ -61,27 +61,27 @@ passkeys, invitations), `routes/passkeys.rs`, `auth.rs` (who is asking), `routes
   `Origin` equal to `PUBLIC_URL`'s origin or matching `Host`; an `Origin` with neither is
   refused, `cross_site`). Every 401 and 403 is logged with its code, the path, who and the
   client's address.
-- **Origin**: `PUBLIC_URL`, else `https://` + `CLOUDFLARE_PUBLIC_HOSTNAME`. The RP ID is its
-  host and cannot change without losing every passkey. An IP address is never an RP ID: the
-  LAN address cannot sign in, so the house goes through the tunnel too. Locally,
+- **Origin**: `PUBLIC_URL`. The RP ID is its host and cannot change without losing every
+  passkey. An IP address is never an RP ID: the LAN address cannot sign in, so the house is
+  reached at its public address too. Locally,
   `http://localhost` is a secure context and works.
-- **Client address**: cloudflared runs on the Pi, so a loopback request names its client in
-  `CF-Connecting-IP` (else `X-Real-IP`, else the last `X-Forwarded-For`); from anywhere else
-  these headers are ignored.
+- **Client address**: a tunnel on the host arrives on loopback, so a loopback request names
+  its client in `CF-Connecting-IP` (else `X-Real-IP`, else the last `X-Forwarded-For`); the
+  edge listener believes its proxy's `X-Forwarded-For` (`edge.rs`); from anywhere else these
+  headers are ignored.
 - **OpenSSL**: `webauthn-rs-core` links it; for the static musl binary, `openssl` with
-  `features = ["vendored"]`, compiled by `cargo zigbuild` for `arm-unknown-linux-musleabihf`.
+  `features = ["vendored"]`, compiled with it by the host's build ([deploy.md](deploy.md)).
 - **Roles**: `admin` invites, lists and removes people, ends their sessions, pairs and
   removes wall screens, and configures (device addresses and pairing, a forced Broadlink
-  scan, APK installs, Matter commissioning, the house's place, the remote's keymap, a litter
+  scan, APK installs, Matter commissioning, the house's place, a litter
   box's factory reset); `member` does everything else, driving the house included.
-- **Edition 2021**: no let-chains; Ariane's are rewritten as nested `if`s.
 
 ## Service tokens (machines)
 
 A companion app (Achi, on a phone) drives the devices without a passkey: a long-lived
 service token, sent as `Authorization: Bearer maison_…`.
 
-- Made, listed and revoked from the CLI only (as root on the Pi, like `invite`); the token is
+- Made, listed and revoked from the CLI only (as root on the host, like `invite`); the token is
   printed once, only its `hash_secret` is kept, in `auth/auth.json` (`tokens`). 256 random
   bits, base64url, prefixed `maison_`. A revoked token stops at the next request.
 
@@ -93,14 +93,14 @@ service token, sent as `Authorization: Bearer maison_…`.
 - One scope, `devices`: every route under the device layer (`auth::DeviceClient`, the
   routers of `DEVICE_ROUTES` in `lib.rs`), as a member drives them. An app's token comes as a
   bearer header only; in a cookie it is not read. Anything that takes
-  `AuthenticatedUser` or `AdminUser` (people, passkeys, invitations, sessions, the keymap,
+  `AuthenticatedUser` or `AdminUser` (people, passkeys, invitations, sessions,
   pairing, device settings, scene editing) answers 403 `forbidden` to a service token. An
   unknown or revoked one is 401 `not_signed_in`.
 - The request guard lets an app's token reach the device routes over Tailscale
-  (`http://<pi>:3033`, encrypted by WireGuard), and over the LAN's plain HTTP only with
-  `ALLOW_LAN_TOKENS` (the token would cross the Wi-Fi in clear), not only through the tunnel;
-  people's sessions and wall screens still go through the tunnel.
-- The last use is dated (`lastUsedMs`, written at most once an hour: the SD card). Tokens
+  (`http://<host>:3033`, encrypted by WireGuard), and over the LAN's plain HTTP only with
+  `ALLOW_LAN_TOKENS` (the token would cross the Wi-Fi in clear), not only by the public address;
+  people's sessions and wall screens still come by it.
+- The last use is dated (`lastUsedMs`, written at most once an hour: the host's flash). Tokens
   never reach the logs (only the path is traced).
 
 ## Wall screens
@@ -130,12 +130,4 @@ settings under the device layer (a lamp's or a shutter's name, the sun schedule,
 reboot) takes `SettingsClient`, which a screen never is (`not_for_screens`): the frame on the
 wall is anyone's in the room. A screen unseen for `SCREEN_IDLE_DAYS` (default 90; 0 keeps them)
 is revoked: a frame thrown away or stolen stops opening the house. Like people's sessions, a
-screen comes through the tunnel only.
-
-## The IR bridge
-
-The set-top box's `kird` sends its keys with `IR_API_TOKEN` as a bearer token
-(`auth::MachineClient`): compared in constant time, 32 characters at least (shorter, the
-backend refuses to start), failures limited per address. It is the house's only: `POST
-/api/ir/key` is answered from the LAN and refused through the tunnel (`lan_only`), whatever
-the token.
+screen comes by the public address only.

@@ -1,51 +1,110 @@
 # <img src="web/static/brand.svg" alt="" width="36" align="top"> Maison
 
-[![last commit](https://img.shields.io/github/last-commit/synthe-se/maison)](https://github.com/synthe-se/maison/commits/main)
-[![top language](https://img.shields.io/github/languages/top/synthe-se/maison)](https://github.com/synthe-se/maison)
-[![license](https://img.shields.io/github/license/synthe-se/maison)](LICENCE)
-[![runs on](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%201-C51A4A?logo=raspberrypi&logoColor=white)](docs/deploy.md)
-[![sign-in](https://img.shields.io/badge/sign--in-passkeys%20only-3B82F6)](docs/passkeys.md)
+A self-hosted home dashboard in one Rust binary, small enough for the hardware nobody wants
+any more.
 
-A self-hosted home dashboard: one Rust binary on a 2012 Raspberry Pi 1.
+![The dashboard: scenes, Tempo, lamps, the cats' devices, climate, shutters, plugs, the TV](/screenshots/maison-e3fd47de0e81.jpg)
 
-![Maison](/screenshots/maison-e4a164a85c37.jpg)
+Maison drives every device of a house on its own network, serves the web app that controls
+them, and needs nothing else: no cloud account, no container, no database, no broker between
+it and the radios. It ran on a 2012 Raspberry Pi 1; it now runs on an ISP's
+discarded set-top box.
 
-## Why not Home Assistant
+## What it drives
 
-| | Maison | Home Assistant |
+| | |
+|---|---|
+| Lamps | Zigbee through a native EZSP driver (no zigbee2mqtt), Hue over Bluetooth, the Hue dimmer |
+| Shutters | Matter, commissioned by Maison itself; they follow the sun, and one evening can be skipped |
+| Plugs | Meross over local HTTP, with power and cost |
+| Climate | a Mitsubishi air conditioner over infrared, its frames encoded from the unit's grammar |
+| TV | a Philips set and an Android TV box (keys, apps, sideloading), and [a home screen of our own](docs/box.md) for the box |
+| Cats | Tuya feeder, fountain and litter box over local TCP |
+| Energy | EDF Tempo: today's and tomorrow's colours, prices, and [a 7-day forecast](docs/tempo.md) |
+| Scenes | named lists of actions across them |
+| And | a Nabaztag that wears tomorrow's Tempo colour on its ears |
+
+## How it is made
+
+- **One binary.** Axum and tokio serve the API and a SvelteKit app built to static files. State
+  is a handful of JSON files written atomically.
+- **Local.** Every device is spoken to on the LAN in its own protocol. The only outside calls
+  fetch public data: Tempo, the weather.
+- **Passkeys only.** No password exists. People come in by invitation; a machine gets a
+  service token; a wall screen is paired by a code. [docs/passkeys.md](docs/passkeys.md)
+- **Pushed, not polled.** A change reaches every open page and screen as it happens, over
+  server-sent events; polling is the safety net.
+- **Said once.** API types, refusal codes, read paces and event names live in one shared crate,
+  generated for the web app and compiled into the wall screen.
+- **Tested end to end.** Rust unit and integration tests, Vitest for every component,
+  Playwright and axe against the real backend.
+
+## Where it runs
+
+Anything that runs a static Linux binary and answers SSH. `deploy.sh` cross-builds, pushes
+with `sh` and `tar`, and leaves the rest to the host's own supervisor.
+
+| Host | | Measured |
 |---|---|---|
-| Runs on | Raspberry Pi 1 (ARMv6, 700 MHz, 512 MB) | Raspberry Pi 4 or 5 with at least 2 GB of RAM and a 32 GB card ([requirements](https://www.home-assistant.io/installation/raspberrypi)); 32-bit ARM, the original Pi included, unsupported since 2025.12 ([announcement](https://www.home-assistant.io/blog/2025/05/22/deprecating-core-and-supervised-installation-methods-and-32-bit-systems/)) |
-| Footprint | one ~20 MB binary, ~18 MB of RAM (measured: the whole Pi uses 67 MB of 427 MB) | Python runtime, OS image or containers |
-| Cloud | none: no account, every device driven on the LAN; a Cloudflare tunnel only exposes it | local-first; remote access through the optional Nabu Casa cloud; some integrations are cloud-based |
-| Sign-in | passkeys only, by invitation, no password | username and password (optional MFA) |
-| Radios | Zigbee (native EZSP), Matter commissioning, infrared: built in, nothing to install | Matter needs the Matter Server add-on; Zigbee via ZHA or the Zigbee2MQTT add-on |
+| ISP set-top box | MIPS32, two cores, 512 MB, BusyBox init | 13.7 MB binary, 18 MB of memory, 28 MB of flash for the app and its state |
+| Raspberry Pi 1 | ARMv6, 700 MHz, 512 MB, Alpine | until 2026 |
 
-Controls Hue and Zigbee lamps (and the Hue dimmer), Matter roller shutters that follow the sun, Meross plugs, Tuya cat devices (feeder, fountain, litter box), a Mitsubishi air conditioner over IR, a Philips TV and an Android TV box, a set-top-box remote turned into a house remote, a Nabaztag, and EDF Tempo with a 7-day forecast. Changes are pushed to every open page and screen as they happen (server-sent events); polls are only a safety net.
+It is reached at a domain of its own, through a reverse proxy elsewhere over mutual TLS or
+through a tunnel on the host. [docs/deploy.md](docs/deploy.md)
 
 ## On the wall
 
-A Frameo photo frame (RK3126, four Cortex-A7, 1 GB, an 800×1280 touch panel) turned into the house's wall screen: no Android, no browser.
+A Frameo photo frame (RK3126, 1 GB, an 800×1280 touch panel) is the house's wall screen: no
+Android, no browser.
 
-- **Mainline Linux 7.3 and Buildroot**, the frame's own (`synthe-se/frame-kernel`, checked out beside this repository: its device tree, the panel, the touch, the Wi-Fi, its signed updates); Maison is the product it runs (`frame/product`), the system a read-only squashfs on the eMMC. It boots by itself on its own power, a power cut included; the vendor's Android stays whole in the recovery slot.
-- **A native app in Rust**, SDL3 straight on the GPU (`frame/ui`): the web dashboard's layout, words, colours, fonts and icons, generated from the same sources, drawn only when something changes. Every dashboard group, the summary strip at the top, a Tempo page, and the cats' devices' pages.
-- **A wall screen of the house**: paired once from an admin's phone, then in by its own cookie; it dims after two minutes without a finger, nearly dark at night, and the first touch only wakes it.
-- **Maintained over the network**: two slots with a way back, signed updates over the air, SSH by short-lived certificates, a journal that survives power cuts.
+- **Its own Linux.** Mainline kernel and Buildroot from
+  [frame-kernel](https://github.com/synthe-se/frame-kernel): a read-only system, two slots
+  with a way back, signed updates over the air. Maison is the product it runs
+  (`frame/product`).
+- **A native app.** Rust and SDL3 straight on the GPU (`frame/ui`), drawn only when something
+  changes, with the web app's layout, words, colours, fonts and icons generated from the same
+  sources. It starts 5 seconds after the kernel.
+- **A screen of the house.** Paired once from an admin's phone. It dims when nobody touches it,
+  shows the family's photos, and joins a Wi-Fi network on its own touch screen.
 
-Bring-up and maintenance: [docs/frame.md](docs/frame.md). The app: [frame/ui/ARCHITECTURE.md](frame/ui/ARCHITECTURE.md).
+[docs/frame.md](docs/frame.md) · [frame/ui/ARCHITECTURE.md](frame/ui/ARCHITECTURE.md)
 
 ## Develop
 
-Needs Rust and Bun.
+Rust and Bun.
 
 ```bash
-cp .env.example .env                      # set JWT_SECRET: openssl rand -hex 32
-PUBLIC_URL=http://localhost:5173 make backend   # API on :3033
-make web                                  # http://localhost:5173
-make test                                 # fmt, clippy, tests (api, backend, frame/ui, frame/tools), web checks, Vitest
-cd e2e && bun install && bun run all      # Playwright + axe (the frame's app too), after cargo build and web build
-(cd ../frame-kernel && just image ../maison/frame/product && just install ../maison/frame/product)   # wall screen: build the system, send it to the free slot
+cp .env.example .env                            # set JWT_SECRET: openssl rand -hex 32
+PUBLIC_URL=http://localhost:5173 make backend   # the API, on :3033
+make web                                        # http://localhost:5173
 ```
 
-Sign in with an invitation: `PUBLIC_URL=http://localhost:5173 cargo run --manifest-path backend/Cargo.toml -- invite me --name Me --admin`.
+Sign in with an invitation:
 
-Deploying to the Pi: [docs/deploy.md](docs/deploy.md). Contributors and agents: [AGENTS.md](AGENTS.md).
+```bash
+PUBLIC_URL=http://localhost:5173 cargo run --manifest-path backend/Cargo.toml -- invite me --name Me --admin
+```
+
+```bash
+make test                                 # fmt, clippy and tests of every crate, web checks, Vitest
+cd e2e && bun install && bun run all      # Playwright and axe, after cargo build and the web build
+```
+
+The frame's crates need [frame-kernel](https://github.com/synthe-se/frame-kernel) checked out
+beside this repository.
+
+## Documentation
+
+| | |
+|---|---|
+| [AGENTS.md](AGENTS.md) | the map of the code, its rules, and what the hardware taught |
+| [docs/deploy.md](docs/deploy.md) | hosts, settings, deploying, reaching the house |
+| [docs/passkeys.md](docs/passkeys.md) | people, invitations, sessions, service tokens, wall screens |
+| [docs/ux.md](docs/ux.md) | the interface's rules |
+| [docs/tempo.md](docs/tempo.md) | Tempo's sources and the forecast's model |
+| [docs/frame.md](docs/frame.md) | the wall frame |
+| [docs/box.md](docs/box.md) | the Android TV box and its home screen |
+
+## Licence
+
+[MIT](LICENCE)

@@ -41,7 +41,7 @@ Fed with the measured net consumption, this rule gives RTE's colour on 96 % of t
 2014–2026. Maison estimates the net consumption from the weather forecast (three linear
 models, as ratios of their past year) and runs the rule 400 times with an error that grows
 with the horizon (correlated from day to day): the share of each colour is its probability.
-A forecast costs about 70 µs on the Mac, a few milliseconds on the Pi 1.
+A forecast costs about 70 µs on the build machine, a few milliseconds on a Raspberry Pi 1.
 
 ### Measured (`model.json`, backtest on 2024-2025 and 2025-2026)
 
@@ -68,7 +68,7 @@ J+1 counts only before RTE publishes (after, tomorrow is RTE's).
 
 ## Refit, once a year (or after a change of the rules)
 
-On the Mac, never on the Pi:
+On the build machine, never on the host:
 
 ```bash
 cargo run --release --manifest-path backend/Cargo.toml --bin fit_tempo   # --fresh: download again
@@ -78,4 +78,4 @@ It downloads RTE's seasons since 2014, éCO2mix since 2013, Open-Meteo's archive
 past ECMWF forecasts (`backend/target/tempo-fit/`, kept), fits, replays the last full
 seasons, prints the scores and writes `cache/tempo/model.json`, `netload.json` and the
 seasons' files. Commit them, then `make deploy`: `deploy.sh` pushes `model.json` over the
-Pi's (the rest of `cache/` only when newer).
+host's (the rest of `cache/` only when newer).

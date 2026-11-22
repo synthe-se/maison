@@ -117,7 +117,7 @@ does the band of Maison's silence; a house that answers offers nothing. With the
 (the power key held) the setup view stays alone.
 
 Not on the frame: settings (night hours, preferences, meal plans, a shutter's schedule, a plug's
-LED), pairing, sideloading, admin, the keymap: what the backend refuses a screen
+LED), pairing, sideloading, admin: what the backend refuses a screen
 (`not_for_screens`) stays out.
 
 ## Tests
