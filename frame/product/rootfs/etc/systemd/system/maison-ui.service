@@ -4,7 +4,7 @@
 # the devices and whatever else: it shows the house as soon as it can, and asks again by itself.
 # It draws upside down, as the panel is mounted (MAISON_ROTATE); the device tree maps the touch to
 # what the person sees. Maison's address is the credential `target`; its cookie is kept 0600 in
-# /android-data/maison/ui; it pairs from its own door.
+# /data/maison/ui; it pairs from its own door.
 # It never waits for NTP: after a power cut the clock starts from timesyncd's last one, kept on
 # userdata (the frame's systemd-timesyncd.service.d), and until the house answers (a clock too
 # wrong for TLS among the reasons) the app says so and asks again by itself.
@@ -18,14 +18,14 @@ Before=shutdown.target
 
 [Service]
 User=kiosk
-ExecStartPre=+/usr/bin/install -d -o kiosk -g kiosk -m 0700 /android-data/maison/ui
+ExecStartPre=+/usr/bin/install -d -o kiosk -g kiosk -m 0700 /data/maison/ui
 # the boot's ring (the frame's frame-loader) stops where the interface starts; `-`: it may be gone
 ExecStartPost=-+/bin/sh -c 'kill $$(pidof frame-loader) 2>/dev/null'
 # root's copy of the address, else the image's (maison-target)
 LoadCredential=target:/run/maison-target
 # its edge identity (maison-backend edge client), if root gave it one: the house reached on the LAN,
 # TLS both ways (frame/ui/src/edge.rs); maison-target makes the directory
-LoadCredential=edge:/android-data/maison/edge
+LoadCredential=edge:/data/maison/edge
 # the frame as its own Wi-Fi, when its power key was held (the frame's frame-wifi writes it)
 EnvironmentFile=-/run/frame-setup
 RuntimeDirectory=maison-ui
@@ -33,13 +33,13 @@ RuntimeDirectory=maison-ui
 NoNewPrivileges=yes
 ProtectSystem=strict
 # `-`: the first start's ExecStartPre makes it
-ReadWritePaths=-/android-data/maison/ui
+ReadWritePaths=-/data/maison/ui
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-Environment=HOME=/home/kiosk LANG=C.UTF-8 MAISON_STATE=/android-data/maison/ui MAISON_ROTATE=180 MAISON_HEARTBEAT=/run/maison-ui/heartbeat
+Environment=HOME=/home/kiosk LANG=C.UTF-8 MAISON_STATE=/data/maison/ui MAISON_ROTATE=180 MAISON_HEARTBEAT=/run/maison-ui/heartbeat
 ExecStart=/usr/local/sbin/maison-ui
 Restart=always
 RestartSec=5

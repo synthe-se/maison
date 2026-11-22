@@ -437,7 +437,7 @@ LED = today, ears = tomorrow (both ears when RTE published, the left one only fo
 - Mainline, the hotspot is the frame's, a dead touch panel's last resort (its power key held 10 s);
   the interface reads `FRAME_SETUP_*` as it starts, and `maison-setup` serves the page
   (`frame-setup.service`).
-- Mainline: Maison's address is never typed on the frame: root's `/android-data/maison/target`
+- Mainline: Maison's address is never typed on the frame: root's `/data/maison/target`
   (0600), over SSH or from the setup page, else the image's `/etc/maison-target` (`FRAME_TARGET` at
   build); `maison-target` puts the one that holds in `/run/maison-target`, the unit's `target`
   credential.

@@ -37,7 +37,7 @@ Cortex-A7, Mali-400 (Lima, GLES 2.0), 1 GB, 800×1280 portrait panel mounted ups
 
 Pairing follows the web app (`/screens/pairing`, `/claim`, `POST /me` to renew; a screen with no
 target says so, a paired one Maison cannot reach waits calmly). The cookie is
-kept 0600 in `/android-data/maison/ui`, bound to its origin. Claims rotate over any, IPv4-only
+kept 0600 in `/data/maison/ui`, bound to its origin. Claims rotate over any, IPv4-only
 and IPv6-only agents so the server records both of the screen's addresses. HTTPS only
 (`MAISON_ALLOW_HTTP=1` for simulations); no proxy from the environment.
 
@@ -112,7 +112,7 @@ two fades only the clock's minute draws, and no house source is read.
 The Wi-Fi's screens (`Screen::Wifi`, `Screen::Password`) come over whoever the frame is, without a
 network nothing behind them can be reached; only the photos come first, and the first finger finds
 them again. No band, no way back while the frame has no network. Maison's address is never typed:
-`/android-data/maison/target` over SSH, else the image's. Each door offers « Réseau Wi-Fi », and so
+`/data/maison/target` over SSH, else the image's. Each door offers « Réseau Wi-Fi », and so
 does the band of Maison's silence; a house that answers offers nothing. With the frame its own Wi-Fi
 (the power key held) the setup view stays alone.
 

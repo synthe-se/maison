@@ -14,7 +14,7 @@ use std::time::SystemTime;
 use std::{fs, process};
 
 const LISTEN: &str = "192.168.4.1:80";
-const TARGET: &str = "/android-data/maison/target";
+const TARGET: &str = "/data/maison/target";
 const SETUP: &str = "/run/frame-setup";
 const MESSAGES: &str = include_str!("../../../../i18n/messages/fr.json");
 

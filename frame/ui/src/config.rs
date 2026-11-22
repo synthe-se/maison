@@ -1,7 +1,7 @@
 //! What the app is told at start, from its environment (the service's, or a simulation's):
 //!
 //! - Maison's address: the systemd credential `target` (`$CREDENTIALS_DIRECTORY/target`,
-//!   `maison-target`'s `/run/maison-target`: root's `/android-data/maison/target`, set over SSH, else
+//!   `maison-target`'s `/run/maison-target`: root's `/data/maison/target`, set over SSH, else
 //!   the image's `/etc/maison-target`), else `MAISON_TARGET`; never typed on the frame. Its fragment and path are dropped (the kiosk's `#lang=…`, an older
 //!   target's token). HTTPS only, but for this computer (`localhost`, a loopback address) and a
 //!   simulation that says `MAISON_ALLOW_HTTP=1` (the host seen from a container): the screen's
@@ -11,7 +11,7 @@
 //!   the app starts on its setup view, with what `FRAME_SETUP_SSID`, `FRAME_SETUP_PASSWORD` and
 //!   `FRAME_SETUP_URL` say of that Wi-Fi and its page;
 //! - `MAISON_WIFI_SOCKET`: the frame's `frame-wifid`'s socket, a simulation's fake;
-//! - where it keeps its cookie: `MAISON_STATE` (the unit's `/android-data/maison/ui`), else
+//! - where it keeps its cookie: `MAISON_STATE` (the unit's `/data/maison/ui`), else
 //!   `$XDG_DATA_HOME/maison-ui`;
 //! - its language: `MAISON_LANG`, else `LANG` (`fr_FR.UTF-8`);
 //! - `MAISON_ROTATE=180` (the app turns its picture: the panel is mounted upside down; the
@@ -193,7 +193,7 @@ mod tests {
             Some("https://maison.example/#lang=fr&token=old\n".into()),
             vars(&[
                 ("MAISON_TARGET", "http://other"),
-                ("XDG_DATA_HOME", "/android-data/maison/ui"),
+                ("XDG_DATA_HOME", "/data/maison/ui"),
                 ("LANG", "fr_FR.UTF-8"),
             ]),
         )
@@ -201,7 +201,7 @@ mod tests {
         assert_eq!(c.origin.as_deref(), Some("https://maison.example"));
         assert_eq!(
             c.state_dir,
-            PathBuf::from("/android-data/maison/ui/maison-ui")
+            PathBuf::from("/data/maison/ui/maison-ui")
         );
         assert_eq!(c.lang, Lang::Fr);
         assert!(!c.rotate);

@@ -125,13 +125,13 @@ just release ../maison/frame/product --publish   # a signed release, for updates
 just on 'systemctl status maison-ui'    # a command over SSH
 ```
 
-Maison's address is never typed on the frame. It is root's: `/android-data/maison/target` (0600),
+Maison's address is never typed on the frame. It is root's: `/data/maison/target` (0600),
 changed over SSH or by the setup page. Without it the image's default applies
 (`FRAME_TARGET=https://…` at build writes `/etc/maison-target`). `maison-target` hands the one
 that holds to the interface as `/run/maison-target`, its `target` credential (`systemctl restart
 maison-ui` runs it again); with neither, the interface says so in plain words.
 On the house's LAN the frame reaches Maison at its edge listener (`EDGE_LISTEN`), not out to the
-public address and back in: root's `/android-data/maison/edge` (0700) holds the frame's identity,
+public address and back in: root's `/data/maison/edge` (0700) holds the frame's identity,
 `maison-backend edge client <EDGE_DIR> <dir> <name>`'s `ca.pem`, `client.pem`, `client-key.pem`,
 and the target is the edge's address (`https://<house>:<port>`). The interface (its `edge`
 credential, `frame/ui/src/edge.rs`) then trusts the edge's CA alone, presents its certificate, and
@@ -140,7 +140,7 @@ asks the edge's name, sent to that address; an empty directory leaves it a clien
 The native interface (`frame/ui`, [its architecture](../frame/ui/ARCHITECTURE.md)):
 `maison-ui.service` runs `maison-frame-ui`, SDL straight on KMS with no compositor and no session,
 as the `kiosk` user, whose groups open the panel and the touch panel (the frame's initramfs gives
-them before the system starts); its cookie 0600 in `/android-data/maison/ui`. It starts with the
+them before the system starts); its cookie 0600 in `/data/maison/ui`. It starts with the
 system, before the network: 5.0 s after the kernel's first line, its first picture 3.3 s later
 (SDL and the graphics driver; it was 15.5 s to start under a logind session ordered behind the
 network). It turns its own picture (`MAISON_ROTATE=180`); its launcher
@@ -154,7 +154,7 @@ frame: 99 to 92 MB of RAM, a draw 28 to 29-34 ms; what compositing itself cost i
   the sun's side); the first touch only wakes it, the next acts. The app writes
   /sys/class/backlight itself: the video group may (the frame's udev rule).
 - With photos added from « Cadre photo », the panel shows them instead, 5 s each, at its full
-  level by day and dimmed at night, from its own copy (`/android-data/maison/ui/photos`, 256 MiB
+  level by day and dimmed at night, from its own copy (`/data/maison/ui/photos`, 256 MiB
   at most); the unit's `ReadWritePaths` covers it. A photo's fade draws at 20 images a second,
   63 ms at worst.
 - It never waits for NTP: after a power cut the clock starts from the one the frame kept, and
