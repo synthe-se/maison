@@ -19,7 +19,7 @@ A plug blinking green/red broadcasts an open AP "Meross_XXXX" with itself at
         --key blabliblou \
         --ssid "MonSSID" --password "MonMotDePasse"
 
-The plug reboots, joins the WiFi, connects to Mosquitto on the Pi (:8883,
+The plug reboots, joins the WiFi, connects to Mosquitto on the host (:8883,
 TLS, cert NOT validated by the plug) and stops blinking. Then find its DHCP
 IP, append {name, ip, key} to meross-devices.json and restart the backend.
 

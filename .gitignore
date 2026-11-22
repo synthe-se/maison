@@ -1,5 +1,6 @@
-# Environment
+# Environment, and this house's deploy settings
 .env
+/deploy.env
 
 # Logs and runtime state
 /logs/
@@ -10,12 +11,6 @@
 
 # Backend
 backend/target/
-
-# Cross-compiled binaries
-/cloudflared-arm
-
-# Root tooling
-node_modules/
 
 # Runtime data kept locally, at the repository's root only (anchored: backend/src/matter/ and
 # the test fixtures' devices.json are sources)
@@ -52,7 +47,6 @@ mosquitto/certs/
 *.swp
 *.swo
 
-/ir-keymap.json
 /tv.json
 /androidtv.json
 /adb-key

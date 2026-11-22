@@ -8,7 +8,7 @@
 # developer tools > Application (Storage) > Cookies, and copy the value of
 # `maison_session` (`__Host-maison_session` over HTTPS):
 #
-#   MAISON_SESSION=eyJ... BROADLINK_HOST=192.168.1.73 scripts/capture-mitsubishi-ir.sh
+#   MAISON_SESSION=eyJ... BROADLINK_HOST=<the blaster's address> scripts/capture-mitsubishi-ir.sh
 #
 # The session lasts 15 minutes: when a call answers 401, copy a fresh one and run the
 # script again; finished captures are skipped.

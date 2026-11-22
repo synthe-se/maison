@@ -1,37 +1,42 @@
 #!/usr/bin/env bash
+# Maison onto a host, over SSH: one static binary, the web bundle, the settings. The host is
+# anything that runs a Linux binary and has sh, tar and wget (BusyBox's do); what it must
+# provide itself (the service's account, a supervisor, its logs) is docs/deploy.md's « The host ».
 set -euo pipefail
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# pi: the Raspberry Pi (Alpine, OpenRC, cloudflared). box: the AirTies box (its image runs the
-# services, airties-upcycling builds the backend).
-DEPLOY_TARGET="${DEPLOY_TARGET:-pi}"
-AIRTIES_DIR="${AIRTIES_DIR:-${ROOT_DIR}/../airties-upcycling}"
-# box: the edge's certificates for this host (`maison-backend edge init`'s first directory), when
+ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# This house's deploy settings, never pushed (deploy.env.example)
+if [ -f "${ROOT_DIR}/deploy.env" ]; then
+  # shellcheck source=/dev/null
+  . "${ROOT_DIR}/deploy.env"
+fi
+
+DEPLOY_HOST="${DEPLOY_HOST:-}"
+APP_DIR="${APP_DIR:-/opt/maison}"
+SERVICE_USER="${SERVICE_USER:-maison}"
+SERVICE_GROUP="${SERVICE_GROUP:-${SERVICE_USER}}"
+ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
+# The backend for the host: BACKEND_BUILD is the command that makes BACKEND_BIN; without one,
+# cargo-zigbuild for BACKEND_TARGET (a target rustup ships)
+BACKEND_TARGET="${BACKEND_TARGET:-}"
+BACKEND_BUILD="${BACKEND_BUILD:-}"
+BACKEND_BIN="${BACKEND_BIN:-${ROOT_DIR}/backend/target/${BACKEND_TARGET}/release/maison-backend}"
+# The edge's certificates for this host (`maison-backend edge init`'s first directory), when
 # EDGE_LISTEN is set
 EDGE_HOUSE_DIR="${EDGE_HOUSE_DIR:-}"
-PI_HOST="${PI_HOST:-}"
-PI_PASSWORD="${PI_PASSWORD:-}"
-PI_APP_DIR="${PI_APP_DIR:-/opt/maison}"
-PI_SERVICE_USER="${PI_SERVICE_USER:-maison}"
-PI_SERVICE_GROUP="${PI_SERVICE_GROUP:-${PI_SERVICE_USER}}"
-# cloudflared runs as a user of its own: compromised, it reads none of the backend's secrets
-PI_TUNNEL_USER="${PI_TUNNEL_USER:-cloudflared}"
-PI_ENV_FILE="${PI_ENV_FILE:-${ROOT_DIR}/.env}"
-BACKEND_TARGET="${BACKEND_TARGET:-arm-unknown-linux-musleabihf}"
-BACKEND_BIN="${ROOT_DIR}/backend/target/${BACKEND_TARGET}/release/maison-backend"
-CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-${ROOT_DIR}/cloudflared-arm}"
 
-# Files pushed from this machine on every deploy (the source of truth is local).
+# Pushed from this machine on every deploy (the source of truth is local).
 RUNTIME_FILES=(
   devices.json
   meross-devices.json
 )
 
-# Mutable state owned by the backend on the Pi: never pushed, never seeded (a
-# missing file is the backend's default, an empty one an error), handed back to
-# the service user when present. The backend creates them itself: APP_DIR is
-# root:maison 1775 (group-writable, sticky like /tmp), so the service makes and
-# renames its own files but can never replace root's (.env, devices.json…).
+# Mutable state owned by the backend on the host: never pushed, never seeded (a missing file is
+# the backend's default, an empty one an error), handed back to the service user when present.
+# The backend creates them itself: APP_DIR is root:maison 1775 (group-writable, sticky like
+# /tmp), so the service makes and renames its own files but can never replace root's (.env,
+# devices.json…).
 STATE_FILES=(
   device-cache.json
   broadlink-codes.json
@@ -42,7 +47,6 @@ STATE_FILES=(
   climate-state.json
   nabaztag.json
   refresh-tokens.json
-  ir-keymap.json
   scenes.json
   tv.json
   androidtv.json
@@ -50,10 +54,9 @@ STATE_FILES=(
   atv-identity
 )
 
-# State directories handed recursively to the service user. Format:
-# "name|mode"; an empty mode leaves permissions alone. matter/ holds the
-# fabric keys: the controller saves by temp-file + rename, so it needs a
-# private directory of its own rather than a pre-created file.
+# State directories handed recursively to the service user, "name|mode" (an empty mode leaves
+# permissions alone). matter/ holds the fabric keys: the controller saves by temp file + rename,
+# so it needs a private directory of its own rather than a pre-created file.
 STATE_DIRS=(
   'cache|'
   'matter|700'
@@ -61,16 +64,13 @@ STATE_DIRS=(
   'photos|700'
 )
 
-# Remote layout, relative to PI_APP_DIR.
+# The host's layout, relative to APP_DIR.
 REMOTE_BACKEND_DIR=backend/target/release
 REMOTE_WEB_DIR=web/build
 REMOTE_LAYOUT=(
   "${REMOTE_BACKEND_DIR}"
   "${REMOTE_WEB_DIR}"
-  deploy/openrc
   deploy/mosquitto
-  deploy/ssh
-  mosquitto/certs
   matter-trust
   cache/tempo
 )
@@ -78,38 +78,26 @@ REMOTE_LAYOUT=(
 usage() {
   cat <<'EOF'
 Usage:
-  PI_HOST=pi@raspberrypi ./deploy.sh [all|build|push|upgrade|start|stop|logs|status]
+  ./deploy.sh [all|build|push|start|stop|logs|status]
 
 Commands:
-  all      Build locally, push to the Pi, upgrade host services, restart everything
-  build    Build the web frontend and cross-build the backend only
-  push     Push artifacts and configs to the Pi only
-  upgrade  Install or upgrade host-native dependencies on the Pi
-  start    Install service definitions and restart the stack on the Pi
-  stop     Stop the running stack on the Pi
-  logs     Follow logs for one service or the full stack
-  status   Show service status, dependency hints, and final URLs
+  all      build, push, start
+  build    Build the web bundle and the backend for the host
+  push     Push the binary, the bundle and the settings to the host
+  start    Restart the stack on the host and wait for /health
+  stop     Stop the stack on the host until the next start
+  logs     Follow the host's logs: stack (default), backend, mosquitto
+  status   The host's own account of its services
 
-Environment:
-  DEPLOY_TARGET    pi (default) or box (the AirTies box: no upgrade, no tunnel, its image runs
-                   the services; the backend built by AIRTIES_DIR's `make maison`)
-  AIRTIES_DIR      box: the airties-upcycling checkout, default ../airties-upcycling
-  EDGE_HOUSE_DIR   box: the edge's certificates for this host (maison-backend edge init)
-  PI_HOST          SSH target, required for push/upgrade/start/all/logs/status
-  PI_PASSWORD      Optional SSH password used via sshpass when installed locally
-  PI_APP_DIR       Remote app directory, default /opt/maison
-  PI_SERVICE_USER  Service user on the Pi, default maison
-  PI_SERVICE_GROUP Service group on the Pi, default maison
-  PI_TUNNEL_USER   cloudflared's own user on the Pi, default cloudflared
-  PI_ENV_FILE      Local env file to deploy, default ./.env
-  BACKEND_TARGET   Rust target triple, default arm-unknown-linux-musleabihf
-  CLOUDFLARED_BIN  Path to cross-compiled cloudflared binary, default ./cloudflared-arm
-
-Examples:
-  PI_HOST=pi@192.168.1.50 ./deploy.sh all
-  PI_HOST=pi@192.168.1.50 ./deploy.sh push
-  PI_HOST=pi@192.168.1.50 ./deploy.sh logs backend
-  PI_HOST=pi@192.168.1.50 ./deploy.sh status
+Settings (deploy.env, or the environment):
+  DEPLOY_HOST      SSH target, by key (root@<host>)
+  BACKEND_TARGET   Rust target triple, built with cargo-zigbuild (RUSTFLAGS is passed on)
+  BACKEND_BUILD    a command that builds the backend instead, run from the repository's root
+  BACKEND_BIN      the binary it makes, default backend/target/<BACKEND_TARGET>/release/maison-backend
+  EDGE_HOUSE_DIR   the edge's certificates for this host (maison-backend edge init)
+  APP_DIR          the host's directory, default /opt/maison
+  SERVICE_USER     the service's account on the host, default maison (SERVICE_GROUP alike)
+  ENV_FILE         the env file pushed as the host's .env, default ./.env
 EOF
 }
 
@@ -121,23 +109,9 @@ warn() {
   printf 'Warning: %s\n' "$*" >&2
 }
 
-require_host() {
-  if [ -z "${PI_HOST}" ]; then
-    printf '%s\n' 'Missing PI_HOST. Example: PI_HOST=pi@192.168.1.50 ./deploy.sh all' >&2
-    exit 1
-  fi
-}
-
-ssh_base_cmd() {
-  if [ -n "${PI_PASSWORD}" ]; then
-    if ! command -v sshpass >/dev/null 2>&1; then
-      printf '%s\n' 'PI_PASSWORD is set but sshpass is not installed. Install it first, for example: brew install hudochenkov/sshpass/sshpass' >&2
-      exit 1
-    fi
-    SSHPASS="${PI_PASSWORD}" sshpass -e "$@"
-  else
-    "$@"
-  fi
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
 }
 
 run_local() {
@@ -145,76 +119,41 @@ run_local() {
   "$@"
 }
 
-ssh_pi() {
-  ssh_base_cmd ssh "${PI_HOST}" "$@"
+on_host() {
+  if [ -z "${DEPLOY_HOST}" ]; then
+    fail 'Missing DEPLOY_HOST (deploy.env): the SSH target, e.g. root@<host>'
+  fi
+  # shellcheck disable=SC2029 # the command line is built here, on purpose
+  ssh "${DEPLOY_HOST}" "$@"
 }
 
-rsync_pi() {
-  ssh_base_cmd rsync "$@"
-}
-
-# Prologue of every remote script. The Pi runs BusyBox sh: no bash-isms
-# below this line, and lists arrive as positional arguments.
-remote_prologue() {
-  cat <<'EOF'
-set -eu
-# shellcheck disable=SC2034 # not every script uses all four
-APP_DIR="$1" SERVICE_USER="$2" SERVICE_GROUP="$3" TUNNEL_USER="$4"
-shift 4
-EOF
-}
-
-# Run the script read on stdin on the Pi, as root, with APP_DIR, SERVICE_USER,
-# SERVICE_GROUP and TUNNEL_USER set and "$@" as its remaining arguments.
-# ssh hands the remote shell a single command line, hence the quoting.
-ssh_pi_script() {
-  require_host
+# Run the script read on stdin on the host, as root, with APP_DIR, SERVICE_USER and
+# SERVICE_GROUP set and "$@" as its remaining arguments. The host may run BusyBox sh: no
+# bash-isms in a remote script, and lists arrive as positional arguments. ssh hands the remote
+# shell a single command line, hence the quoting.
+host_script() {
   local args
-  args="$(printf ' %q' "${PI_APP_DIR}" "${PI_SERVICE_USER}" "${PI_SERVICE_GROUP}" "${PI_TUNNEL_USER}" "$@")"
-  { remote_prologue; cat; } | ssh_pi "sh -s --${args}"
+  args="$(printf ' %q' "${APP_DIR}" "${SERVICE_USER}" "${SERVICE_GROUP}" "$@")"
+  {
+    cat <<'EOF'
+set -eu
+# shellcheck disable=SC2034 # not every script uses all three
+APP_DIR="$1" SERVICE_USER="$2" SERVICE_GROUP="$3"
+shift 3
+EOF
+    cat
+  } | on_host "sh -s --${args}"
 }
 
-# The one place that knows how the Pi's state is laid out: service account,
-# directory layout, seeded state files, ownership. Idempotent.
-# Arguments: LAYOUT, STATE_DIRS (space-separated), then one "name|seed" per
-# state file.
-remote_state_script() {
-  cat <<'EOF'
+# The one place that knows how the host's state is laid out: directories, ownership. Idempotent.
+# Files come as root, so ownership is handed back after every push, otherwise the backend gets
+# EACCES on its next save.
+lay_out_state() {
+  host_script "${REMOTE_LAYOUT[*]}" "${STATE_DIRS[*]}" "${STATE_FILES[@]}" <<'EOF'
 LAYOUT="$1"
 STATE_DIRS="$2"
 shift 2
-EOF
-  # The box's image carries its accounts (maison in dialout); the Pi makes them
-  if [ "${DEPLOY_TARGET}" = pi ]; then
-    remote_accounts_script
-  fi
-  remote_layout_script
-}
 
-remote_accounts_script() {
-  cat <<'EOF'
-if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
-  addgroup -S "${SERVICE_GROUP}"
-fi
-if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-  adduser -S -D -H -h "${APP_DIR}" -G "${SERVICE_GROUP}" -s /sbin/nologin "${SERVICE_USER}"
-fi
-# The backend drives the Zigbee dongle over /dev/ttyUSB0 (root:dialout).
-if ! id -Gn "${SERVICE_USER}" | grep -qw dialout; then
-  addgroup "${SERVICE_USER}" dialout
-fi
-# The tunnel's own account: no home, no shell, in no group of the backend's.
-if ! getent group "${TUNNEL_USER}" >/dev/null 2>&1; then
-  addgroup -S "${TUNNEL_USER}"
-fi
-if ! id -u "${TUNNEL_USER}" >/dev/null 2>&1; then
-  adduser -S -D -H -h /var/empty -G "${TUNNEL_USER}" -s /sbin/nologin "${TUNNEL_USER}"
-fi
-EOF
-}
-
-remote_layout_script() {
-  cat <<'EOF'
 for dir in ${LAYOUT}; do
   mkdir -p "${APP_DIR}/${dir}"
 done
@@ -224,8 +163,6 @@ done
 chown "root:${SERVICE_GROUP}" "${APP_DIR}"
 chmod 1775 "${APP_DIR}"
 
-# rsync runs as root, so ownership is handed back after every push —
-# otherwise the backend gets EACCES on its next persist.
 for entry in ${STATE_DIRS}; do
   dir="${APP_DIR}/${entry%%|*}"
   mode="${entry#*|}"
@@ -245,16 +182,10 @@ done
 EOF
 }
 
-# Run the state step on the Pi, followed by the script read on stdin (if any).
-ssh_pi_with_state() {
-  { remote_state_script; cat; } |
-    ssh_pi_script "${REMOTE_LAYOUT[*]}" "${STATE_DIRS[*]}" "${STATE_FILES[@]}"
-}
-
-# A setting of the local .env (the last one wins), quotes around it dropped.
+# A setting of the local env file (the last one wins), quotes around it dropped.
 env_value() {
   local value
-  value="$(grep -E "^$1=" "${PI_ENV_FILE}" 2>/dev/null | tail -n1 | cut -d'=' -f2-)" || true
+  value="$(grep -E "^$1=" "${ENV_FILE}" 2>/dev/null | tail -n1 | cut -d'=' -f2-)" || true
   value="${value%\"}"
   value="${value#\"}"
   value="${value%\'}"
@@ -262,28 +193,10 @@ env_value() {
   printf '%s' "${value}"
 }
 
-# The tunnel's token, in its own 0600 file owned by cloudflared's user, sent over ssh's stdin
-# (never on a command line); the Pi's .env goes without it.
-push_tunnel_token() {
-  local token
-  token="$(env_value CLOUDFLARE_TUNNEL_TOKEN)"
-  if [ -z "${token}" ]; then
-    warn "CLOUDFLARE_TUNNEL_TOKEN is empty in ${PI_ENV_FILE}: the tunnel keeps its current token, if any"
-    return 0
-  fi
-  log "Pushing the tunnel token (cloudflared's own 0600 file)"
-  printf '%s\n' "${token}" | ssh_pi "set -eu; umask 077; dir=/etc/cloudflared-maison; mkdir -p \"\${dir}\"; cat >\"\${dir}/token.new\"; chown -R ${PI_TUNNEL_USER}:${PI_TUNNEL_USER} \"\${dir}\"; chmod 700 \"\${dir}\"; chmod 600 \"\${dir}/token.new\"; mv \"\${dir}/token.new\" \"\${dir}/token\""
-}
-
-# The Meross plugs' addresses (meross-devices.json), one IPv4 address a line: what the Pi's
-# firewall lets reach Mosquitto's 8883 (deploy/openrc/maison-mqtt-firewall). Anything but a
-# private IPv4 address stops the deploy.
+# The Meross plugs' addresses (meross-devices.json), one IPv4 address a line: what the host's
+# firewall lets reach Mosquitto's 8883. Anything but a private IPv4 address stops the deploy.
 plug_addresses() {
-  local file="${ROOT_DIR}/meross-devices.json"
-  if [ ! -f "${file}" ]; then
-    return 0
-  fi
-  python3 -I - "${file}" <<'PY'
+  python3 -I - "${ROOT_DIR}/meross-devices.json" <<'PY'
 import ipaddress, json, sys
 for device in json.load(open(sys.argv[1])):
     address = ipaddress.ip_address(str(device["ip"]).strip())
@@ -293,557 +206,160 @@ for device in json.load(open(sys.argv[1])):
 PY
 }
 
-build_local() {
-  run_local bun install --cwd "${ROOT_DIR}/web" --frozen-lockfile
-  run_local bun run --cwd "${ROOT_DIR}/web" build
-  run_local env TARGET="${BACKEND_TARGET}" bash "${ROOT_DIR}/scripts/build-rpi1-backend.sh"
+# put_file <local file> <remote path> <owner:group> <mode>: replaced whole (a temp file, renamed)
+put_file() {
+  on_host "set -eu; t=\"$2.new\"; mkdir -p \"\$(dirname \"$2\")\"; cat >\"\${t}\"; chown $3 \"\${t}\"; chmod $4 \"\${t}\"; mv \"\${t}\" \"$2\"" <"$1"
 }
 
-prepare_remote_push() {
-  log "Preparing remote host for file sync"
-  ssh_pi_with_state <<'EOF'
-apk add --no-cache rsync
-# The React frontend (frontend/dist) was replaced by the SvelteKit bundle in
-# web/build: drop the stale copy so the Pi carries a single frontend.
-rm -rf "${APP_DIR}/frontend"
-EOF
-}
-
-fix_state_ownership() {
-  log "Restoring mutable-state ownership"
-  ssh_pi_with_state </dev/null
-}
-
-push_to_pi() {
-  require_host
-
-  if [ ! -f "${BACKEND_BIN}" ]; then
-    printf 'Missing backend artifact: %s\n' "${BACKEND_BIN}" >&2
-    printf '%s\n' 'Run ./deploy.sh build first.' >&2
-    exit 1
-  fi
-
-  if [ ! -d "${ROOT_DIR}/${REMOTE_WEB_DIR}" ]; then
-    printf 'Missing %s. Run ./deploy.sh build first.\n' "${REMOTE_WEB_DIR}" >&2
-    exit 1
-  fi
-
-  prepare_remote_push
-
-  log "Pushing backend artifact"
-  rsync_pi -avz "${BACKEND_BIN}" "${PI_HOST}:${PI_APP_DIR}/${REMOTE_BACKEND_DIR}/"
-
-  log "Pushing web bundle"
-  rsync_pi -avz "${ROOT_DIR}/${REMOTE_WEB_DIR}/" "${PI_HOST}:${PI_APP_DIR}/${REMOTE_WEB_DIR}/"
-
-  # Secrets (.env holds JWT_SECRET and the tunnel token; devices.json the Tuya local keys,
-  # meross-devices.json the Meross key): root's, readable by the service's group only.
-  local secret=(--chown="root:${PI_SERVICE_GROUP}" --chmod=F640)
-
-  local scratch
-  scratch="$(mktemp -d)"
-  # shellcheck disable=SC2064 # the directory is known now
-  trap "rm -rf '${scratch}'" EXIT
-
-  if [ -f "${PI_ENV_FILE}" ]; then
-    log "Pushing env file (without the tunnel's token: cloudflared has its own file)"
-    grep -v '^CLOUDFLARE_TUNNEL_TOKEN=' "${PI_ENV_FILE}" >"${scratch}/env" || [ $? -eq 1 ]
-    rsync_pi -avz "${secret[@]}" "${scratch}/env" "${PI_HOST}:${PI_APP_DIR}/.env"
-    push_tunnel_token
-  else
-    warn "Env file not found at ${PI_ENV_FILE}; keeping remote .env untouched"
-  fi
-
-  log "Pushing service templates and configs"
-  rsync_pi -avz "${ROOT_DIR}/deploy/openrc/maison" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
-  rsync_pi -avz "${ROOT_DIR}/deploy/openrc/cloudflared-maison" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
-  rsync_pi -avz "${ROOT_DIR}/deploy/openrc/maison-mqtt-firewall" "${PI_HOST}:${PI_APP_DIR}/deploy/openrc/"
-  rsync_pi -avz "${ROOT_DIR}/deploy/mosquitto/maison.conf" "${PI_HOST}:${PI_APP_DIR}/deploy/mosquitto/"
-  rsync_pi -avz "${ROOT_DIR}/deploy/ssh/00-keys-only.conf" "${PI_HOST}:${PI_APP_DIR}/deploy/ssh/"
-  log "Pushing the plugs' addresses (Mosquitto's firewall)"
-  plug_addresses >"${scratch}/plugs.allow"
-  rsync_pi -avz --chown=root:root --chmod=F644 "${scratch}/plugs.allow" "${PI_HOST}:${PI_APP_DIR}/deploy/mosquitto/plugs.allow"
-  rsync_pi -avz --chown=root:root "${ROOT_DIR}/deploy/logrotate/maison" "${PI_HOST}:/etc/logrotate.d/maison"
-
-  if [ -d "${ROOT_DIR}/mosquitto/certs" ]; then
-    log "Pushing Mosquitto certificates"
-    # The CA private key never needs to leave this machine.
-    rsync_pi -avz --exclude ca-key.pem "${ROOT_DIR}/mosquitto/certs/" "${PI_HOST}:${PI_APP_DIR}/mosquitto/certs/"
-  else
-    warn "mosquitto/certs is missing locally; TLS listener deployment may fail"
-  fi
-
-  log "Pushing Matter attestation roots"
-  rsync_pi -avz --delete "${ROOT_DIR}/matter-trust/" "${PI_HOST}:${PI_APP_DIR}/matter-trust/"
-
-  if [ -f "${CLOUDFLARED_BIN}" ]; then
-    log "Pushing cloudflared binary to /usr/local/bin/cloudflared"
-    rsync_pi -avz "${CLOUDFLARED_BIN}" "${PI_HOST}:/usr/local/bin/cloudflared"
-    ssh_pi chmod +x /usr/local/bin/cloudflared
-  else
-    warn "cloudflared-arm binary not found at ${CLOUDFLARED_BIN}; skipping"
-    warn "Build it with: ./scripts/build-cloudflared-armv6.sh"
-  fi
-
-  local relative_path entry
-  for relative_path in "${RUNTIME_FILES[@]}"; do
-    if [ -f "${ROOT_DIR}/${relative_path}" ]; then
-      log "Pushing ${relative_path}"
-      rsync_pi -avz "${secret[@]}" "${ROOT_DIR}/${relative_path}" "${PI_HOST}:${PI_APP_DIR}/"
-    fi
-  done
-
-  for relative_path in "${STATE_FILES[@]}"; do
-    if [ -f "${ROOT_DIR}/${relative_path}" ]; then
-      warn "Skipping push of mutable runtime file ${relative_path}; keeping remote state"
-      ## Enable on first deploy
-      #log "Pushing ${relative_path}"
-      #rsync_pi -avz "${ROOT_DIR}/${relative_path}" "${PI_HOST}:${PI_APP_DIR}/"
-    fi
-  done
-
-  if [ -d "${ROOT_DIR}/cache" ]; then
-    log "Pushing cache directory"
-    # --update: what the Pi has learnt since (Tempo seasons, netload.json, weather.json) is
-    # newer than this machine's copy and stays. model.json is fitted here (fit_tempo) and
-    # versioned: always this machine's.
-    rsync_pi -avz --update "${ROOT_DIR}/cache/" "${PI_HOST}:${PI_APP_DIR}/cache/"
-    rsync_pi -avz "${ROOT_DIR}/cache/tempo/model.json" "${PI_HOST}:${PI_APP_DIR}/cache/tempo/"
-  fi
-
-  fix_state_ownership
-}
-
-upgrade_pi() {
-  log "Upgrading host-native services on the Pi"
-  ssh_pi_with_state <<'EOF'
-apk update
-apk add --no-cache bash ca-certificates curl git ip6tables iptables logrotate mosquitto rsync
-apk upgrade --no-cache $(apk info | grep '^openssh')
-
-# sshd: keys only (deploy/ssh/00-keys-only.conf), checked before sshd reloads it
-if [ -f "${APP_DIR}/deploy/ssh/00-keys-only.conf" ] &&
-  ! cmp -s "${APP_DIR}/deploy/ssh/00-keys-only.conf" /etc/ssh/sshd_config.d/00-keys-only.conf; then
-  mkdir -p /etc/ssh/sshd_config.d
-  cp "${APP_DIR}/deploy/ssh/00-keys-only.conf" /etc/ssh/sshd_config.d/00-keys-only.conf
-  if sshd -t; then
-    rc-service sshd reload
-  else
-    rm -f /etc/ssh/sshd_config.d/00-keys-only.conf
-    printf '%s\n' 'Error: sshd rejected 00-keys-only.conf, left out.' >&2
-  fi
-fi
-
-mkdir -p /etc/mosquitto/conf.d /etc/mosquitto/certs/maison /var/log/mosquitto /var/log
-
-if [ -f "${APP_DIR}/deploy/mosquitto/maison.conf" ]; then
-  cp "${APP_DIR}/deploy/mosquitto/maison.conf" /etc/mosquitto/conf.d/maison.conf
-fi
-
-if [ -f "${APP_DIR}/mosquitto/certs/ca.pem" ]; then
-  cp "${APP_DIR}/mosquitto/certs/ca.pem" /etc/mosquitto/certs/maison/ca.pem
-fi
-if [ -f "${APP_DIR}/mosquitto/certs/server.pem" ]; then
-  cp "${APP_DIR}/mosquitto/certs/server.pem" /etc/mosquitto/certs/maison/server.pem
-fi
-if [ -f "${APP_DIR}/mosquitto/certs/server-key.pem" ]; then
-  cp "${APP_DIR}/mosquitto/certs/server-key.pem" /etc/mosquitto/certs/maison/server-key.pem
-  chmod 600 /etc/mosquitto/certs/maison/server-key.pem
-fi
-
-chown -R mosquitto:mosquitto /etc/mosquitto/certs/maison /var/log/mosquitto 2>/dev/null || true
-# the logs name people, addresses and refusals: their writer and root read them
-touch /var/log/maison.log /var/log/cloudflared-maison.log
-chown "${SERVICE_USER}:${SERVICE_GROUP}" /var/log/maison.log
-chown "${TUNNEL_USER}:${TUNNEL_USER}" /var/log/cloudflared-maison.log
-chmod 640 /var/log/maison.log /var/log/cloudflared-maison.log
-
-if ! command -v cloudflared >/dev/null 2>&1; then
-  printf '%s\n' 'Warning: cloudflared is not installed on the Pi.' >&2
-  printf '%s\n' 'Push it with: ./scripts/build-cloudflared-armv6.sh && ./deploy.sh push' >&2
-fi
-EOF
-}
-
-start_pi() {
-  log "Installing service definitions and restarting the stack"
-  ssh_pi_with_state <<'EOF'
-for service in maison cloudflared-maison maison-mqtt-firewall; do
-  sed \
-    -e "s#@@APP_DIR@@#${APP_DIR}#g" \
-    -e "s#@@SERVICE_USER@@#${SERVICE_USER}#g" \
-    -e "s#@@SERVICE_GROUP@@#${SERVICE_GROUP}#g" \
-    -e "s#@@TUNNEL_USER@@#${TUNNEL_USER}#g" \
-    "${APP_DIR}/deploy/openrc/${service}" | tee "/etc/init.d/${service}" >/dev/null
-  chmod +x "/etc/init.d/${service}"
-done
-
-# cloudflared's protocol, from the .env (it no longer reads the .env itself)
-protocol="$(grep -E '^CLOUDFLARED_PROTOCOL=' "${APP_DIR}/.env" | tail -n1 | cut -d'=' -f2-)" || true
-printf 'cloudflared_protocol="%s"\n' "${protocol:-http2}" >/etc/conf.d/cloudflared-maison
-# Mosquitto reads our configuration (the package's mosquitto.conf includes nothing: from it the
-# broker ran local only, its TLS listener never loaded), and never listens without the
-# plugs-only firewall in front of it
-printf '%s\n' 'cfgfile="/etc/mosquitto/conf.d/maison.conf"' 'rc_need="maison-mqtt-firewall"' >/etc/conf.d/mosquitto
-
-rc-update add maison-mqtt-firewall default >/dev/null 2>&1 || true
-rc-update add mosquitto default >/dev/null 2>&1 || true
-rc-update add maison default >/dev/null 2>&1 || true
-# the plugs' list may have changed: the rules are rebuilt (mosquitto keeps running)
-rc-service --nodeps maison-mqtt-firewall restart || rc-service maison-mqtt-firewall start
-# --nodeps: maison `need`s mosquitto, so a plain mosquitto restart would also stop maison and
-# start it again in the background, racing the restart below (« maison stopped by something
-# else », flock errors). maison only needs the broker for the plugs' boot; restart it once.
-rc-service --nodeps mosquitto restart || rc-service mosquitto start
-rc-service maison restart || rc-service maison start
-
-if command -v cloudflared >/dev/null 2>&1 && [ -s /etc/cloudflared-maison/token ]; then
-  rc-update add cloudflared-maison default >/dev/null 2>&1 || true
-  rc-service cloudflared-maison restart || rc-service cloudflared-maison start
-else
-  if ! command -v cloudflared >/dev/null 2>&1; then
-    printf '%s\n' 'Skipping cloudflared service start: cloudflared is not installed on the Pi.' >&2
-  else
-    printf '%s\n' 'Skipping cloudflared service start: no tunnel token (/etc/cloudflared-maison/token; CLOUDFLARE_TUNNEL_TOKEN in the local .env, then deploy.sh push).' >&2
-  fi
-fi
-
-sleep 2
-
-for service in maison-mqtt-firewall mosquitto maison cloudflared-maison; do
-  if rc-service "${service}" status >/dev/null 2>&1; then
-    printf '%s: active\n' "${service}"
-  else
-    printf '%s: inactive\n' "${service}"
-  fi
-done
-EOF
-}
-
-stop_pi() {
-  log "Stopping the stack on the Pi"
-  ssh_pi_script <<'EOF'
-for service in cloudflared-maison maison mosquitto; do
-  if [ -x "/etc/init.d/${service}" ]; then
-    rc-service "${service}" stop >/dev/null 2>&1 || true
-  fi
-done
-
-for service in mosquitto maison cloudflared-maison; do
-  if [ -x "/etc/init.d/${service}" ] && rc-service "${service}" status >/dev/null 2>&1; then
-    printf '%s: active\n' "${service}"
-  elif [ -x "/etc/init.d/${service}" ]; then
-    printf '%s: inactive\n' "${service}"
-  fi
-done
-EOF
-}
-
-logs_pi() {
-  local target="${1:-stack}"
-  log "Following ${target} logs on the Pi"
-  ssh_pi_script "${target}" <<'EOF'
-TARGET="$1"
-
-case "${TARGET}" in
-  stack)
-    touch /var/log/mosquitto/mosquitto.log /var/log/maison.log /var/log/cloudflared-maison.log
-    exec tail -f /var/log/mosquitto/mosquitto.log /var/log/maison.log /var/log/cloudflared-maison.log
-    ;;
-  mosquitto)
-    touch /var/log/mosquitto/mosquitto.log
-    exec tail -f /var/log/mosquitto/mosquitto.log
-    ;;
-  backend|maison)
-    touch /var/log/maison.log
-    exec tail -f /var/log/maison.log
-    ;;
-  cloudflared|tunnel)
-    touch /var/log/cloudflared-maison.log
-    exec tail -f /var/log/cloudflared-maison.log
-    ;;
-  *)
-    printf 'Unknown log target: %s\n' "${TARGET}" >&2
-    printf '%s\n' 'Valid targets: stack, mosquitto, backend, cloudflared' >&2
-    exit 1
-    ;;
-esac
-EOF
-}
-
-status_pi() {
-  log "Collecting deployment status from the Pi"
-  ssh_pi_script "${REMOTE_BACKEND_DIR}" "${REMOTE_WEB_DIR}" <<'EOF'
-BACKEND_DIR="$1"
-WEB_DIR="$2"
-
-service_state_openrc() {
-  if rc-service "$1" status >/dev/null 2>&1; then
-    printf 'active'
-  elif [ -x "/etc/init.d/$1" ]; then
-    printf 'inactive'
-  else
-    printf 'not-installed'
-  fi
-}
-
-public_hostname=''
-if [ -f "${APP_DIR}/.env" ]; then
-  public_hostname="$(grep -E '^CLOUDFLARE_PUBLIC_HOSTNAME=' "${APP_DIR}/.env" | tail -n1 | cut -d'=' -f2-)"
-fi
-
-tunnel_token_present='no'
-if [ -s /etc/cloudflared-maison/token ]; then
-  tunnel_token_present='yes'
-fi
-
-printf 'Platform:\n'
-printf '  os: %s\n' "$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-unknown}")"
-
-printf '\nServices:\n'
-printf '  mqtt firewall: %s\n' "$(service_state_openrc maison-mqtt-firewall)"
-printf '  mosquitto: %s\n' "$(service_state_openrc mosquitto)"
-printf '  maison: %s\n' "$(service_state_openrc maison)"
-printf '  cloudflared: %s\n' "$(service_state_openrc cloudflared-maison)"
-
-printf '\nRuntime:\n'
-if command -v cloudflared >/dev/null 2>&1; then
-  printf '  cloudflared: installed (%s)\n' "$(cloudflared --version 2>/dev/null | head -n1)"
-else
-  printf '%s\n' '  cloudflared: missing'
-fi
-
-printf '\nPaths:\n'
-printf '  app: %s\n' "${APP_DIR}"
-printf '  backend: %s\n' "${APP_DIR}/${BACKEND_DIR}/maison-backend"
-printf '  web: %s\n' "${APP_DIR}/${WEB_DIR}"
-
-printf '\nAccess:\n'
-printf '  local: http://%s:3033\n' "$(hostname -i 2>/dev/null | awk '{print $1}' || hostname)"
-if [ -n "${public_hostname}" ]; then
-  printf '  public: https://%s\n' "${public_hostname}"
-else
-  printf '%s\n' '  public: not configured'
-fi
-
-printf '\nHints:\n'
-if ! command -v cloudflared >/dev/null 2>&1; then
-  printf '%s\n' '  - Cloudflare Tunnel cannot start because cloudflared is not installed.'
-elif [ "${tunnel_token_present}" != 'yes' ]; then
-  printf '%s\n' '  - Cloudflare Tunnel cannot start: no token in /etc/cloudflared-maison/token (CLOUDFLARE_TUNNEL_TOKEN in the local .env, then deploy.sh push).'
-fi
-EOF
-}
-
-# ---- The AirTies box (DEPLOY_TARGET=box) ----
-# Its image (airties-upcycling, the Maison role) runs maison-run, mosquitto-run and clapier-run
-# from init: they start once the files below are there, and init restarts what exits. No rsync
-# there: files go over ssh, through tar or cat. The same layout under /opt/maison as on the Pi.
-
-BOX_BACKEND_BIN="${AIRTIES_DIR}/build_output/maison-backend"
-
-build_box() {
-  run_local bun install --cwd "${ROOT_DIR}/web" --frozen-lockfile
-  run_local bun run --cwd "${ROOT_DIR}/web" build
-  run_local make -C "${AIRTIES_DIR}" maison MAISON_DIR="${ROOT_DIR}"
-}
-
-# box_file <local file> <remote path> <owner:group> <mode>: replaced whole (a temp file, renamed)
-box_file() {
-  ssh_pi "set -eu; t=\"$2.new\"; mkdir -p \"\$(dirname \"$2\")\"; cat >\"\${t}\"; chown $3 \"\${t}\"; chmod $4 \"\${t}\"; mv \"\${t}\" \"$2\"" <"$1"
-}
-
-# box_tree <local dir> <remote dir>: the tree replaced whole (unpacked aside, then swapped)
-box_tree() {
+# put_tree <local dir> <remote dir>: the tree replaced whole (unpacked aside, then swapped)
+put_tree() {
   COPYFILE_DISABLE=1 tar -C "$1" --no-xattrs -cf - . |
-    ssh_pi "set -eu; d=\"$2\"; rm -rf \"\${d}.new\"; mkdir -p \"\${d}.new\"; tar -C \"\${d}.new\" -xf -; rm -rf \"\${d}.old\"; if [ -e \"\${d}\" ]; then mv \"\${d}\" \"\${d}.old\"; fi; mv \"\${d}.new\" \"\${d}\"; rm -rf \"\${d}.old\"; chown -R root:root \"\${d}\""
+    on_host "set -eu; d=\"$2\"; rm -rf \"\${d}.new\"; mkdir -p \"\${d}.new\"; tar -C \"\${d}.new\" -xf -; rm -rf \"\${d}.old\"; if [ -e \"\${d}\" ]; then mv \"\${d}\" \"\${d}.old\"; fi; mv \"\${d}.new\" \"\${d}\"; rm -rf \"\${d}.old\"; chown -R root:root \"\${d}\""
 }
 
-push_to_box() {
-  require_host
-  if [ ! -f "${BOX_BACKEND_BIN}" ]; then
-    printf 'Missing backend artifact: %s\nRun DEPLOY_TARGET=box ./deploy.sh build first.\n' "${BOX_BACKEND_BIN}" >&2
-    exit 1
+build() {
+  run_local bun install --cwd "${ROOT_DIR}/web" --frozen-lockfile
+  run_local bun run --cwd "${ROOT_DIR}/web" build
+  if [ -n "${BACKEND_BUILD}" ]; then
+    log "${BACKEND_BUILD}"
+    (cd "${ROOT_DIR}" && bash -c "${BACKEND_BUILD}")
+  elif [ -n "${BACKEND_TARGET}" ]; then
+    # --no-default-features: no Bluetooth (BlueZ's libraries are not cross-built)
+    run_local cargo zigbuild --release --locked --no-default-features \
+      --manifest-path "${ROOT_DIR}/backend/Cargo.toml" --target "${BACKEND_TARGET}" --bin maison-backend
+  else
+    fail 'Missing BACKEND_TARGET or BACKEND_BUILD (deploy.env): what the host runs'
+  fi
+}
+
+push() {
+  if [ ! -f "${BACKEND_BIN}" ]; then
+    fail "Missing backend artifact: ${BACKEND_BIN}. Run ./deploy.sh build first."
   fi
   if [ ! -d "${ROOT_DIR}/${REMOTE_WEB_DIR}" ]; then
-    printf 'Missing %s. Run DEPLOY_TARGET=box ./deploy.sh build first.\n' "${REMOTE_WEB_DIR}" >&2
-    exit 1
+    fail "Missing ${REMOTE_WEB_DIR}. Run ./deploy.sh build first."
   fi
-  ssh_pi 'mountpoint -q /opt' || { printf '%s\n' 'The box has no /opt (mtd6): its image is older than the Maison role.' >&2; exit 1; }
 
-  log "Preparing /opt/maison"
-  ssh_pi_with_state </dev/null
+  log "Preparing ${APP_DIR}"
+  lay_out_state
 
   log "Pushing backend artifact"
-  box_file "${BOX_BACKEND_BIN}" "${PI_APP_DIR}/${REMOTE_BACKEND_DIR}/maison-backend" root:root 755
+  put_file "${BACKEND_BIN}" "${APP_DIR}/${REMOTE_BACKEND_DIR}/maison-backend" root:root 755
   log "Pushing web bundle"
-  box_tree "${ROOT_DIR}/${REMOTE_WEB_DIR}" "${PI_APP_DIR}/${REMOTE_WEB_DIR}"
+  put_tree "${ROOT_DIR}/${REMOTE_WEB_DIR}" "${APP_DIR}/${REMOTE_WEB_DIR}"
 
-  local scratch
-  scratch="$(mktemp -d)"
-  # shellcheck disable=SC2064 # the directory is known now
-  trap "rm -rf '${scratch}'" EXIT
-
-  # Secrets: root's, readable by the service's group only
-  if [ -f "${PI_ENV_FILE}" ]; then
+  # Secrets (.env holds JWT_SECRET; devices.json the Tuya local keys, meross-devices.json the
+  # Meross key): root's, readable by the service's group only
+  if [ -f "${ENV_FILE}" ]; then
     log "Pushing env file"
-    grep -v '^CLOUDFLARE_TUNNEL_TOKEN=' "${PI_ENV_FILE}" >"${scratch}/env" || [ $? -eq 1 ]
-    box_file "${scratch}/env" "${PI_APP_DIR}/.env" "root:${PI_SERVICE_GROUP}" 640
+    put_file "${ENV_FILE}" "${APP_DIR}/.env" "root:${SERVICE_GROUP}" 640
   else
-    warn "Env file not found at ${PI_ENV_FILE}; keeping remote .env untouched"
+    warn "Env file not found at ${ENV_FILE}; keeping the host's .env untouched"
   fi
   local relative_path
   for relative_path in "${RUNTIME_FILES[@]}"; do
     if [ -f "${ROOT_DIR}/${relative_path}" ]; then
       log "Pushing ${relative_path}"
-      box_file "${ROOT_DIR}/${relative_path}" "${PI_APP_DIR}/${relative_path}" "root:${PI_SERVICE_GROUP}" 640
+      put_file "${ROOT_DIR}/${relative_path}" "${APP_DIR}/${relative_path}" "root:${SERVICE_GROUP}" 640
     fi
   done
 
   # The edge's certificates (edge.rs): the service's own directory, its key 0600
   if [ -n "${EDGE_HOUSE_DIR}" ]; then
     log "Pushing the edge's certificates"
+    local f
     for f in ca.pem cert.pem; do
-      box_file "${EDGE_HOUSE_DIR}/${f}" "${PI_APP_DIR}/edge/${f}" "${PI_SERVICE_USER}:${PI_SERVICE_GROUP}" 644
+      put_file "${EDGE_HOUSE_DIR}/${f}" "${APP_DIR}/edge/${f}" "${SERVICE_USER}:${SERVICE_GROUP}" 644
     done
-    box_file "${EDGE_HOUSE_DIR}/key.pem" "${PI_APP_DIR}/edge/key.pem" "${PI_SERVICE_USER}:${PI_SERVICE_GROUP}" 600
+    put_file "${EDGE_HOUSE_DIR}/key.pem" "${APP_DIR}/edge/key.pem" "${SERVICE_USER}:${SERVICE_GROUP}" 600
   elif [ -n "$(env_value EDGE_LISTEN)" ]; then
-    warn "EDGE_LISTEN is set but EDGE_HOUSE_DIR is not: the box keeps the edge certificates it has"
+    warn "EDGE_LISTEN is set but EDGE_HOUSE_DIR is not: the host keeps the edge certificates it has"
   fi
 
-  log "Pushing Mosquitto's configuration, certificates and the plugs' addresses (its firewall)"
-  box_file "${ROOT_DIR}/deploy/mosquitto/maison.conf" /etc/mosquitto/maison.conf root:root 644
-  if [ -d "${ROOT_DIR}/mosquitto/certs" ]; then
-    # The CA private key never needs to leave this machine.
-    for f in ca.pem server.pem; do
-      box_file "${ROOT_DIR}/mosquitto/certs/${f}" "/etc/mosquitto/certs/maison/${f}" mosquitto:mosquitto 644
-    done
-    box_file "${ROOT_DIR}/mosquitto/certs/server-key.pem" /etc/mosquitto/certs/maison/server-key.pem mosquitto:mosquitto 600
-  else
-    warn "mosquitto/certs is missing locally; the TLS listener cannot start"
+  # Meross plugs only: their firmware wants a broker to boot
+  if [ -f "${ROOT_DIR}/meross-devices.json" ]; then
+    log "Pushing Mosquitto's configuration, certificates and the plugs' addresses (its firewall)"
+    local scratch
+    scratch="$(mktemp -d)"
+    # shellcheck disable=SC2064 # the directory is known now
+    trap "rm -rf '${scratch}'" EXIT
+    put_file "${ROOT_DIR}/deploy/mosquitto/maison.conf" /etc/mosquitto/maison.conf root:root 644
+    if [ -d "${ROOT_DIR}/mosquitto/certs" ]; then
+      # The CA private key never needs to leave this machine.
+      for f in ca.pem server.pem; do
+        put_file "${ROOT_DIR}/mosquitto/certs/${f}" "/etc/mosquitto/certs/maison/${f}" mosquitto:mosquitto 644
+      done
+      put_file "${ROOT_DIR}/mosquitto/certs/server-key.pem" /etc/mosquitto/certs/maison/server-key.pem mosquitto:mosquitto 600
+    else
+      warn "mosquitto/certs is missing locally; the TLS listener cannot start"
+    fi
+    plug_addresses >"${scratch}/plugs.allow"
+    put_file "${scratch}/plugs.allow" "${APP_DIR}/deploy/mosquitto/plugs.allow" root:root 644
   fi
-  plug_addresses >"${scratch}/plugs.allow"
-  box_file "${scratch}/plugs.allow" "${PI_APP_DIR}/deploy/mosquitto/plugs.allow" root:root 644
 
   log "Pushing Matter attestation roots"
-  box_tree "${ROOT_DIR}/matter-trust" "${PI_APP_DIR}/matter-trust"
+  put_tree "${ROOT_DIR}/matter-trust" "${APP_DIR}/matter-trust"
 
   if [ -d "${ROOT_DIR}/cache/tempo" ]; then
     log "Pushing the Tempo cache"
-    # What the box has learnt since (seasons, netload.json, weather.json) is newer and stays;
+    # What the host has learnt since (seasons, netload.json, weather.json) is newer and stays;
     # model.json is fitted here (fit_tempo) and versioned: always this machine's.
     COPYFILE_DISABLE=1 tar -C "${ROOT_DIR}/cache/tempo" --no-xattrs -cf - . |
-      ssh_pi "set -eu; d=${PI_APP_DIR}/cache/tempo; s=\$(mktemp -d); tar -C \"\${s}\" -xf -; mkdir -p \"\${d}\"; for f in \"\${s}\"/*; do n=\"\${d}/\${f##*/}\"; if [ ! -e \"\${n}\" ] || [ \"\${f##*/}\" = model.json ] || [ \"\${f}\" -nt \"\${n}\" ]; then cp \"\${f}\" \"\${n}\"; fi; done; rm -rf \"\${s}\""
+      on_host "set -eu; d=${APP_DIR}/cache/tempo; s=\$(mktemp -d); tar -C \"\${s}\" -xf -; mkdir -p \"\${d}\"; for f in \"\${s}\"/*; do n=\"\${d}/\${f##*/}\"; if [ ! -e \"\${n}\" ] || [ \"\${f##*/}\" = model.json ] || [ \"\${f}\" -nt \"\${n}\" ]; then cp \"\${f}\" \"\${n}\"; fi; done; rm -rf \"\${s}\""
   fi
 
-  fix_state_ownership
+  log "Restoring mutable-state ownership"
+  lay_out_state
 }
 
-start_box() {
-  log "Restarting the stack on the box"
-  ssh_pi_script <<'EOF'
+start() {
+  log "Restarting the stack on the host"
+  host_script <<'EOF'
 rm -f "${APP_DIR}/stopped"
-# init (inittab respawn) starts them again at once, from the files just pushed; mosquitto-run
-# rebuilds the plugs' firewall first
+# the host's supervisor starts them again at once, from the files just pushed
 killall maison-backend mosquitto 2>/dev/null || true
 port="$(grep -E '^PORT=' "${APP_DIR}/.env" | tail -n1 | cut -d'=' -f2-)" || true
 n=0
 until wget -q -O - "http://127.0.0.1:${port:-3033}/health" >/dev/null 2>&1; do
   n=$((n + 1))
   if [ "${n}" -ge 60 ]; then
-    printf '%s\n' 'maison: no /health after 60 s (DEPLOY_TARGET=box ./deploy.sh logs)' >&2
+    printf '%s\n' 'maison: no /health after 60 s (./deploy.sh logs)' >&2
     exit 1
   fi
   sleep 1
 done
 printf 'maison: healthy after %s s\n' "${n}"
-for p in mosquitto clapier; do
-  if pidof "${p}" >/dev/null; then printf '%s: running\n' "${p}"; else printf '%s: not running\n' "${p}"; fi
-done
 EOF
 }
 
-stop_box() {
-  log "Stopping the stack on the box"
-  ssh_pi_script <<'EOF'
-# the run scripts wait while this file exists
+stop() {
+  log "Stopping the stack on the host"
+  host_script <<'EOF'
+# the host's supervisor starts nothing while this file exists
 touch "${APP_DIR}/stopped"
 killall maison-backend mosquitto 2>/dev/null || true
-nft delete table inet maison_mqtt 2>/dev/null || true
-printf '%s\n' 'maison, mosquitto: stopped (DEPLOY_TARGET=box ./deploy.sh start to restart)'
+printf '%s\n' 'maison, mosquitto: stopped (./deploy.sh start to restart)'
 EOF
-}
-
-logs_box() {
-  log "Following ${1:-stack} logs on the box"
-  ssh_pi "maison-logs ${1:-stack}"
-}
-
-status_box() {
-  log "Collecting deployment status from the box"
-  ssh_pi maison-status
 }
 
 COMMAND="${1:-all}"
-LOG_TARGET="${2:-stack}"
-
-if [ "${DEPLOY_TARGET}" = box ]; then
-  case "${COMMAND}" in
-    all) build_box; push_to_box; start_box ;;
-    build) build_box ;;
-    push) push_to_box ;;
-    start) start_box ;;
-    stop) stop_box ;;
-    logs) logs_box "${LOG_TARGET}" ;;
-    status) status_box ;;
-    upgrade)
-      printf '%s\n' 'The box has no package manager: its software comes with its image (airties-upcycling).' >&2
-      exit 1
-      ;;
-    help | -h | --help) usage ;;
-    *)
-      printf 'Unknown command: %s\n\n' "${COMMAND}" >&2
-      usage >&2
-      exit 1
-      ;;
-  esac
-  exit 0
-elif [ "${DEPLOY_TARGET}" != pi ]; then
-  printf 'DEPLOY_TARGET: pi or box, not %s\n' "${DEPLOY_TARGET}" >&2
-  exit 1
-fi
 
 case "${COMMAND}" in
   all)
-    build_local
-    push_to_pi
-    upgrade_pi
-    start_pi
+    build
+    push
+    start
     ;;
-  build)
-    build_local
-    ;;
-  push)
-    push_to_pi
-    ;;
-  upgrade)
-    upgrade_pi
-    ;;
-  start)
-    start_pi
-    ;;
-  stop)
-    stop_pi
-    ;;
+  build) build ;;
+  push) push ;;
+  start) start ;;
+  stop) stop ;;
   logs)
-    logs_pi "${LOG_TARGET}"
+    log "Following ${2:-stack} logs on the host"
+    on_host "maison-logs $(printf '%q' "${2:-stack}")"
     ;;
-  status)
-    status_pi
-    ;;
-  help|-h|--help)
-    usage
-    ;;
+  status) on_host maison-status ;;
+  help | -h | --help) usage ;;
   *)
     printf 'Unknown command: %s\n\n' "${COMMAND}" >&2
     usage >&2
